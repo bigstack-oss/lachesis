@@ -1,0 +1,182 @@
+#include "vmlinux.h"
+#include <bpf/bpf_endian.h>
+#include <bpf/bpf_helpers.h>
+
+#define TC_ACT_OK         0
+#define ETH_P_IP          0x0800
+#define ETH_P_IPV6        0x86DD
+
+// Zone codes — must match Go-side constants
+#define ZONE_EXTERNAL     0
+#define ZONE_SAME_TENANT  1
+#define ZONE_OTHER_TENANT 2
+#define ZONE_INFRA        3
+#define ZONE_MISS         4
+
+// 16-byte MAC-pair + direction + dst_zone flow key (real design from spec)
+struct flow_key {
+    __u8  src_mac[6];
+    __u8  dst_mac[6];
+    __u16 eth_proto;
+    __u8  direction; // 0=ingress (VM sending), 1=egress (VM receiving)
+    __u8  dst_zone;
+} __attribute__((packed));
+
+struct flow_metrics {
+    __u64 bytes;
+    __u64 packets;
+    __u64 last_seen_ns;
+};
+
+// LPM key: prefixlen covers bits in (tenant_id ++ ip).
+// Catchall entry:  prefixlen=32 → exact tenant_id, /0 ip wildcard.
+// Subnet /24 entry: prefixlen=56 → exact tenant_id + 24-bit ip prefix.
+struct lpm_key {
+    __u32 prefixlen;
+    __u32 tenant_id;
+    __u32 ip; // IPv4; IPv6 extension out of demo scope
+};
+
+// PERCPU_HASH: each CPU owns its slot — no atomic needed at 10 Gbps × N cores.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct flow_key);
+    __type(value, struct flow_metrics);
+} telemetry_map SEC(".maps");
+
+// LPM trie: (tenant_id, dst_ip) → zone code.
+// Populated from Go side on boot (demo stubs; production: MySQL cold-start + Kafka).
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, 4096);
+    __type(key, struct lpm_key);
+    __type(value, __u8);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} subnet_zone_trie SEC(".maps");
+
+// MAC → tenant_id.  Key: MAC as big-endian u64 (low 6 bytes used).
+// Populated from Go side on boot (demo stubs; production: OpenStack metadata).
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u64);
+    __type(value, __u32);
+} mac_tenant_map SEC(".maps");
+
+static __always_inline __u64 mac_to_u64(const __u8 mac[6])
+{
+    return ((__u64)mac[0] << 40) | ((__u64)mac[1] << 32) |
+           ((__u64)mac[2] << 24) | ((__u64)mac[3] << 16) |
+           ((__u64)mac[4] <<  8) |  (__u64)mac[5];
+}
+
+// LPM lookup: resolve dst_ip zone relative to the source VM's tenant.
+// Returns ZONE_MISS if the source MAC is not in the metadata map.
+static __always_inline __u8 lookup_zone(const __u8 vm_mac[6], __be32 remote_ip_be)
+{
+    __u64 mac_key = mac_to_u64(vm_mac);
+    __u32 *tid = bpf_map_lookup_elem(&mac_tenant_map, &mac_key);
+    if (!tid)
+        return ZONE_MISS;
+
+    struct lpm_key lk = {
+        .prefixlen = 64, // request full match; trie finds longest stored prefix
+        .tenant_id = *tid,
+        .ip        = bpf_ntohl(remote_ip_be),
+    };
+    __u8 *zone = bpf_map_lookup_elem(&subnet_zone_trie, &lk);
+    return zone ? *zone : ZONE_MISS;
+}
+
+// Shared packet handler; direction is inlined as a constant per program.
+static __always_inline int handle_packet(struct __sk_buff *skb, __u8 direction)
+{
+    // Pull Ethernet + IPv4 headers into linear region before accessing.
+    if (bpf_skb_pull_data(skb, sizeof(struct ethhdr) + sizeof(struct iphdr)) < 0)
+        return TC_ACT_OK;
+
+    void *data     = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
+
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return TC_ACT_OK;
+
+    __u16 proto = bpf_ntohs(eth->h_proto);
+    // ARP/LLDP/non-IP: pass through uncounted per spec.
+    if (proto != ETH_P_IP && proto != ETH_P_IPV6)
+        return TC_ACT_OK;
+
+    struct flow_key key = {};
+    __builtin_memcpy(key.src_mac, eth->h_source, 6);
+    __builtin_memcpy(key.dst_mac, eth->h_dest, 6);
+    key.eth_proto = proto;
+    key.direction = direction;
+
+    if (proto == ETH_P_IP) {
+        struct iphdr *iph = (void *)(eth + 1);
+        if ((void *)(iph + 1) > data_end)
+            return TC_ACT_OK;
+
+        // Directional swap: always classify against the VM's own MAC and
+        // the *remote* endpoint IP.
+        //
+        // INGRESS (direction=0, VM sending):
+        //   vm_mac=h_source, remote_ip=daddr
+        //   → "what zone is the VM sending to?"
+        //
+        // EGRESS (direction=1, VM receiving):
+        //   vm_mac=h_dest,   remote_ip=saddr
+        //   → "what zone is the VM receiving from?"
+        //
+        // Without this swap, egress traffic from 8.8.8.8 would look up
+        // daddr (the VM's own IP) and classify a Google download as
+        // same-tenant — a direct billing loss.
+        const __u8 *vm_mac   = (direction == 0) ? eth->h_source : eth->h_dest;
+        __be32      remote_ip = (direction == 0) ? iph->daddr    : iph->saddr;
+
+        key.dst_zone = lookup_zone(vm_mac, remote_ip);
+    } else {
+        // IPv6 zone resolution: out of demo scope, mark as miss.
+        key.dst_zone = ZONE_MISS;
+    }
+
+    __u64 pkt_len = skb->len;
+    __u64 now     = bpf_ktime_get_ns();
+
+    struct flow_metrics *val = bpf_map_lookup_elem(&telemetry_map, &key);
+    if (val) {
+        // PERCPU slot: no atomic needed — this CPU is the sole writer.
+        val->bytes       += pkt_len;
+        val->packets     += 1;
+        val->last_seen_ns = now;
+    } else {
+        struct flow_metrics init = {
+            .bytes       = pkt_len,
+            .packets     = 1,
+            .last_seen_ns = now,
+        };
+        // BPF_ANY: on a first-packet race between CPUs, one CPU's initial
+        // count overwrites the other's.  Acceptable: at most 1 packet lost
+        // per new flow.  PERCPU eliminates contention on all subsequent
+        // packets, which is what matters at line-rate.
+        bpf_map_update_elem(&telemetry_map, &key, &init, BPF_ANY);
+    }
+
+    return TC_ACT_OK;
+}
+
+SEC("tc")
+int tc_telemetry_in(struct __sk_buff *skb)
+{
+    return handle_packet(skb, 0); // ingress hook: VM is sending
+}
+
+SEC("tc")
+int tc_telemetry_out(struct __sk_buff *skb)
+{
+    return handle_packet(skb, 1); // egress hook: VM is receiving
+}
+
+char _license[] SEC("license") = "GPL";
