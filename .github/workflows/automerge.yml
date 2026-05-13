@@ -1,0 +1,22 @@
+name: Auto-merge on done label
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-automerge:
+    if: github.event.label.name == 'done'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (rebase)
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --rebase --auto
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,25 @@
+name: Done label gate
+
+# Required status check that fails until the `done` label is applied.
+# This forces non-admins to merge via the automerge workflow rather than the
+# manual merge button. Admins can still bypass (enforce_admins=false).
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+jobs:
+  done-label-required:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require `done` label
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if echo "$LABELS" | jq -e 'index("done")' > /dev/null; then
+            echo "OK: 'done' label present — merge gate open."
+          else
+            echo "BLOCKED: apply the 'done' label to merge."
+            echo "Labels on PR: $LABELS"
+            exit 1
+          fi
