@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./internal/...
+      - run: go test ./internal/...
+
+  integration:
+    name: integration (linux, privileged docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: build BPF builder image
+        run: task setup
+      - name: generate BPF bindings
+        # UID=0/GID=0 so bpf2go's docker run can write to runner-owned dirs.
+        run: task generate UID=0 GID=0
+      - name: run integration tests
+        run: task test-integration
+
+  bench-gate:
+    name: bench-gate (zero-allocation check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: ./scripts/bench-gate.sh

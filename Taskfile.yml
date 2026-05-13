@@ -1,0 +1,97 @@
+version: "3"
+
+dotenv: [ ".env" ]
+
+vars:
+  BUILDER_IMAGE: ebpf-builder
+  BUILD_DIR: build
+
+  UID: "{{default \"1000\" .UID}}"
+  GID: "{{default \"1000\" .GID}}"
+
+tasks:
+  setup:
+    desc: Build/Rebuild the Docker image for the builder environment
+    cmd: docker build --platform linux/amd64 -t {{.BUILDER_IMAGE}} .
+    sources: [ Dockerfile ]
+
+  headers:
+    desc: Populate .include/ with libbpf/kernel headers and generate vmlinux.h from
+      the builder image
+    deps: [ setup ]
+    sources:
+      - Dockerfile
+    generates:
+      - .include/vmlinux.h
+      - .include/bpf/bpf_helpers.h
+    cmds:
+      - rm -rf .include/bpf .include/asm .include/asm-generic .include/linux .include/vmlinux.h
+      - mkdir -p .include
+      - |
+        cid=$(docker create --platform linux/amd64 {{.BUILDER_IMAGE}})
+        docker cp $cid:/usr/include/bpf .include/bpf
+        docker cp $cid:/usr/include/x86_64-linux-gnu/asm .include/asm
+        docker cp $cid:/usr/include/asm-generic .include/asm-generic
+        docker cp $cid:/usr/include/linux .include/linux
+        docker rm $cid
+      - >
+        docker run --rm --privileged --platform linux/amd64
+        -u 0 -v "$(pwd)/.include":/out
+        {{.BUILDER_IMAGE}}
+        sh -c "bpftool btf dump file /sys/kernel/btf/vmlinux format c > /out/vmlinux.h && chown {{.UID}}:{{.GID}} /out/vmlinux.h"
+
+  generate:
+    desc: Generate BPF Go bindings only if C code or headers changed
+    deps: [ headers ]
+    sources:
+      - bpf/*.c
+      - bpf/test_fixtures/*.c
+      - .include/*
+    generates:
+      - internal/bpf/telemetry_bpfel.go
+      - internal/bpf/telemetry_bpfel.o
+      - internal/testenv/bpfunit/fixtures/noop_bpfel.go
+      - internal/testenv/bpfunit/fixtures/noop_bpfel.o
+    cmd: >
+      docker run --rm --platform linux/amd64 -v "$(pwd)":/app -u
+      {{.UID}}:{{.GID}} {{.BUILDER_IMAGE}} go generate ./...
+
+  perfbench:
+    desc: Build and run perfbench inside privileged Docker. Pass args after --
+    deps: [ generate ]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - >
+        docker run --rm --platform linux/amd64 -v "$(pwd)":/app -u
+        {{.UID}}:{{.GID}} -e GOOS=linux -e GOARCH=amd64 -e GOWORK=off
+        {{.BUILDER_IMAGE}} go build -o {{.BUILD_DIR}}/perfbench ./cmd/perfbench
+      - >
+        docker run --rm --platform linux/amd64 --privileged -u 0
+        -v "$(pwd)":/app -w /app {{.BUILDER_IMAGE}}
+        ./build/perfbench {{.CLI_ARGS}}
+
+  test:
+    desc: Run unit tests on the host (no integration tag; no privileges needed)
+    cmd: GOWORK=off go test ./internal/...
+
+  test-integration:
+    desc: Run integration tests inside the privileged Docker builder
+    deps: [ generate ]
+    cmd: >
+      docker run --rm --platform linux/amd64 --privileged -u 0
+      -v "$(pwd)":/app -w /app -e GOWORK=off {{.BUILDER_IMAGE}}
+      sh -c "go test -tags integration -v ./internal/testenv/..."
+
+  bench-gate:
+    desc: Enforce zero-allocation contract on BenchmarkHotpath_* benchmarks
+    cmd: ./scripts/bench-gate.sh
+
+  ci:
+    desc: Run the CI checks devs can run locally without Docker (unit + bench-gate)
+    cmds:
+      - task: test
+      - task: bench-gate
+
+  clean:
+    desc: Remove build artifacts
+    cmd: rm -rf build/ internal/bpf/*_bpfel.go internal/bpf/*_bpfel.o
