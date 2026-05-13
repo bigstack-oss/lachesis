@@ -2,8 +2,8 @@
 
 // Package classifier_test exercises the production telemetry BPF program
 // through BPF_PROG_TEST_RUN with table-driven cases. Verifies §4.3 hybrid
-// MAC-first / LPM-fallback zone lookup. No real interfaces, no real traffic;
-// see internal/testenv/e2e for that.
+// MAC-first / LPM-fallback zone lookup. No real interfaces, no real
+// traffic; see internal/testenv/e2e for that.
 package classifier_test
 
 import (
@@ -14,17 +14,8 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 
-	telemetrybpf "github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
-)
-
-// Zone codes — must match bpf/telemetry.c.
-const (
-	zoneExternal    uint8 = 0
-	zoneSameTenant  uint8 = 1
-	zoneOtherTenant uint8 = 2
-	zoneInfra       uint8 = 3
-	zoneMiss        uint8 = 4
 )
 
 // Locally-administered MACs (top bit of first byte = 0x02) so we never
@@ -42,31 +33,11 @@ const (
 	tenantB uint32 = 200
 )
 
-// flowKey mirrors struct flow_key in bpf/telemetry.c. Layout is 16 bytes,
-// __attribute__((packed)) on the C side. Go's natural alignment of these
-// fixed-width fields produces the same layout — no padding.
-type flowKey struct {
-	SrcMAC    [6]uint8
-	DstMAC    [6]uint8
-	EthProto  uint16 // host order after BPF read; ETH_P_IP = 0x0800
-	Direction uint8
-	DstZone   uint8
-}
-
-// flowMetrics mirrors struct flow_metrics in bpf/telemetry.c. Used as a
-// discard buffer when iterating the PERCPU_HASH map — we only assert on the
-// key's DstZone here.
-type flowMetrics struct {
-	Bytes      uint64
-	Packets    uint64
-	LastSeenNs uint64
-}
-
 func TestHybridZoneLookup(t *testing.T) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		t.Fatalf("rlimit: %v", err)
 	}
-	spec, err := telemetrybpf.LoadTelemetry()
+	spec, err := bpf.LoadTelemetry()
 	if err != nil {
 		t.Fatalf("load telemetry spec: %v", err)
 	}
@@ -104,27 +75,27 @@ func TestHybridZoneLookup(t *testing.T) {
 		srcIP    net.IP
 		dstIP    net.IP
 		prog     string // tc_telemetry_in (dir=0) or tc_telemetry_out (dir=1)
-		wantDir  uint8
-		wantZone uint8
+		wantDir  bpf.Direction
+		wantZone bpf.ZoneCode
 	}{
 		// — Hybrid path (MAC-first, LPM not consulted) —
 		{
 			name: "ingress same-tenant direct L2",
 			src:  macVMA, dst: macVMB,
 			srcIP: net.IPv4(10, 0, 0, 1), dstIP: net.IPv4(10, 0, 0, 2),
-			prog: "tc_telemetry_in", wantDir: 0, wantZone: zoneSameTenant,
+			prog: "tc_telemetry_in", wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneSameTenant,
 		},
 		{
 			name: "ingress cross-tenant direct L2",
 			src:  macVMA, dst: macVMC,
 			srcIP: net.IPv4(10, 0, 0, 1), dstIP: net.IPv4(10, 0, 0, 3),
-			prog: "tc_telemetry_in", wantDir: 0, wantZone: zoneOtherTenant,
+			prog: "tc_telemetry_in", wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneOtherTenant,
 		},
 		{
 			name: "egress same-tenant direct L2 (directional swap)",
 			src:  macVMB, dst: macVMA, // on the wire: B->A; we're at A's tap egress
 			srcIP: net.IPv4(10, 0, 0, 2), dstIP: net.IPv4(10, 0, 0, 1),
-			prog: "tc_telemetry_out", wantDir: 1, wantZone: zoneSameTenant,
+			prog: "tc_telemetry_out", wantDir: bpf.DirectionEgress, wantZone: bpf.ZoneSameTenant,
 		},
 
 		// — LPM-fallback path (peer not in map; trie empty → MISS) —
@@ -132,7 +103,7 @@ func TestHybridZoneLookup(t *testing.T) {
 			name: "ingress routed peer with empty trie → MISS",
 			src:  macVMA, dst: macRouter,
 			srcIP: net.IPv4(10, 0, 0, 1), dstIP: net.IPv4(8, 8, 8, 8),
-			prog: "tc_telemetry_in", wantDir: 0, wantZone: zoneMiss,
+			prog: "tc_telemetry_in", wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMiss,
 		},
 
 		// — Unknown VM short-circuit (don't even look up peer) —
@@ -140,7 +111,7 @@ func TestHybridZoneLookup(t *testing.T) {
 			name: "ingress unknown vm_mac → MISS",
 			src:  macUnknownVM, dst: macVMA,
 			srcIP: net.IPv4(10, 0, 0, 99), dstIP: net.IPv4(10, 0, 0, 1),
-			prog: "tc_telemetry_in", wantDir: 0, wantZone: zoneMiss,
+			prog: "tc_telemetry_in", wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMiss,
 		},
 	}
 
@@ -173,14 +144,14 @@ func TestHybridZoneLookup(t *testing.T) {
 // findZone scans telemetry_map for an entry matching (src, dst, direction)
 // and returns the recorded DstZone. The map is PERCPU_HASH so the value
 // slot is per-CPU; we only care about the key here.
-func findZone(m *ebpf.Map, src, dst uint64, dir uint8) (uint8, bool) {
+func findZone(m *ebpf.Map, src, dst uint64, dir bpf.Direction) (bpf.ZoneCode, bool) {
 	srcB := macToArr(src)
 	dstB := macToArr(dst)
-	var key flowKey
-	var vals []flowMetrics // discard
+	var key bpf.FlowKey
+	var vals []bpf.FlowMetrics // discard
 	iter := m.Iterate()
 	for iter.Next(&key, &vals) {
-		if key.SrcMAC == srcB && key.DstMAC == dstB && key.Direction == dir {
+		if key.SrcMac == srcB && key.DstMac == dstB && key.Direction == dir {
 			return key.DstZone, true
 		}
 	}

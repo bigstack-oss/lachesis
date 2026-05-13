@@ -6,20 +6,29 @@
 #define ETH_P_IP          0x0800
 #define ETH_P_IPV6        0x86DD
 
-// Zone codes — must match Go-side constants
-#define ZONE_EXTERNAL     0
-#define ZONE_SAME_TENANT  1
-#define ZONE_OTHER_TENANT 2
-#define ZONE_INFRA        3
-#define ZONE_MISS         4
+// Zone codes — single source of truth (mirrored to Go via bpf2go BTF).
+// __attribute__((packed)) keeps it __u8-sized so flow_key stays 16 bytes.
+enum zone_code {
+    ZONE_EXTERNAL     = 0,
+    ZONE_SAME_TENANT  = 1,
+    ZONE_OTHER_TENANT = 2,
+    ZONE_INFRA        = 3,
+    ZONE_MISS         = 4,
+} __attribute__((packed));
+
+// TC hook direction — single source of truth (mirrored to Go via bpf2go BTF).
+enum tc_direction {
+    TC_DIR_INGRESS = 0, // VM is sending (packet arrives at tap ingress)
+    TC_DIR_EGRESS  = 1, // VM is receiving (packet arrives at tap egress)
+} __attribute__((packed));
 
 // 16-byte MAC-pair + direction + dst_zone flow key (real design from spec)
 struct flow_key {
     __u8  src_mac[6];
     __u8  dst_mac[6];
     __u16 eth_proto;
-    __u8  direction; // 0=ingress (VM sending), 1=egress (VM receiving)
-    __u8  dst_zone;
+    enum tc_direction direction;
+    enum zone_code    dst_zone;
 } __attribute__((packed));
 
 struct flow_metrics {
@@ -102,7 +111,7 @@ static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
 }
 
 // Shared packet handler; direction is inlined as a constant per program.
-static __always_inline int handle_packet(struct __sk_buff *skb, __u8 direction)
+static __always_inline int handle_packet(struct __sk_buff *skb, enum tc_direction direction)
 {
     // Pull Ethernet + IPv4 headers into linear region before accessing.
     if (bpf_skb_pull_data(skb, sizeof(struct ethhdr) + sizeof(struct iphdr)) < 0)
@@ -134,20 +143,18 @@ static __always_inline int handle_packet(struct __sk_buff *skb, __u8 direction)
         // Directional swap: always classify against the VM's own MAC and
         // the *remote* endpoint IP.
         //
-        // INGRESS (direction=0, VM sending):
-        //   vm_mac=h_source, remote_ip=daddr
+        // INGRESS (VM sending):  vm_mac=h_source, remote_ip=daddr.
         //   → "what zone is the VM sending to?"
-        //
-        // EGRESS (direction=1, VM receiving):
-        //   vm_mac=h_dest,   remote_ip=saddr
+        // EGRESS  (VM receiving): vm_mac=h_dest, remote_ip=saddr.
         //   → "what zone is the VM receiving from?"
         //
         // Without this swap, egress traffic from 8.8.8.8 would look up
         // daddr (the VM's own IP) and classify a Google download as
         // same-tenant — a direct billing loss.
-        const __u8 *vm_mac   = (direction == 0) ? eth->h_source : eth->h_dest;
-        const __u8 *peer_mac = (direction == 0) ? eth->h_dest   : eth->h_source;
-        __be32      remote_ip = (direction == 0) ? iph->daddr    : iph->saddr;
+        const _Bool ingress = (direction == TC_DIR_INGRESS);
+        const __u8 *vm_mac   = ingress ? eth->h_source : eth->h_dest;
+        const __u8 *peer_mac = ingress ? eth->h_dest   : eth->h_source;
+        __be32      remote_ip = ingress ? iph->daddr    : iph->saddr;
 
         key.dst_zone = lookup_zone(vm_mac, peer_mac, remote_ip);
     } else {
@@ -183,13 +190,13 @@ static __always_inline int handle_packet(struct __sk_buff *skb, __u8 direction)
 SEC("tc")
 int tc_telemetry_in(struct __sk_buff *skb)
 {
-    return handle_packet(skb, 0); // ingress hook: VM is sending
+    return handle_packet(skb, TC_DIR_INGRESS); // VM is sending
 }
 
 SEC("tc")
 int tc_telemetry_out(struct __sk_buff *skb)
 {
-    return handle_packet(skb, 1); // egress hook: VM is receiving
+    return handle_packet(skb, TC_DIR_EGRESS); // VM is receiving
 }
 
 char _license[] SEC("license") = "GPL";

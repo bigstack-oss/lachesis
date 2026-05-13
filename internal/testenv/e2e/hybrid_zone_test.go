@@ -11,32 +11,11 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/vishvananda/netlink"
 
-	telemetrybpf "github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
 	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/traffic"
 )
-
-// Zone codes — must match bpf/telemetry.c. Duplicated from the classifier
-// test rather than imported via a shared abi package; the duplication is
-// 3 lines and keeps test packages independent.
-const (
-	zoneSameTenant uint8 = 1
-)
-
-type hybridFlowKey struct {
-	SrcMAC    [6]uint8
-	DstMAC    [6]uint8
-	EthProto  uint16
-	Direction uint8
-	DstZone   uint8
-}
-
-type hybridFlowMetrics struct {
-	Bytes      uint64
-	Packets    uint64
-	LastSeenNs uint64
-}
 
 // TestE2E_HybridZone_SameTenantNoTrie is Sprint 1's "Done when" criterion:
 // a same-tenant TCP stream over a real veth pair classifies as SAME_TENANT
@@ -56,7 +35,7 @@ func TestE2E_HybridZone_SameTenantNoTrie(t *testing.T) {
 		t.Fatalf("rlimit: %v", err)
 	}
 
-	spec, err := telemetrybpf.LoadTelemetry()
+	spec, err := bpf.LoadTelemetry()
 	if err != nil {
 		t.Fatalf("load telemetry: %v", err)
 	}
@@ -123,19 +102,19 @@ func TestE2E_HybridZone_SameTenantNoTrie(t *testing.T) {
 	}
 
 	// Inner is the VM, outer is the peer. The packet enters tap-h1 ingress,
-	// so direction=0; vm_mac=h_source=innerMAC, peer_mac=h_dest=outerMAC.
+	// so direction=Ingress; vm_mac=h_source=innerMAC, peer_mac=h_dest=outerMAC.
 	var (
 		innerArr   = [6]uint8(innerMAC)
 		outerArr   = [6]uint8(outerMAC)
 		matched    bool
-		matchedKey hybridFlowKey
+		matchedKey bpf.FlowKey
 		matchedAgg uint64
 	)
-	var key hybridFlowKey
-	var vals []hybridFlowMetrics
+	var key bpf.FlowKey
+	var vals []bpf.FlowMetrics
 	iter := telMap.Iterate()
 	for iter.Next(&key, &vals) {
-		if key.SrcMAC == innerArr && key.DstMAC == outerArr && key.Direction == 0 {
+		if key.SrcMac == innerArr && key.DstMac == outerArr && key.Direction == bpf.DirectionIngress {
 			matched = true
 			matchedKey = key
 			for _, v := range vals {
@@ -150,8 +129,8 @@ func TestE2E_HybridZone_SameTenantNoTrie(t *testing.T) {
 	if !matched {
 		t.Fatal("no telemetry_map entry for inner→outer ingress")
 	}
-	if matchedKey.DstZone != zoneSameTenant {
-		t.Errorf("dst_zone = %d, want %d (SAME_TENANT)", matchedKey.DstZone, zoneSameTenant)
+	if matchedKey.DstZone != bpf.ZoneSameTenant {
+		t.Errorf("dst_zone = %d, want %d (SAME_TENANT)", matchedKey.DstZone, bpf.ZoneSameTenant)
 	}
 	t.Logf("hybrid path verified: dst_zone=SAME_TENANT, aggregated bytes=%d (trie was empty)", matchedAgg)
 }
