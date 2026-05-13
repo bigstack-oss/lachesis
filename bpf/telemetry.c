@@ -71,18 +71,30 @@ static __always_inline __u64 mac_to_u64(const __u8 mac[6])
            ((__u64)mac[4] <<  8) |  (__u64)mac[5];
 }
 
-// LPM lookup: resolve dst_ip zone relative to the source VM's tenant.
-// Returns ZONE_MISS if the source MAC is not in the metadata map.
-static __always_inline __u8 lookup_zone(const __u8 vm_mac[6], __be32 remote_ip_be)
+// Hybrid MAC-first / LPM-fallback zone resolution (§4.3).
+//
+//   1. vm_mac must be in mac_tenant_map; otherwise ZONE_MISS — not our VM.
+//   2. Direct-L2 fast path: if peer_mac is also in mac_tenant_map, compare
+//      tenant_ids exactly. No trie consulted, no CIDR ambiguity.
+//   3. Routed traffic (peer_mac is a router or unknown) falls back to the
+//      LPM trie keyed on (vm_tenant_id, remote_ip).
+static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
+                                        const __u8 peer_mac[6],
+                                        __be32 remote_ip_be)
 {
-    __u64 mac_key = mac_to_u64(vm_mac);
-    __u32 *tid = bpf_map_lookup_elem(&mac_tenant_map, &mac_key);
-    if (!tid)
+    __u64 vm_key = mac_to_u64(vm_mac);
+    __u32 *vm_tid = bpf_map_lookup_elem(&mac_tenant_map, &vm_key);
+    if (!vm_tid)
         return ZONE_MISS;
+
+    __u64 peer_key = mac_to_u64(peer_mac);
+    __u32 *peer_tid = bpf_map_lookup_elem(&mac_tenant_map, &peer_key);
+    if (peer_tid)
+        return (*peer_tid == *vm_tid) ? ZONE_SAME_TENANT : ZONE_OTHER_TENANT;
 
     struct lpm_key lk = {
         .prefixlen = 64, // request full match; trie finds longest stored prefix
-        .tenant_id = *tid,
+        .tenant_id = *vm_tid,
         .ip        = bpf_ntohl(remote_ip_be),
     };
     __u8 *zone = bpf_map_lookup_elem(&subnet_zone_trie, &lk);
@@ -134,9 +146,10 @@ static __always_inline int handle_packet(struct __sk_buff *skb, __u8 direction)
         // daddr (the VM's own IP) and classify a Google download as
         // same-tenant — a direct billing loss.
         const __u8 *vm_mac   = (direction == 0) ? eth->h_source : eth->h_dest;
+        const __u8 *peer_mac = (direction == 0) ? eth->h_dest   : eth->h_source;
         __be32      remote_ip = (direction == 0) ? iph->daddr    : iph->saddr;
 
-        key.dst_zone = lookup_zone(vm_mac, remote_ip);
+        key.dst_zone = lookup_zone(vm_mac, peer_mac, remote_ip);
     } else {
         // IPv6 zone resolution: out of demo scope, mark as miss.
         key.dst_zone = ZONE_MISS;
