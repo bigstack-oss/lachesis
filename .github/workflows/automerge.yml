@@ -17,6 +17,6 @@ jobs:
         run: |
           gh pr merge ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
-            --rebase --auto
+            --rebase --auto --delete-branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
