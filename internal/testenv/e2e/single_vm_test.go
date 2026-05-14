@@ -1,8 +1,8 @@
 //go:build integration
 
-// Package e2e_test exercises the full Sprint 0.5 test-infrastructure stack:
-// BPF load + TC attach + netns + real TCP traffic + map assertion. The proof
-// that every component in Sprint 0.5 composes correctly.
+// Package e2e_test exercises the full test-infrastructure stack: BPF load
+// + TC attach + netns + real TCP traffic + map assertion. Verifies that
+// every test-environment component composes correctly end to end.
 package e2e_test
 
 import (
@@ -18,8 +18,8 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/traffic"
 )
 
-// TestE2E_SingleVM_NoopCounter is the Sprint 0.5 success criterion:
-// netns + veth + TC attach + noop BPF + real TCP all compose correctly.
+// TestE2E_SingleVM_NoopCounter verifies end-to-end composition:
+// netns + veth + TC attach + noop BPF + real TCP all wired together.
 //
 // Topology:
 //

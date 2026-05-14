@@ -21,8 +21,7 @@ const (
 // AttachBPF attaches prog to link via TC clsact. Idempotent: installs the
 // clsact qdisc if missing and replaces any existing filter with name.
 //
-// Test-only helper — Sprint 5 builds the production attach path with zombie
-// hunter, error recovery, and retries.
+// Intended for tests; production code paths add error recovery and retries.
 func AttachBPF(link netlink.Link, prog *ebpf.Program, dir TCDirection, name string) error {
 	qdisc := &netlink.GenericQdisc{
 		QdiscAttrs: netlink.QdiscAttrs{
