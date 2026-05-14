@@ -84,6 +84,26 @@ tasks:
     desc: Enforce zero-allocation contract on BenchmarkHotpath_* benchmarks
     cmd: ./scripts/bench-gate.sh
 
+  loadtest:
+    desc: Build the agent + loadtest binaries, then exercise the agent under
+      sustained traffic and verify resource budgets (RSS, CPU). Extra args
+      after -- are forwarded to the loadtest binary.
+    deps: [ generate ]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - >
+        docker run --rm --platform linux/amd64 -v "$(pwd)":/app -u
+        {{.UID}}:{{.GID}} -e GOOS=linux -e GOARCH=amd64 -e GOWORK=off
+        {{.BUILDER_IMAGE}} go build -o {{.BUILD_DIR}}/agent ./cmd/agent
+      - >
+        docker run --rm --platform linux/amd64 -v "$(pwd)":/app -u
+        {{.UID}}:{{.GID}} -e GOOS=linux -e GOARCH=amd64 -e GOWORK=off
+        {{.BUILDER_IMAGE}} go build -o {{.BUILD_DIR}}/loadtest ./cmd/loadtest
+      - >
+        docker run --rm --platform linux/amd64 --privileged -u 0
+        -v "$(pwd)":/app -w /app {{.BUILDER_IMAGE}}
+        ./build/loadtest -agent ./build/agent {{.CLI_ARGS}}
+
   ci:
     desc: Run the CI checks devs can run locally without Docker (unit + bench-gate)
     cmds:
