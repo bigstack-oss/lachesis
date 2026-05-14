@@ -43,10 +43,10 @@ struct flow_metrics {
 struct lpm_key {
     __u32 prefixlen;
     __u32 tenant_id;
-    __u32 ip; // IPv4; IPv6 extension out of demo scope
+    __u32 ip; // IPv4 only.
 };
 
-// PERCPU_HASH: each CPU owns its slot — no atomic needed at 10 Gbps × N cores.
+// PERCPU_HASH: each CPU writes to its own slot; no atomics on the hot path.
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
     __uint(max_entries, 65536);
@@ -54,8 +54,8 @@ struct {
     __type(value, struct flow_metrics);
 } telemetry_map SEC(".maps");
 
-// LPM trie: (tenant_id, dst_ip) → zone code.
-// Populated from Go side on boot (demo stubs; production: MySQL cold-start + Kafka).
+// LPM trie: (tenant_id, dst_ip) → zone code. Populated by the userspace
+// agent at startup and updated incrementally via the metadata event stream.
 struct {
     __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __uint(max_entries, 4096);
@@ -64,8 +64,8 @@ struct {
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } subnet_zone_trie SEC(".maps");
 
-// MAC → tenant_id.  Key: MAC as big-endian u64 (low 6 bytes used).
-// Populated from Go side on boot (demo stubs; production: OpenStack metadata).
+// MAC → tenant_id. Key: MAC as big-endian u64 (low 6 bytes used).
+// Populated by the userspace agent from the platform's port metadata.
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
@@ -141,16 +141,13 @@ static __always_inline int handle_packet(struct __sk_buff *skb, enum tc_directio
             return TC_ACT_OK;
 
         // Directional swap: always classify against the VM's own MAC and
-        // the *remote* endpoint IP.
+        // the remote endpoint IP, regardless of which TC hook fired.
         //
-        // INGRESS (VM sending):  vm_mac=h_source, remote_ip=daddr.
-        //   → "what zone is the VM sending to?"
-        // EGRESS  (VM receiving): vm_mac=h_dest, remote_ip=saddr.
-        //   → "what zone is the VM receiving from?"
+        // INGRESS (VM sending):   vm_mac = h_source, remote_ip = daddr.
+        // EGRESS  (VM receiving): vm_mac = h_dest,   remote_ip = saddr.
         //
-        // Without this swap, egress traffic from 8.8.8.8 would look up
-        // daddr (the VM's own IP) and classify a Google download as
-        // same-tenant — a direct billing loss.
+        // Without the swap, egress traffic looks up the VM's own address
+        // as the remote peer and produces a wrong classification.
         const _Bool ingress = (direction == TC_DIR_INGRESS);
         const __u8 *vm_mac   = ingress ? eth->h_source : eth->h_dest;
         const __u8 *peer_mac = ingress ? eth->h_dest   : eth->h_source;
@@ -158,7 +155,7 @@ static __always_inline int handle_packet(struct __sk_buff *skb, enum tc_directio
 
         key.dst_zone = lookup_zone(vm_mac, peer_mac, remote_ip);
     } else {
-        // IPv6 zone resolution: out of demo scope, mark as miss.
+        // IPv6 zone resolution is not yet implemented; record as MISS.
         key.dst_zone = ZONE_MISS;
     }
 

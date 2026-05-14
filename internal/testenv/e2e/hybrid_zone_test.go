@@ -17,10 +17,10 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/traffic"
 )
 
-// TestE2E_HybridZone_SameTenantNoTrie is Sprint 1's "Done when" criterion:
+// TestE2E_HybridZone_SameTenantNoTrie verifies the MAC-first hybrid path:
 // a same-tenant TCP stream over a real veth pair classifies as SAME_TENANT
-// while the LPM trie is empty — proving the MAC-first hybrid path is what
-// produced the classification.
+// while the LPM trie is empty. The empty trie ensures the classification
+// came from the MAC-first path, not the LPM fallback.
 //
 // Topology:
 //

@@ -2,14 +2,11 @@
 # bench-gate.sh — enforce the zero-allocation contract for hot-path code.
 #
 # Convention: benchmarks named BenchmarkHotpath_* MUST report 0 allocs/op.
-# Sprint 2+ will add real hot-path benches (Collect, BatchLookupAndProcess).
-# Until then this gate is a dormant no-op — it passes when no
-# BenchmarkHotpath_ benchmarks exist.
+# When no BenchmarkHotpath_* benchmarks exist this gate is a dormant no-op.
 #
-# Rationale (CLAUDE.md §Dev Guidelines / Performance):
-# hot-path allocations compound at the 15s scrape rate and produce billing-
-# grade latency tails. Catching them at PR time is much cheaper than at
-# production diagnosis time.
+# Rationale: hot-path allocations compound at the scrape rate and add
+# latency tails that are expensive to diagnose in production. Catching
+# them at PR time is much cheaper than at production diagnosis time.
 
 set -euo pipefail
 
@@ -18,8 +15,7 @@ trap 'rm -f "$LOG"' EXIT
 
 # -run='^$' disables non-bench tests so we don't pay test-setup cost.
 # -count=1 prevents flake-averaging (allocations are deterministic).
-# Scope: ./internal/... only. cmd/ is excluded until Sprint 1 lands the agent
-# skeleton with proper build tags.
+# Scope: ./internal/... only.
 GOWORK=off go test -bench='^BenchmarkHotpath_' -benchmem -run='^$' -count=1 ./internal/... 2>&1 | tee "$LOG"
 
 # Standard `go test -bench -benchmem` row format:

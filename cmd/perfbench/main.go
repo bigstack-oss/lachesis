@@ -1,8 +1,5 @@
-// perfbench reports ns/packet for a loaded BPF program by driving it through
-// BPF_PROG_TEST_RUN with a configurable repeat count.
-//
-// Currently bound to the noop fixture. Sprint 1+ will add a -fixture flag
-// to point at the real classifier once it exists.
+// perfbench reports ns/packet for a loaded BPF program by driving it
+// through BPF_PROG_TEST_RUN with a configurable repeat count.
 //
 // Output modes:
 //   - human (default): readable summary including packets/sec extrapolation
