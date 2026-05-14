@@ -9,15 +9,24 @@
 // GlobalState directly preserves cumulative continuity across
 // restarts so `rate()` does not go negative. See docs/DESIGN.md §C.7.
 //
+// # Per-flow vs per-label aggregation
+//
+// [state.GlobalState] is keyed by [bpf.FlowKey] (MAC, EthProto,
+// Direction, DstZone) — finer than the metric label set. Multiple
+// flow keys can map to the same (tenant_id, zone, direction) tuple.
+// The Collector aggregates per tuple before emission; Prometheus
+// rejects duplicate label sets in a single scrape, so this is not
+// optional. Per-flow granularity remains available to the GC + WAL,
+// which need it.
+//
 // # Allocation behaviour
 //
-// The Snapshot walk is zero-alloc thanks to the reused buffer in
-// [Collector]. The Prometheus emission via
-// [prometheus.MustNewConstMetric] does allocate; that cost is
-// per-scrape (10s cadence), not per-flow per-packet, so it is left
-// as-is. If profiling later shows the emission to be a hotspot, the
-// fix is a custom [prometheus.Metric] implementation backed by a
-// sync.Pool of *dto.Metric — deferred until a real signal arises.
+// The Snapshot walk is zero-alloc thanks to the reused buffer. The
+// per-tuple aggregation map and [prometheus.MustNewConstMetric] do
+// allocate; those costs are per-scrape (10s cadence), not per-flow
+// per-packet, so they are left as-is. A custom [prometheus.Metric]
+// implementation backed by a sync.Pool would close that gap if
+// profiling later shows the emission to be a hotspot.
 package metrics
 
 import (
@@ -67,6 +76,24 @@ type Collector struct {
 	// emitBuf is reused across Collect calls so the snapshot walk is
 	// zero-alloc in steady state.
 	emitBuf []state.Entry
+	// aggBuf groups per-flow entries by (tenant, zone, direction)
+	// before emission. Reused across Collect calls; clear(aggBuf)
+	// resets without releasing the bucket allocations.
+	aggBuf map[aggKey]aggValue
+}
+
+// aggKey is the granularity at which Collect aggregates per-flow
+// state for Prometheus emission. tenant is the resolver output.
+type aggKey struct {
+	tenant string
+	zone   bpf.ZoneCode
+	dir    bpf.Direction
+}
+
+// aggValue holds the summed per-tuple counters.
+type aggValue struct {
+	bytes   uint64
+	packets uint64
 }
 
 // New constructs a Collector. The TenantResolver is required —
@@ -76,6 +103,7 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		state:    st,
 		scraper:  sc,
 		resolver: resolver,
+		aggBuf:   make(map[aggKey]aggValue),
 		bytesDesc: prometheus.NewDesc(
 			"cubecos_bytes_total",
 			"Network bytes observed by the agent, cumulative since first sight.",
@@ -121,18 +149,29 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	defer c.collectMu.Unlock()
 
 	c.emitBuf = c.state.Snapshot(c.emitBuf[:0])
+	clear(c.aggBuf)
 	for i := range c.emitBuf {
 		e := &c.emitBuf[i]
-		tenant := c.resolver.ResolveTenant(e.Key)
-		zone := zoneLabel(e.Key.DstZone)
-		dir := directionLabel(e.Key.Direction)
+		k := aggKey{
+			tenant: c.resolver.ResolveTenant(e.Key),
+			zone:   e.Key.DstZone,
+			dir:    e.Key.Direction,
+		}
+		v := c.aggBuf[k]
+		v.bytes += e.Total.Bytes
+		v.packets += e.Total.Packets
+		c.aggBuf[k] = v
+	}
+	for k, v := range c.aggBuf {
+		zone := zoneLabel(k.zone)
+		dir := directionLabel(k.dir)
 		ch <- prometheus.MustNewConstMetric(
-			c.bytesDesc, prometheus.CounterValue, float64(e.Total.Bytes),
-			tenant, zone, dir,
+			c.bytesDesc, prometheus.CounterValue, float64(v.bytes),
+			k.tenant, zone, dir,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.packetsDesc, prometheus.CounterValue, float64(e.Total.Packets),
-			tenant, zone, dir,
+			c.packetsDesc, prometheus.CounterValue, float64(v.packets),
+			k.tenant, zone, dir,
 		)
 	}
 
