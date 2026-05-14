@@ -1,0 +1,82 @@
+# Local Prometheus + Grafana stack for the CubeCOS network-telemetry agent.
+#
+# Default profile (viz-only):
+#   docker compose up
+# Scrapes an agent reachable at host.docker.internal:9090 by default;
+# edit prometheus.yml to point at a different target.
+#
+# Full profile (Linux only — needs BPF + privileged container):
+#   docker compose --profile full up
+# Mounts the host-built ./build/agent binary into the container and
+# starts it on the host network namespace. Run `task binary` first.
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: cubecos-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=24h
+      - --web.enable-lifecycle
+    ports:
+      - "9091:9090"
+    # host-gateway resolves to the host's IP on Linux; Docker Desktop
+    # already injects host.docker.internal automatically on macOS/Windows.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: cubecos-grafana
+    restart: unless-stopped
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # Anonymous access is intentional for a local dev stack — do not
+      # ship this profile to a shared host without re-enabling auth.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Editor"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: "dark"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  # Linux-only optional service: runs the host-built agent binary in a
+  # privileged container on the host network namespace so it can attach
+  # TC clsact on a real interface.
+  agent:
+    profiles: ["full"]
+    image: ubuntu:24.04
+    container_name: cubecos-agent
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    cap_add:
+      - BPF
+      - PERFMON
+      - NET_ADMIN
+      - SYS_ADMIN
+    volumes:
+      - ../../build/agent:/usr/local/bin/cubecos-agent:ro
+      - /sys/fs/bpf:/sys/fs/bpf
+      - /sys/kernel/btf:/sys/kernel/btf:ro
+    environment:
+      # Override these to attach to a real host interface. Empty means
+      # the agent assumes an external attach (BPF won't capture traffic
+      # unless something else attaches the programs).
+      CUBECOS_BPF_ATTACH_INTERFACE: "${CUBECOS_BPF_ATTACH_INTERFACE:-}"
+      CUBECOS_HTTP_LISTEN: "${CUBECOS_HTTP_LISTEN:-:9090}"
+    command: ["/usr/local/bin/cubecos-agent"]
+
+volumes:
+  prometheus-data:
+  grafana-data:

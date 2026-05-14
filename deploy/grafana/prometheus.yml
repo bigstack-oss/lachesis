@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: cubecos-local
+
+scrape_configs:
+  # The agent. Edit the target if you run the agent somewhere other
+  # than the host machine reachable via the Docker host gateway.
+  - job_name: cubecos-agent
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['host.docker.internal:9090']
+        labels:
+          instance: agent-local

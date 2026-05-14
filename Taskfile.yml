@@ -54,6 +54,16 @@ tasks:
       docker run --rm --platform linux/amd64 -v "$(pwd)":/app -u
       {{.UID}}:{{.GID}} {{.BUILDER_IMAGE}} go generate ./...
 
+  binary:
+    desc: Build the agent binary into ./build/agent for Linux/amd64
+    deps: [ generate ]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - >
+        docker run --rm --platform linux/amd64 -v "$(pwd)":/app -u
+        {{.UID}}:{{.GID}} -e GOOS=linux -e GOARCH=amd64 -e GOWORK=off
+        {{.BUILDER_IMAGE}} go build -o {{.BUILD_DIR}}/agent ./cmd/agent
+
   perfbench:
     desc: Build and run perfbench inside privileged Docker. Pass args after --
     deps: [ generate ]
