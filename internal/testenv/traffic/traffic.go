@@ -2,10 +2,10 @@
 
 // Package traffic generates network traffic for testenv-based tests.
 //
-// Uses real TCP via net.Dial inside the source netns; the receiver is a
+// It uses real TCP via net.Dial inside the source netns; the receiver is a
 // minimal listener in the caller's current netns. AF_PACKET / gopacket
-// injection is intentionally not provided here — add it only when a
-// specific scenario needs spoofed headers (e.g., port-security tests).
+// injection is intentionally not provided here; add it only when a specific
+// scenario needs spoofed headers (e.g., port-security tests).
 package traffic
 
 import (

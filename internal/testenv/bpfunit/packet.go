@@ -112,6 +112,9 @@ func MAC(v uint64) net.HardwareAddr {
 	return m[:]
 }
 
+// serialize concatenates layers into a wire-format byte slice with lengths
+// and checksums filled in. Panics on serialization error, which indicates a
+// programming bug in the caller rather than a runtime condition.
 func serialize(layers ...gopacket.SerializableLayer) []byte {
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{
