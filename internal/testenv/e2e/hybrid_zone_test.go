@@ -135,6 +135,8 @@ func TestE2E_HybridZone_SameTenantNoTrie(t *testing.T) {
 	t.Logf("hybrid path verified: dst_zone=SAME_TENANT, aggregated bytes=%d (trie was empty)", matchedAgg)
 }
 
+// macAddrToU64 packs a 6-byte MAC into the low 48 bits of a u64 in
+// big-endian order, matching the encoding used by mac_tenant_map.
 func macAddrToU64(m net.HardwareAddr) uint64 {
 	if len(m) != 6 {
 		return 0

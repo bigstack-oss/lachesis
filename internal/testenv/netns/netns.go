@@ -2,8 +2,9 @@
 
 // Package netns provides Linux network namespace lifecycle helpers for tests.
 //
-// Not production code. Production agents do not manipulate netns directly;
-// this exists so tests can simulate multi-VM topologies on a single host.
+// This is not production code. Production agents do not manipulate netns
+// directly; this package exists so tests can simulate multi-VM topologies
+// on a single host.
 //
 // All operations require Linux + CAP_NET_ADMIN. Gate test files with
 // //go:build integration.
@@ -24,7 +25,7 @@ type NS struct {
 }
 
 // New creates a fresh anonymous network namespace and returns a handle.
-// Caller must Close() to release.
+// The caller must call [NS.Close] to release.
 func New() (*NS, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

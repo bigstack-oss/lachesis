@@ -158,6 +158,9 @@ func findZone(m *ebpf.Map, src, dst uint64, dir bpf.Direction) (bpf.ZoneCode, bo
 	return 0, false
 }
 
+// macToArr converts the low 48 bits of v into a 6-byte MAC array in
+// big-endian order. The encoding matches bpfunit.MAC so flow_key entries
+// can be looked up by the same u64 value used to create the frame.
 func macToArr(v uint64) [6]uint8 {
 	var b [6]uint8
 	binary.BigEndian.PutUint16(b[0:2], uint16(v>>32))

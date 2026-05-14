@@ -1,30 +1,39 @@
 // Package bpf exposes the kernel↔userspace ABI for the telemetry agent.
 //
-// Source of truth: bpf/telemetry.c. The enums and structs there are
-// compiled with BTF; bpf2go reads the BTF and emits the Go mirrors you
-// see in telemetry_bpfel.go (TelemetryFlowKey, TelemetryZoneCode,
-// TelemetryTcDirection, TelemetryFlowMetrics, ...).
+// The map specs, program entry points, and low-level loader live in the
+// bpf2go-generated files (telemetry_bpfel.go). This file adds the
+// hand-written constants and struct mirrors that production code and
+// tests use, so the values are declared in exactly one place.
 //
-// This file re-exports those under shorter, project-local names. Use
-// bpf.FlowKey, bpf.ZoneSameTenant, bpf.DirectionIngress, etc. in
-// production code and tests — never redeclare them.
-//
-// Changing a value here means changing it in bpf/telemetry.c too, since
-// the constants here are aliases to the generated ones. The build will
-// fail loudly if they drift.
+// All declarations here must stay in lockstep with bpf/telemetry.c.
+// The struct layouts and constant values cross the kernel↔userspace
+// boundary; silent skew between sides produces incorrect metrics.
 package bpf
 
-// Struct aliases — re-exports of the bpf2go-generated map key/value types.
-type (
-	FlowKey     = TelemetryFlowKey
-	FlowMetrics = TelemetryFlowMetrics
-	LpmKey      = TelemetryLpmKey
-	ZoneCode    = TelemetryZoneCode
-	Direction   = TelemetryTcDirection
-)
+// FlowKey is the Go-side mirror of the BPF flow_key map key. It is the
+// 16-byte composite key written by the classifier into telemetry_map.
+type FlowKey = TelemetryFlowKey
 
-// Zone codes stored in flow_key.dst_zone. Values are stable: persisted to
-// the WAL across restarts.
+// FlowMetrics is the Go-side mirror of the BPF flow_metrics map value.
+// One instance per CPU is stored in telemetry_map (PERCPU_HASH).
+type FlowMetrics = TelemetryFlowMetrics
+
+// LpmKey is the Go-side mirror of the BPF lpm_key. It keys subnet_zone_trie
+// with (prefixlen, tenant_id, ip) so longest-prefix matching can resolve
+// a remote IP to a zone code relative to the source VM's tenant.
+type LpmKey = TelemetryLpmKey
+
+// ZoneCode is the enum stored in [FlowKey.DstZone]. See [ZoneExternal] and
+// the other Zone constants for the set of valid values.
+type ZoneCode = TelemetryZoneCode
+
+// Direction is the enum stored in [FlowKey.Direction]. See [DirectionIngress]
+// and [DirectionEgress] for the set of valid values.
+type Direction = TelemetryTcDirection
+
+// ZoneExternal through ZoneMiss are the zone codes stored in [FlowKey.DstZone].
+// The values are stable across releases: they are persisted to the WAL and
+// read back on restart.
 const (
 	ZoneExternal    = TelemetryZoneCodeZONE_EXTERNAL
 	ZoneSameTenant  = TelemetryZoneCodeZONE_SAME_TENANT
@@ -33,7 +42,8 @@ const (
 	ZoneMiss        = TelemetryZoneCodeZONE_MISS
 )
 
-// TC hook direction stored in flow_key.direction.
+// DirectionIngress and DirectionEgress are the TC hook direction values
+// stored in [FlowKey.Direction].
 const (
 	DirectionIngress = TelemetryTcDirectionTC_DIR_INGRESS
 	DirectionEgress  = TelemetryTcDirectionTC_DIR_EGRESS

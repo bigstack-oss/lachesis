@@ -1,12 +1,13 @@
-// perfbench reports ns/packet for a loaded BPF program by driving it
+// Perfbench reports ns/packet for a loaded BPF program by driving it
 // through BPF_PROG_TEST_RUN with a configurable repeat count.
 //
 // Output modes:
-//   - human (default): readable summary including packets/sec extrapolation
-//   - json:            single-line object suitable for CI ingestion
 //
-// Must run on Linux with CAP_BPF (use `task perfbench`, which wraps the
-// privileged Docker invocation).
+//   - human: readable summary including packets/sec extrapolation (default)
+//   - json: single-line object suitable for CI ingestion
+//
+// Must run on Linux with CAP_BPF. Use `task perfbench`, which wraps the
+// privileged Docker invocation.
 package main
 
 import (
@@ -76,6 +77,8 @@ func main() {
 	}
 }
 
+// result is a single perfbench measurement, rendered as either human-readable
+// text or JSON.
 type result struct {
 	Program   string `json:"program"`
 	FrameSize int    `json:"frame_size_bytes"`
@@ -84,6 +87,8 @@ type result struct {
 	PerRunNs  int64  `json:"per_run_ns"`
 }
 
+// printHuman writes r to stdout as a multi-line summary, including an
+// extrapolated packets-per-second figure when per-run latency is measurable.
 func printHuman(r result) {
 	fmt.Printf("perfbench v0.1\n")
 	fmt.Printf("  program:     %s\n", r.Program)
@@ -99,6 +104,7 @@ func printHuman(r result) {
 	}
 }
 
+// fail writes a prefixed error message to stderr and exits with status 1.
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "perfbench: "+format+"\n", args...)
 	os.Exit(1)

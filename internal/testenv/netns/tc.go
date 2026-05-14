@@ -13,6 +13,7 @@ import (
 // TCDirection selects which clsact hook to attach to.
 type TCDirection int
 
+// Clsact hook directions accepted by AttachBPF.
 const (
 	TCIngress TCDirection = iota
 	TCEgress
