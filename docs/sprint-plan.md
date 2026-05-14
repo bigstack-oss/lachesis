@@ -2,7 +2,7 @@
 
 > Living document. Each sprint = one PR. PRs are reviewable by a single engineer in one sitting, land a working slice that demonstrates new capability, and unblock the next sprint.
 
-This plan was scoped against [DESIGN.md](../DESIGN.md). When the design changes, update this plan; the design remains the source of truth.
+This plan is scoped against [DESIGN.md](./DESIGN.md). When the design changes, update this plan; the design remains the source of truth.
 
 ## How to read it
 
