@@ -1,4 +1,15 @@
-name: Auto-merge on done label
+name: Merge on done label
+
+# Replaces the previous `gh pr merge --auto` flow. That approach handed
+# the merge off to GitHub's deferred auto-merge queue, which fired with an
+# expired GITHUB_TOKEN; the repo-level `delete_branch_on_merge` setting
+# then silently skipped the head-branch deletion.
+#
+# Here we instead perform the merge synchronously: wait for required
+# checks to pass inside this workflow run, then call `gh pr merge` with
+# an active token. The merge — and the branch deletion — happen while we
+# still hold `contents: write`, so both succeed reliably. Same pattern
+# the cubecos repo uses.
 
 on:
   pull_request_target:
@@ -9,14 +20,15 @@ permissions:
   pull-requests: write
 
 jobs:
-  enable-automerge:
+  merge:
     if: github.event.label.name == 'done'
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
-      - name: Enable auto-merge (rebase)
-        run: |
-          gh pr merge ${{ github.event.pull_request.number }} \
-            --repo ${{ github.repository }} \
-            --rebase --auto --delete-branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Wait for required checks
+        run: gh pr checks "$PR_NUMBER" --watch --required
+
+      - name: Merge (rebase + delete head branch)
+        run: gh pr merge "$PR_NUMBER" --rebase --delete-branch
