@@ -1,0 +1,119 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Bytes/sec by direction",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" },
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (direction) (rate(cubecos_bytes_total[1m]))",
+          "legendFormat": "{{direction}}",
+          "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "spanNulls": true },
+          "unit": "binBps"
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull", "max"] } }
+    },
+    {
+      "id": 2,
+      "title": "Packets/sec by direction",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" },
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (direction) (rate(cubecos_packets_total[1m]))",
+          "legendFormat": "{{direction}}",
+          "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "spanNulls": true },
+          "unit": "pps"
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull", "max"] } }
+    },
+    {
+      "id": 3,
+      "title": "Bytes/sec by zone",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" },
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (zone) (rate(cubecos_bytes_total[1m]))",
+          "legendFormat": "{{zone}}",
+          "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "stacking": { "mode": "normal" }, "spanNulls": true },
+          "unit": "binBps"
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 4,
+      "title": "Top tenants by bytes (1m rate)",
+      "type": "bargauge",
+      "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" },
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, sum by (tenant_id) (rate(cubecos_bytes_total[1m])))",
+          "legendFormat": "{{tenant_id}}",
+          "instant": true,
+          "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" }
+        }
+      ],
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "binBps"
+        }
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["cubecos"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "title": "CubeCOS · Throughput",
+  "uid": "cubecos-10-throughput",
+  "version": 1,
+  "weekStart": ""
+}

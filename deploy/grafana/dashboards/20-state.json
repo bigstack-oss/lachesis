@@ -1,0 +1,114 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Tracked flows over time",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" },
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cubecos_state_flows",
+          "legendFormat": "flows",
+          "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "spanNulls": true },
+          "unit": "short"
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] } }
+    },
+    {
+      "id": 2,
+      "title": "Cumulative bytes by (zone, direction)",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" },
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 10 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (zone, direction) (cubecos_bytes_total)",
+          "format": "table",
+          "instant": true,
+          "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true },
+            "renameByName": { "Value": "bytes" }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": { "fields": {}, "sort": [{ "field": "bytes", "desc": true }] }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "left", "displayMode": "auto" },
+          "unit": "bytes"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "bytes" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } }] }
+        ]
+      },
+      "options": { "showHeader": true, "footer": { "show": false } }
+    },
+    {
+      "id": 3,
+      "title": "Time since last successful scrape (s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" },
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 10 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - cubecos_scraper_last_success_unix_seconds",
+          "legendFormat": "lag",
+          "datasource": { "type": "prometheus", "uid": "cubecos-prometheus" }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "thresholdsStyle": { "mode": "area" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 30 },
+              { "color": "red", "value": 120 }
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["cubecos"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "title": "CubeCOS · GlobalState",
+  "uid": "cubecos-20-state",
+  "version": 1,
+  "weekStart": ""
+}
