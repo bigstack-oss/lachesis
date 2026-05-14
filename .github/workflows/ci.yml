@@ -14,6 +14,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # internal/bpf imports bpf2go-generated types; need the generate step
+      # to materialize them before plain `go build`/`go test` can compile.
+      - run: task setup
+      - run: task generate UID=0 GID=0
       - run: go build ./internal/...
       - run: go test ./internal/...
 
@@ -47,4 +55,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # bench-gate.sh runs `go test`, which compiles internal/bpf and needs
+      # the bpf2go-generated types.
+      - run: task setup
+      - run: task generate UID=0 GID=0
       - run: ./scripts/bench-gate.sh
