@@ -11,6 +11,23 @@ This plan is scoped against [DESIGN.md](./DESIGN.md). When the design changes, u
 - **Done when** — testable statement that gates merge.
 - **LOC** — rough net new code, excluding generated `_bpfel.go`. Use it to size review cycles.
 
+## Visualization (Sprint 2 onward)
+
+A Grafana dashboard set lives at `deploy/grafana/` as committed JSON, versioned with the code. Each sprint that produces new metrics adds matching panels in the same PR. By Sprint 10 the dashboards cover health, throughput, state, GC, Kafka, Octavia, and performance — a complete operator view.
+
+| Sprint | Panels added | Visualizes |
+|---|---|---|
+| 2 | health, throughput, state | scrape success, bytes/sec by tenant + zone, GlobalState size |
+| 3 | WAL detail | write latency, file size, restart recovery gap |
+| 4 | Neutron sync | sync age, port population rate, builder step durations |
+| 5 | boot health | phase completion, zombie-filter cleanup count, attach success rate |
+| 6 | GC + ghosts | pressure-relief runs, eviction rate, lingering-ghost count |
+| 7 | Kafka | consumer lag, consume error rate |
+| 8 | Octavia | per-LB bytes, per-backend-VM breakdown, Segment 1 / Segment 2 split |
+| 9 | performance | ns/packet, scrape duration, internal-error rate |
+
+Dashboard JSON is syntax-validated in CI (`promtool query` on every panel). Metric names form an API contract — renames go through a deliberate PR with matching dashboard updates.
+
 ---
 
 ## Sprint 0 — Design fixups [DONE 2026-05-09]
@@ -92,8 +109,9 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 - HTTP server exposing `/metrics`.
 - `cmd/loadtest/` (deferred from Sprint 0.5): synthesizes sustained traffic, samples `/proc/<pid>/{stat,status}` over a window, asserts RSS < 250 MB and CPU < 1%. Pairs with the agent built in this sprint.
 - First `BenchmarkHotpath_*` benchmarks for `Collect()` and the scraper hot loop. Activates `task bench-gate` from Sprint 0.5 Group D.
+- `deploy/grafana/`: dashboard-as-code scaffolding — `docker-compose.yaml` for a local Prometheus + Grafana stack, provisioning configs, and the first three dashboards (health, throughput, state) consuming the metrics added above.
 
-**Done when.** Restart agent → `rate()` stays non-negative across the gap. `task loadtest` against the agent reports RSS/CPU within budget. `task bench-gate` enforces zero allocations on `Collect()`.
+**Done when.** Restart agent → `rate()` stays non-negative across the gap. `task loadtest` against the agent reports RSS/CPU within budget. `task bench-gate` enforces zero allocations on `Collect()`. The local Grafana stack renders the Sprint-2 dashboards against the agent's `/metrics`.
 
 **LOC.** ~700 (originally ~500; +200 for loadtest moved from Sprint 0.5).
 
@@ -266,4 +284,4 @@ Sprints 1, 2, 3 can technically interleave; the linear ordering above gives a wo
 
 ---
 
-*Last updated: 2026-05-09 (Sprint 0 complete).*
+*Last updated: 2026-05-14 (added Sprint 2+ Grafana dashboard track).*
