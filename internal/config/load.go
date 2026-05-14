@@ -71,6 +71,19 @@ func LoadWith(opts Options, args []string) (Config, error) {
 	return cfg, cfg.Validate()
 }
 
+// FindConfigPath returns the YAML config-file path that [LoadWith]
+// would resolve from args and the environment. Exposed so callers
+// can pass the same path to [runtime.New] for SIGHUP reload.
+func FindConfigPath(args []string, opts Options) string {
+	if opts.EnvPrefix == "" {
+		opts.EnvPrefix = DefaultEnvPrefix
+	}
+	if opts.Getenv == nil {
+		opts.Getenv = os.Getenv
+	}
+	return findConfigPath(args, opts.Getenv(opts.EnvPrefix+"_CONFIG"))
+}
+
 // LoadYAML reads and parses a YAML config file, starting from [Defaults]
 // and overlaying any fields the file specifies. Unknown YAML keys are
 // rejected as typos. Used by [Load] and by SIGHUP reload.
@@ -119,6 +132,9 @@ func applyEnv(cfg *Config, prefix string, getenv func(string) string) error {
 	if v := getenv(prefix + "_BPF_PIN_PATH"); v != "" {
 		cfg.BPF.PinPath = v
 	}
+	if v := getenv(prefix + "_BPF_ATTACH_INTERFACE"); v != "" {
+		cfg.BPF.AttachInterface = v
+	}
 	if v := getenv(prefix + "_SCRAPE_INTERVAL"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -150,6 +166,8 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 		"HTTP listen address"+envHint("HTTP_LISTEN"))
 	fs.StringVar(&cfg.BPF.PinPath, "bpf-pin-path", cfg.BPF.PinPath,
 		"BPF FS pin directory"+envHint("BPF_PIN_PATH"))
+	fs.StringVar(&cfg.BPF.AttachInterface, "bpf-attach-interface", cfg.BPF.AttachInterface,
+		"Host interface to attach TC clsact + telemetry programs on; empty disables attach"+envHint("BPF_ATTACH_INTERFACE"))
 	fs.DurationVar(&cfg.Scrape.Interval, "scrape-interval", cfg.Scrape.Interval,
 		"Scrape interval"+envHint("SCRAPE_INTERVAL"))
 	fs.StringVar(&cfg.Logging.Level, "log-level", cfg.Logging.Level,

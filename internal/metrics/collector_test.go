@@ -178,6 +178,39 @@ func TestCollect_UnknownZoneFallsBackToNumeric(t *testing.T) {
 	}
 }
 
+func TestCollect_AggregatesFlowsSharingLabels(t *testing.T) {
+	// Multiple FlowKeys with different MAC pairs but the same
+	// (tenant, zone, direction) label tuple must collapse into one
+	// Prometheus sample whose value is the sum.
+	st := state.New()
+	for i := 0; i < 5; i++ {
+		k := keyWith(bpf.DirectionEgress, bpf.ZoneExternal)
+		k.SrcMac[5] = byte(i)
+		k.DstMac[5] = byte(i + 100)
+		st.ApplyDelta(k, bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: uint64(i + 1)})
+	}
+
+	c := metrics.New(st, stubScraper{}, metrics.UnknownTenant{})
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE cubecos_bytes_total counter
+cubecos_bytes_total{direction="egress",tenant_id="unknown",zone="external"} 500
+# HELP cubecos_packets_total Network packets observed by the agent, cumulative since first sight.
+# TYPE cubecos_packets_total counter
+cubecos_packets_total{direction="egress",tenant_id="unknown",zone="external"} 5
+# HELP cubecos_state_flows Distinct flow keys currently tracked in GlobalState.
+# TYPE cubecos_state_flows gauge
+cubecos_state_flows 5
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"cubecos_bytes_total", "cubecos_packets_total", "cubecos_state_flows"); err != nil {
+		t.Errorf("GatherAndCompare: %v", err)
+	}
+}
+
 func TestCollect_HealthMetrics(t *testing.T) {
 	st := state.New()
 	st.ApplyDelta(keyWith(bpf.DirectionEgress, bpf.ZoneExternal),
