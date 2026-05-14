@@ -33,7 +33,6 @@ go.work.sum
 .include
 .task
 CLAUDE.md
-DESIGN.md
 .claude
 tmp/
 
