@@ -10,11 +10,9 @@
 //	                                       ^
 //	                                       |   TCP sink in caller's netns
 //
-// Loadtest spawns the agent binary as a subprocess pointed at the
-// host-side veth, drives N concurrent TCP streams from the netns to
-// the host's sink, and samples /proc/<agent-pid>/{stat,status} every
-// second. On completion it prints a summary and exits non-zero if
-// the resource budget was exceeded.
+// main is flag parsing + delegate; the test is staged as
+// [setupEnv] → [driveLoad] → [report]. Resources owned by [env]
+// are released in reverse setup order by [env.Close].
 package main
 
 import (
@@ -40,120 +38,214 @@ import (
 	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
 )
 
-func main() {
-	var (
-		agentBin    = flag.String("agent", "./build/agent", "path to the cubecos agent binary")
-		duration    = flag.Duration("duration", 15*time.Second, "load-generation window")
-		workers     = flag.Int("workers", 4, "concurrent TCP-stream workers")
-		rssLimitMB  = flag.Uint64("rss-mb", 250, "max permitted VmRSS in MB; loadtest fails above this")
-		cpuLimitPct = flag.Float64("cpu-pct", 1.0, "max permitted average CPU% over the window")
-		httpAddr    = flag.String("agent-http", "127.0.0.1:19090", "address the agent should listen on")
-	)
-	flag.Parse()
+// flags bundles the parsed CLI inputs so phase functions take one
+// argument instead of six.
+type flags struct {
+	agentBin    string
+	duration    time.Duration
+	workers     int
+	rssLimitMB  uint64
+	cpuLimitPct float64
+	httpAddr    string
+}
 
-	if err := run(*agentBin, *duration, *workers, *rssLimitMB, *cpuLimitPct, *httpAddr); err != nil {
+func main() {
+	f := parseFlags()
+	if err := run(f); err != nil {
 		fmt.Fprintf(os.Stderr, "loadtest: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(agentBin string, duration time.Duration, workers int, rssLimitMB uint64, cpuLimitPct float64, httpAddr string) error {
+func parseFlags() flags {
+	var f flags
+	flag.StringVar(&f.agentBin, "agent", "./build/agent", "path to the telemetry agent binary")
+	flag.DurationVar(&f.duration, "duration", 15*time.Second, "load-generation window")
+	flag.IntVar(&f.workers, "workers", 4, "concurrent TCP-stream workers")
+	flag.Uint64Var(&f.rssLimitMB, "rss-mb", 250, "max permitted VmRSS in MB; loadtest fails above this")
+	flag.Float64Var(&f.cpuLimitPct, "cpu-pct", 1.0, "max permitted average CPU% over the window")
+	flag.StringVar(&f.httpAddr, "agent-http", "127.0.0.1:19090", "address the agent should listen on")
+	flag.Parse()
+	return f
+}
+
+func run(f flags) error {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("remove memlock: %w", err)
 	}
 
-	ns, err := tns.New()
+	e, err := setupEnv(f)
 	if err != nil {
-		return fmt.Errorf("new netns: %w", err)
+		return err
 	}
-	defer ns.Close()
+	defer e.Close()
+
+	if err := waitForAgent(f.httpAddr, 10*time.Second); err != nil {
+		return fmt.Errorf("agent did not become ready: %w", err)
+	}
+	fmt.Printf("loadtest: agent pid=%d, http=%s\n", e.agent.Process.Pid, f.httpAddr)
+
+	r, err := driveLoad(f, e)
+	if err != nil {
+		return err
+	}
+	return report(f, r)
+}
+
+// env bundles the agent under test plus its surrounding plumbing —
+// netns, veth, on-disk config, subprocess, TCP sink — so phase
+// functions accept one handle. [env.Close] releases everything in
+// reverse setup order.
+type env struct {
+	ns       *tns.NS
+	host     netlink.Link
+	cfgPath  string
+	agent    *exec.Cmd
+	stopSink func()
+	sinkPort uint16
+	outerIP  net.IP
+}
+
+// Close releases env resources. Safe to call on a partially-built
+// env; nil fields are skipped.
+func (e *env) Close() {
+	if e.agent != nil {
+		stopAgent(e.agent)
+	}
+	if e.stopSink != nil {
+		e.stopSink()
+	}
+	if e.host != nil {
+		_ = netlink.LinkDel(e.host)
+	}
+	if e.ns != nil {
+		_ = e.ns.Close()
+	}
+	if e.cfgPath != "" {
+		_ = os.Remove(e.cfgPath)
+	}
+}
+
+// setupEnv brings up the netns + veth, writes a temporary agent
+// config, spawns the agent subprocess, and starts the discarding
+// TCP sink. On any failure partial state is cleaned up before the
+// error is returned.
+func setupEnv(f flags) (*env, error) {
+	e := &env{}
+	ok := false
+	defer func() {
+		if !ok {
+			e.Close()
+		}
+	}()
+
+	var err error
+	e.ns, err = tns.New()
+	if err != nil {
+		return nil, fmt.Errorf("new netns: %w", err)
+	}
 
 	innerMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:01")
 	outerMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:02")
 	innerIP := &net.IPNet{IP: net.IPv4(10, 77, 7, 1), Mask: net.CIDRMask(30, 32)}
 	outerIP := &net.IPNet{IP: net.IPv4(10, 77, 7, 2), Mask: net.CIDRMask(30, 32)}
 
-	host, err := ns.AddVeth(tns.VethSpec{
+	e.host, err = e.ns.AddVeth(tns.VethSpec{
 		InnerName: "vm-load", OuterName: "tap-load",
 		InnerMAC: innerMAC, OuterMAC: outerMAC,
 		InnerIP: innerIP, OuterIP: outerIP,
 	})
 	if err != nil {
-		return fmt.Errorf("add veth: %w", err)
+		return nil, fmt.Errorf("add veth: %w", err)
 	}
-	defer netlink.LinkDel(host)
+	e.outerIP = outerIP.IP
 
-	cfgPath, err := writeAgentConfig(host.Attrs().Name, httpAddr)
+	e.cfgPath, err = writeAgentConfig(e.host.Attrs().Name, f.httpAddr)
 	if err != nil {
-		return fmt.Errorf("write agent config: %w", err)
+		return nil, fmt.Errorf("write agent config: %w", err)
 	}
-	defer os.Remove(cfgPath)
 
-	agent, err := startAgent(agentBin, cfgPath)
+	e.agent, err = startAgent(f.agentBin, e.cfgPath)
 	if err != nil {
-		return fmt.Errorf("start agent: %w", err)
+		return nil, fmt.Errorf("start agent: %w", err)
 	}
-	defer stopAgent(agent)
-
-	if err := waitForAgent(httpAddr, 10*time.Second); err != nil {
-		return fmt.Errorf("agent did not become ready: %w", err)
-	}
-	fmt.Printf("loadtest: agent pid=%d, http=%s\n", agent.Process.Pid, httpAddr)
 
 	sinkAddr, stopSink := serveSink()
-	defer stopSink()
-	sinkTCP := sinkAddr.(*net.TCPAddr)
+	e.stopSink = stopSink
+	e.sinkPort = uint16(sinkAddr.(*net.TCPAddr).Port)
 
-	first, err := sampleProc(agent.Process.Pid)
+	ok = true
+	return e, nil
+}
+
+// result holds the measurements driveLoad emits.
+type result struct {
+	rssPeakKB uint64
+	cpuAvgPct float64
+	bytesObs  uint64
+}
+
+// driveLoad runs f.workers concurrent TCP workers for f.duration
+// while sampling /proc/<agent>/{stat,status} once per second, then
+// scrapes /metrics once for the bytes-observed liveness number.
+func driveLoad(f flags, e *env) (result, error) {
+	first, err := sampleProc(e.agent.Process.Pid)
 	if err != nil {
-		return fmt.Errorf("initial sample: %w", err)
+		return result{}, fmt.Errorf("initial sample: %w", err)
 	}
 
-	loadCtx, cancelLoad := context.WithTimeout(context.Background(), duration)
-	defer cancelLoad()
+	loadCtx, cancel := context.WithTimeout(context.Background(), f.duration)
+	defer cancel()
 
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
+	for i := 0; i < f.workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := sustainedTCPSend(loadCtx, ns, outerIP.IP, uint16(sinkTCP.Port)); err != nil && loadCtx.Err() == nil {
+			if err := sustainedTCPSend(loadCtx, e.ns, e.outerIP, e.sinkPort); err != nil && loadCtx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "loadtest: worker exited: %v\n", err)
 			}
 		}()
 	}
 
-	rssPeakKB, cpuAvgPct := sampleWindow(agent.Process.Pid, loadCtx, time.Second, first)
+	rssPeakKB, cpuAvgPct := sampleWindow(e.agent.Process.Pid, loadCtx, time.Second, first)
 	wg.Wait()
 
-	bytesObserved, err := sumBytesTotal(httpAddr)
+	bytesObs, err := sumBytesTotal(f.httpAddr)
 	if err != nil {
-		return fmt.Errorf("read final /metrics: %w", err)
+		return result{}, fmt.Errorf("read final /metrics: %w", err)
 	}
+	return result{rssPeakKB: rssPeakKB, cpuAvgPct: cpuAvgPct, bytesObs: bytesObs}, nil
+}
 
-	rssPeakMB := rssPeakKB / 1024
-	// Require at least 1 MB of captured traffic. Below that, the BPF
-	// program likely never fired (broken attach, kernel path skipped
-	// clsact, etc.) and the resource budget is meaningless.
+// report prints the verdict and returns a non-nil error if any
+// threshold was exceeded. The minBytes guard catches the "BPF never
+// fired" failure mode — without it a misconfigured attach can
+// silently pass the resource budget.
+func report(f flags, r result) error {
 	const minBytes uint64 = 1 << 20
-	pass := rssPeakMB < rssLimitMB && cpuAvgPct < cpuLimitPct && bytesObserved >= minBytes
+
+	rssPeakMB := r.rssPeakKB / 1024
+	pass := rssPeakMB < f.rssLimitMB && r.cpuAvgPct < f.cpuLimitPct && r.bytesObs >= minBytes
 	verdict := "PASS"
 	if !pass {
 		verdict = "FAIL"
 	}
 
 	fmt.Printf("\nloadtest: %s\n", verdict)
-	fmt.Printf("  duration:        %s\n", duration)
-	fmt.Printf("  workers:         %d\n", workers)
-	fmt.Printf("  RSS peak:        %d MB (limit %d MB)\n", rssPeakMB, rssLimitMB)
-	fmt.Printf("  CPU avg:         %.2f%% (limit %.2f%%)\n", cpuAvgPct, cpuLimitPct)
-	fmt.Printf("  bytes observed:  %d (min %d)\n", bytesObserved, minBytes)
+	fmt.Printf("  duration:        %s\n", f.duration)
+	fmt.Printf("  workers:         %d\n", f.workers)
+	fmt.Printf("  RSS peak:        %d MB (limit %d MB)\n", rssPeakMB, f.rssLimitMB)
+	fmt.Printf("  CPU avg:         %.2f%% (limit %.2f%%)\n", r.cpuAvgPct, f.cpuLimitPct)
+	fmt.Printf("  bytes observed:  %d (min %d)\n", r.bytesObs, minBytes)
 
 	if !pass {
-		return fmt.Errorf("loadtest assertions failed")
+		return errors.New("loadtest assertions failed")
 	}
 	return nil
 }
+
+// --- helpers below ---------------------------------------------------------
 
 // sumBytesTotal fetches /metrics once and returns the sum of every
 // cubecos_bytes_total sample. Used as a liveness check that the BPF
@@ -256,6 +348,29 @@ func waitForAgent(addr string, timeout time.Duration) error {
 	return fmt.Errorf("/metrics not ready at http://%s within %s", addr, timeout)
 }
 
+// serveSink starts a discarding TCP listener. Unlike traffic.ServeTCPSink
+// (which is *testing.T-coupled) this version is bare so a non-test
+// command can use it.
+func serveSink() (net.Addr, func()) {
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		panic(fmt.Errorf("loadtest: listen: %w", err))
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_, _ = io.Copy(io.Discard, conn)
+			}(c)
+		}
+	}()
+	return ln.Addr(), func() { _ = ln.Close() }
+}
+
 // sustainedTCPSend opens one long-lived TCP connection from inside ns
 // and writes 64 KB chunks back-to-back until ctx is cancelled. Using
 // a single connection per worker (vs. dial-write-close per iteration)
@@ -282,29 +397,6 @@ func sustainedTCPSend(ctx context.Context, src *tns.NS, dstIP net.IP, dstPort ui
 		}
 		return nil
 	})
-}
-
-// serveSink starts a discarding TCP listener. Unlike traffic.ServeTCPSink
-// (which is *testing.T-coupled) this version is bare so a non-test
-// command can use it.
-func serveSink() (net.Addr, func()) {
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
-	if err != nil {
-		panic(fmt.Errorf("loadtest: listen: %w", err))
-	}
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(conn net.Conn) {
-				defer conn.Close()
-				_, _ = io.Copy(io.Discard, conn)
-			}(c)
-		}
-	}()
-	return ln.Addr(), func() { _ = ln.Close() }
 }
 
 // sampleWindow polls the agent's /proc every interval until ctx is
