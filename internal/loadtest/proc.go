@@ -1,11 +1,15 @@
 //go:build linux
 
-package main
+package loadtest
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -98,4 +102,68 @@ func cpuPercent(start, end procSample) float64 {
 	}
 	djiff := end.cpuJiff - start.cpuJiff
 	return float64(djiff) / float64(clkTck) / dt * 100
+}
+
+// sampleWindow polls the agent's /proc every interval until ctx is
+// cancelled, then returns the peak VmRSS (kB) and average CPU% over
+// the whole window. start is the pre-load baseline used to compute
+// the integrated CPU%.
+func sampleWindow(pid int, ctx context.Context, interval time.Duration, start procSample) (uint64, float64) {
+	var (
+		rssPeak uint64
+		prev    = start
+		last    = start
+	)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			final, err := sampleProc(pid)
+			if err == nil {
+				if final.rssKB > rssPeak {
+					rssPeak = final.rssKB
+				}
+				last = final
+			}
+			return rssPeak, cpuPercent(start, last)
+		case <-t.C:
+			s, err := sampleProc(pid)
+			if err != nil {
+				// Process may have exited; surface to caller via stderr.
+				fmt.Fprintf(os.Stderr, "loadtest: sample failed: %v\n", err)
+				return rssPeak, cpuPercent(start, prev)
+			}
+			if s.rssKB > rssPeak {
+				rssPeak = s.rssKB
+			}
+			prev = s
+			last = s
+		}
+	}
+}
+
+// sumBytesTotal fetches /metrics once and returns the sum of every
+// cubecos_bytes_total sample. Used as a liveness check that the BPF
+// program actually saw the load-generated traffic.
+func sumBytesTotal(httpAddr string) (uint64, error) {
+	resp, err := http.Get("http://" + httpAddr + "/metrics")
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+	re := regexp.MustCompile(`cubecos_bytes_total\{[^}]*\} (\d+(?:\.\d+e\+?\d+)?)`)
+	var total uint64
+	for _, m := range re.FindAllStringSubmatch(string(b), -1) {
+		f, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			continue
+		}
+		total += uint64(f)
+	}
+	return total, nil
 }
