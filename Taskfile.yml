@@ -95,3 +95,25 @@ tasks:
   clean:
     desc: Remove build artifacts
     cmd: rm -rf build/ internal/bpf/*_bpfel.go internal/bpf/*_bpfel.o
+
+  editor-setup:
+    desc: Generate .clangd for clangd-based editors. Run after `task headers`.
+      The .clangd is machine-local (absolute paths) and gitignored.
+    cmds:
+      - |
+        cat > .clangd <<EOF
+        CompileFlags:
+          Add:
+            - --target=bpf
+            - -I$(pwd)/.include
+            - -I$(pwd)/.include/bpf
+            - -D__TARGET_ARCH_x86
+            - -D__BPF_TRACING__
+            - -std=gnu17
+          Compiler: clang
+
+        Diagnostics:
+          Suppress:
+            - unused-includes
+        EOF
+      - echo "Wrote $(pwd)/.clangd — reload your editor to pick it up."
