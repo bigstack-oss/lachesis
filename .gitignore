@@ -25,6 +25,9 @@ go.work.sum
 # Vscode setting files
 .vscode/
 
+# clangd local config (generated per-machine by `task editor-setup`)
+.clangd
+
 # Local Development files
 .env
 .include
