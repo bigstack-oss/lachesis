@@ -118,12 +118,32 @@ func (a *App) Addr() string {
 	return a.listener.Addr().String()
 }
 
+// shutdownTimeout caps the time spent gracefully draining the HTTP
+// server and the scraper goroutine on shutdown. The HTTP server uses
+// the full budget; the scraper gets a fresh budget after the server
+// has stopped — its in-flight Tick is bounded by the configured
+// scrape interval, not the shutdown budget.
+const shutdownTimeout = 5 * time.Second
+
 // Run starts the scraper and HTTP server and blocks until ctx is
-// cancelled. Graceful shutdown waits up to 5s for in-flight scrapes.
+// cancelled or the server fails. On graceful shutdown it stops
+// accepting new HTTP requests, drains in-flight scrapes, then waits
+// for the scraper goroutine to finish its current Tick so callers
+// can safely release BPF resources without racing the kernel-map
+// read.
+//
+// TC programs are not detached on shutdown — the qdisc and filter
+// outlive the process. The next agent start replaces them via
+// netlink's idempotent QdiscReplace / FilterReplace. A clean detach
+// + the Zombie-Hunter recovery path are Sprint 5 deliverables.
 func (a *App) Run(ctx context.Context) error {
 	a.runtime.InstallSIGHUP(ctx)
 
-	go a.scraper.Run(ctx)
+	scraperDone := make(chan struct{})
+	go func() {
+		a.scraper.Run(ctx)
+		close(scraperDone)
+	}()
 
 	srvErr := make(chan error, 1)
 	go func() {
@@ -138,15 +158,38 @@ func (a *App) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := a.server.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("agent: shutdown: %w", err)
-		}
-		// Drain srvErr so the Serve goroutine exits cleanly.
-		<-srvErr
-		return nil
+		return a.shutdown(srvErr, scraperDone)
 	case err := <-srvErr:
 		return err
 	}
+}
+
+// shutdown drains the HTTP server, then awaits the scraper. Called
+// after ctx fires. Returns an error only if HTTP shutdown itself
+// fails — a scraper timeout is logged but not promoted to an error,
+// because by then the agent's job is done.
+func (a *App) shutdown(srvErr <-chan error, scraperDone <-chan struct{}) error {
+	slog.Info("agent: shutdown initiated")
+
+	httpCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := a.server.Shutdown(httpCtx); err != nil {
+		return fmt.Errorf("agent: http shutdown: %w", err)
+	}
+	<-srvErr
+	slog.Info("agent: http server stopped")
+
+	// The scraper checks ctx.Done() between Ticks; an in-flight Tick
+	// must finish (drain kernel map, apply deltas) before Run returns
+	// so callers' BPF-collection close does not race the read.
+	select {
+	case <-scraperDone:
+		slog.Info("agent: scraper stopped")
+	case <-time.After(shutdownTimeout):
+		slog.Warn("agent: scraper did not exit within shutdown budget",
+			"budget", shutdownTimeout)
+	}
+
+	slog.Info("agent: shutdown complete")
+	return nil
 }

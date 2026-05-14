@@ -127,6 +127,77 @@ func TestApp_NilReaderRejected(t *testing.T) {
 	}
 }
 
+// blockingReader holds BatchLookup until Release is closed. It also
+// signals the first call so tests can observe the scraper entering
+// the (blocked) Tick.
+type blockingReader struct {
+	inflight chan struct{} // buffered 1; receives a signal on first call
+	release  chan struct{} // close to let pending and future calls return
+}
+
+func (b *blockingReader) BatchLookup(_ map[bpf.FlowKey]bpf.FlowMetrics) error {
+	select {
+	case b.inflight <- struct{}{}:
+	default: // already signalled; subsequent calls don't re-signal
+	}
+	<-b.release
+	return nil
+}
+
+// TestApp_ShutdownWaitsForScraper verifies that App.Run does not
+// return while the scraper is still inside a Tick (i.e. mid
+// BatchLookup). Without this guarantee, callers that close BPF
+// resources after Run returns can race the kernel-map read.
+func TestApp_ShutdownWaitsForScraper(t *testing.T) {
+	r := &blockingReader{
+		inflight: make(chan struct{}, 1),
+		release:  make(chan struct{}),
+	}
+	cfg := config.Defaults()
+	cfg.HTTP.Listen = "127.0.0.1:0"
+	cfg.Scrape.Interval = 25 * time.Millisecond
+	log, err := logging.Init(cfg.Logging, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	app, err := agent.New(agent.Options{Config: cfg, Reader: r, Log: log})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		_ = app.Run(ctx)
+		close(runDone)
+	}()
+
+	// Wait for the first BatchLookup to begin.
+	select {
+	case <-r.inflight:
+	case <-time.After(time.Second):
+		t.Fatal("scraper did not reach BatchLookup within 1s")
+	}
+
+	// Trigger shutdown. Run must NOT return yet — the scraper is
+	// still blocked inside BatchLookup.
+	cancel()
+	select {
+	case <-runDone:
+		t.Fatal("Run returned while scraper was still inside BatchLookup")
+	case <-time.After(150 * time.Millisecond):
+		// Expected: Run is still blocked waiting for the scraper.
+	}
+
+	// Release the scraper; Run should now drain and return.
+	close(r.release)
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return within 2s of scraper release")
+	}
+}
+
 // mustGetMetrics polls /metrics until predicate matches or deadline
 // elapses. Returns the last body seen.
 func mustGetMetrics(t *testing.T, addr string, timeout time.Duration, predicate func(string) bool) string {
