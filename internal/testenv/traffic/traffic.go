@@ -36,10 +36,7 @@ func SendTCPStream(src *tns.NS, dstIP net.IP, dstPort uint16, payloadBytes int) 
 
 		buf := make([]byte, 8192)
 		for remaining := payloadBytes; remaining > 0; {
-			n := len(buf)
-			if remaining < n {
-				n = remaining
-			}
+			n := min(len(buf), remaining)
 			w, err := conn.Write(buf[:n])
 			if err != nil {
 				return fmt.Errorf("traffic: write: %w", err)
@@ -61,22 +58,18 @@ func ServeTCPSink(t *testing.T) (net.Addr, func()) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				defer c.Close()
 				_, _ = io.Copy(io.Discard, c)
-			}()
+			})
 		}
-	}()
+	})
 
 	stop := func() {
 		_ = ln.Close()
