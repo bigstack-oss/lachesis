@@ -33,7 +33,7 @@ func (s *staticReader) BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) error {
 	return nil
 }
 
-func newTestApp(t *testing.T, reader scraper.MapReader) (*agent.App, context.CancelFunc) {
+func newTestAgent(t *testing.T, reader scraper.MapReader) (*agent.Agent, context.CancelFunc) {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.HTTP.Listen = "127.0.0.1:0" // ephemeral
@@ -42,7 +42,7 @@ func newTestApp(t *testing.T, reader scraper.MapReader) (*agent.App, context.Can
 	if err != nil {
 		t.Fatalf("logging.Init: %v", err)
 	}
-	app, err := agent.New(agent.Options{
+	ag, err := agent.New(agent.Options{
 		Config: cfg,
 		Reader: reader,
 		Log:    log,
@@ -53,7 +53,7 @@ func newTestApp(t *testing.T, reader scraper.MapReader) (*agent.App, context.Can
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		_ = app.Run(ctx)
+		_ = ag.Run(ctx)
 		close(done)
 	}()
 	t.Cleanup(func() {
@@ -64,10 +64,10 @@ func newTestApp(t *testing.T, reader scraper.MapReader) (*agent.App, context.Can
 			t.Errorf("agent did not exit within 2s of cancel")
 		}
 	})
-	return app, cancel
+	return ag, cancel
 }
 
-func TestApp_ServesMetricsFromReader(t *testing.T) {
+func TestAgent_ServesMetricsFromReader(t *testing.T) {
 	reader := &staticReader{
 		entries: map[bpf.FlowKey]bpf.FlowMetrics{
 			{
@@ -79,10 +79,10 @@ func TestApp_ServesMetricsFromReader(t *testing.T) {
 			}: {Bytes: 4242, Packets: 7, LastSeenNs: 1},
 		},
 	}
-	app, _ := newTestApp(t, reader)
+	ag, _ := newTestAgent(t, reader)
 
 	// Poll up to 1s for the first scrape to complete and surface in /metrics.
-	body := mustGetMetrics(t, app.Addr(), time.Second, func(s string) bool {
+	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
 		return strings.Contains(s, `cubecos_bytes_total{direction="egress",tenant_id="unknown",zone="external"} 4242`)
 	})
 
@@ -97,14 +97,14 @@ func TestApp_ServesMetricsFromReader(t *testing.T) {
 	}
 }
 
-func TestApp_DebugConfigEndpoint(t *testing.T) {
+func TestAgent_DebugConfigEndpoint(t *testing.T) {
 	reader := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{}}
-	app, _ := newTestApp(t, reader)
+	ag, _ := newTestAgent(t, reader)
 
 	// Give the listener a moment to be ready.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://" + app.Addr() + "/debug/config")
+		resp, err := http.Get("http://" + ag.Addr() + "/debug/config")
 		if err == nil && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
 			return
@@ -117,7 +117,7 @@ func TestApp_DebugConfigEndpoint(t *testing.T) {
 	t.Fatalf("/debug/config did not return 200 within 1s")
 }
 
-func TestApp_NilReaderRejected(t *testing.T) {
+func TestAgent_NilReaderRejected(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.HTTP.Listen = "127.0.0.1:0"
 	log, _ := logging.Init(cfg.Logging, &bytes.Buffer{})
@@ -144,11 +144,11 @@ func (b *blockingReader) BatchLookup(_ map[bpf.FlowKey]bpf.FlowMetrics) error {
 	return nil
 }
 
-// TestApp_ShutdownWaitsForScraper verifies that App.Run does not
+// TestAgent_ShutdownWaitsForScraper verifies that Agent.Run does not
 // return while the scraper is still inside a Tick (i.e. mid
 // BatchLookup). Without this guarantee, callers that close BPF
 // resources after Run returns can race the kernel-map read.
-func TestApp_ShutdownWaitsForScraper(t *testing.T) {
+func TestAgent_ShutdownWaitsForScraper(t *testing.T) {
 	r := &blockingReader{
 		inflight: make(chan struct{}, 1),
 		release:  make(chan struct{}),
@@ -160,7 +160,7 @@ func TestApp_ShutdownWaitsForScraper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logging.Init: %v", err)
 	}
-	app, err := agent.New(agent.Options{Config: cfg, Reader: r, Log: log})
+	ag, err := agent.New(agent.Options{Config: cfg, Reader: r, Log: log})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestApp_ShutdownWaitsForScraper(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan struct{})
 	go func() {
-		_ = app.Run(ctx)
+		_ = ag.Run(ctx)
 		close(runDone)
 	}()
 
