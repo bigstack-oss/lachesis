@@ -50,6 +50,29 @@ type Options struct {
 	Resolver metrics.TenantResolver
 }
 
+// validate rejects required fields that the caller forgot to fill.
+// Returned errors are intended for [New]; no validation is done on
+// optional fields here (defaults are applied elsewhere).
+func (o Options) validate() error {
+	if o.Reader == nil {
+		return errors.New("agent: Options.Reader is nil")
+	}
+	if o.Log == nil {
+		return errors.New("agent: Options.Log is nil")
+	}
+	return nil
+}
+
+// resolverOrDefault returns the caller's [TenantResolver] when set,
+// otherwise the no-Neutron stub. Centralising the default keeps
+// [New] free of branches that aren't about wiring.
+func (o Options) resolverOrDefault() metrics.TenantResolver {
+	if o.Resolver != nil {
+		return o.Resolver
+	}
+	return metrics.UnknownTenant{}
+}
+
 // App is the running agent. Construct one with [New], then call
 // [App.Run]. Run blocks until ctx is cancelled.
 type App struct {
@@ -67,32 +90,26 @@ type App struct {
 // callers can use [App.Addr] before [App.Run] starts serving — useful
 // for tests that request an ephemeral port (":0") and then need the
 // resolved address.
+//
+// New reads top-to-bottom as the agent's composition order: validate
+// inputs, build the data plane (state + scraper + collector), wire the
+// Prometheus registry, mount the HTTP surface, open the listener.
 func New(opts Options) (*App, error) {
-	if opts.Reader == nil {
-		return nil, errors.New("agent: Options.Reader is nil")
-	}
-	if opts.Log == nil {
-		return nil, errors.New("agent: Options.Log is nil")
-	}
-	resolver := opts.Resolver
-	if resolver == nil {
-		resolver = metrics.UnknownTenant{}
+	if err := opts.validate(); err != nil {
+		return nil, err
 	}
 
 	st := state.New()
 	sc := scraper.New(opts.Reader, st, opts.Config.Scrape.Interval)
-	col := metrics.New(st, sc, resolver)
+	col := metrics.New(st, sc, opts.resolverOrDefault())
 
-	reg := prometheus.NewRegistry()
-	if err := reg.Register(col); err != nil {
-		return nil, fmt.Errorf("agent: register collector: %w", err)
+	reg, err := buildRegistry(col)
+	if err != nil {
+		return nil, err
 	}
 
 	mgr := runtime.New(opts.ConfigPath, opts.Config, opts.Log)
-
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	mux.Handle("/debug/", mgr.DebugHandler())
+	handler := buildHTTPHandler(reg, mgr)
 
 	ln, err := net.Listen("tcp", opts.Config.HTTP.Listen)
 	if err != nil {
@@ -107,8 +124,31 @@ func New(opts Options) (*App, error) {
 		runtime:   mgr,
 		log:       opts.Log,
 		listener:  ln,
-		server:    &http.Server{Handler: mux, ReadHeaderTimeout: httpReadHeaderTimeout},
+		server:    &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout},
 	}, nil
+}
+
+// buildRegistry creates a fresh Prometheus registry and binds the
+// agent's custom Collector to it. Wrapping the call here keeps the
+// "construct the registry" intent visible in [New] without making
+// the registration error path a sibling of the data-plane wiring.
+func buildRegistry(col *metrics.Collector) (*prometheus.Registry, error) {
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(col); err != nil {
+		return nil, fmt.Errorf("agent: register collector: %w", err)
+	}
+	return reg, nil
+}
+
+// buildHTTPHandler returns the mux the HTTP server will serve.
+// Centralising the route table here is the seam future subsystems
+// (e.g. a /healthz, a /reload, a /pprof under debug) attach to —
+// rather than each one widening [New].
+func buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	mux.Handle("/debug/", mgr.DebugHandler())
+	return mux
 }
 
 // httpReadHeaderTimeout bounds how long the HTTP server will wait
