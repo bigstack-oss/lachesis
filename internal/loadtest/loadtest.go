@@ -93,7 +93,7 @@ func report(cfg Config, r Result) error {
 	fmt.Printf("\nloadtest: %s\n", verdict)
 	fmt.Printf("  duration:        %s\n", cfg.Duration)
 	fmt.Printf("  workers:         %d\n", cfg.Workers)
-	fmt.Printf("  RSS peak:        %d MB (limit %d MB)\n", rssPeakMB, cfg.RSSLimitMB)
+	fmt.Printf("  RSS peak:        %d MiB (limit %d MiB)\n", rssPeakMB, cfg.RSSLimitMB)
 	fmt.Printf("  CPU avg:         %.2f%% (limit %.2f%%)\n", r.CPUAvgPct, cfg.CPULimitPct)
 	fmt.Printf("  bytes observed:  %s (min %s)\n", humanBytes(r.BytesObs), humanBytes(minBytes))
 
