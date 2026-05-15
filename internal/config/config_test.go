@@ -23,7 +23,7 @@ func TestDefaultsValidate(t *testing.T) {
 func TestLoadDefaultsOnly(t *testing.T) {
 	// No flags, no env, no yaml — should match Defaults().
 	clearEnv(t)
-	cfg, err := config.Load(nil)
+	cfg, err := config.Load(config.Options{}, nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("CUBECOS_LOG_LEVEL", "warn")
 	t.Setenv("CUBECOS_LOG_FORMAT", "text")
 
-	cfg, err := config.Load(nil)
+	cfg, err := config.Load(config.Options{}, nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestLoadFromFlags(t *testing.T) {
 		"-log-level", "debug",
 		"-log-format", "text",
 	}
-	cfg, err := config.Load(args)
+	cfg, err := config.Load(config.Options{}, args)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -102,7 +102,7 @@ logging:
   level: warn
   format: text
 `)
-	cfg, err := config.Load([]string{"-config", path})
+	cfg, err := config.Load(config.Options{}, []string{"-config", path})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -128,7 +128,7 @@ version: "1"
 http:
   listen: ":9500"
 `)
-	cfg, err := config.Load([]string{"-config", path})
+	cfg, err := config.Load(config.Options{}, []string{"-config", path})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -153,7 +153,7 @@ http:
 	t.Setenv("CUBECOS_HTTP_LISTEN", ":2222")
 
 	// All three sources set http.listen — flag should win.
-	cfg, err := config.Load([]string{"-config", path, "-http-listen", ":3333"})
+	cfg, err := config.Load(config.Options{}, []string{"-config", path, "-http-listen", ":3333"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -162,7 +162,7 @@ http:
 	}
 
 	// Without the flag, env should win over YAML.
-	cfg, err = config.Load([]string{"-config", path})
+	cfg, err = config.Load(config.Options{}, []string{"-config", path})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -188,12 +188,12 @@ http:
 func TestLoadRejectsBadEnv(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("CUBECOS_SCRAPE_INTERVAL", "not-a-duration")
-	if _, err := config.Load(nil); err == nil {
+	if _, err := config.Load(config.Options{}, nil); err == nil {
 		t.Fatal("expected error for malformed env value, got nil")
 	}
 }
 
-func TestLoadWith_CustomEnvPrefix(t *testing.T) {
+func TestLoad_CustomEnvPrefix(t *testing.T) {
 	clearEnv(t)
 	getenv := func(key string) string {
 		switch key {
@@ -204,9 +204,9 @@ func TestLoadWith_CustomEnvPrefix(t *testing.T) {
 		}
 		return ""
 	}
-	cfg, err := config.LoadWith(config.Options{EnvPrefix: "ACME", Getenv: getenv}, nil)
+	cfg, err := config.Load(config.Options{EnvPrefix: "ACME", Getenv: getenv}, nil)
 	if err != nil {
-		t.Fatalf("LoadWith: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if cfg.HTTP.Listen != ":7777" {
 		t.Errorf("HTTP.Listen = %q, want :7777", cfg.HTTP.Listen)
@@ -216,7 +216,7 @@ func TestLoadWith_CustomEnvPrefix(t *testing.T) {
 	}
 }
 
-func TestLoadWith_ZeroOptsUsesDefaultPrefix(t *testing.T) {
+func TestLoad_ZeroOptsUsesDefaultPrefix(t *testing.T) {
 	clearEnv(t)
 	getenv := func(key string) string {
 		if key == "CUBECOS_HTTP_LISTEN" {
@@ -224,22 +224,22 @@ func TestLoadWith_ZeroOptsUsesDefaultPrefix(t *testing.T) {
 		}
 		return ""
 	}
-	cfg, err := config.LoadWith(config.Options{Getenv: getenv}, nil)
+	cfg, err := config.Load(config.Options{Getenv: getenv}, nil)
 	if err != nil {
-		t.Fatalf("LoadWith: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if cfg.HTTP.Listen != ":8888" {
 		t.Errorf("HTTP.Listen = %q, want :8888 (default prefix applied)", cfg.HTTP.Listen)
 	}
 }
 
-func TestLoadWith_CustomPrefixDoesNotReadCubecos(t *testing.T) {
+func TestLoad_CustomPrefixDoesNotReadCubecos(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("CUBECOS_HTTP_LISTEN", ":9999")
 	getenv := func(key string) string { return os.Getenv(key) }
-	cfg, err := config.LoadWith(config.Options{EnvPrefix: "ACME", Getenv: getenv}, nil)
+	cfg, err := config.Load(config.Options{EnvPrefix: "ACME", Getenv: getenv}, nil)
 	if err != nil {
-		t.Fatalf("LoadWith: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if cfg.HTTP.Listen != ":9090" {
 		t.Errorf("HTTP.Listen = %q, want :9090 (CUBECOS_ should be ignored under ACME prefix)", cfg.HTTP.Listen)

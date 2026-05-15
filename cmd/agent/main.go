@@ -7,7 +7,7 @@
 // spins up the scraper goroutine and an HTTP server serving /metrics
 // and /debug. SIGHUP triggers a config reload via the [runtime.Manager].
 //
-// Configuration is layered as described in [config.LoadWith]:
+// Configuration is layered as described in [config.Load]:
 // defaults → YAML file → env vars → CLI flags. All wiring lives in
 // [agent.Bootstrap]; main is signal handling and exit codes.
 package main

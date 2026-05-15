@@ -30,7 +30,7 @@ import (
 // Errors are wrapped with the phase they failed in so the caller need
 // not understand the internals to print a useful message.
 func Bootstrap(args []string) (*App, io.Closer, error) {
-	cfg, err := config.Load(args)
+	cfg, err := config.Load(config.Options{}, args)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -61,7 +61,7 @@ func Bootstrap(args []string) (*App, io.Closer, error) {
 
 	app, err := New(Options{
 		Config:     cfg,
-		ConfigPath: config.FindConfigPath(args, config.Options{}),
+		ConfigPath: config.FindConfigPath(config.Options{}, args),
 		Reader:     reader,
 		Log:        log,
 	})

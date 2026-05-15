@@ -13,7 +13,8 @@
 //   - CLI flags
 //
 // The default env prefix is "CUBECOS"; callers can override via
-// [LoadWith] for forks or tests. The YAML file is the only "moving"
+// [Options].EnvPrefix for forks or tests. The YAML file is the
+// only "moving"
 // source at runtime: SIGHUP triggers a re-read via [LoadYAML].
 //
 // Adding a new section (e.g. Neutron client, Kafka consumer):
