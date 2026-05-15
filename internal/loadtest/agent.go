@@ -38,6 +38,8 @@ scrape:
 logging:
   level: warn
   format: text
+wal:
+  enabled: false
 `, httpAddr, iface)
 	dir, err := os.MkdirTemp("", "cubecos-loadtest-")
 	if err != nil {
