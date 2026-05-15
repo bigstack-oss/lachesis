@@ -32,6 +32,13 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 )
 
+// Component values for the "component" slog attribute. Reload logs
+// cover the SIGHUP path; debug logs cover the /debug HTTP handlers.
+const (
+	componentReload = "reload"
+	componentDebug  = "debug"
+)
+
 // Manager owns the agent's runtime configuration state. Construct one in
 // main after [config.Load] and [logging.Init], then call [Manager.InstallSIGHUP]
 // and mount [Manager.DebugHandler] on the HTTP server.
@@ -87,7 +94,7 @@ func (m *Manager) Reload() error {
 			return fmt.Errorf("runtime: apply logging.level: %w", err)
 		}
 		slog.Info("logging.level changed",
-			"component", "reload",
+			"component", componentReload,
 			"from", m.current.Logging.Level, "to", next.Logging.Level)
 	}
 
@@ -106,7 +113,7 @@ func warnLoadTimeChange(field, current, fromYAML string) {
 		return
 	}
 	slog.Warn("load-time field change ignored; restart required",
-		"component", "reload",
+		"component", componentReload,
 		"field", field, "running", current, "yaml", fromYAML)
 }
 
@@ -124,10 +131,10 @@ func (m *Manager) InstallSIGHUP(ctx context.Context) {
 				return
 			case <-ch:
 				if err := m.Reload(); err != nil {
-					slog.Warn("SIGHUP reload failed", "component", "reload", "err", err)
+					slog.Warn("SIGHUP reload failed", "component", componentReload, "err", err)
 					continue
 				}
-				slog.Info("SIGHUP reload applied", "component", "reload")
+				slog.Info("SIGHUP reload applied", "component", componentReload)
 			}
 		}
 	}()
@@ -152,7 +159,7 @@ func (m *Manager) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 	cur := m.Current()
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(cur); err != nil {
-		slog.Warn("encode /debug/config", "component", "debug", "err", err)
+		slog.Warn("encode /debug/config", "component", componentDebug, "err", err)
 	}
 }
 
@@ -172,6 +179,6 @@ func (m *Manager) handlePutLogLevel(w http.ResponseWriter, r *http.Request) {
 	m.current.Logging.Level = body.Level
 	m.mu.Unlock()
 
-	slog.Info("logging.level changed via /debug", "component", "debug", "level", body.Level)
+	slog.Info("logging.level changed via /debug", "component", componentDebug, "level", body.Level)
 	w.WriteHeader(http.StatusNoContent)
 }
