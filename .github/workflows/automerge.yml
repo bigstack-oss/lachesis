@@ -26,9 +26,14 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      # gh cli infers the repo from the working directory's .git
+      # config; we don't actions/checkout the repo (the steps are
+      # API-only), so pass --repo explicitly. GITHUB_REPOSITORY is
+      # provided by the runner in "owner/repo" form.
+      REPO: ${{ github.repository }}
     steps:
       - name: Wait for required checks
-        run: gh pr checks "$PR_NUMBER" --watch --required
+        run: gh pr checks "$PR_NUMBER" --repo "$REPO" --watch --required
 
       - name: Merge (rebase + delete head branch)
-        run: gh pr merge "$PR_NUMBER" --rebase --delete-branch
+        run: gh pr merge "$PR_NUMBER" --repo "$REPO" --rebase --delete-branch
