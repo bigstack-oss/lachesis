@@ -20,6 +20,24 @@ func TestDefaultsValidate(t *testing.T) {
 	}
 }
 
+// TestExampleYAMLMatchesDefaults guards the operator-facing
+// deploy/agent/config.example.yaml against drift: the parsed file
+// must exactly equal config.Defaults(). Update one without the other
+// and this test fires.
+func TestExampleYAMLMatchesDefaults(t *testing.T) {
+	const path = "../../deploy/agent/config.example.yaml"
+	cfg, err := config.LoadYAML(path)
+	if err != nil {
+		t.Fatalf("LoadYAML(%s): %v", path, err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("example YAML must validate: %v", err)
+	}
+	if cfg != config.Defaults() {
+		t.Errorf("example YAML drift:\n  yaml:     %+v\n  defaults: %+v", cfg, config.Defaults())
+	}
+}
+
 func TestLoadDefaultsOnly(t *testing.T) {
 	// No flags, no env, no yaml — should match Defaults().
 	clearEnv(t)
