@@ -60,7 +60,7 @@ DESIGN §11 target: **~150 ns/packet**. Sprint 1 produces the first real number 
 
 ### Zero-allocation gate
 
-Hot-path code (`Collect()`, scraper, packet handlers) must allocate zero memory per call to keep GC pressure off the 15s scrape rate (CLAUDE.md §Dev Guidelines).
+Hot-path code (`Collect()`, scraper, packet handlers) must allocate zero memory per call to keep GC pressure off the 15s scrape rate.
 
 **Convention:**
 - `BenchmarkHotpath_<Name>` → gated; must report `0 allocs/op`. CI fails the PR if violated.
@@ -74,7 +74,7 @@ iperf3-measured BPF overhead is documented in DESIGN §12 ("Demo Workflow"). Not
 
 ### Load test (deferred to Sprint 2)
 
-`cmd/loadtest` — synthesizes sustained traffic, samples `/proc/<pid>/{stat,status}`, asserts RSS/CPU thresholds — was originally planned for Sprint 0.5 but moved to Sprint 2 where the agent binary first lands. Building load-test infrastructure without an agent to load-test is infra for absent code (CLAUDE.md §Simplicity First).
+`cmd/loadtest` — synthesizes sustained traffic, samples `/proc/<pid>/{stat,status}`, asserts RSS/CPU thresholds — was originally planned for Sprint 0.5 but moved to Sprint 2 where the agent binary first lands. Building load-test infrastructure without an agent to load-test is infra for absent code.
 
 ---
 

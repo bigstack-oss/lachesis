@@ -1,6 +1,8 @@
 // Package metrics implements the Prometheus custom Collector for the
-// agent. See Implementation Contract #2 (CLAUDE.md): Collect() holds
-// the [state.GlobalState] RLock for the full iteration.
+// agent. Collect() holds the [state.GlobalState] RLock for the full
+// iteration — without it the Prometheus scrape would race the
+// scraper writer and the Go runtime would fatal on concurrent map
+// iteration. See docs/DESIGN.md §13.1.
 //
 // # Why a custom Collector, not CounterVec
 //

@@ -15,8 +15,9 @@
 - [ ] Bench-gate — `task bench-gate` (required if hot-path code touched: `Collect()`, `BatchLookupAndProcess()`, packet path)
 
 ## Contract impact
-<!-- The 5 Implementation Contracts from CLAUDE.md. Tick any this PR touches
-     and explain how the contract is preserved (or why a change is justified). -->
+<!-- The 5 Implementation Contracts from docs/DESIGN.md §13.1. Tick any
+     this PR touches and explain how the contract is preserved (or why
+     a change is justified). -->
 - [ ] UnresolvedBuffer capped at 10k with LRU eviction
 - [ ] `Collect()` holds RLock around full GlobalState iteration
 - [ ] TenantMeta pointer-replace, never in-place mutation

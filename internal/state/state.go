@@ -16,7 +16,7 @@
 // wraparound guard treating current<lastRaw as a kernel-side reset
 // (kernel reboot or post-eviction re-creation). Total += delta;
 // LastEbpfRaw = current. See [GlobalState.ApplyDelta] and
-// Implementation Contract #5 in CLAUDE.md.
+// docs/DESIGN.md §13.1.
 //
 // # Concurrency
 //
