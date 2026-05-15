@@ -70,7 +70,7 @@ func New(reader MapReader, st *state.GlobalState, interval time.Duration) *Scrap
 // startup; subsequent ticks fire on the configured cadence.
 func (s *Scraper) Run(ctx context.Context) {
 	if err := s.Tick(); err != nil {
-		slog.Warn("scraper: initial tick failed", "err", err)
+		slog.Warn("initial tick failed", "component", "scraper", "err", err)
 	}
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
@@ -80,7 +80,7 @@ func (s *Scraper) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			if err := s.Tick(); err != nil {
-				slog.Warn("scraper: tick failed", "err", err)
+				slog.Warn("tick failed", "component", "scraper", "err", err)
 			}
 		}
 	}

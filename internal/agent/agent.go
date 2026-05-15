@@ -241,7 +241,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		srvErr <- nil
 	}()
 
-	slog.Info("agent: serving",
+	slog.Info("serving",
+		"component", "agent",
 		"addr", a.Addr(),
 		"scrape_interval", a.cfg.Scrape.Interval,
 		"wal_enabled", a.cfg.WAL.Enabled,
@@ -268,14 +269,14 @@ func (a *Agent) walFlushLoop(ctx context.Context, done chan<- struct{}) {
 		select {
 		case <-ctx.Done():
 			if err := a.flushWAL(); err != nil {
-				slog.Warn("wal: final flush failed", "err", err)
+				slog.Warn("final flush failed", "component", "wal", "err", err)
 				return
 			}
-			slog.Info("wal: final flush ok", "records", len(a.walRecBuf))
+			slog.Info("final flush ok", "component", "wal", "records", len(a.walRecBuf))
 			return
 		case <-t.C:
 			if err := a.flushWAL(); err != nil {
-				slog.Warn("wal: periodic flush failed", "err", err)
+				slog.Warn("periodic flush failed", "component", "wal", "err", err)
 			}
 		}
 	}
@@ -306,7 +307,7 @@ func (a *Agent) flushWAL() error {
 // (otherwise the BPF-collection close in main could race the
 // kernel-map read, and the latest in-memory state could be lost).
 func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone <-chan struct{}) error {
-	slog.Info("agent: shutdown initiated")
+	slog.Info("shutdown initiated", "component", "agent")
 	defer a.awaitWAL(walDone)
 	defer a.awaitScraper(scraperDone)
 
@@ -316,7 +317,7 @@ func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone <-chan struct
 		return fmt.Errorf("agent: http shutdown: %w", err)
 	}
 	<-srvErr
-	slog.Info("agent: http server stopped")
+	slog.Info("http server stopped", "component", "agent")
 	return nil
 }
 
@@ -327,9 +328,10 @@ func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone <-chan struct
 func (a *Agent) awaitScraper(scraperDone <-chan struct{}) {
 	select {
 	case <-scraperDone:
-		slog.Info("agent: scraper stopped")
+		slog.Info("scraper stopped", "component", "agent")
 	case <-time.After(shutdownTimeout):
-		slog.Warn("agent: scraper did not exit within shutdown budget",
+		slog.Warn("scraper did not exit within shutdown budget",
+			"component", "agent",
 			"budget", shutdownTimeout)
 	}
 }
@@ -342,10 +344,11 @@ func (a *Agent) awaitScraper(scraperDone <-chan struct{}) {
 func (a *Agent) awaitWAL(walDone <-chan struct{}) {
 	select {
 	case <-walDone:
-		slog.Info("agent: wal stopped")
+		slog.Info("wal stopped", "component", "agent")
 	case <-time.After(shutdownTimeout):
-		slog.Warn("agent: wal did not exit within shutdown budget",
+		slog.Warn("wal did not exit within shutdown budget",
+			"component", "agent",
 			"budget", shutdownTimeout)
 	}
-	slog.Info("agent: shutdown complete")
+	slog.Info("shutdown complete", "component", "agent")
 }

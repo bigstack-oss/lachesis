@@ -268,7 +268,7 @@ func TestSave_RecordsFailureStageOnBadDir(t *testing.T) {
 	}
 
 	// Target a directory that does not exist — the open in
-	// writeAndFsync will fail at the "write" stage.
+	// writeAndFsync will fail at the StageWrite stage.
 	path := filepath.Join(t.TempDir(), "no", "such", "dir", "wal.json")
 	if err := wal.Save(path, "", sampleRecords(), m); err == nil {
 		t.Fatal("Save: expected error for bad dir, got nil")
@@ -294,8 +294,8 @@ func TestSave_RecordsFailureStageOnBadDir(t *testing.T) {
 			}
 		}
 	}
-	if stageSeen != "write" {
-		t.Errorf("expected stage=write failure, got %q", stageSeen)
+	if stageSeen != wal.StageWrite {
+		t.Errorf("expected stage=%s failure, got %q", wal.StageWrite, stageSeen)
 	}
 }
 
@@ -305,9 +305,9 @@ func TestRecordLoadFallback_IncrementsLabel(t *testing.T) {
 	for _, c := range m.Collectors() {
 		reg.MustRegister(c)
 	}
-	m.RecordLoadFallback("bak")
-	m.RecordLoadFallback("bak")
-	m.RecordLoadFallback("empty")
+	m.RecordLoadFallback(wal.LoadFallbackBak)
+	m.RecordLoadFallback(wal.LoadFallbackBak)
+	m.RecordLoadFallback(wal.LoadFallbackEmpty)
 
 	mf, err := reg.Gather()
 	if err != nil {
@@ -328,11 +328,11 @@ func TestRecordLoadFallback_IncrementsLabel(t *testing.T) {
 			counts[from] = metric.GetCounter().GetValue()
 		}
 	}
-	if counts["bak"] != 2 {
-		t.Errorf("bak count = %v, want 2", counts["bak"])
+	if counts[wal.LoadFallbackBak] != 2 {
+		t.Errorf("%s count = %v, want 2", wal.LoadFallbackBak, counts[wal.LoadFallbackBak])
 	}
-	if counts["empty"] != 1 {
-		t.Errorf("empty count = %v, want 1", counts["empty"])
+	if counts[wal.LoadFallbackEmpty] != 1 {
+		t.Errorf("%s count = %v, want 1", wal.LoadFallbackEmpty, counts[wal.LoadFallbackEmpty])
 	}
 }
 

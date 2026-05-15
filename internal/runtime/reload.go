@@ -86,7 +86,8 @@ func (m *Manager) Reload() error {
 		if err := m.log.SetLevel(next.Logging.Level); err != nil {
 			return fmt.Errorf("runtime: apply logging.level: %w", err)
 		}
-		slog.Info("reload: logging.level changed",
+		slog.Info("logging.level changed",
+			"component", "reload",
 			"from", m.current.Logging.Level, "to", next.Logging.Level)
 	}
 
@@ -104,7 +105,8 @@ func warnLoadTimeChange(field, current, fromYAML string) {
 	if current == fromYAML {
 		return
 	}
-	slog.Warn("reload: load-time field change ignored; restart required",
+	slog.Warn("load-time field change ignored; restart required",
+		"component", "reload",
 		"field", field, "running", current, "yaml", fromYAML)
 }
 
@@ -122,10 +124,10 @@ func (m *Manager) InstallSIGHUP(ctx context.Context) {
 				return
 			case <-ch:
 				if err := m.Reload(); err != nil {
-					slog.Warn("SIGHUP reload failed", "err", err)
+					slog.Warn("SIGHUP reload failed", "component", "reload", "err", err)
 					continue
 				}
-				slog.Info("SIGHUP reload applied")
+				slog.Info("SIGHUP reload applied", "component", "reload")
 			}
 		}
 	}()
@@ -150,7 +152,7 @@ func (m *Manager) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 	cur := m.Current()
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(cur); err != nil {
-		slog.Warn("debug: encode /debug/config", "err", err)
+		slog.Warn("encode /debug/config", "component", "debug", "err", err)
 	}
 }
 
@@ -170,6 +172,6 @@ func (m *Manager) handlePutLogLevel(w http.ResponseWriter, r *http.Request) {
 	m.current.Logging.Level = body.Level
 	m.mu.Unlock()
 
-	slog.Info("logging.level changed via /debug", "level", body.Level)
+	slog.Info("logging.level changed via /debug", "component", "debug", "level", body.Level)
 	w.WriteHeader(http.StatusNoContent)
 }
