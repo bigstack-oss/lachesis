@@ -39,6 +39,7 @@ type Config struct {
 	BPF     BPFConfig     `yaml:"bpf"`
 	Scrape  ScrapeConfig  `yaml:"scrape"`
 	Logging LoggingConfig `yaml:"logging"`
+	WAL     WALConfig     `yaml:"wal"`
 }
 
 // Defaults returns the production-ready configuration baseline. Each
@@ -50,6 +51,7 @@ func Defaults() Config {
 		BPF:     bpfDefaults(),
 		Scrape:  scrapeDefaults(),
 		Logging: loggingDefaults(),
+		WAL:     walDefaults(),
 	}
 }
 
@@ -71,6 +73,9 @@ func (c Config) Validate() error {
 	}
 	if err := c.Logging.Validate(); err != nil {
 		return fmt.Errorf("logging: %w", err)
+	}
+	if err := c.WAL.Validate(); err != nil {
+		return fmt.Errorf("wal: %w", err)
 	}
 	return nil
 }

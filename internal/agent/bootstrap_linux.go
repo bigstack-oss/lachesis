@@ -14,6 +14,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 )
 
 // Bootstrap is the agent's single startup sequence: parse args,
@@ -68,7 +69,46 @@ func Bootstrap(args []string) (*Agent, io.Closer, error) {
 		closer.Close()
 		return nil, nil, err
 	}
+
+	if err := restoreFromWAL(ag, cfg.WAL); err != nil {
+		// WAL restore failure is non-fatal — the design says "if
+		// both fail, start empty and log the loss" (§3.2).
+		// Surfacing as an error would block startup even though
+		// the agent can run correctly with a fresh state.
+		slog.Warn("wal: restore failed; agent will start with empty state", "err", err)
+	}
+
 	return ag, closer, nil
+}
+
+// restoreFromWAL reads the on-disk snapshot (if enabled) and seeds
+// the agent's GlobalState. Runs BEFORE the scraper goroutine starts,
+// so the first ApplyDelta computes deltas against restored
+// LastEbpfRaw values rather than re-baselining.
+func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
+	if !cfg.Enabled {
+		slog.Info("wal: disabled; starting with empty state")
+		return nil
+	}
+	res, err := wal.Load(cfg.Path)
+	if err != nil {
+		return err
+	}
+	switch res.Source {
+	case wal.LoadFromPrimary:
+		slog.Info("wal: restored from primary",
+			"path", cfg.Path, "records", len(res.Records))
+	case wal.LoadFromBackup:
+		slog.Warn("wal: primary unusable; restored from backup",
+			"path", cfg.Path+wal.BackupSuffix, "records", len(res.Records))
+	case wal.LoadEmpty:
+		slog.Info("wal: no prior snapshot; starting empty",
+			"path", cfg.Path)
+	}
+	if len(res.Records) > 0 {
+		ag.SeedState(res.Records)
+	}
+	return nil
 }
 
 // loadCollection compiles the embedded BPF spec into a kernel-loaded

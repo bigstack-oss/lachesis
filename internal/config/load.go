@@ -148,7 +148,37 @@ func applyEnv(cfg *Config, prefix string, getenv func(string) string) error {
 	if v := getenv(prefix + "_LOG_FORMAT"); v != "" {
 		cfg.Logging.Format = v
 	}
+	if v := getenv(prefix + "_WAL_PATH"); v != "" {
+		cfg.WAL.Path = v
+	}
+	if v := getenv(prefix + "_WAL_FLUSH_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("%s_WAL_FLUSH_INTERVAL=%q: %w", prefix, v, err)
+		}
+		cfg.WAL.FlushInterval = d
+	}
+	if v := getenv(prefix + "_WAL_ENABLED"); v != "" {
+		b, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s_WAL_ENABLED=%q: %w", prefix, v, err)
+		}
+		cfg.WAL.Enabled = b
+	}
 	return nil
+}
+
+// parseBool accepts the same forms strconv.ParseBool does ("1",
+// "true", "false", etc.) plus the YAML-style "yes" / "no" that
+// operators often type in env vars by habit.
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(s) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true, nil
+	case "0", "f", "false", "n", "no", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("not a boolean")
 }
 
 // applyFlags binds each configurable field to a CLI flag and parses
@@ -174,5 +204,11 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 		"Log level: debug, info, warn, error"+envHint("LOG_LEVEL"))
 	fs.StringVar(&cfg.Logging.Format, "log-format", cfg.Logging.Format,
 		"Log format: json, text"+envHint("LOG_FORMAT"))
+	fs.StringVar(&cfg.WAL.Path, "wal-path", cfg.WAL.Path,
+		"WAL snapshot file (absolute path)"+envHint("WAL_PATH"))
+	fs.DurationVar(&cfg.WAL.FlushInterval, "wal-flush-interval", cfg.WAL.FlushInterval,
+		"WAL flush cadence"+envHint("WAL_FLUSH_INTERVAL"))
+	fs.BoolVar(&cfg.WAL.Enabled, "wal-enabled", cfg.WAL.Enabled,
+		"Enable WAL persistence (boot-restore + periodic flush)"+envHint("WAL_ENABLED"))
 	return fs.Parse(args)
 }

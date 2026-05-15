@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,8 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 )
 
 // staticReader returns a fixed snapshot on every BatchLookup; suitable
@@ -35,9 +38,27 @@ func (s *staticReader) BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) error {
 
 func newTestAgent(t *testing.T, reader scraper.MapReader) (*agent.Agent, context.CancelFunc) {
 	t.Helper()
+	return newTestAgentCfg(t, reader, func(cfg *config.Config) {
+		// Existing tests don't care about persistence and would
+		// otherwise log "final flush failed" against the
+		// production WAL path on shutdown.
+		cfg.WAL.Enabled = false
+	})
+}
+
+// newTestAgentCfg constructs and runs a test agent, applying mutate
+// after Defaults() so callers can opt into specific config (e.g.
+// enable the WAL with a tempdir path).
+func newTestAgentCfg(t *testing.T, reader scraper.MapReader, mutate func(*config.Config)) (*agent.Agent, context.CancelFunc) {
+	t.Helper()
 	cfg := config.Defaults()
 	cfg.HTTP.Listen = "127.0.0.1:0" // ephemeral
 	cfg.Scrape.Interval = 25 * time.Millisecond
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	// cfg.Validate is intentionally skipped — tests use sub-second
+	// scrape intervals that the production validator rejects.
 	log, err := logging.Init(cfg.Logging, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("logging.Init: %v", err)
@@ -195,6 +216,133 @@ func TestAgent_ShutdownWaitsForScraper(t *testing.T) {
 	case <-runDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return within 2s of scraper release")
+	}
+}
+
+func TestAgent_SeedStateAppearsOnMetrics(t *testing.T) {
+	// A reader that returns no entries; without the seed the
+	// emitted total would be 0. The Restore-via-SeedState path
+	// must show up on /metrics.
+	r := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{}}
+	ag, _ := newTestAgent(t, r)
+
+	seeded := []state.Record{{
+		Key: bpf.FlowKey{
+			SrcMac:    [6]uint8{0xaa, 0, 0, 0, 0, 1},
+			DstMac:    [6]uint8{0xaa, 0, 0, 0, 0, 2},
+			EthProto:  0x0800,
+			Direction: bpf.DirectionEgress,
+			DstZone:   bpf.ZoneExternal,
+		},
+		Counter: state.Counter{
+			Total:       bpf.FlowMetrics{Bytes: 7777, Packets: 13, LastSeenNs: 1},
+			LastEbpfRaw: bpf.FlowMetrics{Bytes: 7777, Packets: 13, LastSeenNs: 1},
+		},
+	}}
+	ag.SeedState(seeded)
+
+	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
+		return strings.Contains(s, `cubecos_bytes_total{direction="egress",tenant_id="unknown",zone="external"} 7777`)
+	})
+	if !strings.Contains(body, `cubecos_packets_total{direction="egress",tenant_id="unknown",zone="external"} 13`) {
+		t.Errorf("packets total missing or wrong; body:\n%s", body)
+	}
+}
+
+func TestAgent_WALPeriodicFlushWritesSnapshot(t *testing.T) {
+	walPath := filepath.Join(t.TempDir(), "wal.json")
+
+	r := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{
+		{
+			SrcMac:    [6]uint8{0xaa, 0, 0, 0, 0, 1},
+			DstMac:    [6]uint8{0xaa, 0, 0, 0, 0, 2},
+			EthProto:  0x0800,
+			Direction: bpf.DirectionEgress,
+			DstZone:   bpf.ZoneExternal,
+		}: {Bytes: 4242, Packets: 7, LastSeenNs: 1},
+	}}
+	_, _ = newTestAgentCfg(t, r, func(cfg *config.Config) {
+		cfg.WAL.Path = walPath
+		cfg.WAL.FlushInterval = 50 * time.Millisecond
+		cfg.WAL.Enabled = true
+	})
+
+	// Wait for the scraper to apply the delta AND the WAL ticker
+	// to fire at least once.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		res, err := wal.Load(walPath)
+		if err == nil && res.Source == wal.LoadFromPrimary && len(res.Records) > 0 {
+			if res.Records[0].Counter.Total.Bytes != 4242 {
+				t.Errorf("loaded Total.Bytes = %d, want 4242",
+					res.Records[0].Counter.Total.Bytes)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("WAL was not written within 2s with the seeded reader entry")
+}
+
+func TestAgent_WALFinalFlushOnShutdown(t *testing.T) {
+	walPath := filepath.Join(t.TempDir(), "wal.json")
+
+	r := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{
+		{
+			SrcMac:    [6]uint8{0xaa, 0, 0, 0, 0, 1},
+			DstMac:    [6]uint8{0xaa, 0, 0, 0, 0, 2},
+			EthProto:  0x0800,
+			Direction: bpf.DirectionEgress,
+			DstZone:   bpf.ZoneExternal,
+		}: {Bytes: 9999, Packets: 33, LastSeenNs: 1},
+	}}
+
+	// Long flush interval so only the shutdown-final-flush has a
+	// chance to write. Self-contained lifecycle (no helper) so the
+	// WAL assertion ordering is explicit: cancel → wait → assert.
+	cfg := config.Defaults()
+	cfg.HTTP.Listen = "127.0.0.1:0"
+	cfg.Scrape.Interval = 25 * time.Millisecond
+	cfg.WAL.Path = walPath
+	cfg.WAL.FlushInterval = 30 * time.Second
+	cfg.WAL.Enabled = true
+
+	log, err := logging.Init(cfg.Logging, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	ag, err := agent.New(agent.Options{Config: cfg, Reader: r, Log: log})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = ag.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for the scraper to absorb the seeded delta at least once.
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent did not exit within 2s of cancel")
+	}
+
+	res, err := wal.Load(walPath)
+	if err != nil {
+		t.Fatalf("wal.Load: %v", err)
+	}
+	if res.Source != wal.LoadFromPrimary || len(res.Records) == 0 {
+		t.Fatalf("final flush did not produce a usable WAL: source=%v records=%d",
+			res.Source, len(res.Records))
+	}
+	if res.Records[0].Counter.Total.Bytes != 9999 {
+		t.Errorf("final flush Total.Bytes = %d, want 9999",
+			res.Records[0].Counter.Total.Bytes)
 	}
 }
 
