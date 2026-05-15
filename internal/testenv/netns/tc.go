@@ -3,62 +3,32 @@
 package netns
 
 import (
-	"fmt"
-
 	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
+
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
 )
 
-// TCDirection selects which clsact hook to attach to.
-type TCDirection int
+// TCDirection mirrors [tcattach.Direction] so existing tests can
+// keep their netns-package imports unchanged.
+type TCDirection = tcattach.Direction
 
-// Clsact hook directions accepted by AttachBPF.
+// Clsact hook directions accepted by AttachBPF. Aliased to the
+// constants in [tcattach] so the test-side and production-side
+// enums never drift.
 const (
-	TCIngress TCDirection = iota
-	TCEgress
+	TCIngress = tcattach.Ingress
+	TCEgress  = tcattach.Egress
 )
 
-// AttachBPF attaches prog to link via TC clsact. Idempotent: installs the
-// clsact qdisc if missing and replaces any existing filter with name.
+// AttachBPF attaches prog to link via TC clsact at the given
+// direction with the given filter name. Idempotent: installs the
+// clsact qdisc if missing and replaces any existing filter with the
+// same name.
 //
-// Intended for tests; production code paths add error recovery and retries.
+// Thin wrapper over [tcattach.Replace]; intended for tests only.
+// Production code paths add error recovery and retries via the
+// agent package's AttachClsact.
 func AttachBPF(link netlink.Link, prog *ebpf.Program, dir TCDirection, name string) error {
-	qdisc := &netlink.GenericQdisc{
-		QdiscAttrs: netlink.QdiscAttrs{
-			LinkIndex: link.Attrs().Index,
-			Handle:    netlink.MakeHandle(0xffff, 0),
-			Parent:    netlink.HANDLE_CLSACT,
-		},
-		QdiscType: "clsact",
-	}
-	if err := netlink.QdiscReplace(qdisc); err != nil {
-		return fmt.Errorf("netns: clsact qdisc on %s: %w", link.Attrs().Name, err)
-	}
-
-	var parent uint32
-	switch dir {
-	case TCIngress:
-		parent = netlink.HANDLE_MIN_INGRESS
-	case TCEgress:
-		parent = netlink.HANDLE_MIN_EGRESS
-	default:
-		return fmt.Errorf("netns: bad direction %d", dir)
-	}
-
-	filter := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    parent,
-			Handle:    1,
-			Protocol:  unix.ETH_P_ALL,
-		},
-		Fd:           prog.FD(),
-		Name:         name,
-		DirectAction: true,
-	}
-	if err := netlink.FilterReplace(filter); err != nil {
-		return fmt.Errorf("netns: attach %s on %s: %w", name, link.Attrs().Name, err)
-	}
-	return nil
+	return tcattach.Replace(link, prog, dir, name)
 }
