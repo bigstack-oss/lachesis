@@ -89,11 +89,19 @@ type Agent struct {
 	listener  net.Listener
 	server    *http.Server
 
+	walMetrics *wal.Metrics
+
 	// walRecBuf is the reused SnapshotForWAL destination so a
 	// steady-state flush does not allocate a fresh records slice.
 	// Owned solely by the WAL flush goroutine; no lock needed.
 	walRecBuf []state.Record
 }
+
+// WALMetrics returns the WAL instrument bundle the agent registered
+// with its prometheus.Registry. Exposed so the boot path can record
+// load-fallback observations on the same Metrics that the periodic
+// flush will later contribute timings to.
+func (a *Agent) WALMetrics() *wal.Metrics { return a.walMetrics }
 
 // New constructs the agent. The HTTP listener is opened immediately so
 // callers can use [Agent.Addr] before [Agent.Run] starts serving — useful
@@ -112,7 +120,8 @@ func New(opts Options) (*Agent, error) {
 	sc := scraper.New(opts.Reader, st, opts.Config.Scrape.Interval)
 	col := metrics.New(st, sc, opts.resolverOrDefault())
 
-	reg, err := buildRegistry(col)
+	walMx := wal.NewMetrics()
+	reg, err := buildRegistry(col, walMx)
 	if err != nil {
 		return nil, err
 	}
@@ -126,25 +135,31 @@ func New(opts Options) (*Agent, error) {
 	}
 
 	return &Agent{
-		cfg:       opts.Config,
-		state:     st,
-		scraper:   sc,
-		collector: col,
-		runtime:   mgr,
-		log:       opts.Log,
-		listener:  ln,
-		server:    &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout},
+		cfg:        opts.Config,
+		state:      st,
+		scraper:    sc,
+		collector:  col,
+		runtime:    mgr,
+		log:        opts.Log,
+		listener:   ln,
+		server:     &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout},
+		walMetrics: walMx,
 	}, nil
 }
 
 // buildRegistry creates a fresh Prometheus registry and binds the
-// agent's custom Collector to it. Wrapping the call here keeps the
-// "construct the registry" intent visible in [New] without making
-// the registration error path a sibling of the data-plane wiring.
-func buildRegistry(col *metrics.Collector) (*prometheus.Registry, error) {
+// agent's custom Collector plus the WAL instruments to it. The two
+// register in tandem so /metrics is the single endpoint operators
+// scrape — billing and WAL health on one wire.
+func buildRegistry(col *metrics.Collector, walMx *wal.Metrics) (*prometheus.Registry, error) {
 	reg := prometheus.NewRegistry()
 	if err := reg.Register(col); err != nil {
 		return nil, fmt.Errorf("agent: register collector: %w", err)
+	}
+	for _, c := range walMx.Collectors() {
+		if err := reg.Register(c); err != nil {
+			return nil, fmt.Errorf("agent: register wal metric: %w", err)
+		}
 	}
 	return reg, nil
 }
@@ -268,10 +283,15 @@ func (a *Agent) walFlushLoop(ctx context.Context, done chan<- struct{}) {
 
 // flushWAL snapshots GlobalState and writes it via [wal.Save]. The
 // snapshot uses a reused buffer; steady-state flushes do not
-// allocate beyond the JSON marshal that wal.Save performs.
+// allocate beyond the JSON marshal that wal.Save performs. The
+// copy-under-lock duration is recorded here because only this
+// function sees the RLock window; marshal + write+fsync+rename
+// timings are recorded inside Save.
 func (a *Agent) flushWAL() error {
+	copyStart := time.Now()
 	a.walRecBuf = a.state.SnapshotForWAL(a.walRecBuf[:0])
-	return wal.Save(a.cfg.WAL.Path, "", a.walRecBuf)
+	a.walMetrics.ObserveCopy(time.Since(copyStart))
+	return wal.Save(a.cfg.WAL.Path, "", a.walRecBuf, a.walMetrics)
 }
 
 // shutdown drains the HTTP server, awaits the scraper, then awaits

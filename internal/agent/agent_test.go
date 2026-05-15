@@ -284,6 +284,53 @@ func TestAgent_WALPeriodicFlushWritesSnapshot(t *testing.T) {
 	t.Fatal("WAL was not written within 2s with the seeded reader entry")
 }
 
+func TestAgent_WALMetricsAppearOnMetricsEndpoint(t *testing.T) {
+	walPath := filepath.Join(t.TempDir(), "wal.json")
+
+	r := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{
+		{
+			SrcMac:    [6]uint8{0xaa, 0, 0, 0, 0, 1},
+			DstMac:    [6]uint8{0xaa, 0, 0, 0, 0, 2},
+			EthProto:  0x0800,
+			Direction: bpf.DirectionEgress,
+			DstZone:   bpf.ZoneExternal,
+		}: {Bytes: 1, Packets: 1, LastSeenNs: 1},
+	}}
+	ag, _ := newTestAgentCfg(t, r, func(cfg *config.Config) {
+		cfg.WAL.Path = walPath
+		cfg.WAL.FlushInterval = 50 * time.Millisecond
+		cfg.WAL.Enabled = true
+	})
+	// Also record one boot-time load fallback synthetically (Bootstrap
+	// would normally do this; agent.New does not).
+	ag.WALMetrics().RecordLoadFallback("empty")
+
+	// Wait for at least one flush to populate the histograms.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := wal.Load(walPath); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
+		return strings.Contains(s, "cubecos_wal_marshal_seconds_count") &&
+			strings.Contains(s, "cubecos_wal_flush_latency_seconds_count")
+	})
+
+	for _, want := range []string{
+		"cubecos_wal_snapshot_copy_seconds_count",
+		"cubecos_wal_marshal_seconds_count",
+		"cubecos_wal_flush_latency_seconds_count",
+		`cubecos_wal_load_fallback_total{from="empty"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/metrics missing %q\n----\n%s", want, body)
+		}
+	}
+}
+
 func TestAgent_WALFinalFlushOnShutdown(t *testing.T) {
 	walPath := filepath.Join(t.TempDir(), "wal.json")
 

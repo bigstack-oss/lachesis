@@ -106,10 +106,24 @@ type flowMetricsWire struct {
 	LastSeenNs uint64 `json:"last_seen_ns,string"`
 }
 
+// stageErr attributes a Save failure to one of the labelled stages
+// in cubecos_wal_flush_failures_total: "marshal" | "write" |
+// "fsync" | "rename_bak" | "rename_current". Save returns errors
+// wrapped this way so the caller can decide which counter to bump
+// without parsing error messages.
+type stageErr struct {
+	Stage string
+	Err   error
+}
+
+func (e *stageErr) Error() string { return fmt.Sprintf("wal %s: %v", e.Stage, e.Err) }
+func (e *stageErr) Unwrap() error { return e.Err }
+
 // Save writes records to path via the atomic tmp+fsync+rename
 // rotation described in the package doc. agentBuild is informational
-// (correlation with build logs); empty is acceptable.
-func Save(path, agentBuild string, records []state.Record) error {
+// (correlation with build logs); empty is acceptable. m may be nil
+// when phase timings and failure stages are not needed.
+func Save(path, agentBuild string, records []state.Record, m *Metrics) error {
 	snap := snapshotWire{
 		SchemaVersion: SchemaVersion,
 		AgentBuild:    agentBuild,
@@ -120,13 +134,23 @@ func Save(path, agentBuild string, records []state.Record) error {
 		snap.GlobalState[i] = toWire(records[i])
 	}
 
+	marshalStart := time.Now()
 	data, err := json.Marshal(snap)
+	m.observeMarshal(time.Since(marshalStart))
 	if err != nil {
-		return fmt.Errorf("wal: marshal: %w", err)
+		m.observeFailure("marshal")
+		return &stageErr{Stage: "marshal", Err: err}
 	}
+
+	flushStart := time.Now()
+	defer func() { m.observeFlush(time.Since(flushStart)) }()
 
 	tmp := path + TempSuffix
 	if err := writeAndFsync(tmp, data); err != nil {
+		var se *stageErr
+		if errors.As(err, &se) {
+			m.observeFailure(se.Stage)
+		}
 		return err
 	}
 
@@ -134,33 +158,35 @@ func Save(path, agentBuild string, records []state.Record) error {
 	// expected — there is no prior file.
 	bak := path + BackupSuffix
 	if err := os.Rename(path, bak); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("wal: rotate to .bak: %w", err)
+		m.observeFailure("rename_bak")
+		return &stageErr{Stage: "rename_bak", Err: err}
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("wal: rename tmp: %w", err)
+		m.observeFailure("rename_current")
+		return &stageErr{Stage: "rename_current", Err: err}
 	}
 	return nil
 }
 
-// writeAndFsync writes data to path, fsyncs, and closes. Returns
-// errors wrapped with their syscall stage so failure metrics can
-// route on it.
+// writeAndFsync writes data to path, fsyncs, and closes. Failures
+// are returned as a *stageErr so the caller can bump the right
+// flush-failure counter without string-matching.
 func writeAndFsync(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return fmt.Errorf("wal: open tmp: %w", err)
+		return &stageErr{Stage: "write", Err: fmt.Errorf("open tmp: %w", err)}
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("wal: write: %w", err)
+		return &stageErr{Stage: "write", Err: err}
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("wal: fsync: %w", err)
+		return &stageErr{Stage: "fsync", Err: err}
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("wal: close tmp: %w", err)
+		return &stageErr{Stage: "write", Err: fmt.Errorf("close tmp: %w", err)}
 	}
 	return nil
 }
