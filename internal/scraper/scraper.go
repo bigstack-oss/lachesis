@@ -19,6 +19,12 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 )
 
+// initialBufCap is the starting capacity for the per-tick BatchLookup
+// buffer. Picked to cover a typical compute host's steady-state flow
+// count without growing on the hot path; the map grows on demand if
+// the host actually has more flows.
+const initialBufCap = 1024
+
 // MapReader is the kernel-side data source drained on every tick.
 // The dst map is caller-owned and reused across ticks; implementations
 // must clear it before populating to avoid stale entries leaking from
@@ -55,7 +61,7 @@ func New(reader MapReader, st *state.GlobalState, interval time.Duration) *Scrap
 		reader:   reader,
 		state:    st,
 		interval: interval,
-		buf:      make(map[bpf.FlowKey]bpf.FlowMetrics, 1024),
+		buf:      make(map[bpf.FlowKey]bpf.FlowMetrics, initialBufCap),
 	}
 }
 
