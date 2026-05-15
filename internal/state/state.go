@@ -124,3 +124,44 @@ func (g *GlobalState) Len() int {
 	defer g.mu.RUnlock()
 	return len(g.counts)
 }
+
+// Record is the (Key, Counter) pair emitted by [GlobalState.SnapshotForWAL]
+// and consumed by [GlobalState.Restore]. The Counter carries both
+// Total and LastEbpfRaw so a WAL-restored state can compute deltas
+// against the kernel's next reading without re-baselining.
+type Record struct {
+	Key     bpf.FlowKey
+	Counter Counter
+}
+
+// SnapshotForWAL appends every (key, Counter) pair to dst and returns
+// the resulting slice. Same reuse contract as [GlobalState.Snapshot]:
+// pass the prior return value to keep steady-state allocations at zero.
+//
+// Holds the RLock for the full iteration. The Counter is copied by
+// value so the returned records are safe to use after the RLock is
+// released, including across the (no-lock) marshal and flush phases
+// of the WAL writer.
+func (g *GlobalState) SnapshotForWAL(dst []Record) []Record {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for k, c := range g.counts {
+		dst = append(dst, Record{Key: k, Counter: *c})
+	}
+	return dst
+}
+
+// Restore seeds the map from records previously written to the WAL.
+// Intended to run once at boot before any scraper or collector
+// goroutine starts; takes the write lock defensively. Existing keys
+// are overwritten, matching the "WAL is the source of truth on
+// boot" contract.
+func (g *GlobalState) Restore(records []Record) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := range records {
+		r := records[i]
+		c := r.Counter
+		g.counts[r.Key] = &c
+	}
+}
