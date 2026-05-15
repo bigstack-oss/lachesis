@@ -69,9 +69,9 @@ const minBytes uint64 = 1 << 20
 
 // Result is what driveLoad measures across one window.
 type Result struct {
-	RSSPeakKB    uint64
-	CPUAvgPct    float64
-	BytesObs     uint64
+	RSSPeakKB uint64
+	CPUAvgPct float64
+	BytesObs  uint64
 }
 
 // report prints the verdict and returns a non-nil error if any

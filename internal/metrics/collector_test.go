@@ -17,7 +17,7 @@ type stubScraper struct {
 	lastOK int64
 }
 
-func (s stubScraper) ErrorCount() uint64    { return s.errors }
+func (s stubScraper) ErrorCount() uint64     { return s.errors }
 func (s stubScraper) LastSuccessUnix() int64 { return s.lastOK }
 
 // staticTenant resolves every key to a fixed tenant id.

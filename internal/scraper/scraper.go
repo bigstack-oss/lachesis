@@ -6,7 +6,7 @@
 // The [MapReader] interface lets unit tests and benchmarks substitute
 // a synthetic reader without loading eBPF. The production
 // implementation — a thin wrapper over cilium/ebpf BatchLookup —
-// lands with the agent binary in Sprint 2 Slice 2.
+// lives in the agent package alongside cmd/agent.
 package scraper
 
 import (
