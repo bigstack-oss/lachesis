@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
@@ -49,7 +51,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.json")
 	want := sampleRecords()
 
-	if err := wal.Save(path, "test-build", want); err != nil {
+	if err := wal.Save(path, "test-build", want, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -91,7 +93,7 @@ func TestSave_UsesStringEncodingForU64(t *testing.T) {
 			Total: bpf.FlowMetrics{Bytes: big, Packets: big, LastSeenNs: big},
 		},
 	}}
-	if err := wal.Save(path, "", in); err != nil {
+	if err := wal.Save(path, "", in, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -119,7 +121,7 @@ func TestSave_RotatesPriorToBackup(t *testing.T) {
 	path := filepath.Join(dir, "wal.json")
 
 	// First Save: no prior file, no .bak should appear yet.
-	if err := wal.Save(path, "", sampleRecords()[:1]); err != nil {
+	if err := wal.Save(path, "", sampleRecords()[:1], nil); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
 	if _, err := os.Stat(path + wal.BackupSuffix); !errors.Is(err, fs.ErrNotExist) {
@@ -127,7 +129,7 @@ func TestSave_RotatesPriorToBackup(t *testing.T) {
 	}
 
 	// Second Save: previous file should rotate to .bak.
-	if err := wal.Save(path, "", sampleRecords()); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
 		t.Fatalf("second Save: %v", err)
 	}
 	if _, err := os.Stat(path + wal.BackupSuffix); err != nil {
@@ -141,10 +143,10 @@ func TestLoad_FallsBackToBackupOnBadPrimary(t *testing.T) {
 
 	// Land a good snapshot on .bak by saving twice; the first
 	// save's content rotates into .bak on the second save.
-	if err := wal.Save(path, "", sampleRecords()); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
 		t.Fatalf("seed save 1: %v", err)
 	}
-	if err := wal.Save(path, "", sampleRecords()); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
 		t.Fatalf("seed save 2: %v", err)
 	}
 
@@ -217,6 +219,120 @@ func TestLoad_BothCorruptReturnsError(t *testing.T) {
 	_, err := wal.Load(path)
 	if err == nil {
 		t.Fatal("Load: expected error when both files corrupt, got nil")
+	}
+}
+
+func TestSave_RecordsMarshalAndFlushOnMetrics(t *testing.T) {
+	m := wal.NewMetrics()
+	reg := prometheus.NewRegistry()
+	for _, c := range m.Collectors() {
+		reg.MustRegister(c)
+	}
+
+	path := filepath.Join(t.TempDir(), "wal.json")
+	if err := wal.Save(path, "", sampleRecords(), m); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Each histogram must have observed exactly one sample.
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	wantNonEmpty := map[string]bool{
+		"cubecos_wal_marshal_seconds":       false,
+		"cubecos_wal_flush_latency_seconds": false,
+	}
+	for _, fam := range mf {
+		if _, ok := wantNonEmpty[fam.GetName()]; !ok {
+			continue
+		}
+		for _, metric := range fam.GetMetric() {
+			if metric.GetHistogram().GetSampleCount() > 0 {
+				wantNonEmpty[fam.GetName()] = true
+			}
+		}
+	}
+	for name, observed := range wantNonEmpty {
+		if !observed {
+			t.Errorf("%s histogram has no observations after Save", name)
+		}
+	}
+}
+
+func TestSave_RecordsFailureStageOnBadDir(t *testing.T) {
+	m := wal.NewMetrics()
+	reg := prometheus.NewRegistry()
+	for _, c := range m.Collectors() {
+		reg.MustRegister(c)
+	}
+
+	// Target a directory that does not exist — the open in
+	// writeAndFsync will fail at the "write" stage.
+	path := filepath.Join(t.TempDir(), "no", "such", "dir", "wal.json")
+	if err := wal.Save(path, "", sampleRecords(), m); err == nil {
+		t.Fatal("Save: expected error for bad dir, got nil")
+	}
+
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var stageSeen string
+	for _, fam := range mf {
+		if fam.GetName() != "cubecos_wal_flush_failures_total" {
+			continue
+		}
+		for _, metric := range fam.GetMetric() {
+			if metric.GetCounter().GetValue() < 1 {
+				continue
+			}
+			for _, lbl := range metric.GetLabel() {
+				if lbl.GetName() == "stage" {
+					stageSeen = lbl.GetValue()
+				}
+			}
+		}
+	}
+	if stageSeen != "write" {
+		t.Errorf("expected stage=write failure, got %q", stageSeen)
+	}
+}
+
+func TestRecordLoadFallback_IncrementsLabel(t *testing.T) {
+	m := wal.NewMetrics()
+	reg := prometheus.NewRegistry()
+	for _, c := range m.Collectors() {
+		reg.MustRegister(c)
+	}
+	m.RecordLoadFallback("bak")
+	m.RecordLoadFallback("bak")
+	m.RecordLoadFallback("empty")
+
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	counts := map[string]float64{}
+	for _, fam := range mf {
+		if fam.GetName() != "cubecos_wal_load_fallback_total" {
+			continue
+		}
+		for _, metric := range fam.GetMetric() {
+			var from string
+			for _, lbl := range metric.GetLabel() {
+				if lbl.GetName() == "from" {
+					from = lbl.GetValue()
+				}
+			}
+			counts[from] = metric.GetCounter().GetValue()
+		}
+	}
+	if counts["bak"] != 2 {
+		t.Errorf("bak count = %v, want 2", counts["bak"])
+	}
+	if counts["empty"] != 1 {
+		t.Errorf("empty count = %v, want 1", counts["empty"])
 	}
 }
 

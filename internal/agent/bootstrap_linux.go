@@ -85,6 +85,10 @@ func Bootstrap(args []string) (*Agent, io.Closer, error) {
 // the agent's GlobalState. Runs BEFORE the scraper goroutine starts,
 // so the first ApplyDelta computes deltas against restored
 // LastEbpfRaw values rather than re-baselining.
+//
+// Load fallbacks (bak or empty) are recorded on the agent's WAL
+// metrics so an operator can grep cubecos_wal_load_fallback_total
+// to spot a corrupt primary or a first-boot.
 func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 	if !cfg.Enabled {
 		slog.Info("wal: disabled; starting with empty state")
@@ -101,9 +105,11 @@ func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 	case wal.LoadFromBackup:
 		slog.Warn("wal: primary unusable; restored from backup",
 			"path", cfg.Path+wal.BackupSuffix, "records", len(res.Records))
+		ag.WALMetrics().RecordLoadFallback("bak")
 	case wal.LoadEmpty:
 		slog.Info("wal: no prior snapshot; starting empty",
 			"path", cfg.Path)
+		ag.WALMetrics().RecordLoadFallback("empty")
 	}
 	if len(res.Records) > 0 {
 		ag.SeedState(res.Records)
