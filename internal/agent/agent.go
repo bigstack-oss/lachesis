@@ -35,6 +35,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 )
 
 // Options bundles the inputs to [New]. ConfigPath is the YAML file
@@ -87,6 +88,11 @@ type Agent struct {
 	log       *logging.Handle
 	listener  net.Listener
 	server    *http.Server
+
+	// walRecBuf is the reused SnapshotForWAL destination so a
+	// steady-state flush does not allocate a fresh records slice.
+	// Owned solely by the WAL flush goroutine; no lock needed.
+	walRecBuf []state.Record
 }
 
 // New constructs the agent. The HTTP listener is opened immediately so
@@ -174,12 +180,22 @@ func (a *Agent) Addr() string {
 // scrape interval, not the shutdown budget.
 const shutdownTimeout = 5 * time.Second
 
-// Run starts the scraper and HTTP server and blocks until ctx is
-// cancelled or the server fails. On graceful shutdown it stops
-// accepting new HTTP requests, drains in-flight scrapes, then waits
-// for the scraper goroutine to finish its current Tick so callers
-// can safely release BPF resources without racing the kernel-map
-// read.
+// SeedState seeds the agent's [state.GlobalState] from records,
+// intended to run between [New] and [Run] (for example, after a
+// WAL restore on boot). Takes the state's write lock; safe to call
+// before any other goroutine touches the agent.
+func (a *Agent) SeedState(records []state.Record) {
+	a.state.Restore(records)
+}
+
+// Run starts the scraper, WAL flush goroutine (when enabled), and
+// HTTP server. Blocks until ctx is cancelled or the server fails.
+//
+// On graceful shutdown it stops accepting new HTTP requests, drains
+// in-flight scrapes, waits for the scraper goroutine to finish its
+// current Tick (so callers can safely release BPF resources without
+// racing the kernel-map read), then lets the WAL flush goroutine
+// run its final flush.
 //
 // TC programs are not detached on shutdown — the qdisc and filter
 // outlive the process. The next agent start replaces them via
@@ -194,6 +210,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		close(scraperDone)
 	}()
 
+	walDone := make(chan struct{})
+	if a.cfg.WAL.Enabled {
+		go a.walFlushLoop(ctx, walDone)
+	} else {
+		close(walDone)
+	}
+
 	srvErr := make(chan error, 1)
 	go func() {
 		if err := a.server.Serve(a.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -203,28 +226,68 @@ func (a *Agent) Run(ctx context.Context) error {
 		srvErr <- nil
 	}()
 
-	slog.Info("agent: serving", "addr", a.Addr(), "scrape_interval", a.cfg.Scrape.Interval)
+	slog.Info("agent: serving",
+		"addr", a.Addr(),
+		"scrape_interval", a.cfg.Scrape.Interval,
+		"wal_enabled", a.cfg.WAL.Enabled,
+	)
 
 	select {
 	case <-ctx.Done():
-		return a.shutdown(srvErr, scraperDone)
+		return a.shutdown(srvErr, scraperDone, walDone)
 	case err := <-srvErr:
 		return err
 	}
 }
 
-// shutdown drains the HTTP server, then awaits the scraper. Called
-// after ctx fires. Returns an error only if HTTP shutdown itself
-// fails — a scraper timeout is logged but not promoted to an error,
-// because by then the agent's job is done.
+// walFlushLoop drains [state.GlobalState] to disk on the configured
+// cadence. On ctx cancellation it runs one final flush before
+// signalling done — that's how a clean shutdown captures the latest
+// deltas the scraper applied between the last periodic flush and
+// the SIGINT/SIGTERM.
+func (a *Agent) walFlushLoop(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	t := time.NewTicker(a.cfg.WAL.FlushInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if err := a.flushWAL(); err != nil {
+				slog.Warn("wal: final flush failed", "err", err)
+				return
+			}
+			slog.Info("wal: final flush ok", "records", len(a.walRecBuf))
+			return
+		case <-t.C:
+			if err := a.flushWAL(); err != nil {
+				slog.Warn("wal: periodic flush failed", "err", err)
+			}
+		}
+	}
+}
+
+// flushWAL snapshots GlobalState and writes it via [wal.Save]. The
+// snapshot uses a reused buffer; steady-state flushes do not
+// allocate beyond the JSON marshal that wal.Save performs.
+func (a *Agent) flushWAL() error {
+	a.walRecBuf = a.state.SnapshotForWAL(a.walRecBuf[:0])
+	return wal.Save(a.cfg.WAL.Path, "", a.walRecBuf)
+}
+
+// shutdown drains the HTTP server, awaits the scraper, then awaits
+// the WAL flush goroutine's final flush. Returns an error only if
+// HTTP shutdown itself fails — scraper / WAL timeouts are logged
+// but not promoted to errors, because by then the agent's job is
+// done.
 //
-// The scraper wait is deferred so it runs on every exit path,
-// including the HTTP-shutdown error path. Without it, an HTTP
-// drain timeout would return early while the scraper could still
-// be inside a Tick; the caller's BPF-collection Close would then
-// race the kernel-map read.
-func (a *Agent) shutdown(srvErr <-chan error, scraperDone <-chan struct{}) error {
+// Drain order matters: scraper drains first so the latest deltas
+// land in state, then the WAL final flush captures them. Both
+// drains are deferred so they run even on an HTTP shutdown error
+// (otherwise the BPF-collection close in main could race the
+// kernel-map read, and the latest in-memory state could be lost).
+func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone <-chan struct{}) error {
 	slog.Info("agent: shutdown initiated")
+	defer a.awaitWAL(walDone)
 	defer a.awaitScraper(scraperDone)
 
 	httpCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -247,6 +310,21 @@ func (a *Agent) awaitScraper(scraperDone <-chan struct{}) {
 		slog.Info("agent: scraper stopped")
 	case <-time.After(shutdownTimeout):
 		slog.Warn("agent: scraper did not exit within shutdown budget",
+			"budget", shutdownTimeout)
+	}
+}
+
+// awaitWAL blocks until the WAL flush goroutine has run its final
+// flush and exited, or shutdownTimeout elapses. The final flush is
+// best-effort: a timeout here means we lose the last in-memory
+// deltas the periodic flush did not capture (≤flush_interval of
+// data), which is the design's stated worst case.
+func (a *Agent) awaitWAL(walDone <-chan struct{}) {
+	select {
+	case <-walDone:
+		slog.Info("agent: wal stopped")
+	case <-time.After(shutdownTimeout):
+		slog.Warn("agent: wal did not exit within shutdown budget",
 			"budget", shutdownTimeout)
 	}
 	slog.Info("agent: shutdown complete")
