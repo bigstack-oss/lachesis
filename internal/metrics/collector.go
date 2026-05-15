@@ -5,7 +5,7 @@
 // # Why a custom Collector, not CounterVec
 //
 // CounterVec resets to zero on process restart. The agent restores
-// [state.GlobalState] from the WAL on boot (Sprint 3); emitting from
+// [state.GlobalState] from its WAL on boot; emitting from
 // GlobalState directly preserves cumulative continuity across
 // restarts so `rate()` does not go negative. See docs/DESIGN.md §C.7.
 //
@@ -39,9 +39,9 @@ import (
 )
 
 // TenantResolver maps a [bpf.FlowKey] to its tenant_id label.
-// Implementations must be safe for concurrent use. Sprint 2 wires
-// [UnknownTenant], which always returns "unknown"; Sprint 4 will
-// supply a resolver backed by the kernel `mac_tenant_map`.
+// Implementations must be safe for concurrent use. The agent wires
+// [UnknownTenant] until a Neutron-backed resolver consulting the
+// kernel `mac_tenant_map` is available.
 type TenantResolver interface {
 	ResolveTenant(key bpf.FlowKey) string
 }
@@ -63,11 +63,11 @@ type Collector struct {
 	scraper  ScraperStats
 	resolver TenantResolver
 
-	bytesDesc          *prometheus.Desc
-	packetsDesc        *prometheus.Desc
-	flowsDesc          *prometheus.Desc
-	scrapeErrorsDesc   *prometheus.Desc
-	scrapeLastOKDesc   *prometheus.Desc
+	bytesDesc        *prometheus.Desc
+	packetsDesc      *prometheus.Desc
+	flowsDesc        *prometheus.Desc
+	scrapeErrorsDesc *prometheus.Desc
+	scrapeLastOKDesc *prometheus.Desc
 
 	// collectMu serialises concurrent Collect callers. The default
 	// Prometheus registry is single-threaded but third-party
@@ -215,9 +215,9 @@ func directionLabel(d bpf.Direction) string {
 	return strconv.FormatUint(uint64(d), 10)
 }
 
-// UnknownTenant is the Sprint 2 stub TenantResolver. It returns
-// "unknown" for every key; Sprint 4 will replace it with the
-// Neutron-backed `mac_tenant_map` reader.
+// UnknownTenant is the stub TenantResolver wired before the
+// Neutron-backed `mac_tenant_map` reader is available. It returns
+// "unknown" for every key.
 type UnknownTenant struct{}
 
 // ResolveTenant implements [TenantResolver].

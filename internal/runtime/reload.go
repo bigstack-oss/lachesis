@@ -37,8 +37,8 @@ import (
 // and mount [Manager.DebugHandler] on the HTTP server.
 type Manager struct {
 	mu         sync.Mutex
-	configPath string         // YAML path; empty disables SIGHUP reload
-	current    config.Config  // last applied snapshot
+	configPath string        // YAML path; empty disables SIGHUP reload
+	current    config.Config // last applied snapshot
 	log        *logging.Handle
 }
 

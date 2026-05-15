@@ -39,8 +39,8 @@ import (
 // [GlobalState.ApplyDelta] while the write lock is held.
 type Counter struct {
 	// Total is the agent-side cumulative — bytes and packets since
-	// the flow was first observed, surviving kernel evictions and
-	// (with WAL, Sprint 3) agent restarts.
+	// the flow was first observed, surviving kernel evictions and,
+	// once a WAL is in place, agent restarts.
 	Total bpf.FlowMetrics
 	// LastEbpfRaw is the most recent raw value read from the kernel.
 	// The next ApplyDelta computes Δ = current − LastEbpfRaw, then

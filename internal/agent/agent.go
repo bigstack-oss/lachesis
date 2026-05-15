@@ -46,7 +46,7 @@ type Options struct {
 	Reader     scraper.MapReader
 	Log        *logging.Handle
 	// Resolver maps FlowKey → tenant_id label. nil means
-	// [metrics.UnknownTenant]{} (Sprint 2 default).
+	// [metrics.UnknownTenant]{}.
 	Resolver metrics.TenantResolver
 }
 
@@ -135,7 +135,7 @@ const shutdownTimeout = 5 * time.Second
 // TC programs are not detached on shutdown — the qdisc and filter
 // outlive the process. The next agent start replaces them via
 // netlink's idempotent QdiscReplace / FilterReplace. A clean detach
-// + the Zombie-Hunter recovery path are Sprint 5 deliverables.
+// + a recovery path for filters orphaned by crashes are planned.
 func (a *App) Run(ctx context.Context) error {
 	a.runtime.InstallSIGHUP(ctx)
 

@@ -15,8 +15,8 @@ import (
 // mode. Idempotent: replaces an existing clsact qdisc and any prior
 // telemetry_in / telemetry_out filters.
 //
-// Sprint 2 wires a single interface attach with no zombie cleanup and
-// no netlink-driven auto-attach. Both land in Sprint 5.
+// Today this is a single-interface attach with no zombie cleanup
+// and no netlink-driven auto-attach; both are planned.
 func AttachClsact(ifaceName string, ingress, egress *ebpf.Program) error {
 	link, err := netlink.LinkByName(ifaceName)
 	if err != nil {
