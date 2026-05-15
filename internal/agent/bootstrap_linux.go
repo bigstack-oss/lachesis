@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -86,13 +85,13 @@ func loadCollection() (*ebpf.Collection, error) {
 	return coll, nil
 }
 
-// readerFromCollection wires a [BPFMapReader] over the telemetry_map
+// readerFromCollection wires a [BPFMapReader] over [bpf.MapTelemetry]
 // inside coll. Returns an error if the map is missing — that is
 // always a build-time problem, never a runtime one.
 func readerFromCollection(coll *ebpf.Collection) (*BPFMapReader, error) {
-	m := coll.Maps["telemetry_map"]
+	m := coll.Maps[bpf.MapTelemetry]
 	if m == nil {
-		return nil, errors.New("telemetry_map not present in BPF collection")
+		return nil, fmt.Errorf("%s not present in BPF collection", bpf.MapTelemetry)
 	}
 	return NewBPFMapReader(m)
 }
@@ -106,10 +105,11 @@ func attachIfRequested(iface string, coll *ebpf.Collection) error {
 		slog.Info("no attach interface configured; assuming external attach")
 		return nil
 	}
-	ingress := coll.Programs["tc_telemetry_in"]
-	egress := coll.Programs["tc_telemetry_out"]
+	ingress := coll.Programs[bpf.ProgramIngress]
+	egress := coll.Programs[bpf.ProgramEgress]
 	if ingress == nil || egress == nil {
-		return errors.New("tc_telemetry_in / tc_telemetry_out not present in BPF collection")
+		return fmt.Errorf("%s / %s not present in BPF collection",
+			bpf.ProgramIngress, bpf.ProgramEgress)
 	}
 	if err := AttachClsact(iface, ingress, egress); err != nil {
 		return fmt.Errorf("attach clsact: %w", err)

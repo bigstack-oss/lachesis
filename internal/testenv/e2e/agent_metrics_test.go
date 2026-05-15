@@ -70,10 +70,11 @@ func TestAgent_MetricsReflectBPFMapTraffic(t *testing.T) {
 	}
 	defer netlink.LinkDel(host)
 
-	ingress := coll.Programs["tc_telemetry_in"]
-	egress := coll.Programs["tc_telemetry_out"]
+	ingress := coll.Programs[bpf.ProgramIngress]
+	egress := coll.Programs[bpf.ProgramEgress]
 	if ingress == nil || egress == nil {
-		t.Fatal("telemetry collection missing tc_telemetry_in or tc_telemetry_out")
+		t.Fatalf("telemetry collection missing %s or %s",
+			bpf.ProgramIngress, bpf.ProgramEgress)
 	}
 	if err := tns.AttachBPF(host, ingress, tns.TCIngress, "tel_in"); err != nil {
 		t.Fatalf("attach ingress: %v", err)
@@ -82,7 +83,7 @@ func TestAgent_MetricsReflectBPFMapTraffic(t *testing.T) {
 		t.Fatalf("attach egress: %v", err)
 	}
 
-	reader, err := agent.NewBPFMapReader(coll.Maps["telemetry_map"])
+	reader, err := agent.NewBPFMapReader(coll.Maps[bpf.MapTelemetry])
 	if err != nil {
 		t.Fatalf("NewBPFMapReader: %v", err)
 	}
