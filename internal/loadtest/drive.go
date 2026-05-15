@@ -49,21 +49,33 @@ func driveLoad(cfg Config, e *env) (Result, error) {
 	return Result{RSSPeakKB: rssPeakKB, CPUAvgPct: cpuAvgPct, BytesObs: bytesObs}, nil
 }
 
+// workerChunkSize is the per-write payload for each TCP worker.
+// Large enough that the kernel can push it as a single packet on a
+// loopback or veth path, small enough that we cycle through the
+// write loop frequently and surface backpressure quickly.
+const workerChunkSize = 64 * 1024
+
+// workerDialTimeout bounds how long a worker waits to establish its
+// long-lived TCP connection to the sink. The sink is in-process so
+// healthy dials complete instantly; this is a hung-stack guard.
+const workerDialTimeout = 5 * time.Second
+
 // sustainedTCPSend opens one long-lived TCP connection from inside ns
-// and writes 64 KB chunks back-to-back until ctx is cancelled. Using
-// a single connection per worker (vs. dial-write-close per iteration)
-// avoids ephemeral-port exhaustion during a long load window — the
-// kernel's TIME_WAIT pool fills up in seconds at our rate otherwise.
+// and writes [workerChunkSize] chunks back-to-back until ctx is
+// cancelled. Using a single connection per worker (vs. dial-write-
+// close per iteration) avoids ephemeral-port exhaustion during a long
+// load window — the kernel's TIME_WAIT pool fills up in seconds at
+// our rate otherwise.
 func sustainedTCPSend(ctx context.Context, src *tns.NS, dstIP net.IP, dstPort uint16) error {
 	dst := net.JoinHostPort(dstIP.String(), strconv.Itoa(int(dstPort)))
 	return src.Do(func() error {
-		d := &net.Dialer{Timeout: 5 * time.Second}
+		d := &net.Dialer{Timeout: workerDialTimeout}
 		conn, err := d.DialContext(ctx, "tcp", dst)
 		if err != nil {
 			return fmt.Errorf("loadtest: dial %s: %w", dst, err)
 		}
 		defer conn.Close()
-		buf := make([]byte, 64*1024)
+		buf := make([]byte, workerChunkSize)
 		for ctx.Err() == nil {
 			if _, err := conn.Write(buf); err != nil {
 				// Sink shutdown is the expected end-of-window path.

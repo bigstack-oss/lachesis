@@ -50,7 +50,7 @@ func Run(cfg Config) error {
 	}
 	defer e.Close()
 
-	if err := waitForAgent(cfg.HTTPAddr, 10*time.Second); err != nil {
+	if err := waitForAgent(cfg.HTTPAddr, agentReadyTimeout); err != nil {
 		return fmt.Errorf("agent did not become ready: %w", err)
 	}
 	fmt.Printf("loadtest: agent pid=%d, http=%s\n", e.agent.Process.Pid, cfg.HTTPAddr)
@@ -61,6 +61,12 @@ func Run(cfg Config) error {
 	}
 	return report(cfg, r)
 }
+
+// agentReadyTimeout bounds how long Run will wait for the freshly
+// spawned agent's /metrics endpoint to answer. Generous enough to
+// cover a cold Docker layer cache, tight enough that a wedged agent
+// fails the harness fast.
+const agentReadyTimeout = 10 * time.Second
 
 // minBytes is the liveness floor on the agent's observed traffic.
 // Below this the BPF program likely never fired (broken attach,

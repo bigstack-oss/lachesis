@@ -12,6 +12,17 @@ import (
 	"time"
 )
 
+// agentTermGrace is how long stopAgent waits between SIGTERM and
+// SIGKILL. The agent's own shutdown budget is bounded by its
+// internal HTTP + scraper drain (~5s in production); this gives it
+// a bit longer to exit cleanly before we kill the process group.
+const agentTermGrace = 3 * time.Second
+
+// agentReadyPoll is the inter-poll sleep waitForAgent uses while
+// the /metrics endpoint is still warming up. Short enough that the
+// harness's effective startup latency is sub-second.
+const agentReadyPoll = 100 * time.Millisecond
+
 // writeAgentConfig writes a minimal YAML config that points the
 // agent at the host-side veth and asks for an ephemeral listener.
 // Returns the path; caller is responsible for os.Remove.
@@ -55,8 +66,8 @@ func startAgent(bin, cfgPath string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-// stopAgent sends SIGTERM, waits up to 3s for clean shutdown, then
-// SIGKILLs if the agent is unresponsive.
+// stopAgent sends SIGTERM, waits up to [agentTermGrace] for clean
+// shutdown, then SIGKILLs if the agent is unresponsive.
 func stopAgent(cmd *exec.Cmd) {
 	if cmd.Process == nil {
 		return
@@ -66,7 +77,7 @@ func stopAgent(cmd *exec.Cmd) {
 	go func() { done <- cmd.Wait() }()
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(agentTermGrace):
 		_ = cmd.Process.Kill()
 		<-done
 	}
@@ -83,7 +94,7 @@ func waitForAgent(addr string, timeout time.Duration) error {
 				return nil
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(agentReadyPoll)
 	}
 	return fmt.Errorf("/metrics not ready at http://%s within %s", addr, timeout)
 }

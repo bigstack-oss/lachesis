@@ -107,9 +107,15 @@ func New(opts Options) (*App, error) {
 		runtime:   mgr,
 		log:       opts.Log,
 		listener:  ln,
-		server:    &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second},
+		server:    &http.Server{Handler: mux, ReadHeaderTimeout: httpReadHeaderTimeout},
 	}, nil
 }
+
+// httpReadHeaderTimeout bounds how long the HTTP server will wait
+// for request headers before tearing the connection down. Standard
+// guard against slow-header attacks (Slowloris); set above the
+// Prometheus scrape's typical RTT but well below operator patience.
+const httpReadHeaderTimeout = 5 * time.Second
 
 // Addr returns the address the HTTP server is bound to. Stable as
 // soon as [New] returns; remains valid after Run starts and after it
