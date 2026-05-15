@@ -18,6 +18,12 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # `gh pr checks --watch --required` reads the head commit's
+  # statusCheckRollup, which falls under the checks/statuses scopes.
+  # Without these the API returns "Resource not accessible by
+  # integration" even though the workflow can write to PRs.
+  checks: read
+  statuses: read
 
 jobs:
   merge:
