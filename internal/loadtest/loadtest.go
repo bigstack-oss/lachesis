@@ -95,10 +95,35 @@ func report(cfg Config, r Result) error {
 	fmt.Printf("  workers:         %d\n", cfg.Workers)
 	fmt.Printf("  RSS peak:        %d MB (limit %d MB)\n", rssPeakMB, cfg.RSSLimitMB)
 	fmt.Printf("  CPU avg:         %.2f%% (limit %.2f%%)\n", r.CPUAvgPct, cfg.CPULimitPct)
-	fmt.Printf("  bytes observed:  %d (min %d)\n", r.BytesObs, minBytes)
+	fmt.Printf("  bytes observed:  %s (min %s)\n", humanBytes(r.BytesObs), humanBytes(minBytes))
 
 	if !pass {
 		return errors.New("loadtest assertions failed")
 	}
 	return nil
+}
+
+// humanBytes formats n with a binary unit prefix (KiB/MiB/GiB/TiB)
+// for terminal output. Binary rather than decimal because the
+// counter is exact bytes and we already report RSS in MiB. Two
+// decimal places matches the precision of the input ratio.
+func humanBytes(n uint64) string {
+	const (
+		KiB = 1 << 10
+		MiB = 1 << 20
+		GiB = 1 << 30
+		TiB = 1 << 40
+	)
+	switch {
+	case n >= TiB:
+		return fmt.Sprintf("%.2f TiB", float64(n)/TiB)
+	case n >= GiB:
+		return fmt.Sprintf("%.2f GiB", float64(n)/GiB)
+	case n >= MiB:
+		return fmt.Sprintf("%.2f MiB", float64(n)/MiB)
+	case n >= KiB:
+		return fmt.Sprintf("%.2f KiB", float64(n)/KiB)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
