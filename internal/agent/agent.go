@@ -217,8 +217,15 @@ func (a *Agent) Run(ctx context.Context) error {
 // after ctx fires. Returns an error only if HTTP shutdown itself
 // fails — a scraper timeout is logged but not promoted to an error,
 // because by then the agent's job is done.
+//
+// The scraper wait is deferred so it runs on every exit path,
+// including the HTTP-shutdown error path. Without it, an HTTP
+// drain timeout would return early while the scraper could still
+// be inside a Tick; the caller's BPF-collection Close would then
+// race the kernel-map read.
 func (a *Agent) shutdown(srvErr <-chan error, scraperDone <-chan struct{}) error {
 	slog.Info("agent: shutdown initiated")
+	defer a.awaitScraper(scraperDone)
 
 	httpCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -227,10 +234,14 @@ func (a *Agent) shutdown(srvErr <-chan error, scraperDone <-chan struct{}) error
 	}
 	<-srvErr
 	slog.Info("agent: http server stopped")
+	return nil
+}
 
-	// The scraper checks ctx.Done() between Ticks; an in-flight Tick
-	// must finish (drain kernel map, apply deltas) before Run returns
-	// so callers' BPF-collection close does not race the read.
+// awaitScraper blocks until the scraper goroutine has exited its
+// current Tick, or shutdownTimeout elapses. Always runs as part of
+// shutdown so a slow HTTP drain does not leave the scraper holding
+// a BPF map read while the caller closes the collection.
+func (a *Agent) awaitScraper(scraperDone <-chan struct{}) {
 	select {
 	case <-scraperDone:
 		slog.Info("agent: scraper stopped")
@@ -238,7 +249,5 @@ func (a *Agent) shutdown(srvErr <-chan error, scraperDone <-chan struct{}) error
 		slog.Warn("agent: scraper did not exit within shutdown budget",
 			"budget", shutdownTimeout)
 	}
-
 	slog.Info("agent: shutdown complete")
-	return nil
 }
