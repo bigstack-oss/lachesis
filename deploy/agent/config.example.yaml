@@ -1,0 +1,67 @@
+# CubeCOS Network Telemetry agent — example configuration.
+#
+# Every key in this file is optional. The agent ships with a complete
+# set of built-in defaults (see internal/config/*.go); any key omitted
+# here falls back to the default. The values shown below are the
+# defaults — copy this file, edit only the lines you need to change.
+#
+# Resolution order (later wins): built-in defaults → this YAML →
+# CUBECOS_* env vars → CLI flags. The YAML path is set via the
+# -config flag or CUBECOS_CONFIG; SIGHUP re-reads it.
+#
+# Hot-reloadable on SIGHUP: logging.level only. Every other field is
+# load-time — changes in YAML are warned about and ignored until the
+# next agent restart.
+
+# Schema version; the binary refuses to start if this disagrees.
+version: "1"
+
+http:
+  # HTTP listen address for /metrics and /debug. net.Listen syntax.
+  # Env: CUBECOS_HTTP_LISTEN   Flag: -http-listen
+  listen: ":9090"
+
+bpf:
+  # Directory under /sys/fs/bpf for pinned maps and programs.
+  # Must be absolute.
+  # Env: CUBECOS_BPF_PIN_PATH   Flag: -bpf-pin-path
+  pin_path: "/sys/fs/bpf/telemetry"
+
+  # Host interface to attach the TC clsact + telemetry programs on.
+  # Empty disables agent-side attach — useful in tests and on hosts
+  # where attach is managed out-of-band. Multi-interface and
+  # netlink-driven auto-attach land in a later sprint.
+  # Env: CUBECOS_BPF_ATTACH_INTERFACE   Flag: -bpf-attach-interface
+  attach_interface: ""
+
+scrape:
+  # Cadence at which the scraper drains the BPF map and applies
+  # deltas to GlobalState. Minimum 1s.
+  # Env: CUBECOS_SCRAPE_INTERVAL   Flag: -scrape-interval
+  interval: 10s
+
+logging:
+  # Minimum severity emitted: debug, info, warn, error.
+  # HOT-RELOADABLE via SIGHUP and PUT /debug/log-level.
+  # Env: CUBECOS_LOG_LEVEL   Flag: -log-level
+  level: "info"
+
+  # Output encoder: json, text. Load-time only.
+  # Env: CUBECOS_LOG_FORMAT   Flag: -log-format
+  format: "json"
+
+wal:
+  # Enable WAL persistence: boot-time restore + periodic flush.
+  # Disabled is intentionally a no-op (no flush goroutine, no
+  # restore on boot); useful for ephemeral test runs.
+  # Env: CUBECOS_WAL_ENABLED   Flag: -wal-enabled
+  enabled: true
+
+  # WAL snapshot file. Must be absolute when enabled.
+  # Env: CUBECOS_WAL_PATH   Flag: -wal-path
+  path: "/var/lib/cubecos/network_agent_state.json"
+
+  # Flush cadence. Worst-case data loss on a hard reboot is one
+  # flush interval. Minimum 1s.
+  # Env: CUBECOS_WAL_FLUSH_INTERVAL   Flag: -wal-flush-interval
+  flush_interval: 60s
