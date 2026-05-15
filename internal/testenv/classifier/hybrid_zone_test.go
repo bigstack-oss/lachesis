@@ -64,9 +64,9 @@ func TestHybridZoneLookup(t *testing.T) {
 		}
 	}
 
-	telMap := drv.Map("telemetry_map")
+	telMap := drv.Map(bpf.MapTelemetry)
 	if telMap == nil {
-		t.Fatal("telemetry_map not loaded")
+		t.Fatalf("%s not loaded", bpf.MapTelemetry)
 	}
 
 	cases := []struct {
@@ -74,7 +74,7 @@ func TestHybridZoneLookup(t *testing.T) {
 		src, dst uint64
 		srcIP    net.IP
 		dstIP    net.IP
-		prog     string // tc_telemetry_in (dir=0) or tc_telemetry_out (dir=1)
+		prog     string // bpf.ProgramIngress (dir=0) or bpf.ProgramEgress (dir=1)
 		wantDir  bpf.Direction
 		wantZone bpf.ZoneCode
 	}{
@@ -83,19 +83,19 @@ func TestHybridZoneLookup(t *testing.T) {
 			name: "ingress same-tenant direct L2",
 			src:  macVMA, dst: macVMB,
 			srcIP: net.IPv4(10, 0, 0, 1), dstIP: net.IPv4(10, 0, 0, 2),
-			prog: "tc_telemetry_in", wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneSameTenant,
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneSameTenant,
 		},
 		{
 			name: "ingress cross-tenant direct L2",
 			src:  macVMA, dst: macVMC,
 			srcIP: net.IPv4(10, 0, 0, 1), dstIP: net.IPv4(10, 0, 0, 3),
-			prog: "tc_telemetry_in", wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneOtherTenant,
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneOtherTenant,
 		},
 		{
 			name: "egress same-tenant direct L2 (directional swap)",
 			src:  macVMB, dst: macVMA, // on the wire: B->A; we're at A's tap egress
 			srcIP: net.IPv4(10, 0, 0, 2), dstIP: net.IPv4(10, 0, 0, 1),
-			prog: "tc_telemetry_out", wantDir: bpf.DirectionEgress, wantZone: bpf.ZoneSameTenant,
+			prog: bpf.ProgramEgress, wantDir: bpf.DirectionEgress, wantZone: bpf.ZoneSameTenant,
 		},
 
 		// — LPM-fallback path (peer not in map; trie empty → MISS) —
@@ -103,7 +103,7 @@ func TestHybridZoneLookup(t *testing.T) {
 			name: "ingress routed peer with empty trie → MISS",
 			src:  macVMA, dst: macRouter,
 			srcIP: net.IPv4(10, 0, 0, 1), dstIP: net.IPv4(8, 8, 8, 8),
-			prog: "tc_telemetry_in", wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMiss,
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMiss,
 		},
 
 		// — Unknown VM short-circuit (don't even look up peer) —
@@ -111,7 +111,7 @@ func TestHybridZoneLookup(t *testing.T) {
 			name: "ingress unknown vm_mac → MISS",
 			src:  macUnknownVM, dst: macVMA,
 			srcIP: net.IPv4(10, 0, 0, 99), dstIP: net.IPv4(10, 0, 0, 1),
-			prog: "tc_telemetry_in", wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMiss,
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMiss,
 		},
 	}
 

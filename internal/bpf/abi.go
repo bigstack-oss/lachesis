@@ -52,6 +52,21 @@ const (
 	DirectionEgress  = telemetryTcDirectionTC_DIR_EGRESS
 )
 
+// ProgramIngress and ProgramEgress are the SEC("tc") function names
+// of the ingress and egress telemetry programs in bpf/telemetry.c.
+// Loaders use these names to look up [*ebpf.Program] handles from a
+// loaded [*ebpf.Collection]; the strings cross the C↔Go boundary
+// and must match the C symbol exactly.
+const (
+	ProgramIngress = "tc_telemetry_in"
+	ProgramEgress  = "tc_telemetry_out"
+)
+
+// MapTelemetry is the SEC(".maps") name of the PERCPU_HASH that
+// holds [FlowKey] → [FlowMetrics]. Same C↔Go contract as the
+// program names above.
+const MapTelemetry = "telemetry_map"
+
 // LoadTelemetry returns the CollectionSpec for the telemetry BPF program,
 // ready to be loaded into the kernel.
 func LoadTelemetry() (*ebpf.CollectionSpec, error) {

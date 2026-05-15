@@ -79,9 +79,9 @@ func TestE2E_HybridZone_SameTenantNoTrie(t *testing.T) {
 		}
 	}
 
-	prog := drv.Program("tc_telemetry_in")
+	prog := drv.Program(bpf.ProgramIngress)
 	if prog == nil {
-		t.Fatal("tc_telemetry_in program missing")
+		t.Fatalf("%s program missing", bpf.ProgramIngress)
 	}
 	if err := tns.AttachBPF(host, prog, tns.TCIngress, "telemetry_in"); err != nil {
 		t.Fatalf("attach: %v", err)
@@ -96,9 +96,9 @@ func TestE2E_HybridZone_SameTenantNoTrie(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 
-	telMap := drv.Map("telemetry_map")
+	telMap := drv.Map(bpf.MapTelemetry)
 	if telMap == nil {
-		t.Fatal("telemetry_map not loaded")
+		t.Fatalf("%s not loaded", bpf.MapTelemetry)
 	}
 
 	// Inner is the VM, outer is the peer. The packet enters tap-h1 ingress,
