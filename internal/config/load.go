@@ -13,7 +13,7 @@ import (
 // DefaultEnvPrefix is used when [Options.EnvPrefix] is empty.
 const DefaultEnvPrefix = "CUBECOS"
 
-// Options customizes how [LoadWith] resolves the configuration. The zero
+// Options customizes how [Load] resolves the configuration. The zero
 // value is acceptable; missing fields are filled in with defaults.
 type Options struct {
 	// EnvPrefix is prepended to every env var name (e.g. "CUBECOS" yields
@@ -24,23 +24,20 @@ type Options struct {
 	Getenv func(string) string
 }
 
-// Load resolves the configuration using default options. See [LoadWith]
-// for customization.
-func Load(args []string) (Config, error) {
-	return LoadWith(Options{}, args)
-}
-
-// LoadWith resolves the configuration from defaults, an optional YAML
-// file, environment variables (prefixed with opts.EnvPrefix), and CLI
-// flags, in that order; later sources override earlier.
+// Load resolves the configuration from defaults, an optional YAML
+// file, environment variables (prefixed with opts.EnvPrefix), and
+// CLI flags, in that order; later sources override earlier.
+//
+// Pass [Options]{} for the production-default behaviour; tests and
+// forks supply a custom EnvPrefix or Getenv via the same struct.
 //
 // The YAML file path is sourced from the -config flag if present in
 // args, otherwise from <prefix>_CONFIG. If neither is set, the YAML
 // layer is skipped.
 //
-// The returned Config has already been validated; callers can use it
-// without further checks.
-func LoadWith(opts Options, args []string) (Config, error) {
+// The returned Config has already been validated; callers can use
+// it without further checks.
+func Load(opts Options, args []string) (Config, error) {
 	if opts.EnvPrefix == "" {
 		opts.EnvPrefix = DefaultEnvPrefix
 	}
@@ -71,10 +68,13 @@ func LoadWith(opts Options, args []string) (Config, error) {
 	return cfg, cfg.Validate()
 }
 
-// FindConfigPath returns the YAML config-file path that [LoadWith]
+// FindConfigPath returns the YAML config-file path that [Load]
 // would resolve from args and the environment. Exposed so callers
 // can pass the same path to [runtime.New] for SIGHUP reload.
-func FindConfigPath(args []string, opts Options) string {
+//
+// Argument order matches [Load] (opts first, args second) so the
+// two functions read consistently at call sites.
+func FindConfigPath(opts Options, args []string) string {
 	if opts.EnvPrefix == "" {
 		opts.EnvPrefix = DefaultEnvPrefix
 	}
