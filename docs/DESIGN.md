@@ -1288,7 +1288,7 @@ the design's existing fan-out (tenant, zone, direction). **Health metrics**
 | `cubecos_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher |
 | `cubecos_lingering_ghosts_active` | gauge | — | metadata GC |
 | `cubecos_collect_duration_seconds` | histogram | — | Prometheus Collector |
-| `cubecos_internal_errors_total` | counter | `subsystem` | billing-path error sink (CLAUDE.md "Billing-path errors") |
+| `cubecos_internal_errors_total` | counter | `subsystem` | billing-path error sink (see §13.1) |
 
 Cardinality discipline: **never** label a health metric with `tenant_id`,
 `mac`, `flow_key`, or any per-flow identifier. Anything per-flow goes only

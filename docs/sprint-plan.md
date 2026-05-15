@@ -234,7 +234,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 - u64 wraparound guard in delta math (closes Implementation Contract #5).
 - Zero-allocation verified by `go test -bench -benchmem` on `Collect()` and `BatchLookupAndProcess()` — fail PR if any allocation appears.
 - TenantMeta pointer-replace lint test from Sprint 7 hardened (negative tests).
-- Internal error sink: `cubecos_internal_errors_total{subsystem}` wired everywhere CLAUDE.md says "log + increment".
+- Internal error sink: `cubecos_internal_errors_total{subsystem}` wired everywhere a billing-path error is logged (see DESIGN.md §13.1).
 
 **Done when.** All five §13.1 Implementation Contracts have a corresponding test that fails if the contract is broken. Bench job in CI gates merge.
 

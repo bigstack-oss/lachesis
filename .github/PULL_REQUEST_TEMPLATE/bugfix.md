@@ -11,7 +11,8 @@
 ## Root cause
 <!-- Be specific. Avoid generic labels like "race condition" or "off-by-one".
      Name the variables, the goroutines, the order of operations.
-     If the cause is a violated invariant from CLAUDE.md or DESIGN.md, cite it. -->
+     If the cause is a violated invariant from docs/DESIGN.md, cite the
+     section. -->
 
 ## Fix
 <!-- What this PR does to fix it. Keep it narrow — no drive-by refactors.
