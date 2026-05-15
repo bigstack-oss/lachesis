@@ -94,7 +94,7 @@ func TestAgent_MetricsReflectBPFMapTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logging.Init: %v", err)
 	}
-	app, err := agent.New(agent.Options{Config: cfg, Reader: reader, Log: log})
+	ag, err := agent.New(agent.Options{Config: cfg, Reader: reader, Log: log})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestAgent_MetricsReflectBPFMapTraffic(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		_ = app.Run(ctx)
+		_ = ag.Run(ctx)
 		close(done)
 	}()
 	defer func() {
@@ -126,7 +126,7 @@ func TestAgent_MetricsReflectBPFMapTraffic(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	var lastBody string
 	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://" + app.Addr() + "/metrics")
+		resp, err := http.Get("http://" + ag.Addr() + "/metrics")
 		if err != nil {
 			time.Sleep(50 * time.Millisecond)
 			continue

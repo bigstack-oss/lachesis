@@ -73,9 +73,12 @@ func (o Options) resolverOrDefault() metrics.TenantResolver {
 	return metrics.UnknownTenant{}
 }
 
-// App is the running agent. Construct one with [New], then call
-// [App.Run]. Run blocks until ctx is cancelled.
-type App struct {
+// Agent owns the in-process composition of the telemetry data plane:
+// [state.GlobalState], the [scraper.Scraper] goroutine, the metrics
+// Collector, the runtime manager, and the HTTP server. Construct one
+// with [New] (or [Bootstrap] for the full Linux startup sequence),
+// then call [Agent.Run]; Run blocks until ctx is cancelled.
+type Agent struct {
 	cfg       config.Config
 	state     *state.GlobalState
 	scraper   *scraper.Scraper
@@ -87,14 +90,14 @@ type App struct {
 }
 
 // New constructs the agent. The HTTP listener is opened immediately so
-// callers can use [App.Addr] before [App.Run] starts serving — useful
+// callers can use [Agent.Addr] before [Agent.Run] starts serving — useful
 // for tests that request an ephemeral port (":0") and then need the
 // resolved address.
 //
 // New reads top-to-bottom as the agent's composition order: validate
 // inputs, build the data plane (state + scraper + collector), wire the
 // Prometheus registry, mount the HTTP surface, open the listener.
-func New(opts Options) (*App, error) {
+func New(opts Options) (*Agent, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
@@ -116,7 +119,7 @@ func New(opts Options) (*App, error) {
 		return nil, fmt.Errorf("agent: listen %s: %w", opts.Config.HTTP.Listen, err)
 	}
 
-	return &App{
+	return &Agent{
 		cfg:       opts.Config,
 		state:     st,
 		scraper:   sc,
@@ -160,7 +163,7 @@ const httpReadHeaderTimeout = 5 * time.Second
 // Addr returns the address the HTTP server is bound to. Stable as
 // soon as [New] returns; remains valid after Run starts and after it
 // returns.
-func (a *App) Addr() string {
+func (a *Agent) Addr() string {
 	return a.listener.Addr().String()
 }
 
@@ -182,7 +185,7 @@ const shutdownTimeout = 5 * time.Second
 // outlive the process. The next agent start replaces them via
 // netlink's idempotent QdiscReplace / FilterReplace. A clean detach
 // + a recovery path for filters orphaned by crashes are planned.
-func (a *App) Run(ctx context.Context) error {
+func (a *Agent) Run(ctx context.Context) error {
 	a.runtime.InstallSIGHUP(ctx)
 
 	scraperDone := make(chan struct{})
@@ -214,7 +217,7 @@ func (a *App) Run(ctx context.Context) error {
 // after ctx fires. Returns an error only if HTTP shutdown itself
 // fails — a scraper timeout is logged but not promoted to an error,
 // because by then the agent's job is done.
-func (a *App) shutdown(srvErr <-chan error, scraperDone <-chan struct{}) error {
+func (a *Agent) shutdown(srvErr <-chan error, scraperDone <-chan struct{}) error {
 	slog.Info("agent: shutdown initiated")
 
 	httpCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)

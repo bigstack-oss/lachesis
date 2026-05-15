@@ -19,17 +19,17 @@ import (
 
 // Bootstrap is the agent's single startup sequence: parse args,
 // initialise logging, lift the memlock rlimit, load and (optionally)
-// attach the BPF programs, then build the [App]. It returns the App
+// attach the BPF programs, then build the [Agent]. It returns the Agent
 // plus an [io.Closer] that releases the BPF collection — call its
-// Close after [App.Run] returns.
+// Close after [Agent.Run] returns.
 //
 // Bootstrap is Linux-only because the BPF lifecycle is. The
-// cross-platform path used by unit tests constructs [App] directly
+// cross-platform path used by unit tests constructs [Agent] directly
 // via [New] with a synthetic [scraper.MapReader].
 //
 // Errors are wrapped with the phase they failed in so the caller need
 // not understand the internals to print a useful message.
-func Bootstrap(args []string) (*App, io.Closer, error) {
+func Bootstrap(args []string) (*Agent, io.Closer, error) {
 	cfg, err := config.Load(config.Options{}, args)
 	if err != nil {
 		return nil, nil, err
@@ -59,7 +59,7 @@ func Bootstrap(args []string) (*App, io.Closer, error) {
 		return nil, nil, err
 	}
 
-	app, err := New(Options{
+	ag, err := New(Options{
 		Config:     cfg,
 		ConfigPath: config.FindConfigPath(config.Options{}, args),
 		Reader:     reader,
@@ -69,7 +69,7 @@ func Bootstrap(args []string) (*App, io.Closer, error) {
 		closer.Close()
 		return nil, nil, err
 	}
-	return app, closer, nil
+	return ag, closer, nil
 }
 
 // loadCollection compiles the embedded BPF spec into a kernel-loaded
