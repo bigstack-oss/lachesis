@@ -143,6 +143,82 @@ func TestLen(t *testing.T) {
 	}
 }
 
+func TestSnapshotForWAL_ReturnsTotalAndLastRaw(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 10})
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 250, Packets: 3, LastSeenNs: 20})
+
+	records := g.SnapshotForWAL(nil)
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1", len(records))
+	}
+	r := records[0]
+	// Total = baseline 100 + delta 150 = 250.
+	if got, want := r.Counter.Total.Bytes, uint64(250); got != want {
+		t.Errorf("Total.Bytes = %d, want %d", got, want)
+	}
+	// LastEbpfRaw = the most recent raw reading.
+	if got, want := r.Counter.LastEbpfRaw.Bytes, uint64(250); got != want {
+		t.Errorf("LastEbpfRaw.Bytes = %d, want %d", got, want)
+	}
+}
+
+func TestRestore_SeedsBothTotalAndLastRaw(t *testing.T) {
+	g := state.New()
+	g.Restore([]state.Record{{
+		Key: keyA(),
+		Counter: state.Counter{
+			Total:       bpf.FlowMetrics{Bytes: 1000, Packets: 10, LastSeenNs: 100},
+			LastEbpfRaw: bpf.FlowMetrics{Bytes: 900, Packets: 9, LastSeenNs: 90},
+		},
+	}})
+
+	// The next ApplyDelta must compute delta against the restored
+	// LastEbpfRaw, not re-baseline. Raw 1000 → delta = 100 → Total = 1100.
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 1000, Packets: 11, LastSeenNs: 200})
+
+	records := g.SnapshotForWAL(nil)
+	r := records[0]
+	if got, want := r.Counter.Total.Bytes, uint64(1100); got != want {
+		t.Errorf("Total.Bytes after restore + delta = %d, want %d (= 1000 + (1000-900))", got, want)
+	}
+	if got, want := r.Counter.Total.Packets, uint64(12); got != want {
+		t.Errorf("Total.Packets after restore + delta = %d, want %d (= 10 + (11-9))", got, want)
+	}
+}
+
+func TestRestore_OverwritesExistingKey(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 50})
+	g.Restore([]state.Record{{
+		Key: keyA(),
+		Counter: state.Counter{
+			Total:       bpf.FlowMetrics{Bytes: 9999},
+			LastEbpfRaw: bpf.FlowMetrics{Bytes: 9999},
+		},
+	}})
+
+	records := g.SnapshotForWAL(nil)
+	if got, want := records[0].Counter.Total.Bytes, uint64(9999); got != want {
+		t.Errorf("Restore did not overwrite: got %d, want %d", got, want)
+	}
+}
+
+func TestSnapshotForWAL_ReusesCapacity(t *testing.T) {
+	g := state.New()
+	for i := 0; i < 8; i++ {
+		k := keyA()
+		k.SrcMac[5] = byte(i)
+		g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1})
+	}
+	dst := g.SnapshotForWAL(nil)
+	cap1 := cap(dst)
+	dst = g.SnapshotForWAL(dst[:0])
+	if cap(dst) != cap1 {
+		t.Errorf("SnapshotForWAL grew capacity: %d → %d", cap1, cap(dst))
+	}
+}
+
 // TestConcurrent_ApplyAndSnapshot exercises the RWMutex contract under
 // the race detector. With -race, any unsynchronised access will fail.
 func TestConcurrent_ApplyAndSnapshot(t *testing.T) {
