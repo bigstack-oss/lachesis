@@ -76,7 +76,7 @@ func Bootstrap(args []string) (*Agent, io.Closer, error) {
 		// Surfacing as an error would block startup even though
 		// the agent can run correctly with a fresh state.
 		slog.Warn("restore failed; agent will start with empty state",
-			"component", "wal", "err", err)
+			"component", componentWAL, "err", err)
 	}
 
 	return ag, closer, nil
@@ -92,7 +92,7 @@ func Bootstrap(args []string) (*Agent, io.Closer, error) {
 // to spot a corrupt primary or a first-boot.
 func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 	if !cfg.Enabled {
-		slog.Info("disabled; starting with empty state", "component", "wal")
+		slog.Info("disabled; starting with empty state", "component", componentWAL)
 		return nil
 	}
 	res, err := wal.Load(cfg.Path)
@@ -102,16 +102,16 @@ func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 	switch res.Source {
 	case wal.LoadFromPrimary:
 		slog.Info("restored from primary",
-			"component", "wal",
+			"component", componentWAL,
 			"path", cfg.Path, "records", len(res.Records))
 	case wal.LoadFromBackup:
 		slog.Warn("primary unusable; restored from backup",
-			"component", "wal",
+			"component", componentWAL,
 			"path", cfg.Path+wal.BackupSuffix, "records", len(res.Records))
 		ag.WALMetrics().RecordLoadFallback(wal.LoadFallbackBak)
 	case wal.LoadEmpty:
 		slog.Info("no prior snapshot; starting empty",
-			"component", "wal",
+			"component", componentWAL,
 			"path", cfg.Path)
 		ag.WALMetrics().RecordLoadFallback(wal.LoadFallbackEmpty)
 	}
@@ -153,7 +153,7 @@ func readerFromCollection(coll *ebpf.Collection) (*BPFMapReader, error) {
 func attachIfRequested(iface string, coll *ebpf.Collection) error {
 	if iface == "" {
 		slog.Info("no attach interface configured; assuming external attach",
-			"component", "agent")
+			"component", componentAgent)
 		return nil
 	}
 	ingress := coll.Programs[bpf.ProgramIngress]
@@ -165,7 +165,7 @@ func attachIfRequested(iface string, coll *ebpf.Collection) error {
 	if err := AttachClsact(iface, ingress, egress); err != nil {
 		return fmt.Errorf("attach clsact: %w", err)
 	}
-	slog.Info("attached telemetry programs", "component", "agent", "interface", iface)
+	slog.Info("attached telemetry programs", "component", componentAgent, "interface", iface)
 	return nil
 }
 
