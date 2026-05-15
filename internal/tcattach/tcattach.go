@@ -45,14 +45,23 @@ func Replace(link netlink.Link, prog *ebpf.Program, dir Direction, name string) 
 	return replaceFilter(link, prog, dir, name)
 }
 
-// ensureClsact installs the clsact qdisc on link (parent
-// HANDLE_CLSACT, handle 0xffff:0). Clsact is the modern, lockless
-// TC qdisc used for BPF programs at the ingress and egress hooks.
+// clsactHandle is the kernel-reserved TC handle for the clsact
+// qdisc. The 0xffff:0 pair is defined as TC_H_CLSACT in the kernel
+// header include/uapi/linux/pkt_sched.h; the kernel matches on it
+// to recognise *the* clsact slot on a link as opposed to an
+// ordinary user-created qdisc. Any other handle here would leave
+// the qdisc unable to host ingress/egress filters.
+var clsactHandle = netlink.MakeHandle(0xffff, 0)
+
+// ensureClsact installs the clsact qdisc on link at the reserved
+// clsact slot. Clsact is the modern, lockless TC qdisc used for
+// BPF programs at the ingress and egress hooks; filters attached
+// to it land at HANDLE_MIN_INGRESS / HANDLE_MIN_EGRESS.
 func ensureClsact(link netlink.Link) error {
 	qdisc := &netlink.GenericQdisc{
 		QdiscAttrs: netlink.QdiscAttrs{
 			LinkIndex: link.Attrs().Index,
-			Handle:    netlink.MakeHandle(0xffff, 0),
+			Handle:    clsactHandle,
 			Parent:    netlink.HANDLE_CLSACT,
 		},
 		QdiscType: "clsact",
