@@ -75,7 +75,8 @@ func Bootstrap(args []string) (*Agent, io.Closer, error) {
 		// both fail, start empty and log the loss" (§3.2).
 		// Surfacing as an error would block startup even though
 		// the agent can run correctly with a fresh state.
-		slog.Warn("wal: restore failed; agent will start with empty state", "err", err)
+		slog.Warn("restore failed; agent will start with empty state",
+			"component", "wal", "err", err)
 	}
 
 	return ag, closer, nil
@@ -91,7 +92,7 @@ func Bootstrap(args []string) (*Agent, io.Closer, error) {
 // to spot a corrupt primary or a first-boot.
 func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 	if !cfg.Enabled {
-		slog.Info("wal: disabled; starting with empty state")
+		slog.Info("disabled; starting with empty state", "component", "wal")
 		return nil
 	}
 	res, err := wal.Load(cfg.Path)
@@ -100,16 +101,19 @@ func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 	}
 	switch res.Source {
 	case wal.LoadFromPrimary:
-		slog.Info("wal: restored from primary",
+		slog.Info("restored from primary",
+			"component", "wal",
 			"path", cfg.Path, "records", len(res.Records))
 	case wal.LoadFromBackup:
-		slog.Warn("wal: primary unusable; restored from backup",
+		slog.Warn("primary unusable; restored from backup",
+			"component", "wal",
 			"path", cfg.Path+wal.BackupSuffix, "records", len(res.Records))
-		ag.WALMetrics().RecordLoadFallback("bak")
+		ag.WALMetrics().RecordLoadFallback(wal.LoadFallbackBak)
 	case wal.LoadEmpty:
-		slog.Info("wal: no prior snapshot; starting empty",
+		slog.Info("no prior snapshot; starting empty",
+			"component", "wal",
 			"path", cfg.Path)
-		ag.WALMetrics().RecordLoadFallback("empty")
+		ag.WALMetrics().RecordLoadFallback(wal.LoadFallbackEmpty)
 	}
 	if len(res.Records) > 0 {
 		ag.SeedState(res.Records)
@@ -148,7 +152,8 @@ func readerFromCollection(coll *ebpf.Collection) (*BPFMapReader, error) {
 // integration test (testenv attaches its own copy).
 func attachIfRequested(iface string, coll *ebpf.Collection) error {
 	if iface == "" {
-		slog.Info("no attach interface configured; assuming external attach")
+		slog.Info("no attach interface configured; assuming external attach",
+			"component", "agent")
 		return nil
 	}
 	ingress := coll.Programs[bpf.ProgramIngress]
@@ -160,7 +165,7 @@ func attachIfRequested(iface string, coll *ebpf.Collection) error {
 	if err := AttachClsact(iface, ingress, egress); err != nil {
 		return fmt.Errorf("attach clsact: %w", err)
 	}
-	slog.Info("attached telemetry programs", "interface", iface)
+	slog.Info("attached telemetry programs", "component", "agent", "interface", iface)
 	return nil
 }
 

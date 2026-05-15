@@ -303,7 +303,7 @@ func TestAgent_WALMetricsAppearOnMetricsEndpoint(t *testing.T) {
 	})
 	// Also record one boot-time load fallback synthetically (Bootstrap
 	// would normally do this; agent.New does not).
-	ag.WALMetrics().RecordLoadFallback("empty")
+	ag.WALMetrics().RecordLoadFallback(wal.LoadFallbackEmpty)
 
 	// Wait for at least one flush to populate the histograms.
 	deadline := time.Now().Add(2 * time.Second)

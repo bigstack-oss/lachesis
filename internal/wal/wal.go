@@ -55,6 +55,26 @@ const (
 	TempSuffix   = ".tmp"
 )
 
+// Stage labels for cubecos_wal_flush_failures_total{stage=...}. The
+// label value set is part of the package's wire contract — operators
+// query and dashboard against these strings — so they live here as
+// exported consts rather than open-coded at each call site.
+const (
+	StageMarshal       = "marshal"
+	StageWrite         = "write"
+	StageFsync         = "fsync"
+	StageRenameBak     = "rename_bak"
+	StageRenameCurrent = "rename_current"
+)
+
+// Fallback labels for cubecos_wal_load_fallback_total{from=...}.
+// Passed to [Metrics.RecordLoadFallback] from the boot loader.
+// LoadFromPrimary is not a fallback and has no label.
+const (
+	LoadFallbackBak   = "bak"
+	LoadFallbackEmpty = "empty"
+)
+
 // LoadSource indicates which file Load succeeded against, or that
 // no WAL was present at all.
 type LoadSource int
@@ -107,10 +127,9 @@ type flowMetricsWire struct {
 }
 
 // stageErr attributes a Save failure to one of the labelled stages
-// in cubecos_wal_flush_failures_total: "marshal" | "write" |
-// "fsync" | "rename_bak" | "rename_current". Save returns errors
-// wrapped this way so the caller can decide which counter to bump
-// without parsing error messages.
+// in cubecos_wal_flush_failures_total — see the Stage* consts above.
+// Save returns errors wrapped this way so the caller can decide
+// which counter to bump without parsing error messages.
 type stageErr struct {
 	Stage string
 	Err   error
@@ -138,8 +157,8 @@ func Save(path, agentBuild string, records []state.Record, m *Metrics) error {
 	data, err := json.Marshal(snap)
 	m.observeMarshal(time.Since(marshalStart))
 	if err != nil {
-		m.observeFailure("marshal")
-		return &stageErr{Stage: "marshal", Err: err}
+		m.observeFailure(StageMarshal)
+		return &stageErr{Stage: StageMarshal, Err: err}
 	}
 
 	flushStart := time.Now()
@@ -158,13 +177,13 @@ func Save(path, agentBuild string, records []state.Record, m *Metrics) error {
 	// expected — there is no prior file.
 	bak := path + BackupSuffix
 	if err := os.Rename(path, bak); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		m.observeFailure("rename_bak")
-		return &stageErr{Stage: "rename_bak", Err: err}
+		m.observeFailure(StageRenameBak)
+		return &stageErr{Stage: StageRenameBak, Err: err}
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
-		m.observeFailure("rename_current")
-		return &stageErr{Stage: "rename_current", Err: err}
+		m.observeFailure(StageRenameCurrent)
+		return &stageErr{Stage: StageRenameCurrent, Err: err}
 	}
 	return nil
 }
@@ -175,18 +194,18 @@ func Save(path, agentBuild string, records []state.Record, m *Metrics) error {
 func writeAndFsync(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return &stageErr{Stage: "write", Err: fmt.Errorf("open tmp: %w", err)}
+		return &stageErr{Stage: StageWrite, Err: fmt.Errorf("open tmp: %w", err)}
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
-		return &stageErr{Stage: "write", Err: err}
+		return &stageErr{Stage: StageWrite, Err: err}
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		return &stageErr{Stage: "fsync", Err: err}
+		return &stageErr{Stage: StageFsync, Err: err}
 	}
 	if err := f.Close(); err != nil {
-		return &stageErr{Stage: "write", Err: fmt.Errorf("close tmp: %w", err)}
+		return &stageErr{Stage: StageWrite, Err: fmt.Errorf("close tmp: %w", err)}
 	}
 	return nil
 }
