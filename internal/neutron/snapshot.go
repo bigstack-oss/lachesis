@@ -6,8 +6,8 @@ import (
 )
 
 // Snapshot is the four Neutron resource lists the agent consumes
-// together at cold-start (and again on each Sprint 7 Kafka
-// full-resync). Bundled into one type so callers can pass it
+// together at cold-start and at every full-resync triggered by the
+// Kafka updater. Bundled into one type so callers can pass it
 // around as a single value instead of four parallel slices.
 //
 // The fields are slices in API-iteration order — no sorting

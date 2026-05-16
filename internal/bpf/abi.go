@@ -29,8 +29,8 @@ import (
 // resolved zone code. It does NOT and MUST NOT carry the u32
 // `tenant_id` that the kernel `mac_tenant_map` / `subnet_zone_trie`
 // use internally. That u32 is interned fresh on every agent boot
-// (see internal/metadata.TenantInterner, landing in Sprint 4a.6),
-// so embedding it here would invalidate every WAL-restored
+// (see internal/metadata.TenantInterner), so embedding it here
+// would invalidate every WAL-restored
 // GlobalState entry on restart: the same logical flow would be
 // keyed under a stale u32 and never merge with new traffic.
 // The zone code already encodes the *classification* (SAME / OTHER
@@ -62,9 +62,10 @@ type Direction = telemetryTcDirection
 //
 // ZoneShared exists because the LPM trie cannot disambiguate per-VM
 // ownership inside a shared-network /24. Rather than guess SAME vs
-// OTHER for the trie-fallback path on shared networks, the cold-start
-// builder emits a distinct ZoneShared row; the billing engine treats
-// it as its own category. See docs/DESIGN.md §5.2 Step 3.
+// OTHER for the trie-fallback path on shared networks, the
+// cold-start builder emits a distinct ZoneShared row; the billing
+// engine treats it as its own category. See docs/DESIGN.md §5.2
+// Step 3.
 const (
 	ZoneExternal    = telemetryZoneCodeZONE_EXTERNAL
 	ZoneSameTenant  = telemetryZoneCodeZONE_SAME_TENANT

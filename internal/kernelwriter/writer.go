@@ -1,8 +1,8 @@
 // Package kernelwriter pushes userspace metadata and trie entries
 // into the kernel BPF maps loaded from internal/bpf. It is shared
-// between the cold-start path (Sprint 4a Bootstrap) and the
-// incremental-update path (Sprint 7 Kafka consumer), so it lives
-// outside both.
+// between the cold-start path (agent Bootstrap) and the
+// incremental-update path (Kafka consumer), so it lives outside
+// both.
 //
 // # Failure semantics
 //
@@ -17,9 +17,9 @@
 // # Update mode
 //
 // Both writers use `ebpf.UpdateAny` (insert-or-overwrite). At cold
-// start the maps are empty so the choice is moot; for Sprint 7
-// incremental updates UpdateAny is correct — a Kafka event re-asserts
-// the current state and a stale entry should be overwritten in place.
+// start the maps are empty so the choice is moot; for incremental
+// updates UpdateAny is correct — a Kafka event re-asserts the
+// current state and a stale entry should be overwritten in place.
 package kernelwriter
 
 import (

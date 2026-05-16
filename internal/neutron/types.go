@@ -87,8 +87,9 @@ type Router struct {
 	// builder uses this to attribute traffic leaving the cluster.
 	ExternalNetworkID string
 	// Routes are operator-configured static routes. Empty on most
-	// routers. Sprint 4b's resolver walks these for multi-hop
-	// destination resolution (DESIGN §5.3); 4a stubs the step.
+	// routers. The multi-hop static-route resolver (DESIGN §5.3)
+	// walks these; the current builder stubs that step and emits
+	// no trie rows from extra routes.
 	Routes []Route
 }
 
