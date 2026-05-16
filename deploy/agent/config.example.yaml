@@ -65,3 +65,38 @@ wal:
   # flush interval. Minimum 1s.
   # Env: CUBECOS_WAL_FLUSH_INTERVAL   Flag: -wal-flush-interval
   flush_interval: 60s
+
+neutron:
+  # Toggle the Neutron cold-start subsystem. When false the agent
+  # boots without metadata; /metrics emits tenant_id="unknown" for
+  # every flow. Production must set this true.
+  # Env: CUBECOS_NEUTRON_ENABLED   Flag: -neutron-enabled
+  enabled: false
+
+  # --- Exactly ONE of the next two credential modes is required when enabled. ---
+
+  # Mode 1 — admin-openrc-style file: one `export OS_KEY=value` per
+  # line. Recommended for production: keeps OS_PASSWORD out of this
+  # YAML and lets the deploy tooling place the file with restrictive
+  # permissions.
+  # Env: CUBECOS_NEUTRON_CREDENTIALS_FILE   Flag: -neutron-credentials-file
+  credentials_file: ""
+
+  # Mode 2 — inline credentials. When set, credentials_file must be
+  # empty. Convenient for tests and one-off runs.
+  auth_url: ""
+  username: ""
+  password: ""
+  project_name: ""
+  user_domain: "default"
+  project_domain: "default"
+  region: ""
+
+  # Per-request HTTP timeout for Keystone authentication and Neutron
+  # list calls. The boot-time retry loop is the unit of total
+  # patience, not this timeout.
+  request_timeout: 30s
+
+  # Proactive re-authentication lead time relative to token expiry.
+  # 5m is safe for the typical 1h Keystone token.
+  refresh_lead: 5m

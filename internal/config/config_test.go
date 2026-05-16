@@ -311,6 +311,8 @@ func clearEnv(t *testing.T) {
 		"CUBECOS_SCRAPE_INTERVAL",
 		"CUBECOS_LOG_LEVEL",
 		"CUBECOS_LOG_FORMAT",
+		"CUBECOS_NEUTRON_ENABLED",
+		"CUBECOS_NEUTRON_CREDENTIALS_FILE",
 	} {
 		t.Setenv(k, "")
 	}
