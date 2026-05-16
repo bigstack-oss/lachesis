@@ -1,0 +1,60 @@
+package bpf
+
+import "github.com/prometheus/client_golang/prometheus"
+
+// MapMetrics holds Prometheus instruments for the kernel BPF maps
+// the agent populates. The `current_entries` value is updated by the
+// userspace writer (kernelwriter) after each successful map push;
+// it's a userspace-tracked count, not a kernel-side ground truth,
+// so a sudden drift would suggest a writer bug rather than kernel
+// state. `max_entries` is static — set once at boot from the
+// `MapXxxMaxEntries` constants — and serves as the denominator the
+// Grafana fill-ratio panel divides into.
+//
+// The two instruments are:
+//
+//   - cubecos_bpf_map_max_entries{map}      gauge (static capacity)
+//   - cubecos_bpf_map_current_entries{map}  gauge (last-written count)
+type MapMetrics struct {
+	maxEntries     *prometheus.GaugeVec
+	currentEntries *prometheus.GaugeVec
+}
+
+// NewMapMetrics constructs the bundle. Callers populate static max
+// values immediately after construction via [SetMax], then update
+// current values via [SetCurrent] after each kernel write.
+func NewMapMetrics() *MapMetrics {
+	return &MapMetrics{
+		maxEntries: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "cubecos_bpf_map_max_entries",
+			Help: "Compiled-in max_entries of each BPF map the agent populates.",
+		}, []string{"map"}),
+		currentEntries: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "cubecos_bpf_map_current_entries",
+			Help: "Userspace-tracked entry count of each BPF map after the most recent push.",
+		}, []string{"map"}),
+	}
+}
+
+// Collectors returns the underlying prometheus.Collector values.
+func (m *MapMetrics) Collectors() []prometheus.Collector {
+	return []prometheus.Collector{m.maxEntries, m.currentEntries}
+}
+
+// SetMax records the static capacity of mapName.
+func (m *MapMetrics) SetMax(mapName string, max float64) {
+	if m == nil {
+		return
+	}
+	m.maxEntries.WithLabelValues(mapName).Set(max)
+}
+
+// SetCurrent records the userspace-tracked entry count of mapName.
+// Call after a successful push so the dashboard's fill-ratio panel
+// reflects the new state.
+func (m *MapMetrics) SetCurrent(mapName string, current float64) {
+	if m == nil {
+		return
+	}
+	m.currentEntries.WithLabelValues(mapName).Set(current)
+}
