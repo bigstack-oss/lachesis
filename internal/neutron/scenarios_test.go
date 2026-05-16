@@ -12,14 +12,15 @@ package neutron
 //	Step 3 (shared)  : shared subnets → SHARED (uniform across tenants)
 //	Step 4 (infra)   : router/gateway/metadata /32s → INFRA
 //
-// Step 5 (static-route resolver) is intentionally omitted — that's
-// Sprint 4b territory. Scenarios G, H, K, L from DESIGN.md are
-// therefore not exercised here.
+// Step 5 (static-route resolver) is intentionally omitted from the
+// current builder, so scenarios G, H, K, L from DESIGN.md are not
+// exercised here — they only become assertable once the multi-hop
+// resolver lands.
 //
 // Fixtures are in-Go struct literals rather than recorded JSON
-// because Sprint 4b will land a scenario DSL that replaces these
-// tests; minimising the throwaway surface keeps the eventual
-// migration small.
+// because a future scenario DSL is expected to replace these tests;
+// minimising the throwaway surface keeps the eventual migration
+// small.
 
 import (
 	"net/netip"
@@ -278,10 +279,10 @@ func scenarioE() Snapshot {
 
 // ----- Scenario F — Octavia LB ports present in the snapshot -----
 
-// Sprint 4a stops short of full Octavia attribution (Sprint 8). For
-// the trie, the relevant check is that Octavia management ports
-// don't accidentally classify as INFRA or contribute spurious /32
-// rows. They're VM-like by the IsVMPort partition — the kernel
+// The current builder stops short of full Octavia attribution
+// (the LB-owner branch from the design is deferred). For the trie,
+// the relevant check is that Octavia management ports don't
+// accidentally classify as INFRA or contribute spurious /32 rows. They're VM-like by the IsVMPort partition — the kernel
 // `mac_tenant_map` will hold their MACs (verified by
 // agent.populateMetadataFromPorts), but their IPs do NOT appear in
 // the trie.

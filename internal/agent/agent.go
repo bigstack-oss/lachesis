@@ -106,12 +106,12 @@ type Agent struct {
 	bpfMapMetrics  *bpf.MapMetrics
 
 	// lastNeutronSync is the unix-nanos timestamp of the most
-	// recent successful Neutron cold-start (or, in Sprint 7+,
-	// reconcile). Read by the `cubecos_neutron_sync_age_seconds`
-	// gauge on every Prometheus scrape; updated by
-	// `coldStartNeutron` and the future Kafka updater. Zero means
-	// never-synced — the gauge reports -1 in that case so
-	// dashboards can spot the condition with `< 0`.
+	// recent successful Neutron cold-start or full-resync. Read by
+	// the `cubecos_neutron_sync_age_seconds` gauge on every
+	// Prometheus scrape; updated by `coldStartNeutron` and the
+	// future Kafka updater. Zero means never-synced — the gauge
+	// reports -1 in that case so dashboards can spot the condition
+	// with `< 0`.
 	lastNeutronSync atomic.Int64
 
 	// meta is the userspace MAC → TenantMeta store. Constructed
@@ -121,7 +121,7 @@ type Agent struct {
 	meta *metadata.ShardedMetadataMap
 	// interner assigns the u32 tenant_id values the kernel maps
 	// key on. Lives on Agent because both the cold-start writer
-	// (4a.6) and the incremental Kafka updater (Sprint 7+) share it.
+	// and the incremental Kafka updater share it.
 	interner *metadata.TenantInterner
 
 	// walRecBuf is the reused SnapshotForWAL destination so a
@@ -143,8 +143,8 @@ func (a *Agent) WALMetrics() *wal.Metrics { return a.walMetrics }
 func (a *Agent) NeutronMetrics() *neutron.Metrics { return a.neutronMetrics }
 
 // BPFMapMetrics returns the BPF-map instrument bundle. Cold-start
-// (and Sprint 7+ Kafka updates) set the current-entries gauge after
-// each successful kernel push.
+// and any subsequent incremental update set the current-entries
+// gauge after each successful kernel push.
 func (a *Agent) BPFMapMetrics() *bpf.MapMetrics { return a.bpfMapMetrics }
 
 // MarkNeutronSync records `t` as the most recent successful Neutron
@@ -165,9 +165,9 @@ func (a *Agent) lastNeutronSyncTime() time.Time {
 }
 
 // Metadata returns the userspace MAC → TenantMeta store. Bootstrap
-// populates it after Neutron cold-start; Sprint 7+ Kafka events
-// update it incrementally. The metrics Collector reads it through
-// the wired-in [metadata.Resolver].
+// populates it after Neutron cold-start; Kafka events update it
+// incrementally. The metrics Collector reads it through the
+// wired-in [metadata.Resolver].
 func (a *Agent) Metadata() *metadata.ShardedMetadataMap { return a.meta }
 
 // Interner returns the ProjectID → u32 mapping the kernel maps key

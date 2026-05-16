@@ -103,8 +103,8 @@ func IsInfraPort(deviceOwner string) bool {
 //	(empty)                         false        false   ← unbound
 //
 // `cube:mgr` (observed on dev-cmp with project_id set) is treated
-// as VM-like per the 4a.6 design-review default; revisit if Cube's
-// management traffic should be billed differently.
+// as VM-like by default; revisit if CubeCOS management traffic
+// should be billed differently.
 func IsVMPort(deviceOwner string) bool {
 	if deviceOwner == "" {
 		return false
@@ -124,7 +124,8 @@ func IsVMPort(deviceOwner string) bool {
 // Bootstrap uses this to warn-log at cold-start whenever an admitted
 // MAC came from an owner outside the known set, so operators can
 // spot drift without classification semantics changing. The
-// catalogue here is the verified ground truth as of the 4a.6 review:
+// catalogue here is the verified ground truth on the deployment
+// target (OpenStack OVN-Yoga):
 //
 //   - compute:* (Nova VMs, including AZ-specific suffixes)
 //   - Octavia / Octavia:* (Octavia management + health-mgr ports)

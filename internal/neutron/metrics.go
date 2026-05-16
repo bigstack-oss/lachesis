@@ -12,11 +12,12 @@ import (
 // Metrics holds the Neutron-subsystem Prometheus instruments.
 // Construct with [NewMetrics], register the slice from
 // [Metrics.Collectors] with the agent's `prometheus.Registry`, then
-// thread the *Metrics through to cold-start and Sprint 7's Kafka
-// updater. nil is a valid receiver on every observation helper, so
-// code paths that elide metrics for tests can pass nil safely.
+// thread the *Metrics through to cold-start and any future
+// incremental updater. nil is a valid receiver on every observation
+// helper, so code paths that elide metrics for tests can pass nil
+// safely.
 //
-// The instruments mirror docs/sprint-plan.md §4a:
+// The instruments:
 //
 //   - cubecos_neutron_sync_age_seconds                         gauge (sync recency)
 //   - cubecos_neutron_api_errors_total{endpoint, code}         counter

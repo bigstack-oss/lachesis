@@ -214,7 +214,7 @@ func TestIsVMPort(t *testing.T) {
 		{"Octavia:health-mgr", true},
 		{"manila:share", true},
 		{"baremetal:nova", true},
-		{"cube:mgr", true}, // CubeCOS — confirmed in 4a.6 review
+		{"cube:mgr", true}, // CubeCOS internal management VMs
 		{"trunk:subport", true},
 		// network:* never VM (the partition rule).
 		{"network:router_interface", false},
@@ -386,7 +386,7 @@ func TestBuildTrie_MalformedCIDRSkipped(t *testing.T) {
 
 // TestBuildTrie_Step5Omitted asserts router.Routes are silently
 // ignored: the catchall (Step 1) carries the classification as
-// EXTERNAL until Sprint 4b's resolver lands.
+// EXTERNAL until the multi-hop static-route resolver lands.
 func TestBuildTrie_Step5Omitted(t *testing.T) {
 	got := BuildTrie(
 		nil, nil, nil,
