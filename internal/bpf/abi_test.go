@@ -3,7 +3,10 @@ package bpf
 import (
 	"encoding/binary"
 	"net/netip"
+	"strings"
 	"testing"
+
+	"github.com/cilium/ebpf"
 )
 
 func TestMACKey(t *testing.T) {
@@ -86,4 +89,78 @@ func TestLpmKeyForPrefix_IPv6Panics(t *testing.T) {
 		}
 	}()
 	LpmKeyForPrefix(1, netip.MustParsePrefix("fd00::/64"))
+}
+
+// makeSpec returns a minimal CollectionSpec with mac_tenant_map and
+// subnet_zone_trie sized as supplied. Used by ValidateMapSizes tests.
+func makeSpec(macMax, trieMax uint32) *ebpf.CollectionSpec {
+	return &ebpf.CollectionSpec{
+		Maps: map[string]*ebpf.MapSpec{
+			MapMacTenant:      {MaxEntries: macMax},
+			MapSubnetZoneTrie: {MaxEntries: trieMax},
+		},
+	}
+}
+
+func TestValidateMapSizes_OK(t *testing.T) {
+	spec := makeSpec(MapMacTenantMaxEntries, MapSubnetZoneTrieMaxEntries)
+	if err := ValidateMapSizes(spec); err != nil {
+		t.Fatalf("ValidateMapSizes on matching spec: %v", err)
+	}
+}
+
+func TestValidateMapSizes_MacUndersize(t *testing.T) {
+	spec := makeSpec(1024, MapSubnetZoneTrieMaxEntries) // simulate stale .o
+	err := ValidateMapSizes(spec)
+	if err == nil {
+		t.Fatal("undersized mac_tenant_map should error")
+	}
+	if !strings.Contains(err.Error(), MapMacTenant) {
+		t.Errorf("error should name the offending map: %v", err)
+	}
+	if !strings.Contains(err.Error(), "task generate") {
+		t.Errorf("error should hint at the fix: %v", err)
+	}
+}
+
+func TestValidateMapSizes_TrieOversize(t *testing.T) {
+	// Either direction of drift fails — exact match is the contract.
+	spec := makeSpec(MapMacTenantMaxEntries, MapSubnetZoneTrieMaxEntries*2)
+	if err := ValidateMapSizes(spec); err == nil {
+		t.Fatal("oversized subnet_zone_trie should error (drift)")
+	}
+}
+
+func TestValidateMapSizes_MapAbsent(t *testing.T) {
+	spec := &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{
+		MapMacTenant: {MaxEntries: MapMacTenantMaxEntries},
+		// subnet_zone_trie missing
+	}}
+	err := ValidateMapSizes(spec)
+	if err == nil {
+		t.Fatal("missing trie map should error")
+	}
+	if !strings.Contains(err.Error(), "not present") {
+		t.Errorf("error should mention 'not present': %v", err)
+	}
+}
+
+func TestValidateMapSizes_NilSpec(t *testing.T) {
+	if err := ValidateMapSizes(nil); err == nil {
+		t.Fatal("nil spec should error")
+	}
+}
+
+// TestValidateMapSizes_LiveSpec catches a real stale-.o condition:
+// the actual loaded spec must agree with the Go-side constants.
+// This is the test that fails locally when someone forgets to run
+// `task generate` after bumping a size.
+func TestValidateMapSizes_LiveSpec(t *testing.T) {
+	spec, err := LoadTelemetry()
+	if err != nil {
+		t.Fatalf("LoadTelemetry: %v", err)
+	}
+	if err := ValidateMapSizes(spec); err != nil {
+		t.Fatalf("loaded BPF object disagrees with Go-side constants: %v", err)
+	}
 }

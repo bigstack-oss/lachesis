@@ -123,10 +123,19 @@ func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 
 // loadCollection compiles the embedded BPF spec into a kernel-loaded
 // [*ebpf.Collection]. The caller owns Close on the returned value.
+//
+// Before loading, the spec is checked against [bpf.ValidateMapSizes]
+// — a drift between the compiled `.o` and the Go-side `MaxEntries`
+// constants is treated as boot-fatal so an operator who forgot to
+// run `task generate` after a size bump sees an explicit error
+// instead of silently shipping with stale capacity.
 func loadCollection() (*ebpf.Collection, error) {
 	spec, err := bpf.LoadTelemetry()
 	if err != nil {
 		return nil, fmt.Errorf("load BPF spec: %w", err)
+	}
+	if err := bpf.ValidateMapSizes(spec); err != nil {
+		return nil, fmt.Errorf("BPF spec validation: %w", err)
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {

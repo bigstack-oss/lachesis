@@ -31,6 +31,7 @@ import (
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
@@ -46,8 +47,12 @@ type Options struct {
 	ConfigPath string
 	Reader     scraper.MapReader
 	Log        *logging.Handle
-	// Resolver maps FlowKey → tenant_id label. nil means
-	// [metrics.UnknownTenant]{}.
+	// Resolver maps FlowKey → tenant_id label. nil means a
+	// [metadata.NewResolver] wrapping the Agent's own
+	// [metadata.ShardedMetadataMap], which starts empty and is
+	// populated by Bootstrap (Linux) from Neutron. Tests can
+	// inject a mock resolver to pin label outputs without
+	// pre-populating the metadata map.
 	Resolver metrics.TenantResolver
 }
 
@@ -65,13 +70,17 @@ func (o Options) validate() error {
 }
 
 // resolverOrDefault returns the caller's [TenantResolver] when set,
-// otherwise the no-Neutron stub. Centralising the default keeps
-// [New] free of branches that aren't about wiring.
-func (o Options) resolverOrDefault() metrics.TenantResolver {
+// otherwise a [metadata.NewResolver] wrapping meta. Centralising
+// the default keeps [New] free of branches that aren't about
+// wiring. An empty meta yields the same "tenant_id=unknown" labels
+// the old [metrics.UnknownTenant] stub produced, so pre-Bootstrap
+// scrapes (and the no-Neutron loadtest harness) behave
+// indistinguishably from before this change.
+func (o Options) resolverOrDefault(meta *metadata.ShardedMetadataMap) metrics.TenantResolver {
 	if o.Resolver != nil {
 		return o.Resolver
 	}
-	return metrics.UnknownTenant{}
+	return metadata.NewResolver(meta)
 }
 
 // Agent owns the in-process composition of the telemetry data plane:
@@ -91,6 +100,16 @@ type Agent struct {
 
 	walMetrics *wal.Metrics
 
+	// meta is the userspace MAC → TenantMeta store. Constructed
+	// empty in [New]; populated by Bootstrap from Neutron and
+	// from Kafka events in later sprints. The metrics Collector's
+	// Resolver reads it on every emission.
+	meta *metadata.ShardedMetadataMap
+	// interner assigns the u32 tenant_id values the kernel maps
+	// key on. Lives on Agent because both the cold-start writer
+	// (4a.6) and the incremental Kafka updater (Sprint 7+) share it.
+	interner *metadata.TenantInterner
+
 	// walRecBuf is the reused SnapshotForWAL destination so a
 	// steady-state flush does not allocate a fresh records slice.
 	// Owned solely by the WAL flush goroutine; no lock needed.
@@ -102,6 +121,20 @@ type Agent struct {
 // load-fallback observations on the same Metrics that the periodic
 // flush will later contribute timings to.
 func (a *Agent) WALMetrics() *wal.Metrics { return a.walMetrics }
+
+// Metadata returns the userspace MAC → TenantMeta store. Bootstrap
+// populates it after Neutron cold-start; Sprint 7+ Kafka events
+// update it incrementally. The metrics Collector reads it through
+// the wired-in [metadata.Resolver].
+func (a *Agent) Metadata() *metadata.ShardedMetadataMap { return a.meta }
+
+// Interner returns the ProjectID → u32 mapping the kernel maps key
+// on. Shared between cold-start map writes and any future
+// incremental writes so the kernel sees a stable assignment within
+// one agent lifetime. The mapping is rebuilt fresh on every agent
+// boot; see the doc on [metadata.TenantInterner] for why that is
+// correctness-safe.
+func (a *Agent) Interner() *metadata.TenantInterner { return a.interner }
 
 // New constructs the agent. The HTTP listener is opened immediately so
 // callers can use [Agent.Addr] before [Agent.Run] starts serving — useful
@@ -117,8 +150,10 @@ func New(opts Options) (*Agent, error) {
 	}
 
 	st := state.New()
+	meta := metadata.New()
+	interner := metadata.NewTenantInterner()
 	sc := scraper.New(opts.Reader, st, opts.Config.Scrape.Interval)
-	col := metrics.New(st, sc, opts.resolverOrDefault())
+	col := metrics.New(st, sc, opts.resolverOrDefault(meta))
 
 	walMx := wal.NewMetrics()
 	reg, err := buildRegistry(col, walMx)
@@ -144,6 +179,8 @@ func New(opts Options) (*Agent, error) {
 		listener:   ln,
 		server:     &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout},
 		walMetrics: walMx,
+		meta:       meta,
+		interner:   interner,
 	}, nil
 }
 
