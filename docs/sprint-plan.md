@@ -134,42 +134,75 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 4 — Neutron cold-start [the big one]
+## Sprint 4a — Neutron cold-start, foundations [planned split, part 1 of 2]
 
-**Goal.** Populate `mac_tenant_map` + `subnet_zone_trie` from Neutron v2.0.
+**Goal.** Stand up the Neutron data path end-to-end for everything except static routes. After this sprint the agent emits real `tenant_id` labels.
 
 **Scope.**
-- `internal/neutron/` HTTP client with Keystone auth.
-- `ShardedMetadataMap` (64 shards).
-- 5-step trie builder per §5.2 (catchall → owned → shared → infra → static routes).
-- Iterative static-route resolver with cycle detection + `MAX_HOPS=16`.
-- Broadened `device_owner` filter in Step 4 to cover OVN values (`network:distributed`, `network:router_interface`, `network:router_gateway`) — no separate DVR/chassis enumeration step needed; logical routers have a single MAC across all OVN chassis (see DESIGN.md §B.8 OVN paragraph).
-- Push to BPF maps before TC attach (boot order §9 step 3).
-- Golden-file tests on recorded API responses for scenarios A–L.
+- `internal/neutron/` HTTP client with Keystone auth; rate-limited paginated fetch for `networks`, `subnets`, `ports`, `routers`.
+- `internal/metadata/` `ShardedMetadataMap` (64 shards, `sync.RWMutex` per shard) keyed by MAC. Value = `*TenantMeta{ProjectID, VMName, IsAmphora, DeleteAt}`. Pointer-replace invariant enforced by a unit test (closes the §13.1 #3 risk-of-mutation early).
+- ABI: extend `internal/bpf/abi.go` with `MapSubnetZoneTrie`, `MapMacTenant`, and the `LpmKey` writer helpers.
+- **Map size bump in `bpf/telemetry.c`**: `mac_tenant_map` 1024 → 8192, `subnet_zone_trie` 4096 → 16384 (matches DESIGN §3.1; the current values are flagged there as too tight for production).
+- Trie builder steps 1–4 per §5.2 (catchall → owned → shared → infra). Step 5 stubbed to no-op (returns `EXTERNAL`).
+- Broadened `device_owner` filter in step 4 to cover OVN values (`network:distributed`, `network:router_interface`, `network:router_gateway`) — no separate DVR/chassis enumeration step needed; logical routers have a single MAC across all OVN chassis (see DESIGN.md §B.8 OVN paragraph).
+- Map writers: push the trie and `mac_tenant_map` into the kernel before TC attach (boot order §9 step 3).
+- Boot order rework in `internal/agent/bootstrap_linux.go`: insert "fetch Neutron metadata → populate userspace `ShardedMetadataMap` → push to kernel maps" BEFORE `attachIfRequested`. Boot blocks with exponential backoff (1s → 30s cap, indefinite retries) if Neutron is unreachable, per DESIGN §9 fail-closed policy. The formal explicit-sync-point harness — Implementation Contract #4 — stays in Sprint 5; this sprint only gets the ordering right.
+- Tenant resolver swap: replace `metrics.UnknownTenant{}` in `internal/agent/agent.go` with a resolver backed by `ShardedMetadataMap`. The Collector then emits real `tenant_id` strings (project_id UUIDs) instead of `"unknown"`.
+- Health metrics from §11.4: `cubecos_neutron_sync_age_seconds`, `cubecos_neutron_api_errors_total{endpoint, code}`, `cubecos_bpf_map_fill_ratio{map="trie|mac_tenant"}`, `cubecos_bpf_map_max_entries{map=...}`.
+- Grafana panels (per the visualization table above): Neutron-sync detail — sync age, port population rate, builder step durations. Land as `deploy/grafana/dashboards/30-neutron.json`.
+- Golden-file unit tests on recorded Neutron API responses for scenarios A, B, C, D, E, F, I, J.
 
-**Done when.** All scenarios A–L from §7 produce correct zones in a fixture-based unit test. Verified end-to-end against a real OVN Yoga cluster with ≥3 chassis — cross-host scenarios exercise the multi-chassis path.
+**Done when.**
+- All single-hop scenarios (A, B, C, D, E, F, I, J) classify correctly in fixture tests.
+- Agent boots against the real 3-chassis OVN Yoga cluster; `/metrics` shows non-empty `cubecos_bytes_total{tenant_id=<real-UUID>,...}` series (no `unknown` for tenants with active VMs).
+- `cubecos_neutron_sync_age_seconds` < 60 in steady state.
+- Stopping the Neutron API blocks boot with backoff (verified by log + `cubecos_neutron_api_errors_total`); recovery completes once the API returns.
 
 **LOC.** ~900.
 
-**Risk.** Largest PR in the plan. If it grows past ~1,200 lines, split into:
-- **4a** — HTTP client + ShardedMetadataMap + simple builder (steps 1–4).
-- **4b** — Static-route resolver (step 5).
+**Risk.** Medium. Largest piece is the boot-order rework — touches `bootstrap_linux.go` and the shape of `Bootstrap` itself. Within 4a, land the resolver swap first to derisk, then the map-write path, then the boot-order glue.
 
 ---
 
-## Sprint 5 — Boot sequence + Zombie Hunter + Netlink Watcher
+## Sprint 4b — Static-route resolver + scenario harness [planned split, part 2 of 2]
 
-**Goal.** The 10-step boot order in code, not just docs.
+**Goal.** Close the cold-start algorithm — multi-hop static routes resolve correctly. After this sprint, scenarios A–L are all green.
 
 **Scope.**
-- `internal/boot/`: sequenced steps with explicit sync points (closes Implementation Contract #4).
+- Step 5 resolver in `internal/neutron/` per §5.3: iterative graph walk with `MAX_HOPS=16`, `visited` set for cycle detection, `zone_for` helper for VM-appliance nexthops.
+- Strict-mode failure policy on ambiguity-after-scoping (§5.6): log + refuse to start. Operator override flag `--unsafe-allow-ambiguous-routes` falls back to `EXTERNAL` and continues.
+- **Scenario DSL** (deferred from Sprint 0.5 per Group C). Lives at `internal/testenv/scenario/`. Declarative format: list of (tenant, network, subnet, router, port) primitives; the DSL emits the synthetic Neutron API responses the builder consumes. Replaces ad-hoc JSON fixtures from 4a.
+- Golden-file scenario tests for G (single-hop static), K (5-router multi-hop chain), L (VM-appliance nexthop). Migrate the 4a fixture-based scenarios onto the DSL so all of A–L share one harness.
+- End-to-end verification on the 3-chassis OVN Yoga cluster: cross-host scenarios (J) exercised; multi-chassis path explicitly hit and recorded in the test log.
+- `cubecos_neutron_builder_step_duration_seconds` histogram (per-step timing, useful when route resolution is slow on big deployments).
+
+**Done when.**
+- All scenarios A–L green via the scenario DSL.
+- Multi-hop K trace logged at debug level matches the §5.5 worked example step-by-step (hop count, peer router IDs, final `zone_for` call).
+- 3-chassis OVN cluster: a tenant whose router has an `extraroutes` entry pointing through a peer tenant's router shows the correct `OTHER_TENANT` zone on `/metrics`.
+- Cycle-injection test (R2 → R3 → R2) terminates and logs the cycle.
+
+**LOC.** ~600.
+
+**Risk.** Medium. The trace itself is mechanical, but the scenario DSL is new infrastructure — keep it minimal (just enough for A–L); resist generalising. Multi-chassis verification surfaces edge cases that don't appear in single-node OVN, which is why the cluster gate sits here, not in 4a.
+
+---
+
+## Sprint 5 — Boot sync machinery + Zombie Hunter + Netlink Watcher
+
+**Goal.** Promote the boot-order ordering 4a wired into `Bootstrap` into an inspectable, explicit-sync-point machine; replace the single static `BPFConfig.AttachInterface` with netlink-driven dynamic attach.
+
+**Scope.**
+- `internal/boot/`: sequenced phase machine with explicit sync points between goroutines (closes Implementation Contract #4). 4a already enforces metadata-before-attach as a straight-line call sequence; this sprint formalizes it so adding Kafka (Sprint 7) and GC (Sprint 6) plug into named sync gates rather than dropping into `Bootstrap` ad-hoc.
 - `internal/zombie/`: scan `tc filter` for orphan `tc_telemetry_in/out`, delete on startup.
 - `internal/netlink/`: subscribe to `RTM_NEWLINK/DELLINK`; attach BPF on new taps, clean registry on delete.
 - Interface Registry: in-memory map of attached taps.
+- Deprecate `BPFConfig.AttachInterface` (currently a single static string in `internal/config/bpf.go:19`) in favour of the Netlink Watcher's tap-discovery loop. Keep the field for one release with a deprecation log; remove in a follow-up.
+- Health metrics: `cubecos_zombie_filters_cleaned_total`, `cubecos_tc_attach_failures_total{iface_kind="tap|other"}`.
 
-**Done when.** Crash-then-restart leaves no double-attach (verified by `tc filter show`); new tap appears → BPF attached automatically with <1s latency.
+**Done when.** Crash-then-restart leaves no double-attach (verified by `tc filter show` + `cubecos_zombie_filters_cleaned_total>0`); new tap appears → BPF attached automatically with <1s latency; all five §13.1 contracts that touch boot order have a corresponding `internal/boot/` sync gate test.
 
-**LOC.** ~450.
+**LOC.** ~500 (originally ~450; +50 for the `AttachInterface` deprecation + sync-point formalization on top of the ordering 4a already established).
 
 ---
 
@@ -178,30 +211,31 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 **Goal.** Eviction with no byte loss, capped buffers.
 
 **Scope.**
-- **Lingering Ghost**: on `port.deleted` / `subnet.deleted`, set `DeleteAt=now+60s` on the userspace `ShardedMetadataMap` entry only. **Do NOT delete from kernel `mac_tenant_map` yet.** Sweep every 60s; expired entries deleted kernel-first, then userspace (closes §13.1 Contract #6). Insertions follow the reverse order: userspace-then-kernel.
+- **Lingering Ghost**: on `port.deleted` / `subnet.deleted`, set `DeleteAt=now+60s` on the userspace `ShardedMetadataMap` entry only. **Do NOT delete from kernel `mac_tenant_map` yet.** Sweep every 60s; expired entries deleted kernel-first, then userspace (closes §13.1 Contract #6). Insertions follow the reverse order: userspace-then-kernel. **Ghost precedence over UnresolvedBuffer** (DESIGN §3.3): a ghosted MAC is still a hit on both maps; packets matching it attribute to the ghosted tenant, never to UnresolvedBuffer. Encoded as an explicit "check ghost first" branch in the resolver, plus a unit test that fails if the order is inverted.
 - **UnresolvedBuffer**: cap=10k LRU + 60s expiry → `tenant=unknown` (closes Implementation Contract #1).
-- **Pressure-Relief GC**: trigger 80% / floor 75% / 1k cap per pass. Always flush to GlobalState **before** delete.
-- Health metrics: `cubecos_unresolved_buffer_depth`, `cubecos_gc_evictions_total`, `cubecos_lingering_ghosts_active`, `cubecos_gc_pressure_relief_runs_total`.
+- **Pressure-Relief GC**: trigger 80% / floor 75% / 1k cap per pass. Always flush to GlobalState **before** delete. **Algorithm per DESIGN §3.1**: single-pass scan + min-heap of size K=1000 tracking oldest-K by `last_seen_ns`. Cost O(N log K) — implementer must not regress to O(N log N) full-sort (the difference is ~50 ms vs ~200 ms per pass at N=52k).
+- Health metrics: `cubecos_unresolved_buffer_depth`, `cubecos_unresolved_buffer_evictions_total{reason="lru|expired"}`, `cubecos_unresolved_resolved_total`, `cubecos_gc_evictions_total{reason="ttl|pressure_relief"}`, `cubecos_lingering_ghosts_active`, `cubecos_gc_pressure_relief_runs_total`, `cubecos_bpf_map_fill_ratio{map="telemetry"}` (sampled at the start of each scrape — the GC's own trigger source), `cubecos_collect_duration_seconds` histogram.
 
-**Done when.** Stress test with 100k unknown MACs → buffer holds at 10k, no OOM, no negative `rate()`. Stress test that fills the BPF map → fill ratio drops below 75% within 4 scrapes.
+**Done when.** Stress test with 100k unknown MACs → buffer holds at 10k, no OOM, no negative `rate()`. Stress test that fills the BPF map → fill ratio drops below 75% within 4 scrapes. Ghost-precedence inversion test fails the build if a future refactor checks UnresolvedBuffer before the ghost.
 
-**LOC.** ~400.
+**LOC.** ~450 (originally ~400; +50 for the precedence test + min-heap algorithm spec + collect-duration histogram).
 
 ---
 
-## Sprint 7 — Kafka live updates
+## Sprint 7 — Kafka live updates + Neutron reconcile safety net
 
-**Goal.** Trie + MAC map track Neutron in real time.
+**Goal.** Trie + MAC map track Neutron in real time; survive Kafka outages with bounded staleness.
 
 **Scope.**
 - `internal/kafka/` consumer for `port.*`, `subnet.*`, `router.*`.
-- Incremental trie diff (NOT full rebuild) — only re-resolve affected tenants.
-- Enforce TenantMeta-immutable invariant in code: pointer replace, never field mutate (closes Implementation Contract #3). Helper function + unit test that fails if any path mutates a `TenantMeta` after creation.
-- Kafka health metrics: `cubecos_kafka_lag_messages`, `cubecos_kafka_consume_errors_total`.
+- Incremental trie diff (NOT full rebuild) — only re-resolve affected tenants. Insert-then-delete ordering per DESIGN §5.7 (deleting first creates a permanent-miskey window because `dst_zone` is baked into the kernel flow key).
+- **Periodic Neutron reconcile every 5 minutes** (DESIGN §9 Kafka-outage safety net). Full snapshot fetch + diff against current state; differences applied as if Kafka had delivered them. Bounds metadata staleness to 5 minutes regardless of Kafka availability. Runtime reconcile is best-effort per endpoint (a 500 on `routers` doesn't invalidate `ports`).
+- Harden the TenantMeta-immutable invariant test that 4a planted: add negative tests that mutate fields and confirm the lint catches them (closes Implementation Contract #3). The detection mechanism itself moves to Sprint 9's lint coverage sweep.
+- Kafka health metrics: `cubecos_kafka_lag_messages{topic}`, `cubecos_kafka_consume_errors_total{topic}`. Internal-error sink: `cubecos_internal_errors_total{subsystem="kafka"}` on consume failures per the cross-cutting pattern.
 
-**Done when.** Recorded Kafka stream replay against a known-state cluster → trie matches a fresh cold-start at the same point in time.
+**Done when.** Recorded Kafka stream replay against a known-state cluster → trie matches a fresh cold-start at the same point in time. Kill Kafka for >5 minutes → `cubecos_neutron_sync_age_seconds` resets to <300 after each reconcile pass; Kafka resumed → trie converges within one consume cycle.
 
-**LOC.** ~500.
+**LOC.** ~600 (originally ~500; +100 for the 5-minute reconcile + per-endpoint failure isolation).
 
 ---
 
@@ -210,12 +244,13 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 **Goal.** Implement the two-segment Octavia model per the revised §6 (post-empirical-verification finding).
 
 **Scope.**
-- `IsAmphora` flag + `LBOwnerTenant` in `mac_tenant_map` metadata (sidecar map keyed by Amphora MAC).
-- Cold-start enumeration: query Octavia API, walk Amphora VMs, write each Amphora's MAC + LB-owner tenant into the map.
+- New sidecar BPF map `amphora_meta` keyed by Amphora MAC, value = `{LBOwnerTenant u32, _pad}`. **Deliberately not extending `mac_tenant_map`'s value** — keeping its `u32 tenant_id` schema avoids a kernel-ABI break and lets the kernel test `bpf_map_lookup_elem(&amphora_meta, &peer_mac)` as a cheap "is Amphora?" probe.
+- `internal/octavia/` API client (distinct from the Neutron client built in 4a — Octavia is a separate OpenStack service with its own endpoint and pagination semantics).
+- Cold-start enumeration: query Octavia API, walk Amphora VMs, write each Amphora's MAC + LB-owner tenant into `amphora_meta`. Run after the Neutron cold-start of 4a so the regular `mac_tenant_map` entry for the Amphora's admin tenant is already in place.
 - Kernel attribution path: when `peer_mac` is flagged Amphora → attribute bytes to `LBOwnerTenant` instead of Amphora's own admin tenant. Works at every tap, no conntrack required.
 - Kernel zone path: at the Amphora's tap (Segment 1), call `bpf_skb_ct_lookup` to recover the pre-NAT client_ip and refine `dst_zone` (EXTERNAL / OTHER / SAME); fall back to EXTERNAL on miss. At the backend's tap (Segment 2), unconditionally set `dst_zone=INFRA` — **do not call `bpf_skb_ct_lookup` there**, it would return Segment 2's entry with no client_ip.
-- Distinguishing "at the Amphora's tap" vs "at the backend's tap" in the kernel: at the Amphora's tap, `vm_mac` (the local VM) IS the Amphora's MAC, so `vm_mac.IsAmphora==true`; at the backend's tap, `peer_mac.IsAmphora==true` but `vm_mac.IsAmphora==false`. The kernel keys off this asymmetry.
-- Kafka updates: handle Amphora creation/deletion + LB ownership changes incrementally.
+- Distinguishing "at the Amphora's tap" vs "at the backend's tap" in the kernel: at the Amphora's tap, `vm_mac` (the local VM) IS the Amphora's MAC, so `amphora_meta[vm_mac]` hits; at the backend's tap, `amphora_meta[peer_mac]` hits but `amphora_meta[vm_mac]` misses. The kernel keys off this asymmetry.
+- Kafka updates: handle Amphora creation/deletion + LB ownership changes incrementally via the Sprint 7 consumer (`loadbalancer.*` topic).
 
 **Done when.** End-to-end test on a deployment with at least one active Octavia LB: external traffic through the LB is billed to the LB owner (not admin); Segment 1 zone reflects the actual client; Segment 2 zone is INFRA; both segments visible at both taps as expected; UDP-protocol LB sparse-traffic edge case documented and accepted.
 
@@ -225,63 +260,65 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 9 — Hardening + Implementation Contract burndown
+## Sprint 9 — Hardening + Implementation Contract verification + Ops README
 
-**Goal.** Production-readiness sweep — close all five §13.1 contracts.
+**Goal.** Production-readiness sweep. Verify all five §13.1 contracts are held by tests, close the zero-allocation gate on the remaining hot paths, and ship the ops doc.
 
 **Scope.**
-- RLock around the entire `Collect()` loop (closes Implementation Contract #2).
-- u64 wraparound guard in delta math (closes Implementation Contract #5).
-- Zero-allocation verified by `go test -bench -benchmem` on `Collect()` and `BatchLookupAndProcess()` — fail PR if any allocation appears.
-- TenantMeta pointer-replace lint test from Sprint 7 hardened (negative tests).
-- Internal error sink: `cubecos_internal_errors_total{subsystem}` wired everywhere a billing-path error is logged (see DESIGN.md §13.1).
+- **Verification, not initial wiring.** Contracts #2 (RLock around `Collect()`) and #5 (u64 wraparound in delta math) are already in `internal/state/state.go` (landed Sprint 2 — see `Snapshot` at state.go:113 and `addDelta` at state.go:97). Contract #1 lands in Sprint 6, #3 in Sprints 4a + 7, #4 in Sprints 4a + 5, #6 in Sprint 6. This sprint's job is to confirm each contract has a test that **fails** when the contract is broken (negative tests), not to write the contracts themselves.
+- **Close the bench-gate gap.** `BenchmarkHotpath_ApplyDelta` and `BenchmarkHotpath_Snapshot` exist (`internal/state/bench_test.go`) and run under `task bench-gate` today. Add `BenchmarkHotpath_Collect` (in `internal/metrics/`) and `BenchmarkHotpath_BatchLookupAndProcess` (in `internal/scraper/` against a synthetic `MapReader`) — these were promised by Sprint 2's done-when but never written.
+- **Internal-error-sink coverage lint.** Each subsystem (4a Neutron, 5 TC attach, 6 GC, 7 Kafka) already wires its own `cubecos_internal_errors_total{subsystem=…}`. This sprint adds a `go vet`-style lint (or AST walker) that fails the PR if a `slog.Error` in a billing-path package isn't accompanied by the counter increment. Lives at `scripts/lint-error-sink.sh` and runs in CI.
+- **Ops README**: deployment, troubleshooting, dashboards, alert rules. Moved here from Sprint 10 — by the time IPv6 lands in 10 the system is already in production, so an ops README written then is overdue. Lives at `docs/ops.md`.
 
-**Done when.** All five §13.1 Implementation Contracts have a corresponding test that fails if the contract is broken. Bench job in CI gates merge.
+**Done when.** All five §13.1 Implementation Contracts have a corresponding negative test. `BenchmarkHotpath_Collect` and `BenchmarkHotpath_BatchLookupAndProcess` exist and report `0 allocs/op` under `task bench-gate`. The internal-error-sink lint catches a deliberately broken commit on a test branch. Ops README walked through by an engineer who didn't write the code.
 
-**LOC.** ~200.
+**LOC.** ~350 (originally ~200; +150 for the two missing benches + the error-sink lint + ops README — none of which were in scope when 9 was just "wire contracts #2 and #5", which is now retroactively recognized as Sprint 2's work).
 
 ---
 
-## Sprint 10 — IPv6 + ops polish [post-MVP]
+## Sprint 10 — IPv6 [post-MVP]
 
-**Goal.** Close the only §13.2 deferred work.
+**Goal.** Close the only §13.2 deferred work. Ops README moved to Sprint 9 — by the time this sprint runs the system is already in production.
 
 **Scope.**
 - New v6 LPM trie keyed `(tenant_id, u8[16])`.
 - Branch in `lookup_zone()` on `eth_proto`.
 - Cold-start emits v6 entries alongside v4.
 - Update directional swap for v6 (read different IP fields).
-- Ops README: deployment, troubleshooting, dashboards, alert rules.
 
-**Done when.** v6 traffic in scenarios A, B, D classifies correctly. README walked through by an engineer who didn't write the code.
+**Done when.** v6 traffic in scenarios A, B, D classifies correctly. Existing v4 paths unchanged (verified by re-running the A-L scenario suite from 4b).
 
-**LOC.** ~400.
+**LOC.** ~350 (originally ~400; -50 with ops README out of scope).
 
 ---
 
 ## Cadence
 
-If sprint = 1 calendar week, total: ~12 weeks (Sprint 0 done + 10 sprints + 1 buffer). Sprint 4 is the natural place for double-time.
+If sprint = 1 calendar week, total: ~12 weeks (Sprint 0 done + 10 sprints + 1 buffer). With Sprint 4 split into 4a + 4b, the original double-time slot folds into two normal-cadence sprints; total cadence is unchanged.
 
 ## Risk register
 
 | Sprint | Risk | Reason |
 |---|---|---|
-| 4 | High | Largest PR; Neutron API edge cases (deleted-but-cached entries, paginated responses, address-scope semantics); validating against both single-node and multi-node OVN deployments |
-| 7 | Medium | Incremental diff has subtle race with cold-start; replay tests need careful fixture engineering |
+| 4a | Medium | Boot-order rework in `bootstrap_linux.go`; Neutron API edge cases (deleted-but-cached entries, paginated responses, address-scope semantics); first PR to write the trie + `mac_tenant_map` from userspace |
+| 4b | Medium | Multi-hop static-route resolver edge cases (cycles, VM-appliance nexthops, ambiguity-after-scoping); scenario DSL is new infrastructure; multi-chassis OVN verification surfaces cross-host issues that don't appear single-node |
+| 5 | Low | Boot-sync-machinery formalizes ordering that already works after 4a; risk concentrated in netlink lifecycle (RTM_NEWLINK race with the initial sweep — mitigated by ordering the netlink subscribe BEFORE the initial sweep, per DESIGN §9 failure-modes table) |
+| 6 | Medium | Pressure-relief GC must never delete before flushing to GlobalState; min-heap K=1000 algorithm has subtle correctness boundary at exactly the K-th oldest entry; ghost-precedence invariant is silent on violation (under-billing, not crash) |
+| 7 | Medium | Incremental diff has subtle race with cold-start; replay tests need careful fixture engineering; 5-minute reconcile diff against in-memory state has its own race window with concurrent Kafka events |
 | 8 | Low | Attribution-to-LB-owner uses MAC-flag (no conntrack dependency). Segment 1 zone refinement uses `bpf_skb_ct_lookup` which can miss, but fallback to EXTERNAL is the safe-billing default and doesn't affect attribution. See revised §6 |
-| Others | Low | Mechanical and well-bounded |
+| 9 | Low | Verification work, not new subsystems. Bench-gate additions could surface latent allocations in Collect that need a refactor — mitigated by landing the benches incrementally |
+| 10 | Low | Mechanical retrofit; risk only if v6 happens to expose a latent v4 assumption in the directional-swap code |
 
 ## Dependency graph
 
 ```
-                    ┌──► 2 (state+collector) ──► 3 (WAL) ──► 4 (Neutron) ──► 5 (boot) ──► 6 (GC) ──► 7 (Kafka) ──► 8 (Octavia) ──► 9 (harden) ──► 10 (v6)
+                    ┌──► 2 (state+collector) ──► 3 (WAL) ──► 4a (Neutron foundations) ──► 4b (static routes) ──► 5 (boot) ──► 6 (GC) ──► 7 (Kafka) ──► 8 (Octavia) ──► 9 (harden) ──► 10 (v6)
 1 (kernel) ─────────┤
                     └──► (smoke test slice for one hardcoded VM at end of Sprint 3)
 ```
 
-Sprints 1, 2, 3 can technically interleave; the linear ordering above gives a working billing-grade slice for one hardcoded VM at the end of Sprint 3 — useful as an early demo and smoke test before the Neutron complexity lands in Sprint 4.
+Sprints 1, 2, 3 can technically interleave; the linear ordering above gives a working billing-grade slice for one hardcoded VM at the end of Sprint 3 — useful as an early demo and smoke test before the Neutron complexity lands in Sprint 4a. Sprint 4b stays a hard dependency of Sprint 5: the boot-sequence harness assumes the trie is fully populated.
 
 ---
 
-*Last updated: 2026-05-14 (added Sprint 2+ Grafana dashboard track).*
+*Last updated: 2026-05-16 (sprint 4-10 sweep: split Sprint 4 into 4a + 4b; reframed Sprint 5 around boot-sync machinery + AttachInterface deprecation; expanded Sprint 6 with min-heap GC algorithm + ghost precedence + collect-duration metric; added 5-minute Neutron reconcile to Sprint 7; clarified Sprint 8's `amphora_meta` sidecar map vs `mac_tenant_map` schema; rewrote Sprint 9 as verification + bench-gate closure + ops README; trimmed Sprint 10 to strictly IPv6; refreshed risk register).*
