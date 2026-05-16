@@ -163,7 +163,16 @@ static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
 	struct lpm_key lk = {
 		.prefixlen = 64,	/* request full match; trie picks the longest stored prefix */
 		.tenant_id = *vm_tid,
-		.ip        = bpf_ntohl(remote_ip_be),
+		/*
+		 * Network byte order. The kernel LPM trie walks key data
+		 * byte-by-byte, MSB-first within each byte; for CIDR
+		 * matching to work the IPv4 address must lead with its
+		 * MSB octet in memory. `remote_ip_be` is the wire bytes
+		 * read directly from the IP header, so assigning here
+		 * preserves wire order. Userspace agrees via
+		 * internal/bpf.LpmKeyForPrefix (NativeEndian encode).
+		 */
+		.ip        = remote_ip_be,
 	};
 	__u8 *zone = bpf_map_lookup_elem(&subnet_zone_trie, &lk);
 	return zone ? *zone : ZONE_MISS;

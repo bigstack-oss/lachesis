@@ -11,7 +11,13 @@
 // silent skew between sides produces incorrect metrics.
 package bpf
 
-import "github.com/cilium/ebpf"
+import (
+	"encoding/binary"
+	"fmt"
+	"net/netip"
+
+	"github.com/cilium/ebpf"
+)
 
 // FlowKey is the Go-side mirror of the BPF flow_key map key. It is
 // the 16-byte composite key written by the classifier into
@@ -121,6 +127,51 @@ func MACKey(mac [6]uint8) uint64 {
 	return uint64(mac[0])<<40 | uint64(mac[1])<<32 |
 		uint64(mac[2])<<24 | uint64(mac[3])<<16 |
 		uint64(mac[4])<<8 | uint64(mac[5])
+}
+
+// LpmKeyTenantBits is the constant Prefixlen contribution from the
+// tenant_id field. The kernel LPM trie matches `tenant_id` exactly
+// (all 32 bits) before walking the IP portion, so every entry adds
+// 32 to the IP prefix length to produce the full key prefixlen.
+const LpmKeyTenantBits uint32 = 32
+
+// LpmKeyForPrefix constructs an [LpmKey] for the kernel
+// `subnet_zone_trie` from an interned tenant ID and an IPv4 prefix.
+//
+// # Prefixlen
+//
+// Encoded as `LpmKeyTenantBits + prefix.Bits()` — the kernel walks
+// 32 bits of `tenant_id` (always exact-matched) plus 0–32 bits of
+// the IPv4 address.
+//
+// # IP byte order
+//
+// `Ip` is written so its in-memory layout matches the wire (network)
+// byte order of the IPv4 address. The kernel LPM trie walks the key
+// data byte-by-byte, MSB-first within each byte — so for CIDR
+// matching to work the MSB of the IPv4 must lead the byte walk.
+// `binary.NativeEndian.Uint32(addr.As4())` produces a uint32 whose
+// in-memory bytes equal the wire bytes regardless of host
+// endianness; cilium/ebpf serialises the struct via a memcpy of
+// host layout, so kernel and userspace agree on the byte pattern.
+//
+// The C side at bpf/telemetry.c assigns `lk.ip = remote_ip_be`
+// (no ntohl): both sides preserve wire order in memory.
+//
+// Panics if prefix is IPv6 — the kernel trie is IPv4-only and the
+// caller is expected to filter upstream (e.g. [internal/neutron.BuildTrie]
+// skips IPv6 subnets).
+func LpmKeyForPrefix(tenantID uint32, prefix netip.Prefix) LpmKey {
+	addr := prefix.Addr()
+	if !addr.Is4() {
+		panic(fmt.Sprintf("LpmKeyForPrefix: IPv6 prefix unsupported: %s", prefix))
+	}
+	bytes := addr.As4()
+	return LpmKey{
+		Prefixlen: LpmKeyTenantBits + uint32(prefix.Bits()),
+		TenantId:  tenantID,
+		Ip:        binary.NativeEndian.Uint32(bytes[:]),
+	}
 }
 
 // LoadTelemetry returns the CollectionSpec for the telemetry BPF program,

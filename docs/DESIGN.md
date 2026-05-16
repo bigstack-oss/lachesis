@@ -195,8 +195,19 @@ KEY:   struct lpm_key
    ┌──────────────────────────────────────────────────────────┐
    │ prefixlen  u32   (bits in tenant_id ++ ip)               │
    │ tenant_id  u32   (always exact-matched, 32 bits)         │
-   │ ip         u32   (host byte order, IPv4)                 │
+   │ ip         u32   (network byte order in memory, IPv4)    │
    └──────────────────────────────────────────────────────────┘
+
+The `ip` field stores the IPv4 address in **network byte order** in
+memory (MSB at the lowest address). The kernel LPM trie walks key
+data byte-by-byte, MSB-first within each byte, so for CIDR matching
+to work the IPv4's leading octet (the "10" in `10.0.1.x`) must
+appear at the lowest byte address of the `ip` field. Both sides
+preserve wire order: the C path assigns `lk.ip = remote_ip_be` (no
+`ntohl`), the Go path uses `bpf.LpmKeyForPrefix` which encodes via
+`binary.NativeEndian.Uint32(addr.As4())`. cilium/ebpf serialises
+the struct via host-layout memcpy, so kernel and userspace end up
+with the same byte pattern regardless of host endianness.
 
 VALUE: u8  zone code  (one of ZONE_EXTERNAL, ZONE_SAME_TENANT,
                       ZONE_OTHER_TENANT, ZONE_INFRA, ZONE_MISS,
