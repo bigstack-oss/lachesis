@@ -40,6 +40,7 @@ type Config struct {
 	Scrape  ScrapeConfig  `yaml:"scrape"`
 	Logging LoggingConfig `yaml:"logging"`
 	WAL     WALConfig     `yaml:"wal"`
+	Neutron NeutronConfig `yaml:"neutron"`
 }
 
 // Defaults returns the production-ready configuration baseline. Each
@@ -52,6 +53,7 @@ func Defaults() Config {
 		Scrape:  scrapeDefaults(),
 		Logging: loggingDefaults(),
 		WAL:     walDefaults(),
+		Neutron: neutronDefaults(),
 	}
 }
 
@@ -76,6 +78,9 @@ func (c Config) Validate() error {
 	}
 	if err := c.WAL.Validate(); err != nil {
 		return fmt.Errorf("wal: %w", err)
+	}
+	if err := c.Neutron.Validate(); err != nil {
+		return fmt.Errorf("neutron: %w", err)
 	}
 	return nil
 }

@@ -165,6 +165,16 @@ func applyEnv(cfg *Config, prefix string, getenv func(string) string) error {
 		}
 		cfg.WAL.Enabled = b
 	}
+	if v := getenv(prefix + "_NEUTRON_ENABLED"); v != "" {
+		b, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s_NEUTRON_ENABLED=%q: %w", prefix, v, err)
+		}
+		cfg.Neutron.Enabled = b
+	}
+	if v := getenv(prefix + "_NEUTRON_CREDENTIALS_FILE"); v != "" {
+		cfg.Neutron.CredentialsFile = v
+	}
 	return nil
 }
 
@@ -210,5 +220,9 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 		"WAL flush cadence"+envHint("WAL_FLUSH_INTERVAL"))
 	fs.BoolVar(&cfg.WAL.Enabled, "wal-enabled", cfg.WAL.Enabled,
 		"Enable WAL persistence (boot-restore + periodic flush)"+envHint("WAL_ENABLED"))
+	fs.BoolVar(&cfg.Neutron.Enabled, "neutron-enabled", cfg.Neutron.Enabled,
+		"Enable Neutron cold-start (boot-blocking)"+envHint("NEUTRON_ENABLED"))
+	fs.StringVar(&cfg.Neutron.CredentialsFile, "neutron-credentials-file", cfg.Neutron.CredentialsFile,
+		"Absolute path to admin-openrc-style credentials file"+envHint("NEUTRON_CREDENTIALS_FILE"))
 	return fs.Parse(args)
 }
