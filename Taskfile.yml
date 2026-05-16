@@ -88,7 +88,7 @@ tasks:
     cmd: >
       docker run --rm --platform linux/amd64 --privileged -u 0
       -v "$(pwd)":/app -w /app -e GOWORK=off {{.BUILDER_IMAGE}}
-      sh -c "go test -tags integration -v ./internal/testenv/..."
+      sh -c "go test -tags integration -v ./internal/..."
 
   bench-gate:
     desc: Enforce zero-allocation contract on BenchmarkHotpath_* benchmarks

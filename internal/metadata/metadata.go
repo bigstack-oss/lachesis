@@ -154,3 +154,29 @@ func (s *ShardedMetadataMap) Len() int {
 	}
 	return n
 }
+
+// Range calls f for every live (MAC, *TenantMeta) entry. The walk
+// is shard-by-shard under a shared (read) lock per shard, so f must
+// not call any method on s that takes a write lock on the same
+// shard — that deadlocks. f returning false stops iteration early.
+//
+// Snapshot semantics are weak: entries in shards iterated after the
+// current one may already reflect concurrent inserts / deletes
+// completed during the walk. Callers that need a fully consistent
+// view should serialise externally.
+func (s *ShardedMetadataMap) Range(f func(mac uint64, meta *TenantMeta) bool) {
+	for i := range s.shards {
+		s.shards[i].mu.RLock()
+		stop := false
+		for mac, meta := range s.shards[i].m {
+			if !f(mac, meta) {
+				stop = true
+				break
+			}
+		}
+		s.shards[i].mu.RUnlock()
+		if stop {
+			return
+		}
+	}
+}
