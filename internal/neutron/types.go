@@ -19,9 +19,18 @@ type Network struct {
 	Name      string
 	// Shared indicates the network can be attached to by any
 	// project. Used by §5.2 Step 3 of the trie builder (shared
-	// networks contribute INFRA entries rather than per-tenant
-	// entries).
+	// networks contribute OTHER_TENANT entries rather than per-tenant
+	// entries) — except when also flagged IsExternal, in which case
+	// the catchall handles them as EXTERNAL.
 	Shared bool
+	// IsExternal mirrors Neutron's `router:external` attribute. True
+	// for the operator-managed networks that routers use as upstream
+	// gateways (floating-IP pools, transit-to-internet networks).
+	// Subnets on external networks are intentionally omitted from
+	// the trie's Step 2 / Step 3 — they should classify as EXTERNAL,
+	// which is what the Step-1 catchall returns by default. See
+	// docs/DESIGN.md §5.3 `zone_for`.
+	IsExternal bool
 }
 
 // Subnet is the trie-builder view of a Neutron subnet.

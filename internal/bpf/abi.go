@@ -34,15 +34,22 @@ type ZoneCode = telemetryZoneCode
 // and [DirectionEgress] for the set of valid values.
 type Direction = telemetryTcDirection
 
-// ZoneExternal through ZoneMiss are the zone codes stored in [FlowKey.DstZone].
-// The values are stable across releases: they are persisted to the WAL and
-// read back on restart.
+// ZoneExternal through ZoneShared are the zone codes stored in
+// [FlowKey.DstZone]. The values are stable across releases: they are
+// persisted to the WAL and read back on restart.
+//
+// ZoneShared exists because the LPM trie cannot disambiguate per-VM
+// ownership inside a shared-network /24. Rather than guess SAME vs
+// OTHER for the trie-fallback path on shared networks, the cold-start
+// builder emits a distinct ZoneShared row; the billing engine treats
+// it as its own category. See docs/DESIGN.md §5.2 Step 3.
 const (
 	ZoneExternal    = telemetryZoneCodeZONE_EXTERNAL
 	ZoneSameTenant  = telemetryZoneCodeZONE_SAME_TENANT
 	ZoneOtherTenant = telemetryZoneCodeZONE_OTHER_TENANT
 	ZoneInfra       = telemetryZoneCodeZONE_INFRA
 	ZoneMiss        = telemetryZoneCodeZONE_MISS
+	ZoneShared      = telemetryZoneCodeZONE_SHARED
 )
 
 // DirectionIngress and DirectionEgress are the TC hook direction values

@@ -4,31 +4,43 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/external"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/routers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/ports"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/subnets"
 )
 
+// networkWithExternal combines the base Network with the
+// `router:external` extension so the agent can tell external
+// (operator-managed gateway) networks apart from tenant ones.
+type networkWithExternal struct {
+	networks.Network
+	external.NetworkExternalExt
+}
+
 // ListNetworks returns every Neutron network the agent's project is
-// authorised to read. Pagination is drained inside the call; the
-// returned slice is the full result set.
+// authorised to read, including the `router:external` flag needed by
+// the trie builder to classify external (operator-managed) networks
+// correctly. Pagination is drained inside the call; the returned
+// slice is the full result set.
 func (c *Client) ListNetworks(ctx context.Context) ([]Network, error) {
 	pages, err := networks.List(c.network, networks.ListOpts{}).AllPages(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("neutron: list networks: %w", err)
 	}
-	gcs, err := networks.ExtractNetworks(pages)
-	if err != nil {
+	var gcs []networkWithExternal
+	if err := networks.ExtractNetworksInto(pages, &gcs); err != nil {
 		return nil, fmt.Errorf("neutron: extract networks: %w", err)
 	}
 	out := make([]Network, len(gcs))
 	for i, n := range gcs {
 		out[i] = Network{
-			ID:        n.ID,
-			ProjectID: preferProjectID(n.ProjectID, n.TenantID),
-			Name:      n.Name,
-			Shared:    n.Shared,
+			ID:         n.ID,
+			ProjectID:  preferProjectID(n.ProjectID, n.TenantID),
+			Name:       n.Name,
+			Shared:     n.Shared,
+			IsExternal: n.External,
 		}
 	}
 	return out, nil

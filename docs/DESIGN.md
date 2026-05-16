@@ -198,13 +198,17 @@ KEY:   struct lpm_key
    │ ip         u32   (host byte order, IPv4)                 │
    └──────────────────────────────────────────────────────────┘
 
-VALUE: u8  zone code
+VALUE: u8  zone code  (one of ZONE_EXTERNAL, ZONE_SAME_TENANT,
+                      ZONE_OTHER_TENANT, ZONE_INFRA, ZONE_MISS,
+                      ZONE_SHARED — see §5.2 for emission rules)
 
 Insertion examples:
   Catchall for tenant 1001:
     {prefixlen=32, tenant_id=1001, ip=0}             → ZONE_EXTERNAL
   /24 subnet for tenant 1001:
     {prefixlen=56, tenant_id=1001, ip=10.0.1.0}      → ZONE_SAME_TENANT
+  /24 subnet on a SHARED network (any tenant's view):
+    {prefixlen=56, tenant_id=1001, ip=192.168.0.0}   → ZONE_SHARED
   Single-host /32 (e.g., metadata svc):
     {prefixlen=64, tenant_id=1001, ip=169.254.169.254} → ZONE_INFRA
 ```
@@ -498,8 +502,21 @@ For each tenant T (run once at cold start, then incrementally on Kafka events):
 
   Step 3 — Shared / provider networks T can reach
     for each subnet S where S.network.shared == true:
-      add (T, S.cidr) → ZONE_OTHER_TENANT
-    (or ZONE_INFRA if your billing model treats shared infra separately)
+      add (T, S.cidr) → ZONE_SHARED
+
+    ZONE_SHARED is emitted uniformly for every tenant, including the
+    network's owner. Rationale: the LPM trie cannot resolve per-VM
+    ownership inside a shared /24, so guessing SAME or OTHER
+    systematically mis-bills the wrong direction. The MAC-first
+    hot path classifies L2 traffic on shared networks correctly
+    (intra-tenant L2 hits ZONE_SAME_TENANT via mac_tenant_map
+    comparison); ZONE_SHARED labels only the L3-routed-fallback
+    case, where the trie alone has insufficient information.
+    Billing engines should treat ZONE_SHARED as its own line item.
+
+    Exception: subnets on networks where router:external == true
+    are NOT emitted by Step 3 (or Step 2); they fall through to
+    Step 1's catchall as ZONE_EXTERNAL.
 
   Step 4 — Infrastructure IPs into the trie
     for each port P with device_owner in {
@@ -612,10 +629,19 @@ function resolve_static_route_zone(R, destination_cidr, initial_nexthop):
 
 function zone_for(owner_tenant, source_tenant, network):
   if network is router:external == true:  return EXTERNAL
-  if owner_tenant == source_tenant:       return SAME_TENANT
-  if network.shared == true:              return OTHER_TENANT
+  if network.shared == true:               return SHARED   ← see §5.2 Step 3
+  if owner_tenant == source_tenant:        return SAME_TENANT
   return OTHER_TENANT
 ```
+
+The `shared` check sits **above** the owner check so that a shared
+network owned by the source tenant returns SHARED, not SAME — the
+trie cannot resolve per-VM ownership inside a shared CIDR, and
+returning SAME would systematically under-bill the owner's traffic
+to non-owner VMs that have attached to the shared network. The
+MAC-first hot path provides exact SAME_TENANT classification for
+L2 intra-tenant traffic on shared networks; SHARED is the honest
+label for the L3-routed-fallback case only.
 
 **Cycle detection.** A misconfigured deployment can have routing loops (R2 forwards to R3, R3 forwards back to R2). The `visited` set bounds the walk to each router at most once and bails to `EXTERNAL` on detection. Without this, the resolver would infinite-loop at cold-start.
 
@@ -1386,6 +1412,7 @@ Explicitly out of MVP scope. Documented so future contributors know it's open by
 | Crash-leftover filters | Zombie Hunter on startup | Ignore / let attach fail | Stacking duplicates on restart silently double-counts |
 | Flow-key cardinality | MAC-pair + dst_zone | 5-tuple `(src_ip, dst_ip, ports)` | MAC-pair scales with topology; 5-tuple explodes labels. [C.4](#c4-5-tuple-flow-key-instead-of-mac--zone) |
 | Cross-subnet classification | dst_zone u8 + LPM trie | dst_ip in key | dst_ip explodes cardinality and breaks IPv6; LPM scales with topology |
+| Shared-network attribution | ZONE_SHARED (distinct 5th zone) | Guess SAME for owner / OTHER for others | The LPM trie cannot resolve per-VM ownership inside a shared /24; either guess systematically mis-bills one side. SHARED is the honest label for the L3-routed-fallback case on shared networks. MAC-first hot path still resolves intra-tenant L2 traffic as SAME_TENANT exactly. See §5.2 Step 3 |
 | Map capacity relief | Pressure-relief GC + fill metric | LRU_HASH | LRU evicts silently → unrecoverable byte loss. [C.5](#c5-lru_hash-for-map-eviction) |
 | OpenStack metadata source | Neutron v2.0 API | Direct MySQL | API is versioned/stable; DB schema migrates per release. [C.3](#c3-direct-mysql-queries-instead-of-neutron-api) |
 | Static route resolution | Nexthop trace through Neutron port topology | CIDR-only lookup | CIDR alone is ambiguous when tenants reuse the same prefix. [C.9](#c9-direct-cidr-lookup-without-nexthop-trace) |
