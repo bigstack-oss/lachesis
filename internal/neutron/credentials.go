@@ -1,7 +1,7 @@
 // Package neutron is the OpenStack metadata cold-start path. It
-// owns Keystone v3 authentication, the proactive token-refresh
-// goroutine, and the rate-limited Neutron v2.0 API client used by
-// the trie builder. See docs/DESIGN.md §5.
+// owns Keystone v3 authentication (via gophercloud) and the
+// Neutron v2.0 API client used by the trie builder. See
+// docs/DESIGN.md §5.
 package neutron
 
 import (
@@ -25,6 +25,11 @@ type Credentials struct {
 	UserDomain    string
 	ProjectDomain string
 	Region        string
+	// Interface is the Keystone endpoint-catalog interface to pick
+	// when discovering the Neutron URL: "public", "internal", or
+	// "admin". Empty falls through to "internal" — the right
+	// default for compute-node agents.
+	Interface string
 }
 
 // FromConfig resolves Credentials from a [config.NeutronConfig].
@@ -43,6 +48,7 @@ func FromConfig(c config.NeutronConfig) (Credentials, error) {
 		UserDomain:    c.UserDomain,
 		ProjectDomain: c.ProjectDomain,
 		Region:        c.Region,
+		Interface:     c.Interface,
 	}, nil
 }
 
@@ -56,10 +62,10 @@ func FromConfig(c config.NeutronConfig) (Credentials, error) {
 //
 // Required keys: OS_AUTH_URL, OS_USERNAME, OS_PASSWORD,
 // OS_PROJECT_NAME. Optional: OS_USER_DOMAIN_NAME (default "default"),
-// OS_PROJECT_DOMAIN_NAME (default "default"), OS_REGION_NAME. Other
-// OS_* variables in the file (OS_AUTH_TYPE, OS_IDENTITY_API_VERSION,
-// OS_INTERFACE, …) are ignored — they belong to other OpenStack
-// clients and are noise here.
+// OS_PROJECT_DOMAIN_NAME (default "default"), OS_REGION_NAME,
+// OS_INTERFACE. Other OS_* variables in the file (OS_AUTH_TYPE,
+// OS_IDENTITY_API_VERSION, …) are ignored — they belong to other
+// OpenStack clients and are noise here.
 func ParseOpenRC(path string) (Credentials, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -102,6 +108,7 @@ func ParseOpenRC(path string) (Credentials, error) {
 		UserDomain:    env["OS_USER_DOMAIN_NAME"],
 		ProjectDomain: env["OS_PROJECT_DOMAIN_NAME"],
 		Region:        env["OS_REGION_NAME"],
+		Interface:     env["OS_INTERFACE"],
 	}
 	if c.UserDomain == "" {
 		c.UserDomain = "default"

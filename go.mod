@@ -23,6 +23,7 @@ require (
 )
 
 require (
+	github.com/gophercloud/gophercloud/v2 v2.12.0
 	github.com/vishvananda/netns v0.0.5
-	golang.org/x/sys v0.37.0
+	golang.org/x/sys v0.42.0
 )

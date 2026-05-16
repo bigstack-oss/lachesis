@@ -59,6 +59,11 @@ type NeutronConfig struct {
 	// from. Empty means "any" — Keystone returns the first endpoint
 	// matching service=network. Inline mode only.
 	Region string `yaml:"region"`
+	// Interface selects which endpoint-catalog interface the
+	// Authenticator uses to discover the Neutron URL: "public",
+	// "internal", or "admin". Empty falls through to the agent's
+	// "internal" default. Inline mode only.
+	Interface string `yaml:"interface"`
 
 	// RequestTimeout caps a single HTTP call (Keystone auth, Neutron
 	// list page). The boot-time retry loop is the unit of total
