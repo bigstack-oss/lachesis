@@ -129,6 +129,18 @@ func (g *GlobalState) Len() int {
 // and consumed by [GlobalState.Restore]. The Counter carries both
 // Total and LastEbpfRaw so a WAL-restored state can compute deltas
 // against the kernel's next reading without re-baselining.
+//
+// INVARIANT — no kernel-internal identifiers in the WAL.
+//
+// Record's only identifier is [bpf.FlowKey], which is intentionally
+// free of the u32 `tenant_id` that the kernel maps key on (the
+// userspace `internal/metadata.TenantInterner` re-allocates those
+// u32s on every boot — see the FlowKey doc-comment). Adding any
+// kernel-internal ID to Record would silently break WAL restore on
+// restart: the same logical flow would re-key under a stale u32 and
+// never merge with post-restart traffic. ProjectID strings are the
+// only stable cross-boot tenant identifier and they live in
+// [metadata.ShardedMetadataMap], not here.
 type Record struct {
 	Key     bpf.FlowKey
 	Counter Counter

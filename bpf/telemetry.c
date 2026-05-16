@@ -90,10 +90,17 @@ struct {
  * subnet_zone_trie: (tenant_id, dst_ip) → zone code. Populated by the
  * userspace agent at startup and updated incrementally via the metadata
  * event stream.
+ *
+ * Sizing: per docs/DESIGN.md §5.2, each tenant emits roughly
+ *   1 catchall + N_owned_subnets + N_shared_subnets +
+ *   N_infra_ports + 1 metadata
+ * trie rows. At a target of ~500 tenants × ~30 effective rows/tenant
+ * (Yoga deployments observed empirically on dev-cmp), 15,000 rows is
+ * the realistic upper bound; 16384 = 2× headroom in a power-of-two.
  */
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
-	__uint(max_entries, 4096);
+	__uint(max_entries, 16384);
 	__type(key, struct lpm_key);
 	__type(value, __u8);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
@@ -103,10 +110,16 @@ struct {
  * mac_tenant_map: MAC → tenant_id. The MAC is packed into the low 48 bits
  * of a u64 in big-endian order (see mac_to_u64). Populated by the userspace
  * agent from the platform's port metadata.
+ *
+ * Sizing: one entry per active Neutron port (compute:nova VMs plus
+ * Amphora data ports). dev-cmp empirically observes ~17 compute:nova
+ * ports today; a production OVN-Yoga deployment can reach a few
+ * thousand. 8192 = 2× headroom over a 4000-port target in a
+ * power-of-two.
  */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 1024);
+	__uint(max_entries, 8192);
 	__type(key, __u64);
 	__type(value, __u32);
 } mac_tenant_map SEC(".maps");
