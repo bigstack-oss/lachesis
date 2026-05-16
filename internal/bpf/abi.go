@@ -13,8 +13,24 @@ package bpf
 
 import "github.com/cilium/ebpf"
 
-// FlowKey is the Go-side mirror of the BPF flow_key map key. It is the
-// 16-byte composite key written by the classifier into telemetry_map.
+// FlowKey is the Go-side mirror of the BPF flow_key map key. It is
+// the 16-byte composite key written by the classifier into
+// telemetry_map.
+//
+// INVARIANT — no u32 tenant_id in the key.
+//
+// FlowKey carries only MAC pairs, EtherType, direction, and the
+// resolved zone code. It does NOT and MUST NOT carry the u32
+// `tenant_id` that the kernel `mac_tenant_map` / `subnet_zone_trie`
+// use internally. That u32 is interned fresh on every agent boot
+// (see internal/metadata.TenantInterner, landing in Sprint 4a.6),
+// so embedding it here would invalidate every WAL-restored
+// GlobalState entry on restart: the same logical flow would be
+// keyed under a stale u32 and never merge with new traffic.
+// The zone code already encodes the *classification* (SAME / OTHER
+// / INFRA / EXTERNAL / SHARED) without referencing the specific
+// tenant identifier, which is what makes restart-merge work. See
+// docs/DESIGN.md §3.1 for the broader rationale.
 type FlowKey = telemetryFlowKey
 
 // FlowMetrics is the Go-side mirror of the BPF flow_metrics map value.
@@ -69,10 +85,33 @@ const (
 	ProgramEgress  = "tc_telemetry_out"
 )
 
-// MapTelemetry is the SEC(".maps") name of the PERCPU_HASH that
-// holds [FlowKey] → [FlowMetrics]. Same C↔Go contract as the
-// program names above.
-const MapTelemetry = "telemetry_map"
+// MapTelemetry, MapSubnetZoneTrie, and MapMacTenant are the
+// SEC(".maps") names of the three load-bearing maps in
+// bpf/telemetry.c. Same C↔Go contract as the program names above:
+// loaders look up [*ebpf.Map] handles by these strings on a loaded
+// [*ebpf.Collection], and a typo on either side becomes a missing-
+// map panic at boot.
+const (
+	MapTelemetry      = "telemetry_map"
+	MapSubnetZoneTrie = "subnet_zone_trie"
+	MapMacTenant      = "mac_tenant_map"
+)
+
+// MapSubnetZoneTrieMaxEntries and MapMacTenantMaxEntries mirror the
+// `max_entries` values compiled into bpf/telemetry.c. They are
+// exposed for two reasons:
+//
+//  1. Load-time assertions can check the kernel spec matches what
+//     userspace expects, catching a stale `.o` build before the
+//     agent silently writes into an undersized map.
+//  2. Health metrics (cubecos_bpf_map_fill_ratio) need the
+//     denominator to compute "% of map occupied".
+//
+// Sizing rationale lives in bpf/telemetry.c above each map decl.
+const (
+	MapSubnetZoneTrieMaxEntries = 16384
+	MapMacTenantMaxEntries      = 8192
+)
 
 // MACKey packs a 6-byte MAC into the low 48 bits of a u64, big-endian.
 // Mirrors the C-side `mac_to_u64` in bpf/telemetry.c — both sides
