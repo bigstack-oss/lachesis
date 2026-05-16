@@ -67,6 +67,16 @@ const (
 // program names above.
 const MapTelemetry = "telemetry_map"
 
+// MACKey packs a 6-byte MAC into the low 48 bits of a u64, big-endian.
+// Mirrors the C-side `mac_to_u64` in bpf/telemetry.c — both sides
+// must agree exactly, or `mac_tenant_map` lookups will silently miss.
+// `mac[0]` is the OUI / most-significant byte, `mac[5]` the least.
+func MACKey(mac [6]uint8) uint64 {
+	return uint64(mac[0])<<40 | uint64(mac[1])<<32 |
+		uint64(mac[2])<<24 | uint64(mac[3])<<16 |
+		uint64(mac[4])<<8 | uint64(mac[5])
+}
+
 // LoadTelemetry returns the CollectionSpec for the telemetry BPF program,
 // ready to be loaded into the kernel.
 func LoadTelemetry() (*ebpf.CollectionSpec, error) {
