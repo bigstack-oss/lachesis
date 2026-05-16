@@ -115,8 +115,9 @@ func TestListNetworks(t *testing.T) {
 	defer ns.Close()
 	ns.networksJSON = `{
 		"networks": [
-			{"id":"net-A","project_id":"proj-1","name":"net-A","shared":false},
-			{"id":"net-B","tenant_id":"proj-2","name":"net-B","shared":true}
+			{"id":"net-A","project_id":"proj-1","name":"net-A","shared":false,"router:external":false},
+			{"id":"net-B","tenant_id":"proj-2","name":"net-B","shared":true,"router:external":false},
+			{"id":"net-ext","project_id":"proj-admin","name":"public","shared":true,"router:external":true}
 		]
 	}`
 	c := newListClient(t, ns)
@@ -126,8 +127,9 @@ func TestListNetworks(t *testing.T) {
 		t.Fatalf("ListNetworks: %v", err)
 	}
 	want := []Network{
-		{ID: "net-A", ProjectID: "proj-1", Name: "net-A", Shared: false},
-		{ID: "net-B", ProjectID: "proj-2", Name: "net-B", Shared: true}, // tenant_id → ProjectID fallback
+		{ID: "net-A", ProjectID: "proj-1", Name: "net-A", Shared: false, IsExternal: false},
+		{ID: "net-B", ProjectID: "proj-2", Name: "net-B", Shared: true, IsExternal: false}, // tenant_id → ProjectID fallback
+		{ID: "net-ext", ProjectID: "proj-admin", Name: "public", Shared: true, IsExternal: true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d networks, want %d", len(got), len(want))
@@ -142,9 +144,12 @@ func TestListNetworks(t *testing.T) {
 func TestListSubnets(t *testing.T) {
 	ns := newNeutronStub(t)
 	defer ns.Close()
+	// Two rows: one with project_id, one with tenant_id only.
+	// Both must surface ProjectID populated via preferProjectID.
 	ns.subnetsJSON = `{
 		"subnets": [
-			{"id":"sub-A","network_id":"net-A","project_id":"proj-1","cidr":"10.0.0.0/24","gateway_ip":"10.0.0.1","ip_version":4}
+			{"id":"sub-A","network_id":"net-A","project_id":"proj-1","cidr":"10.0.0.0/24","gateway_ip":"10.0.0.1","ip_version":4},
+			{"id":"sub-B","network_id":"net-B","tenant_id":"proj-2","cidr":"10.1.0.0/24","gateway_ip":"10.1.0.1","ip_version":4}
 		]
 	}`
 	c := newListClient(t, ns)
@@ -153,18 +158,24 @@ func TestListSubnets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSubnets: %v", err)
 	}
-	want := Subnet{
-		ID: "sub-A", NetworkID: "net-A", ProjectID: "proj-1",
-		CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4,
+	want := []Subnet{
+		{ID: "sub-A", NetworkID: "net-A", ProjectID: "proj-1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4},
+		{ID: "sub-B", NetworkID: "net-B", ProjectID: "proj-2", CIDR: "10.1.0.0/24", GatewayIP: "10.1.0.1", IPVersion: 4},
 	}
-	if len(got) != 1 || got[0] != want {
-		t.Fatalf("got %+v, want [%+v]", got, want)
+	if len(got) != len(want) {
+		t.Fatalf("got %d subnets, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("subnet[%d]\n got:  %+v\n want: %+v", i, got[i], want[i])
+		}
 	}
 }
 
 func TestListPorts(t *testing.T) {
 	ns := newNeutronStub(t)
 	defer ns.Close()
+	// port-C exercises preferProjectID's tenant_id fallback.
 	ns.portsJSON = `{
 		"ports": [
 			{
@@ -187,6 +198,14 @@ func TestListPorts(t *testing.T) {
 				"device_owner":"network:router_interface",
 				"device_id":"router-uuid-1",
 				"fixed_ips":[{"subnet_id":"sub-A","ip_address":"10.0.0.1"}]
+			},
+			{
+				"id":"port-C",
+				"network_id":"net-B",
+				"tenant_id":"proj-2",
+				"mac_address":"fa:16:3e:00:00:03",
+				"device_owner":"compute:nova",
+				"fixed_ips":[{"subnet_id":"sub-B","ip_address":"10.1.0.42"}]
 			}
 		]
 	}`
@@ -196,8 +215,8 @@ func TestListPorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPorts: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("got %d ports, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("got %d ports, want 3", len(got))
 	}
 	if got[0].MACAddress != "fa:16:3e:00:00:01" || got[0].DeviceOwner != "compute:nova" {
 		t.Errorf("port[0] = %+v", got[0])
@@ -211,11 +230,15 @@ func TestListPorts(t *testing.T) {
 	if got[1].DeviceOwner != "network:router_interface" {
 		t.Errorf("port[1] device_owner = %q", got[1].DeviceOwner)
 	}
+	if got[2].ProjectID != "proj-2" {
+		t.Errorf("port[2] ProjectID = %q, want proj-2 (tenant_id fallback)", got[2].ProjectID)
+	}
 }
 
 func TestListRouters(t *testing.T) {
 	ns := newNeutronStub(t)
 	defer ns.Close()
+	// r-C exercises preferProjectID's tenant_id fallback.
 	ns.routersJSON = `{
 		"routers": [
 			{
@@ -230,6 +253,11 @@ func TestListRouters(t *testing.T) {
 				"id":"r-B",
 				"project_id":"proj-2",
 				"routes":[]
+			},
+			{
+				"id":"r-C",
+				"tenant_id":"proj-3",
+				"routes":[]
 			}
 		]
 	}`
@@ -239,8 +267,8 @@ func TestListRouters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRouters: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("got %d routers, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("got %d routers, want 3", len(got))
 	}
 	if got[0].ExternalNetworkID != "net-EXT" {
 		t.Errorf("router[0] external = %q, want net-EXT", got[0].ExternalNetworkID)
@@ -253,6 +281,9 @@ func TestListRouters(t *testing.T) {
 	}
 	if len(got[1].Routes) != 0 {
 		t.Errorf("router[1] routes = %v, want []", got[1].Routes)
+	}
+	if got[2].ProjectID != "proj-3" {
+		t.Errorf("router[2] ProjectID = %q, want proj-3 (tenant_id fallback)", got[2].ProjectID)
 	}
 }
 

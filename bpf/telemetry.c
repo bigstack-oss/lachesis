@@ -32,6 +32,12 @@ enum zone_code {
 	ZONE_OTHER_TENANT = 2,
 	ZONE_INFRA        = 3,
 	ZONE_MISS         = 4,
+	ZONE_SHARED       = 5,	/* destination is on a shared Neutron network;
+				 * billing is structurally ambiguous between
+				 * SAME_TENANT and OTHER_TENANT because /24 LPM
+				 * cannot resolve per-VM ownership inside the
+				 * shared CIDR. Emitted by trie Step 3.
+				 */
 } __attribute__((packed));
 
 /*

@@ -203,6 +203,8 @@ func zoneLabel(z bpf.ZoneCode) string {
 		return "infra"
 	case bpf.ZoneMiss:
 		return "miss"
+	case bpf.ZoneShared:
+		return "shared"
 	}
 	return strconv.FormatUint(uint64(z), 10)
 }
