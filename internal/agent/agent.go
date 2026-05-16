@@ -232,13 +232,18 @@ func (a *Agent) Addr() string {
 // scrape interval, not the shutdown budget.
 const shutdownTimeout = 5 * time.Second
 
-// Component values for the "component" slog attribute. Logs about
-// agent lifecycle use componentAgent; logs about the WAL flush
-// goroutine and the WAL boot loader use componentWAL even though
-// they're emitted from this package.
+// Component values for the "component" slog attribute. Logs are
+// tagged by the **subsystem they're about**, not by the package or
+// file that emits them — so the WAL flush goroutine in agent.go
+// tags componentWAL, the Neutron cold-start orchestrator in
+// coldstart_linux.go tags componentNeutron, and so on. An operator
+// filtering `component=<subsystem>` sees the full story of that
+// subsystem regardless of code location; grep-by-message-text is
+// the recommended way to find the emission site in code.
 const (
-	componentAgent = "agent"
-	componentWAL   = "wal"
+	componentAgent   = "agent"
+	componentWAL     = "wal"
+	componentNeutron = "neutron"
 )
 
 // SeedState seeds the agent's [state.GlobalState] from records,

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 
 	"github.com/cilium/ebpf"
@@ -15,19 +14,9 @@ import (
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/kernelwriter"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 )
-
-// componentNeutron is the slog `component` attribute for log calls
-// emitted from the Neutron cold-start phase of Bootstrap. Mirrors
-// the constant of the same name in internal/neutron; redeclared
-// here because Go won't let bootstrap_linux.go reach across the
-// package boundary for an unexported identifier.
-const componentNeutron = "neutron"
 
 // Bootstrap is the agent's single startup sequence: parse args,
 // initialise logging, lift the memlock rlimit, load BPF, populate
@@ -113,115 +102,6 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 	}
 
 	return ag, closer, nil
-}
-
-// coldStartNeutron fetches the Neutron snapshot, populates the
-// userspace [metadata.ShardedMetadataMap], builds the trie via
-// [neutron.BuildTrie], and pushes both into the kernel `mac_tenant_map`
-// and `subnet_zone_trie` via [kernelwriter]. Must run BEFORE TC
-// attach (docs/DESIGN.md §9 step 3 → 4).
-//
-// When `cfg.Enabled == false` the function is a no-op and the agent
-// boots with empty metadata — every flow's `tenant_id` label
-// resolves to "unknown" until an operator enables Neutron and
-// restarts.
-//
-// Sprint 4a.7 layers exponential-backoff retry on top of this naive
-// call sequence; today a single failure aborts boot.
-func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, coll *ebpf.Collection) error {
-	if !cfg.Enabled {
-		slog.Info("neutron disabled; agent boots without metadata",
-			"component", componentNeutron)
-		return nil
-	}
-
-	creds, err := neutron.FromConfig(cfg)
-	if err != nil {
-		return fmt.Errorf("credentials: %w", err)
-	}
-	client, err := neutron.NewClient(ctx, creds)
-	if err != nil {
-		return fmt.Errorf("client: %w", err)
-	}
-
-	networks, err := client.ListNetworks(ctx)
-	if err != nil {
-		return fmt.Errorf("list networks: %w", err)
-	}
-	subnets, err := client.ListSubnets(ctx)
-	if err != nil {
-		return fmt.Errorf("list subnets: %w", err)
-	}
-	ports, err := client.ListPorts(ctx)
-	if err != nil {
-		return fmt.Errorf("list ports: %w", err)
-	}
-	routers, err := client.ListRouters(ctx)
-	if err != nil {
-		return fmt.Errorf("list routers: %w", err)
-	}
-
-	meta := ag.Metadata()
-	skipped := 0
-	unknownOwner := 0
-	for _, p := range ports {
-		if !neutron.IsVMPort(p.DeviceOwner) || p.ProjectID == "" || p.MACAddress == "" {
-			continue
-		}
-		hw, err := net.ParseMAC(p.MACAddress)
-		if err != nil || len(hw) != 6 {
-			slog.Warn("invalid port MAC; skipped",
-				"component", componentNeutron,
-				"port_id", p.ID, "mac", p.MACAddress, "err", err)
-			skipped++
-			continue
-		}
-		if !neutron.IsKnownVMOwner(p.DeviceOwner) {
-			// IsVMPort admitted this MAC under the conservative
-			// blacklist; flag for operator visibility so a new
-			// vendor / plugin owner doesn't silently shape billing.
-			slog.Warn("unknown device_owner admitted to mac_tenant_map",
-				"component", componentNeutron,
-				"port_id", p.ID,
-				"device_owner", p.DeviceOwner,
-				"project_id", p.ProjectID)
-			unknownOwner++
-		}
-		var key [6]uint8
-		copy(key[:], hw)
-		meta.Insert(bpf.MACKey(key), &metadata.TenantMeta{ProjectID: p.ProjectID})
-	}
-
-	entries := neutron.BuildTrie(networks, subnets, ports, routers)
-
-	macMap := coll.Maps[bpf.MapMacTenant]
-	if macMap == nil {
-		return fmt.Errorf("%s map missing from collection", bpf.MapMacTenant)
-	}
-	trieMap := coll.Maps[bpf.MapSubnetZoneTrie]
-	if trieMap == nil {
-		return fmt.Errorf("%s map missing from collection", bpf.MapSubnetZoneTrie)
-	}
-
-	nMac, err := kernelwriter.WriteMacTenantMap(macMap, meta, ag.Interner())
-	if err != nil {
-		return fmt.Errorf("write mac_tenant_map (wrote %d): %w", nMac, err)
-	}
-	nTrie, err := kernelwriter.WriteSubnetZoneTrie(trieMap, entries, ag.Interner())
-	if err != nil {
-		return fmt.Errorf("write subnet_zone_trie (wrote %d): %w", nTrie, err)
-	}
-
-	slog.Info("neutron cold-start complete",
-		"component", componentNeutron,
-		"endpoint", client.EndpointURL(),
-		"macs_written", nMac,
-		"trie_entries_written", nTrie,
-		"tenants_interned", ag.Interner().Len(),
-		"ports_skipped", skipped,
-		"unknown_owners_admitted", unknownOwner,
-	)
-	return nil
 }
 
 // restoreFromWAL reads the on-disk snapshot (if enabled) and seeds
