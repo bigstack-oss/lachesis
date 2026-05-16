@@ -93,6 +93,23 @@ export OS_PROJECT_NAME=p
 	}
 }
 
+func TestParseOpenRC_Interface(t *testing.T) {
+	content := `
+export OS_AUTH_URL=http://keystone.example:5000/v3
+export OS_USERNAME=u
+export OS_PASSWORD=p
+export OS_PROJECT_NAME=admin
+export OS_INTERFACE=public
+`
+	got, err := ParseOpenRC(writeFixture(t, content))
+	if err != nil {
+		t.Fatalf("ParseOpenRC: %v", err)
+	}
+	if got.Interface != "public" {
+		t.Fatalf("Interface = %q, want public", got.Interface)
+	}
+}
+
 func TestParseOpenRC_DomainDefaults(t *testing.T) {
 	content := `
 export OS_AUTH_URL=http://keystone.example:5000/v3

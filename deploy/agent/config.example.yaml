@@ -91,6 +91,9 @@ neutron:
   user_domain: "default"
   project_domain: "default"
   region: ""
+  # Keystone endpoint-catalog interface: public, internal, or admin.
+  # Empty defaults to internal (right for compute-node agents).
+  interface: ""
 
   # Per-request HTTP timeout for Keystone authentication and Neutron
   # list calls. The boot-time retry loop is the unit of total
