@@ -26,7 +26,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	ag, closer, err := agent.Bootstrap(os.Args[1:])
+	ag, closer, err := agent.Bootstrap(ctx, os.Args[1:])
 	if err != nil {
 		fail(err)
 	}

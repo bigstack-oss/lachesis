@@ -33,16 +33,17 @@ var metadataPrefix = netip.MustParsePrefix("169.254.169.254/32")
 // destination falls through to this row.
 var catchall = netip.MustParsePrefix("0.0.0.0/0")
 
-// isInfraPort classifies a Neutron port as infrastructure when its
+// IsInfraPort classifies a Neutron port as infrastructure when its
 // `device_owner` lives in Neutron's reserved `network:` namespace,
 // with one explicit exception: `network:floatingip`.
 //
-// NOTE: when the kernel `mac_tenant_map` writer lands (Slice 4a.6),
-// its port-filter MUST stay in lockstep with this predicate. The
-// hybrid lookup in bpf/telemetry.c consults `mac_tenant_map` first
-// and only falls back to the LPM trie on miss — so any divergence
-// between the two filters silently corrupts classification for the
-// MAC-first hot path.
+// This predicate and [IsVMPort] together partition the
+// `device_owner` space: a port is either infra (its IPs go into the
+// trie as /32 INFRA rows) or VM-like (its MAC goes into the kernel
+// `mac_tenant_map`). The exception `network:floatingip` is in
+// neither — FIP ports are pure bookkeeping with no L2 endpoint, so
+// kernel state for them is wasted capacity. See the comment on
+// [IsVMPort] for the partition table.
 //
 // # Why prefix-match, not an allow-list
 //
@@ -70,7 +71,7 @@ var catchall = netip.MustParsePrefix("0.0.0.0/0")
 // it (EXTERNAL) is more honest. In practice dst=FIP rarely reaches
 // the trie at the VM tap (NAT translation usually intervenes
 // upstream), but the distinction matters when it does.
-func isInfraPort(deviceOwner string) bool {
+func IsInfraPort(deviceOwner string) bool {
 	if !strings.HasPrefix(deviceOwner, "network:") {
 		return false
 	}
@@ -78,6 +79,78 @@ func isInfraPort(deviceOwner string) bool {
 		return false
 	}
 	return true
+}
+
+// IsVMPort classifies a Neutron port as VM-like — i.e. its MAC
+// belongs in the kernel `mac_tenant_map` because tenant-VM traffic
+// terminates at this port.
+//
+// Partition table over observed `device_owner` values (dev-cmp,
+// OVN-Yoga):
+//
+//	device_owner                    IsInfraPort  IsVMPort
+//	network:router_interface        true         false
+//	network:router_gateway          true         false
+//	network:distributed             true         false
+//	network:dhcp                    true         false
+//	network:metadata                true         false
+//	network:floatingip              false        false   ← bookkeeping
+//	compute:nova                    false        true
+//	Octavia / Octavia:health-mgr    false        true
+//	manila:share                    false        true
+//	baremetal:nova                  false        true
+//	cube:mgr                        false        true    ← CubeCOS
+//	(empty)                         false        false   ← unbound
+//
+// `cube:mgr` (observed on dev-cmp with project_id set) is treated
+// as VM-like per the 4a.6 design-review default; revisit if Cube's
+// management traffic should be billed differently.
+func IsVMPort(deviceOwner string) bool {
+	if deviceOwner == "" {
+		return false
+	}
+	if strings.HasPrefix(deviceOwner, "network:") {
+		return false
+	}
+	return true
+}
+
+// IsKnownVMOwner returns true for `device_owner` values empirically
+// confirmed VM-like in OpenStack OVN-Yoga (the deployment target).
+// Stricter than [IsVMPort]: an unknown vendor / third-party plugin
+// owner passes [IsVMPort] (the conservative billing-safety default)
+// but fails [IsKnownVMOwner].
+//
+// Bootstrap uses this to warn-log at cold-start whenever an admitted
+// MAC came from an owner outside the known set, so operators can
+// spot drift without classification semantics changing. The
+// catalogue here is the verified ground truth as of the 4a.6 review:
+//
+//   - compute:* (Nova VMs, including AZ-specific suffixes)
+//   - Octavia / Octavia:* (Octavia management + health-mgr ports)
+//   - manila:* (Manila shares)
+//   - baremetal:* (Ironic instances)
+//   - trunk:* (VM trunk subports)
+//   - cube:mgr (CubeCOS internal management VMs, dev-cmp empirical)
+//
+// Anything else — `vendor:foo`, `oslo:*`, future-Neutron strings —
+// admits via [IsVMPort] but lights up a warn-log here.
+func IsKnownVMOwner(deviceOwner string) bool {
+	switch {
+	case strings.HasPrefix(deviceOwner, "compute:"):
+		return true
+	case deviceOwner == "Octavia" || strings.HasPrefix(deviceOwner, "Octavia:"):
+		return true
+	case strings.HasPrefix(deviceOwner, "manila:"):
+		return true
+	case strings.HasPrefix(deviceOwner, "baremetal:"):
+		return true
+	case strings.HasPrefix(deviceOwner, "trunk:"):
+		return true
+	case deviceOwner == "cube:mgr":
+		return true
+	}
+	return false
 }
 
 // BuildTrie runs the cold-start 5-step algorithm of
@@ -237,7 +310,7 @@ func buildSharedPrefixes(networks []Network, subnetsByNetwork map[string][]Subne
 func buildInfraPrefixes(subnets []Subnet, ports []Port) []netip.Prefix {
 	var out []netip.Prefix
 	for _, p := range ports {
-		if !isInfraPort(p.DeviceOwner) {
+		if !IsInfraPort(p.DeviceOwner) {
 			continue
 		}
 		for _, ip := range p.FixedIPs {
