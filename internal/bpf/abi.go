@@ -179,3 +179,46 @@ func LpmKeyForPrefix(tenantID uint32, prefix netip.Prefix) LpmKey {
 func LoadTelemetry() (*ebpf.CollectionSpec, error) {
 	return loadTelemetry()
 }
+
+// ValidateMapSizes ensures the compiled BPF spec's `max_entries`
+// values for `mac_tenant_map` and `subnet_zone_trie` match the
+// Go-side intent in [MapMacTenantMaxEntries] and
+// [MapSubnetZoneTrieMaxEntries].
+//
+// Mismatch indicates a stale BPF object — typically a developer
+// who bumped the size in bpf/telemetry.c without re-running
+// `task generate`, or the reverse. Either direction is a
+// drift symptom and the agent refuses to start; the operator
+// regenerates and retries.
+//
+// Returns nil when sizes agree, or a multi-line error naming every
+// map whose size differs and the expected value.
+func ValidateMapSizes(spec *ebpf.CollectionSpec) error {
+	if spec == nil {
+		return fmt.Errorf("bpf: ValidateMapSizes called with nil spec")
+	}
+	type check struct {
+		name string
+		want uint32
+	}
+	var problems []string
+	for _, c := range []check{
+		{MapMacTenant, MapMacTenantMaxEntries},
+		{MapSubnetZoneTrie, MapSubnetZoneTrieMaxEntries},
+	} {
+		m, ok := spec.Maps[c.name]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("%s: not present in spec", c.name))
+			continue
+		}
+		if m.MaxEntries != c.want {
+			problems = append(problems,
+				fmt.Sprintf("%s: spec.MaxEntries=%d, want %d (Go-side authority)",
+					c.name, m.MaxEntries, c.want))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("bpf: map-size drift (run `task generate`): %v", problems)
+}
