@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -121,6 +122,44 @@ func TestDelete(t *testing.T) {
 		t.Fatal("Lookup after Delete still finds the entry")
 	}
 	m.Delete(0xBB) // no-op on missing must not panic
+}
+
+func TestRange_VisitsEveryEntry(t *testing.T) {
+	m := New()
+	want := map[uint64]string{}
+	for i := uint64(0); i < 200; i++ {
+		proj := "proj-" + strconv.FormatUint(i, 10)
+		m.Insert(i, &TenantMeta{ProjectID: proj})
+		want[i] = proj
+	}
+	got := map[uint64]string{}
+	m.Range(func(mac uint64, meta *TenantMeta) bool {
+		got[mac] = meta.ProjectID
+		return true
+	})
+	if len(got) != len(want) {
+		t.Fatalf("Range visited %d entries, want %d", len(got), len(want))
+	}
+	for mac, proj := range want {
+		if got[mac] != proj {
+			t.Errorf("Range mac=%d project = %q, want %q", mac, got[mac], proj)
+		}
+	}
+}
+
+func TestRange_EarlyStop(t *testing.T) {
+	m := New()
+	for i := uint64(0); i < 100; i++ {
+		m.Insert(i, &TenantMeta{ProjectID: "p"})
+	}
+	visited := 0
+	m.Range(func(uint64, *TenantMeta) bool {
+		visited++
+		return visited < 5
+	})
+	if visited != 5 {
+		t.Fatalf("Range visited %d entries, want 5 (early stop)", visited)
+	}
 }
 
 func TestLenAcrossShards(t *testing.T) {
