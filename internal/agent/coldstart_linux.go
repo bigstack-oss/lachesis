@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/cilium/ebpf"
 
@@ -44,15 +45,18 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	if err != nil {
 		return fmt.Errorf("credentials: %w", err)
 	}
-	client, snap, err := fetchNeutronSnapshot(ctx, creds)
+	client, snap, err := fetchNeutronSnapshot(ctx, creds, ag.NeutronMetrics())
 	if err != nil {
 		return err
 	}
-	stats := populateMetadataFromPorts(ag.Metadata(), snap.Ports)
+	stats := populateMetadataFromPorts(ag.Metadata(), snap.Ports, ag.NeutronMetrics())
 	nMac, nTrie, err := pushSnapshotToKernel(ag, coll, snap)
 	if err != nil {
 		return err
 	}
+	ag.BPFMapMetrics().SetCurrent(bpf.MapMacTenant, float64(nMac))
+	ag.BPFMapMetrics().SetCurrent(bpf.MapSubnetZoneTrie, float64(nTrie))
+	ag.MarkNeutronSync(time.Now())
 	slog.Info("neutron cold-start complete",
 		"component", componentNeutron,
 		"endpoint", client.EndpointURL(),
@@ -74,7 +78,7 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 // Non-retryable errors (401/403/404/400) surface immediately so an
 // operator notices a typo'd auth URL or bad credentials instead of
 // the agent spinning forever.
-func fetchNeutronSnapshot(ctx context.Context, creds neutron.Credentials) (*neutron.Client, neutron.Snapshot, error) {
+func fetchNeutronSnapshot(ctx context.Context, creds neutron.Credentials, mx *neutron.Metrics) (*neutron.Client, neutron.Snapshot, error) {
 	var client *neutron.Client
 	var snap neutron.Snapshot
 	err := retryWithBackoff(ctx, neutronBackoffInitial, neutronBackoffMax,
@@ -82,15 +86,45 @@ func fetchNeutronSnapshot(ctx context.Context, creds neutron.Credentials) (*neut
 			if client == nil {
 				c, err := neutron.NewClient(ctx, creds)
 				if err != nil {
+					mx.RecordAPIError("keystone", err)
 					return fmt.Errorf("keystone auth: %w", err)
 				}
 				client = c
 			}
-			var ferr error
-			snap, ferr = neutron.FetchSnapshot(ctx, client)
-			return ferr
+			s, ferr := fetchAllWithMetrics(ctx, client, mx)
+			if ferr != nil {
+				return ferr
+			}
+			snap = s
+			return nil
 		})
 	return client, snap, err
+}
+
+// fetchAllWithMetrics issues the four list calls in sequence and
+// records per-endpoint API errors via mx. The endpoint label is
+// the resource name; on the kernel side this corresponds 1:1 to
+// the Neutron URL path.
+func fetchAllWithMetrics(ctx context.Context, client *neutron.Client, mx *neutron.Metrics) (neutron.Snapshot, error) {
+	var s neutron.Snapshot
+	var err error
+	if s.Networks, err = client.ListNetworks(ctx); err != nil {
+		mx.RecordAPIError("networks", err)
+		return s, fmt.Errorf("list networks: %w", err)
+	}
+	if s.Subnets, err = client.ListSubnets(ctx); err != nil {
+		mx.RecordAPIError("subnets", err)
+		return s, fmt.Errorf("list subnets: %w", err)
+	}
+	if s.Ports, err = client.ListPorts(ctx); err != nil {
+		mx.RecordAPIError("ports", err)
+		return s, fmt.Errorf("list ports: %w", err)
+	}
+	if s.Routers, err = client.ListRouters(ctx); err != nil {
+		mx.RecordAPIError("routers", err)
+		return s, fmt.Errorf("list routers: %w", err)
+	}
+	return s, nil
 }
 
 // populateMetadataFromPorts walks ports, applies the IsVMPort
@@ -99,7 +133,7 @@ func fetchNeutronSnapshot(ctx context.Context, creds neutron.Credentials) (*neut
 // device_owner (the IsKnownVMOwner allowlist miss) so operators
 // notice when a vendor / plugin string slipped past the broad
 // blacklist.
-func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, ports []neutron.Port) populateStats {
+func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, ports []neutron.Port, mx *neutron.Metrics) populateStats {
 	var s populateStats
 	for _, p := range ports {
 		if !neutron.IsVMPort(p.DeviceOwner) || p.ProjectID == "" || p.MACAddress == "" {
@@ -119,6 +153,7 @@ func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, ports []neutro
 				"port_id", p.ID,
 				"device_owner", p.DeviceOwner,
 				"project_id", p.ProjectID)
+			mx.RecordUnknownOwner(p.DeviceOwner)
 			s.unknownOwners++
 		}
 		var key [6]uint8

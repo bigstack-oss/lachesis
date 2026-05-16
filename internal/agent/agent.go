@@ -24,15 +24,18 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
@@ -98,7 +101,18 @@ type Agent struct {
 	listener  net.Listener
 	server    *http.Server
 
-	walMetrics *wal.Metrics
+	walMetrics     *wal.Metrics
+	neutronMetrics *neutron.Metrics
+	bpfMapMetrics  *bpf.MapMetrics
+
+	// lastNeutronSync is the unix-nanos timestamp of the most
+	// recent successful Neutron cold-start (or, in Sprint 7+,
+	// reconcile). Read by the `cubecos_neutron_sync_age_seconds`
+	// gauge on every Prometheus scrape; updated by
+	// `coldStartNeutron` and the future Kafka updater. Zero means
+	// never-synced — the gauge reports -1 in that case so
+	// dashboards can spot the condition with `< 0`.
+	lastNeutronSync atomic.Int64
 
 	// meta is the userspace MAC → TenantMeta store. Constructed
 	// empty in [New]; populated by Bootstrap from Neutron and
@@ -121,6 +135,34 @@ type Agent struct {
 // load-fallback observations on the same Metrics that the periodic
 // flush will later contribute timings to.
 func (a *Agent) WALMetrics() *wal.Metrics { return a.walMetrics }
+
+// NeutronMetrics returns the Neutron-subsystem instrument bundle.
+// The cold-start path uses it to record API errors and
+// unknown-owner admissions; sync_age reads the agent's
+// [Agent.lastNeutronSync] timestamp at scrape time.
+func (a *Agent) NeutronMetrics() *neutron.Metrics { return a.neutronMetrics }
+
+// BPFMapMetrics returns the BPF-map instrument bundle. Cold-start
+// (and Sprint 7+ Kafka updates) set the current-entries gauge after
+// each successful kernel push.
+func (a *Agent) BPFMapMetrics() *bpf.MapMetrics { return a.bpfMapMetrics }
+
+// MarkNeutronSync records `t` as the most recent successful Neutron
+// sync. Read by the `cubecos_neutron_sync_age_seconds` gauge.
+func (a *Agent) MarkNeutronSync(t time.Time) {
+	a.lastNeutronSync.Store(t.UnixNano())
+}
+
+// lastNeutronSyncTime returns the timestamp marked by the most
+// recent [MarkNeutronSync] call, or the zero time.Time if none.
+// Used by the neutron metrics' sync_age gauge provider.
+func (a *Agent) lastNeutronSyncTime() time.Time {
+	ns := a.lastNeutronSync.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
 
 // Metadata returns the userspace MAC → TenantMeta store. Bootstrap
 // populates it after Neutron cold-start; Sprint 7+ Kafka events
@@ -156,7 +198,28 @@ func New(opts Options) (*Agent, error) {
 	col := metrics.New(st, sc, opts.resolverOrDefault(meta))
 
 	walMx := wal.NewMetrics()
-	reg, err := buildRegistry(col, walMx)
+	bpfMx := bpf.NewMapMetrics()
+	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
+	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
+	// Both current_entries seed at 0; cold-start will overwrite after
+	// the first successful kernel push.
+	bpfMx.SetCurrent(bpf.MapMacTenant, 0)
+	bpfMx.SetCurrent(bpf.MapSubnetZoneTrie, 0)
+
+	a := &Agent{
+		cfg:           opts.Config,
+		state:         st,
+		scraper:       sc,
+		collector:     col,
+		log:           opts.Log,
+		walMetrics:    walMx,
+		bpfMapMetrics: bpfMx,
+		meta:          meta,
+		interner:      interner,
+	}
+	a.neutronMetrics = neutron.NewMetrics(a.lastNeutronSyncTime)
+
+	reg, err := buildRegistry(col, walMx, a.neutronMetrics, bpfMx)
 	if err != nil {
 		return nil, err
 	}
@@ -169,33 +232,35 @@ func New(opts Options) (*Agent, error) {
 		return nil, fmt.Errorf("agent: listen %s: %w", opts.Config.HTTP.Listen, err)
 	}
 
-	return &Agent{
-		cfg:        opts.Config,
-		state:      st,
-		scraper:    sc,
-		collector:  col,
-		runtime:    mgr,
-		log:        opts.Log,
-		listener:   ln,
-		server:     &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout},
-		walMetrics: walMx,
-		meta:       meta,
-		interner:   interner,
-	}, nil
+	a.runtime = mgr
+	a.listener = ln
+	a.server = &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout}
+	return a, nil
 }
 
 // buildRegistry creates a fresh Prometheus registry and binds the
 // agent's custom Collector plus the WAL instruments to it. The two
 // register in tandem so /metrics is the single endpoint operators
 // scrape — billing and WAL health on one wire.
-func buildRegistry(col *metrics.Collector, walMx *wal.Metrics) (*prometheus.Registry, error) {
+func buildRegistry(
+	col *metrics.Collector,
+	walMx *wal.Metrics,
+	neutronMx *neutron.Metrics,
+	bpfMx *bpf.MapMetrics,
+) (*prometheus.Registry, error) {
 	reg := prometheus.NewRegistry()
 	if err := reg.Register(col); err != nil {
 		return nil, fmt.Errorf("agent: register collector: %w", err)
 	}
-	for _, c := range walMx.Collectors() {
-		if err := reg.Register(c); err != nil {
-			return nil, fmt.Errorf("agent: register wal metric: %w", err)
+	for label, bundle := range map[string][]prometheus.Collector{
+		"wal":     walMx.Collectors(),
+		"neutron": neutronMx.Collectors(),
+		"bpf":     bpfMx.Collectors(),
+	} {
+		for _, c := range bundle {
+			if err := reg.Register(c); err != nil {
+				return nil, fmt.Errorf("agent: register %s metric: %w", label, err)
+			}
 		}
 	}
 	return reg, nil
