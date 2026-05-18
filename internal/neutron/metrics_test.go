@@ -13,8 +13,9 @@ import (
 )
 
 // scrape registers the metrics in a fresh registry, gathers the
-// exposition, and returns it as a string. Useful for asserting
-// label sets without round-tripping through the text format.
+// exposition, and returns it as a string. Used by the nil-error
+// absence check, which asserts a metric family does NOT carry
+// counter entries — robust regardless of proto-text spacing.
 func scrape(t *testing.T, m *Metrics) string {
 	t.Helper()
 	reg := prometheus.NewRegistry()
@@ -32,6 +33,19 @@ func scrape(t *testing.T, m *Metrics) string {
 		fmt.Fprintln(&sb, mf.String())
 	}
 	return sb.String()
+}
+
+// newRegistry registers every Collector on m into a fresh
+// prometheus.Registry, suitable for testutil.GatherAndCompare.
+func newRegistry(t *testing.T, m *Metrics) *prometheus.Registry {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	for _, c := range m.Collectors() {
+		if err := reg.Register(c); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+	}
+	return reg
 }
 
 func TestMetrics_SyncAgeNegativeWhenNeverSynced(t *testing.T) {
@@ -56,23 +70,30 @@ func TestMetrics_RecordAPIError_HTTPCode(t *testing.T) {
 	m.RecordAPIError("ports", gophercloud.ErrUnexpectedResponseCode{Actual: 503})
 	m.RecordAPIError("keystone", gophercloud.ErrUnexpectedResponseCode{Actual: 401})
 
-	dump := scrape(t, m)
-	for _, want := range []string{
-		`name:"endpoint" value:"ports"`, `name:"code" value:"503"`,
-		`name:"endpoint" value:"keystone"`, `name:"code" value:"401"`,
-	} {
-		if !strings.Contains(dump, want) {
-			t.Errorf("missing label fragment %q in:\n%s", want, dump)
-		}
+	const want = `
+# HELP cubecos_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
+# TYPE cubecos_neutron_api_errors_total counter
+cubecos_neutron_api_errors_total{code="401",endpoint="keystone"} 1
+cubecos_neutron_api_errors_total{code="503",endpoint="ports"} 2
+`
+	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
+		"cubecos_neutron_api_errors_total"); err != nil {
+		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
 
 func TestMetrics_RecordAPIError_NetworkLevel(t *testing.T) {
 	m := NewMetrics(func() time.Time { return time.Time{} })
 	m.RecordAPIError("networks", errors.New("dial tcp: connection refused"))
-	dump := scrape(t, m)
-	if !strings.Contains(dump, `name:"code" value:"network"`) {
-		t.Errorf("non-HTTP error should record code='network':\n%s", dump)
+
+	const want = `
+# HELP cubecos_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
+# TYPE cubecos_neutron_api_errors_total counter
+cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 1
+`
+	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
+		"cubecos_neutron_api_errors_total"); err != nil {
+		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
 
@@ -93,11 +114,16 @@ func TestMetrics_RecordUnknownOwner(t *testing.T) {
 	m.RecordUnknownOwner("vendor:foo")
 	m.RecordUnknownOwner("vendor:foo")
 	m.RecordUnknownOwner("oslo:bar")
-	dump := scrape(t, m)
-	for _, want := range []string{`name:"owner" value:"vendor:foo"`, `name:"owner" value:"oslo:bar"`} {
-		if !strings.Contains(dump, want) {
-			t.Errorf("missing %q in:\n%s", want, dump)
-		}
+
+	const want = `
+# HELP cubecos_neutron_unknown_device_owner_total Count of port admissions to mac_tenant_map under device_owner values outside the IsKnownVMOwner allowlist.
+# TYPE cubecos_neutron_unknown_device_owner_total counter
+cubecos_neutron_unknown_device_owner_total{owner="oslo:bar"} 1
+cubecos_neutron_unknown_device_owner_total{owner="vendor:foo"} 2
+`
+	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
+		"cubecos_neutron_unknown_device_owner_total"); err != nil {
+		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
 
