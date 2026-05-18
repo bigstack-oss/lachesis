@@ -188,6 +188,35 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
+## Sprint 4c — Trie dedup for global zone entries
+
+**Goal.** Decouple `subnet_zone_trie` cardinality from tenant count. Today every tenant gets its own copy of every catchall / INFRA / SHARED row; only the SAME_TENANT rows are genuinely per-tenant. Verified empirically (27-tenant test deployment): 9270 of 9270 entries observed, of which ≈340 per tenant are global — i.e. ~96% replication. At realistic production tenant counts (≥200) the current model overflows the 16384 trie cap and hard-fails at boot via `bpf.ValidateMapSizes`. After this sprint, trie size is O(G + Σ O_t) instead of O(T × (G + O_t)), where G = global prefixes and O_t = the per-tenant SAME_TENANT prefixes.
+
+**Scope.**
+- Pick one of two kernel data-model shapes during the design phase, then lock it for the rest of the sprint:
+  - (a) **Sentinel `tenant_id=0`** in the existing `subnet_zone_trie`. Cold-start writes catchall / INFRA / SHARED rows once with `tenant_id=0`; only SAME_TENANT rows replicate per tenant. Hot path adds one `bpf_map_lookup_elem` on first-lookup miss.
+  - (b) **Split into two maps**: `tenant_subnet_trie` (keyed `(tenant_id, ip)`, holds SAME_TENANT rows only) and `global_zone_trie` (keyed `ip` only, holds INFRA / SHARED / catchall). Hot path checks the tenant map first, falls back to the global map on miss.
+- Update `internal/neutron/trie.go BuildTrie` per the chosen shape — global rows emitted once, per-tenant rows scoped to true tenant ownership.
+- Update `bpf/telemetry.c` `lookup_zone()` to add the second BPF map lookup on miss, with a verifier-acceptable shape.
+- Update `internal/kernelwriter` to honor the new emission rules.
+- Update `internal/bpf/abi.go`: for shape (a), `MapSubnetZoneTrieMaxEntries` can drop back near the pre-4a 4096 since per-tenant blowup is gone; for shape (b), add the second map to `ValidateMapSizes`.
+- **Pin-path / map-name bump.** The kernel data-model change is incompatible with a Sprint 4a-pinned `subnet_zone_trie`. Either rename the pinned object or bump the BPF object version so a 4c agent refuses to reuse a 4a pin instead of silently mis-classifying.
+- Benchmark: add `BenchmarkHotpath_LpmFallback_*` for the two-lookup path; gate via `task bench-gate`. Target delta: <50 ns on the routed-fallback path vs the Sprint 4a baseline (MAC-first hot path is unchanged and must stay flat).
+- Migrate scenario tests A–L (from the Sprint 4b scenario DSL) to assert the new emission pattern: each global prefix appears exactly once, each SAME_TENANT prefix exactly per-owning-tenant.
+
+**Done when.**
+- Single-host smoke against a real OVN deployment: trie entry count drops from ~9k → <1k.
+- 3-chassis OVN cluster smoke: trie entries <1k regardless of host count — proves per-host independence at cluster scale (host count never multiplied trie size to begin with, but the test demonstrates it explicitly).
+- `task bench-gate` passes within the 50 ns budget on the routed-fallback path; the MAC-first hot path remains at the Sprint 4a baseline.
+- Scenarios A–L still green via the Sprint 4b DSL, plus new emission-uniqueness assertions.
+- A 4c agent started against a Sprint 4a-pinned trie refuses to start (verified by an explicit incompatibility test), preventing silent mis-classification across the upgrade.
+
+**LOC.** ~400.
+
+**Risk.** Medium-low. Confined to the trie data model; orthogonal to Sprint 4b's static-route resolver. The two-lookup pattern is a well-trodden verifier shape (Cilium `pkg/maps` uses it). The highest-risk piece is the pin-path migration — mitigated by name bump + boot-time refusal-to-reuse.
+
+---
+
 ## Sprint 5 — Boot sync machinery + Zombie Hunter + Netlink Watcher
 
 **Goal.** Promote the boot-order ordering 4a wired into `Bootstrap` into an inspectable, explicit-sync-point machine; replace the single static `BPFConfig.AttachInterface` with netlink-driven dynamic attach.
@@ -294,7 +323,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ## Cadence
 
-If sprint = 1 calendar week, total: ~12 weeks (Sprint 0 done + 10 sprints + 1 buffer). With Sprint 4 split into 4a + 4b, the original double-time slot folds into two normal-cadence sprints; total cadence is unchanged.
+If sprint = 1 calendar week, total: ~13 weeks (Sprint 0 done + 11 sprints + 1 buffer). With Sprint 4 split into 4a + 4b, the original double-time slot folds into two normal-cadence sprints; Sprint 4c adds one more slot for the trie dedup surfaced by the 4a live smoke.
 
 ## Risk register
 
@@ -302,6 +331,7 @@ If sprint = 1 calendar week, total: ~12 weeks (Sprint 0 done + 10 sprints + 1 bu
 |---|---|---|
 | 4a | Medium | Boot-order rework in `bootstrap_linux.go`; Neutron API edge cases (deleted-but-cached entries, paginated responses, address-scope semantics); first PR to write the trie + `mac_tenant_map` from userspace |
 | 4b | Medium | Multi-hop static-route resolver edge cases (cycles, VM-appliance nexthops, ambiguity-after-scoping); scenario DSL is new infrastructure; multi-chassis OVN verification surfaces cross-host issues that don't appear single-node |
+| 4c | Medium-low | Confined to the trie data model; two-lookup verifier shape is a known Cilium pattern. Highest-risk piece is the pin-path migration — mitigated by name bump + boot-time refusal-to-reuse |
 | 5 | Low | Boot-sync-machinery formalizes ordering that already works after 4a; risk concentrated in netlink lifecycle (RTM_NEWLINK race with the initial sweep — mitigated by ordering the netlink subscribe BEFORE the initial sweep, per DESIGN §9 failure-modes table) |
 | 6 | Medium | Pressure-relief GC must never delete before flushing to GlobalState; min-heap K=1000 algorithm has subtle correctness boundary at exactly the K-th oldest entry; ghost-precedence invariant is silent on violation (under-billing, not crash) |
 | 7 | Medium | Incremental diff has subtle race with cold-start; replay tests need careful fixture engineering; 5-minute reconcile diff against in-memory state has its own race window with concurrent Kafka events |
@@ -312,13 +342,13 @@ If sprint = 1 calendar week, total: ~12 weeks (Sprint 0 done + 10 sprints + 1 bu
 ## Dependency graph
 
 ```
-                    ┌──► 2 (state+collector) ──► 3 (WAL) ──► 4a (Neutron foundations) ──► 4b (static routes) ──► 5 (boot) ──► 6 (GC) ──► 7 (Kafka) ──► 8 (Octavia) ──► 9 (harden) ──► 10 (v6)
+                    ┌──► 2 (state+collector) ──► 3 (WAL) ──► 4a (Neutron foundations) ──► 4b (static routes) ──► 4c (trie dedup) ──► 5 (boot) ──► 6 (GC) ──► 7 (Kafka) ──► 8 (Octavia) ──► 9 (harden) ──► 10 (v6)
 1 (kernel) ─────────┤
                     └──► (smoke test slice for one hardcoded VM at end of Sprint 3)
 ```
 
-Sprints 1, 2, 3 can technically interleave; the linear ordering above gives a working billing-grade slice for one hardcoded VM at the end of Sprint 3 — useful as an early demo and smoke test before the Neutron complexity lands in Sprint 4a. Sprint 4b stays a hard dependency of Sprint 5: the boot-sequence harness assumes the trie is fully populated.
+Sprints 1, 2, 3 can technically interleave; the linear ordering above gives a working billing-grade slice for one hardcoded VM at the end of Sprint 3 — useful as an early demo and smoke test before the Neutron complexity lands in Sprint 4a. Sprint 4b stays a hard dependency of Sprint 5: the boot-sequence harness assumes the trie is fully populated. Sprint 4c is a hard dependency of Sprint 7 (Kafka live updates) — incremental diffs against a deduplicated trie are a different algorithm than against the per-tenant-replicated trie, and it is cheaper to land them on the post-4c shape than to migrate the diff code later.
 
 ---
 
-*Last updated: 2026-05-16 (sprint 4-10 sweep: split Sprint 4 into 4a + 4b; reframed Sprint 5 around boot-sync machinery + AttachInterface deprecation; expanded Sprint 6 with min-heap GC algorithm + ghost precedence + collect-duration metric; added 5-minute Neutron reconcile to Sprint 7; clarified Sprint 8's `amphora_meta` sidecar map vs `mac_tenant_map` schema; rewrote Sprint 9 as verification + bench-gate closure + ops README; trimmed Sprint 10 to strictly IPv6; refreshed risk register).*
+*Last updated: 2026-05-18 (added Sprint 4c — trie dedup for global zone entries, surfaced by the 4a single-host smoke against a real OVN deployment where ~96% of trie entries were per-tenant copies of global INFRA/SHARED/catchall rows; updated cadence, risk register, and dep graph; flagged 4c as a hard dep of Sprint 7).*

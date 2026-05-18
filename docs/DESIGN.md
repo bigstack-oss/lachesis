@@ -226,6 +226,27 @@ Insertion examples:
 
 **Why `(tenant_id, ip)` and not just `ip`.** Two tenants can have the same CIDR (e.g., both register `10.0.1.0/24`). Zone is **always relative to the source VM's tenant** — `10.0.1.0/24` may be `SAME_TENANT` for tenant 1001 and `OTHER_TENANT` for tenant 1002. Scoping the key by `tenant_id` makes both views coexist in one trie.
 
+**Scaling cost of the current (tenant_id, ip) shape.** The §5.2 cold-start algorithm emits, *for every tenant T*:
+
+```
+  total_entries(T)  =  1 (catchall)
+                     + 1 (metadata /32)
+                     + |shared_prefixes|          (every shared subnet, all tenants)
+                     + |infra_prefixes|           (router/DHCP/gateway IPs, all tenants)
+                     + |owned_subnets(T)|         (genuinely per-tenant)
+
+  total_entries     =  |T| × (2 + |shared| + |infra|)  +  Σ_t |owned(t)|
+```
+
+Empirically on a 27-tenant single-host OVN deployment: 9270 total entries, of which ~340 per tenant are global (catchall + metadata + shared + infra). That is `27 × 340 + 90 ≈ 9270` — i.e. **~96% of trie occupancy is per-tenant replication of identical global rows.** Adding compute hosts does not multiply this (every node loads the same cluster-wide Neutron snapshot), but adding tenants does. At realistic production tenant counts (≥200) the model overflows the 16384 trie cap and hard-fails at boot via `bpf.ValidateMapSizes`.
+
+**Dedup is planned for Sprint 4c**, *not* a deferred item: see `docs/sprint-plan.md` §4c. Two candidate shapes (decision in the 4c design phase):
+
+  - (a) Sentinel `tenant_id=0` rows in this same trie for catchall / INFRA / SHARED — read with a fallback `bpf_map_lookup_elem` on first-lookup miss.
+  - (b) Split into `tenant_subnet_trie` (keyed `(tenant_id, ip)`, SAME_TENANT only) + a new `global_zone_trie` (keyed `ip` only, holds INFRA / SHARED / catchall).
+
+Either reshapes cardinality from `O(T × G + Σ O_t)` to `O(G + Σ O_t)`. The hot-path cost is one extra BPF map lookup on the routed-fallback path; the MAC-first hot path is unchanged. Sprint 4c is also a hard dependency of Sprint 7 — incremental Kafka diffs are cheaper to write against the deduplicated shape than to migrate later.
+
 #### `mac_tenant_map` — MAC-to-tenant lookup
 
 ```
