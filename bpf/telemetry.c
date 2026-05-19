@@ -94,9 +94,15 @@ struct {
  * Sizing: per docs/DESIGN.md §5.2, each tenant emits roughly
  *   1 catchall + N_owned_subnets + N_shared_subnets +
  *   N_infra_ports + 1 metadata
- * trie rows. At a target of ~500 tenants × ~30 effective rows/tenant
- * (Yoga deployments observed empirically on dev-cmp), 15,000 rows is
- * the realistic upper bound; 16384 = 2× headroom in a power-of-two.
+ * trie rows. Empirically on a 27-tenant OVN-Yoga single-host
+ * deployment Steps 1–4 produce ~340 effective rows/tenant — nearly
+ * all of that is Step 4 (every router_interface / router_gateway /
+ * distributed-DHCP /32 + every subnet gateway, replicated per
+ * tenant). 16384 caps the trie at ~48 tenants of this shape;
+ * deployments above that trip ValidateMapSizes at boot.
+ * docs/sprint-plan.md §4c (trie dedup for global zone entries)
+ * removes the per-tenant replication and reshapes cardinality to
+ * O(G + Σ O_t); after 4c lands this cap can drop back near 4096.
  */
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
