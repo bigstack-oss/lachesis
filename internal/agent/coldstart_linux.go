@@ -50,9 +50,20 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 		return err
 	}
 	stats := populateMetadataFromPorts(ag.Metadata(), snap.Ports, ag.NeutronMetrics())
-	nMac, nTrie, err := pushSnapshotToKernel(ag, coll, snap)
+	nMac, nTrie, ambiguities, err := pushSnapshotToKernel(ag, coll, snap)
 	if err != nil {
 		return err
+	}
+	if len(ambiguities) > 0 {
+		if !cfg.UnsafeAllowAmbiguousRoutes {
+			return fmt.Errorf("static-route ambiguity in strict mode (%d hits, first=%+v); "+
+				"set neutron.unsafe_allow_ambiguous_routes=true to accept EXTERNAL fallback and continue",
+				len(ambiguities), ambiguities[0])
+		}
+		slog.Warn("static-route ambiguities accepted under unsafe mode",
+			"component", componentNeutron,
+			"count", len(ambiguities),
+			"first", ambiguities[0])
 	}
 	ag.BPFMapMetrics().SetCurrent(bpf.MapMacTenant, float64(nMac))
 	ag.BPFMapMetrics().SetCurrent(bpf.MapSubnetZoneTrie, float64(nTrie))
@@ -170,23 +181,23 @@ func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, ports []neutro
 // updates can fail with EINVAL (bad key) or ENOSPC (map full); both
 // indicate a real bug or a sizing regression and retrying would
 // just paper over the cause.
-func pushSnapshotToKernel(ag *Agent, coll *ebpf.Collection, snap neutron.Snapshot) (nMac, nTrie int, err error) {
+func pushSnapshotToKernel(ag *Agent, coll *ebpf.Collection, snap neutron.Snapshot) (nMac, nTrie int, ambiguities []neutron.AmbiguityHit, err error) {
 	macMap := coll.Maps[bpf.MapMacTenant]
 	if macMap == nil {
-		return 0, 0, fmt.Errorf("%s map missing from collection", bpf.MapMacTenant)
+		return 0, 0, nil, fmt.Errorf("%s map missing from collection", bpf.MapMacTenant)
 	}
 	trieMap := coll.Maps[bpf.MapSubnetZoneTrie]
 	if trieMap == nil {
-		return 0, 0, fmt.Errorf("%s map missing from collection", bpf.MapSubnetZoneTrie)
+		return 0, 0, nil, fmt.Errorf("%s map missing from collection", bpf.MapSubnetZoneTrie)
 	}
-	entries := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
+	entries, ambiguities := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
 	nMac, err = kernelwriter.WriteMacTenantMap(macMap, ag.Metadata(), ag.Interner())
 	if err != nil {
-		return nMac, 0, fmt.Errorf("write mac_tenant_map (wrote %d): %w", nMac, err)
+		return nMac, 0, ambiguities, fmt.Errorf("write mac_tenant_map (wrote %d): %w", nMac, err)
 	}
 	nTrie, err = kernelwriter.WriteSubnetZoneTrie(trieMap, entries, ag.Interner())
 	if err != nil {
-		return nMac, nTrie, fmt.Errorf("write subnet_zone_trie (wrote %d): %w", nTrie, err)
+		return nMac, nTrie, ambiguities, fmt.Errorf("write subnet_zone_trie (wrote %d): %w", nTrie, err)
 	}
-	return nMac, nTrie, nil
+	return nMac, nTrie, ambiguities, nil
 }

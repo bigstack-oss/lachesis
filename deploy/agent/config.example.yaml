@@ -103,3 +103,14 @@ neutron:
   # Proactive re-authentication lead time relative to token expiry.
   # 5m is safe for the typical 1h Keystone token.
   refresh_lead: 5m
+
+  # When true, the agent boots even if the static-route resolver
+  # surfaced one or more Step C ambiguity-after-scoping incidents
+  # (DESIGN §5.6). Each affected route classifies EXTERNAL with a
+  # warn log. The default (false) is strict mode: any ambiguity
+  # refuses to start. Set true only with an operator's informed
+  # consent — ambiguous routes systematically mis-bill the
+  # cross-tenant CIDR they cover.
+  # Env: CUBECOS_NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES
+  # Flag: -unsafe-allow-ambiguous-routes
+  unsafe_allow_ambiguous_routes: false

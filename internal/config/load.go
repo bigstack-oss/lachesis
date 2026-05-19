@@ -175,6 +175,13 @@ func applyEnv(cfg *Config, prefix string, getenv func(string) string) error {
 	if v := getenv(prefix + "_NEUTRON_CREDENTIALS_FILE"); v != "" {
 		cfg.Neutron.CredentialsFile = v
 	}
+	if v := getenv(prefix + "_NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES"); v != "" {
+		b, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s_NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES=%q: %w", prefix, v, err)
+		}
+		cfg.Neutron.UnsafeAllowAmbiguousRoutes = b
+	}
 	return nil
 }
 
@@ -224,5 +231,7 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 		"Enable Neutron cold-start (boot-blocking)"+envHint("NEUTRON_ENABLED"))
 	fs.StringVar(&cfg.Neutron.CredentialsFile, "neutron-credentials-file", cfg.Neutron.CredentialsFile,
 		"Absolute path to admin-openrc-style credentials file"+envHint("NEUTRON_CREDENTIALS_FILE"))
+	fs.BoolVar(&cfg.Neutron.UnsafeAllowAmbiguousRoutes, "unsafe-allow-ambiguous-routes", cfg.Neutron.UnsafeAllowAmbiguousRoutes,
+		"Allow boot to continue when BuildTrie reports static-route Step C ambiguities; default false (strict)"+envHint("NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES"))
 	return fs.Parse(args)
 }

@@ -74,6 +74,15 @@ type NeutronConfig struct {
 	// typical 1h Keystone token; tighten only if your deployment
 	// issues shorter-lived tokens.
 	RefreshLead time.Duration `yaml:"refresh_lead"`
+
+	// UnsafeAllowAmbiguousRoutes, when true, lets the agent boot
+	// even if BuildTrie surfaced one or more static-route Step C
+	// ambiguities (DESIGN §5.6). Each such route classifies as
+	// EXTERNAL with a warn-level log. The default (false) is strict
+	// mode: any ambiguity refuses to start. Set true only with an
+	// operator's informed consent — ambiguous routes systematically
+	// mis-bill the cross-tenant CIDR they cover.
+	UnsafeAllowAmbiguousRoutes bool `yaml:"unsafe_allow_ambiguous_routes"`
 }
 
 func neutronDefaults() NeutronConfig {
