@@ -62,8 +62,19 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 		}
 		slog.Warn("static-route ambiguities accepted under unsafe mode",
 			"component", componentNeutron,
-			"count", len(ambiguities),
-			"first", ambiguities[0])
+			"count", len(ambiguities))
+		// One detail entry per hit so operators don't have to grep for
+		// individual routers / destinations — `grep -c "ambiguity hit"`
+		// is the count, and each line carries the (source_tenant,
+		// router, destination, owners) tuple needed to investigate.
+		for _, hit := range ambiguities {
+			slog.Warn("static-route ambiguity hit",
+				"component", componentNeutron,
+				"source_tenant", hit.SourceTenant,
+				"router", hit.RouterID,
+				"destination", hit.Destination.String(),
+				"owners", hit.Owners)
+		}
 	}
 	ag.BPFMapMetrics().SetCurrent(bpf.MapMacTenant, float64(nMac))
 	ag.BPFMapMetrics().SetCurrent(bpf.MapSubnetZoneTrie, float64(nTrie))
