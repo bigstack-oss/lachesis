@@ -175,19 +175,28 @@ func TestWriteSubnetZoneTrie_HappyPath(t *testing.T) {
 	}
 }
 
-func TestWriteSubnetZoneTrie_PanicsOnEmptyTenant(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic on empty TenantID")
-		}
-	}()
-	WriteSubnetZoneTrie(
-		&fakeMap{},
-		[]neutron.TrieEntry{
-			{TenantID: "", Prefix: netip.MustParsePrefix("0.0.0.0/0"), Zone: bpf.ZoneExternal},
-		},
-		metadata.NewTenantInterner(),
-	)
+func TestWriteSubnetZoneTrie_EmptyTenantWarnsAndSkips(t *testing.T) {
+	// An empty TenantID is a caller bug (BuildTrie never emits such
+	// rows), but the writer warn-logs + skips rather than panicking
+	// — consistent with the rest of the writer's first-error-wins
+	// discipline. Valid entries on either side of the empty one are
+	// still written.
+	fm := &fakeMap{}
+	entries := []neutron.TrieEntry{
+		{TenantID: "p", Prefix: netip.MustParsePrefix("10.0.0.0/24"), Zone: bpf.ZoneSameTenant},
+		{TenantID: "", Prefix: netip.MustParsePrefix("0.0.0.0/0"), Zone: bpf.ZoneExternal}, // skipped
+		{TenantID: "p", Prefix: netip.MustParsePrefix("192.0.2.0/24"), Zone: bpf.ZoneOtherTenant},
+	}
+	n, err := WriteSubnetZoneTrie(fm, entries, metadata.NewTenantInterner())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("written = %d, want 2 (empty-TenantID entry should be skipped, others written)", n)
+	}
+	if len(fm.updates) != 2 {
+		t.Errorf("fakeMap.updates len = %d, want 2", len(fm.updates))
+	}
 }
 
 func TestWriteSubnetZoneTrie_PartialFailureReturnsFirstError(t *testing.T) {
