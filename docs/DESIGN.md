@@ -592,6 +592,8 @@ If CubeCOS ever supports a traditional Neutron deployment with DVR, this step wo
 
 ### 5.3 The static route resolver (the heart of step 5)
 
+> Interactive walkthrough: [`docs/static-route-resolver.html`](./static-route-resolver.html) animates this algorithm step-by-step across five canonical topologies (single-hop, VM-appliance, multi-hop, cycle, ambiguity), highlighting the matching line in [`internal/neutron/resolve.go`](../internal/neutron/resolve.go) as it executes. Open in any browser; no build step.
+
 CIDR alone is ambiguous — multiple tenants can register the same CIDR. The disambiguator is **the nexthop**, not the destination.
 
 A static route may also be **multi-hop**: T1's router points to T2's router, which has its own extraroute pointing to T3, and so on until some router has the destination directly attached. The resolver must walk this chain — a single-hop check would falsely return `EXTERNAL` whenever the destination is more than one router away.
