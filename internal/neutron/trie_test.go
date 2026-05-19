@@ -384,25 +384,93 @@ func TestBuildTrie_MalformedCIDRSkipped(t *testing.T) {
 	}
 }
 
-// TestBuildTrie_Step5Omitted asserts router.Routes are silently
-// ignored: the catchall (Step 1) carries the classification as
-// EXTERNAL until the multi-hop static-route resolver lands.
-func TestBuildTrie_Step5Omitted(t *testing.T) {
+// TestBuildTrie_Step5EmitsExtraroute asserts BuildTrie wires the
+// multi-hop static-route resolver (DESIGN §5.3) into Step 5 of
+// docs/DESIGN.md §5.2: a router's extraroute reaches the trie as
+// a (tenant, destination) entry with the zone the resolver picks.
+//
+// The setup is the minimal VM-appliance case: R1 (T1) has an
+// extraroute 172.16.99.0/24 via a compute:nova port on R1's own
+// net-T1. zoneFor(T1, T1, net-T1) returns SAME_TENANT.
+func TestBuildTrie_Step5EmitsExtraroute(t *testing.T) {
+	got := BuildTrie(
+		[]Network{{ID: "net-T1", ProjectID: "T1"}},
+		[]Subnet{{ID: "sub-T1", NetworkID: "net-T1", ProjectID: "T1", CIDR: "10.0.1.0/24", IPVersion: 4}},
+		[]Port{
+			{ID: "p-R1", NetworkID: "net-T1", ProjectID: "T1",
+				DeviceOwner: "network:router_interface", DeviceID: "R1",
+				FixedIPs: []FixedIP{{SubnetID: "sub-T1", IPAddress: "10.0.1.1"}}},
+			{ID: "p-vm", NetworkID: "net-T1", ProjectID: "T1",
+				DeviceOwner: "compute:nova", DeviceID: "instance-uuid",
+				FixedIPs: []FixedIP{{SubnetID: "sub-T1", IPAddress: "10.0.1.50"}}},
+		},
+		[]Router{{
+			ID: "R1", ProjectID: "T1",
+			Routes: []Route{{Destination: "172.16.99.0/24", Nexthop: "10.0.1.50"}},
+		}},
+	)
+	want := TrieEntry{TenantID: "T1", Prefix: mustPrefix(t, "172.16.99.0/24"), Zone: bpf.ZoneSameTenant}
+	found := false
+	for _, e := range got {
+		if e == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("extraroute entry missing from trie; got:\n%+v\nwant: %+v", got, want)
+	}
+}
+
+// TestBuildTrie_Step5UnresolvableFallsBackExternal asserts that a
+// route whose nexthop misses Step A (not on any of R1's iface
+// subnets) classifies EXTERNAL — the resolver's catchall return —
+// rather than being silently dropped.
+func TestBuildTrie_Step5UnresolvableFallsBackExternal(t *testing.T) {
 	got := BuildTrie(
 		nil, nil, nil,
 		[]Router{{
-			ID:        "r1",
-			ProjectID: "T1",
-			Routes:    []Route{{Destination: "10.99.0.0/16", Nexthop: "10.0.0.2"}},
+			ID: "R1", ProjectID: "T1",
+			Routes: []Route{{Destination: "10.99.0.0/16", Nexthop: "10.0.0.2"}},
 		}},
 	)
-	// No row for 10.99.0.0/16 should appear; the only T1 rows are
-	// catchall + metadata INFRA.
+	want := TrieEntry{TenantID: "T1", Prefix: mustPrefix(t, "10.99.0.0/16"), Zone: bpf.ZoneExternal}
+	found := false
 	for _, e := range got {
-		if e.TenantID == "T1" && e.Prefix == mustPrefix(t, "10.99.0.0/16") {
-			t.Errorf("extra route leaked into trie: %+v", e)
+		if e == want {
+			found = true
+			break
 		}
 	}
+	if !found {
+		t.Fatalf("unresolvable extraroute should emit EXTERNAL; got:\n%+v", got)
+	}
+}
+
+// TestBuildTrie_Step5InvalidRouteSkipped asserts malformed
+// destination CIDRs and nexthops are skipped with a warn log
+// (matching the Step 2/4 invalid-CIDR pattern), so a single stale
+// route can't block boot.
+func TestBuildTrie_Step5InvalidRouteSkipped(t *testing.T) {
+	got := BuildTrie(
+		nil, nil, nil,
+		[]Router{{
+			ID: "R1", ProjectID: "T1",
+			Routes: []Route{
+				{Destination: "not-a-cidr", Nexthop: "10.0.0.2"},
+				{Destination: "10.99.0.0/16", Nexthop: "not-an-ip"},
+			},
+		}},
+	)
+	for _, e := range got {
+		if e.TenantID == "T1" && e.Prefix.String() == "10.99.0.0/16" {
+			// Permitted: a valid CIDR with an unparseable nexthop is
+			// dropped before the resolver runs (warn-logged) — this
+			// assertion confirms nothing leaked into the trie.
+			t.Errorf("invalid route leaked into trie: %+v", e)
+		}
+	}
+	// T1 should have exactly catchall + metadata (no extraroutes survived).
 	if countTenant(got, "T1") != 2 {
 		t.Errorf("T1 expected 2 rows (catchall + metadata), got %d", countTenant(got, "T1"))
 	}
