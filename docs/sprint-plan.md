@@ -192,28 +192,32 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 **Goal.** Decouple `subnet_zone_trie` cardinality from tenant count. Today every tenant gets its own copy of every catchall / INFRA / SHARED row; only the SAME_TENANT rows are genuinely per-tenant. Verified empirically (27-tenant test deployment): 9270 of 9270 entries observed, of which ≈340 per tenant are global — i.e. ~96% replication. At realistic production tenant counts (≥200) the current model overflows the 16384 trie cap and hard-fails at boot via `bpf.ValidateMapSizes`. After this sprint, trie size is O(G + Σ O_t) instead of O(T × (G + O_t)), where G = global prefixes and O_t = the per-tenant SAME_TENANT prefixes.
 
+**Shape (locked in slice 1).** Sentinel `tenant_id=0` rows in the existing `subnet_zone_trie`: cold-start writes catchall / INFRA / SHARED rows once with `tenant_id=0`; only SAME_TENANT rows replicate per tenant. The hot path adds one `bpf_map_lookup_elem` on first-lookup miss. Picked over a split-map alternative because pin-path / `ValidateMapSizes` / `LpmKey` surface area stays single-map, and `tenant_id=0` is already reserved by `metadata.TenantIDUnset` (interner starts at 1, so 0 is a natural "applies to all tenants" sentinel). The split-map alternative would have given a marginally cleaner data model at the cost of doubling kernel-ABI surface for a confined optimization. The product is pre-release and the agent does not pin maps today (`grep -rn "m\.Pin\|LoadPinned"` returns nothing outside `internal/config`), so the original §4c "pin-path / map-name bump + boot-time refusal-to-reuse" mitigation is dropped — no v1 pin exists to migrate against.
+
 **Scope.**
-- Pick one of two kernel data-model shapes during the design phase, then lock it for the rest of the sprint:
-  - (a) **Sentinel `tenant_id=0`** in the existing `subnet_zone_trie`. Cold-start writes catchall / INFRA / SHARED rows once with `tenant_id=0`; only SAME_TENANT rows replicate per tenant. Hot path adds one `bpf_map_lookup_elem` on first-lookup miss.
-  - (b) **Split into two maps**: `tenant_subnet_trie` (keyed `(tenant_id, ip)`, holds SAME_TENANT rows only) and `global_zone_trie` (keyed `ip` only, holds INFRA / SHARED / catchall). Hot path checks the tenant map first, falls back to the global map on miss.
-- Update `internal/neutron/trie.go BuildTrie` per the chosen shape — global rows emitted once, per-tenant rows scoped to true tenant ownership.
-- Update `bpf/telemetry.c` `lookup_zone()` to add the second BPF map lookup on miss, with a verifier-acceptable shape.
-- Update `internal/kernelwriter` to honor the new emission rules.
-- Update `internal/bpf/abi.go`: for shape (a), `MapSubnetZoneTrieMaxEntries` can drop back near the pre-4a 4096 since per-tenant blowup is gone; for shape (b), add the second map to `ValidateMapSizes`.
-- **Pin-path / map-name bump.** The kernel data-model change is incompatible with a Sprint 4a-pinned `subnet_zone_trie`. Either rename the pinned object or bump the BPF object version so a 4c agent refuses to reuse a 4a pin instead of silently mis-classifying.
+- Update `internal/neutron/trie.go BuildTrie`: catchall (Step 1), shared (Step 3), and infra (Step 4) rows emit once with `TenantID=""` (resolved to `metadata.TenantIDUnset` by the writer); owned (Step 2) and extraroutes (Step 5) stay per-tenant.
+- Update `bpf/telemetry.c` `lookup_zone()` to add the sentinel fallback `bpf_map_lookup_elem` on first-lookup miss, with a verifier-acceptable shape (re-key the same `lpm_key` with `tenant_id = 0`, look up again, return the zone or `ZONE_MISS`).
+- Update `internal/kernelwriter` to honor the new emission rules (empty `TenantID` → `TenantIDUnset` instead of skip-with-warn).
+- `internal/bpf/abi.go`: `MapSubnetZoneTrieMaxEntries` stays at 16384. Headroom is cheap on an `LPM_TRIE` with `BPF_F_NO_PREALLOC` and absorbs future per-tenant SAME_TENANT growth without another `task generate` cycle.
 - Benchmark: add `BenchmarkHotpath_LpmFallback_*` for the two-lookup path; gate via `task bench-gate`. Target delta: <50 ns on the routed-fallback path vs the Sprint 4a baseline (MAC-first hot path is unchanged and must stay flat).
-- Migrate scenario tests A–L (from the Sprint 4b scenario DSL) to assert the new emission pattern: each global prefix appears exactly once, each SAME_TENANT prefix exactly per-owning-tenant.
+- Migrate scenario tests A–L (from the Sprint 4b scenario DSL) to assert the new emission pattern: each global prefix appears exactly once with `TenantID=""`, each SAME_TENANT prefix exactly per-owning-tenant.
+
+**Slice plan.**
+
+1. Design pin in this doc + `DESIGN.md` §3.1; no code change. (~30 LOC docs.)
+2. `BuildTrie` + scenario-DSL emission-uniqueness assertions + writer change. (~150 LOC.)
+3. C-side two-lookup `lookup_zone` + `task generate` + `BenchmarkHotpath_LpmFallback_*`. (~80 LOC C + bench.)
+4. dev-cmp smoke; trie count drops from 14252 → <1k. cc-cluster 3-chassis check folded in if access is easy.
 
 **Done when.**
-- Single-host smoke against a real OVN deployment: trie entry count drops from ~9k → <1k.
+- Single-host smoke against a real OVN deployment: trie entry count drops from ~14k → <1k.
 - 3-chassis OVN cluster smoke: trie entries <1k regardless of host count — proves per-host independence at cluster scale (host count never multiplied trie size to begin with, but the test demonstrates it explicitly).
 - `task bench-gate` passes within the 50 ns budget on the routed-fallback path; the MAC-first hot path remains at the Sprint 4a baseline.
 - Scenarios A–L still green via the Sprint 4b DSL, plus new emission-uniqueness assertions.
-- A 4c agent started against a Sprint 4a-pinned trie refuses to start (verified by an explicit incompatibility test), preventing silent mis-classification across the upgrade.
 
-**LOC.** ~400.
+**LOC.** ~250 (was ~400 before the pin-path-migration slice was dropped).
 
-**Risk.** Medium-low. Confined to the trie data model; orthogonal to Sprint 4b's static-route resolver. The two-lookup pattern is a well-trodden verifier shape (Cilium `pkg/maps` uses it). The highest-risk piece is the pin-path migration — mitigated by name bump + boot-time refusal-to-reuse.
+**Risk.** Low. Confined to the trie data model; orthogonal to Sprint 4b's static-route resolver. The two-lookup pattern is a well-trodden verifier shape (Cilium `pkg/maps` uses it). No pin reuse to migrate against (pre-release, agent doesn't pin maps today).
 
 ---
 
@@ -331,7 +335,7 @@ If sprint = 1 calendar week, total: ~13 weeks (Sprint 0 done + 11 sprints + 1 bu
 |---|---|---|
 | 4a | Medium | Boot-order rework in `bootstrap_linux.go`; Neutron API edge cases (deleted-but-cached entries, paginated responses, address-scope semantics); first PR to write the trie + `mac_tenant_map` from userspace |
 | 4b | Medium | Multi-hop static-route resolver edge cases (cycles, VM-appliance nexthops, ambiguity-after-scoping); scenario DSL is new infrastructure; multi-chassis OVN verification surfaces cross-host issues that don't appear single-node |
-| 4c | Medium-low | Confined to the trie data model; two-lookup verifier shape is a known Cilium pattern. Highest-risk piece is the pin-path migration — mitigated by name bump + boot-time refusal-to-reuse |
+| 4c | Low | Confined to the trie data model; two-lookup verifier shape is a known Cilium pattern. No pin reuse to migrate against (pre-release, agent doesn't pin maps today), so the original pin-path-migration slice is dropped |
 | 5 | Low | Boot-sync-machinery formalizes ordering that already works after 4a; risk concentrated in netlink lifecycle (RTM_NEWLINK race with the initial sweep — mitigated by ordering the netlink subscribe BEFORE the initial sweep, per DESIGN §9 failure-modes table) |
 | 6 | Medium | Pressure-relief GC must never delete before flushing to GlobalState; min-heap K=1000 algorithm has subtle correctness boundary at exactly the K-th oldest entry; ghost-precedence invariant is silent on violation (under-billing, not crash) |
 | 7 | Medium | Incremental diff has subtle race with cold-start; replay tests need careful fixture engineering; 5-minute reconcile diff against in-memory state has its own race window with concurrent Kafka events |
@@ -351,4 +355,4 @@ Sprints 1, 2, 3 can technically interleave; the linear ordering above gives a wo
 
 ---
 
-*Last updated: 2026-05-18 (added Sprint 4c — trie dedup for global zone entries, surfaced by the 4a single-host smoke against a real OVN deployment where ~96% of trie entries were per-tenant copies of global INFRA/SHARED/catchall rows; updated cadence, risk register, and dep graph; flagged 4c as a hard dep of Sprint 7).*
+*Last updated: 2026-05-19 (Sprint 4c slice 1: locked sentinel `tenant_id=0` shape; dropped the pin-path-migration slice — pre-release product, agent doesn't pin maps today, so no v1 pin to refuse-reuse against; `MapSubnetZoneTrieMaxEntries` stays at 16384 for headroom; LOC re-estimated 400 → 250).*
