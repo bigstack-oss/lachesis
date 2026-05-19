@@ -174,10 +174,11 @@ func IsKnownVMOwner(deviceOwner string) bool {
 }
 
 // BuildTrie runs the cold-start 5-step algorithm of
-// docs/DESIGN.md §5.2 and returns a flat slice of [TrieEntry] for
-// every tenant that owns at least one network, port, or router in
-// the supplied Neutron snapshot. The second return aggregates every
-// Step C ambiguity-after-scoping incident encountered while
+// docs/DESIGN.md §5.2 (Step 5 delegates to the multi-hop static-
+// route resolver of §5.3) and returns a flat slice of [TrieEntry]
+// for every tenant that owns at least one network, port, or router
+// in the supplied Neutron snapshot. The second return aggregates
+// every Step C ambiguity-after-scoping incident encountered while
 // resolving extraroutes (DESIGN §5.6). Callers running in strict
 // mode (the default) refuse to start when the slice is non-empty;
 // callers running with --unsafe-allow-ambiguous-routes log + accept
