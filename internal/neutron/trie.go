@@ -174,10 +174,14 @@ func IsKnownVMOwner(deviceOwner string) bool {
 //     docs/DESIGN.md §5.2 Step 3.
 //  4. Infra:      router / DHCP / metadata port IPs + subnet gateway
 //     IPs + 169.254.169.254 → INFRA for every tenant.
-//  5. Static routes: OMITTED in this sprint. Extra-route CIDRs
-//     fall through to the Step-1 catchall (EXTERNAL).
-//     docs/sprint-plan.md §4b replaces this with the
-//     multi-hop resolver of docs/DESIGN.md §5.3.
+//  5. Extraroutes: for each router R owned by the tenant, walk
+//     every (destination, nexthop) entry in R.Routes through
+//     [resolveStaticRouteZone] (docs/DESIGN.md §5.3). The resolver
+//     iterates router-interface peers until it lands on a directly-
+//     attached subnet or a compute:nova appliance, then classifies
+//     via [zoneFor]. Misconfig (Step A miss), cycle, MAX_HOPS
+//     exceeded, and ambiguity-after-scoping all fall back to
+//     EXTERNAL with a warn-level log.
 //
 // # IPv6
 //
@@ -200,6 +204,7 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 	tenants := collectTenants(networks, ports, routers)
 	sharedPrefixes := buildSharedPrefixes(networks, subnetsByNetwork)
 	infraPrefixes := buildInfraPrefixes(subnets, ports)
+	ri := newResolveIndex(networks, subnets, ports, routers)
 
 	entries := make([]TrieEntry, 0,
 		len(tenants)*(1+len(sharedPrefixes)+len(infraPrefixes)+1))
@@ -237,6 +242,37 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 			entries = append(entries, TrieEntry{tenant, p, bpf.ZoneInfra})
 		}
 		entries = append(entries, TrieEntry{tenant, metadataPrefix, bpf.ZoneInfra})
+
+		// Step 5: extraroutes on this tenant's routers. The resolver
+		// returns a zone for each (destination, nexthop) by tracing
+		// router-interface peers until it lands on a directly-attached
+		// subnet or a compute:nova appliance (docs/DESIGN.md §5.3).
+		for _, r := range routers {
+			if r.ProjectID != tenant {
+				continue
+			}
+			for _, route := range r.Routes {
+				destination, ok := parsePrefixV4(route.Destination)
+				if !ok {
+					continue
+				}
+				nh, err := netip.ParseAddr(route.Nexthop)
+				if err != nil {
+					slog.Warn("invalid extraroute nexthop; skipped",
+						"component", componentNeutron,
+						"tenant", tenant,
+						"destination", route.Destination,
+						"nexthop", route.Nexthop,
+						"err", err)
+					continue
+				}
+				if !nh.Is4() {
+					continue // IPv6 nexthops deferred (DESIGN §13.2).
+				}
+				zone := ri.resolveStaticRouteZone(r, destination, nh)
+				entries = append(entries, TrieEntry{tenant, destination, zone})
+			}
+		}
 	}
 
 	sortEntries(entries)
