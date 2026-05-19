@@ -19,13 +19,15 @@ import (
 //
 // The instruments:
 //
-//   - cubecos_neutron_sync_age_seconds                         gauge (sync recency)
-//   - cubecos_neutron_api_errors_total{endpoint, code}         counter
-//   - cubecos_neutron_unknown_device_owner_total{owner}        counter
+//   - cubecos_neutron_sync_age_seconds                          gauge (sync recency)
+//   - cubecos_neutron_api_errors_total{endpoint, code}          counter
+//   - cubecos_neutron_unknown_device_owner_total{owner}         counter
+//   - cubecos_neutron_builder_step_duration_seconds{step}       histogram
 type Metrics struct {
 	syncAge       prometheus.GaugeFunc
 	apiErrors     *prometheus.CounterVec
 	unknownOwners *prometheus.CounterVec
+	builderStep   *prometheus.HistogramVec
 }
 
 // NewMetrics constructs the bundle. `lastSync` returns the most
@@ -43,6 +45,11 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 			Name: "cubecos_neutron_unknown_device_owner_total",
 			Help: "Count of port admissions to mac_tenant_map under device_owner values outside the IsKnownVMOwner allowlist.",
 		}, []string{"owner"}),
+		builderStep: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "cubecos_neutron_builder_step_duration_seconds",
+			Help:    "BuildTrie per-step duration (DESIGN §5.2 steps 1-5), in seconds.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"step"}),
 	}
 	m.syncAge = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "cubecos_neutron_sync_age_seconds",
@@ -60,7 +67,18 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 // Collectors returns the underlying prometheus.Collector values for
 // the agent's registry to register.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.syncAge, m.apiErrors, m.unknownOwners}
+	return []prometheus.Collector{m.syncAge, m.apiErrors, m.unknownOwners, m.builderStep}
+}
+
+// ObserveBuilderStep records the duration of one BuildTrie step
+// (labels: "1_catchall", "2_owned", "3_shared", "4_infra",
+// "5_extraroutes"). nil receivers no-op so the builder can be
+// called without metrics in tests.
+func (m *Metrics) ObserveBuilderStep(step string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.builderStep.WithLabelValues(step).Observe(d.Seconds())
 }
 
 // RecordAPIError increments the api_errors counter for endpoint with

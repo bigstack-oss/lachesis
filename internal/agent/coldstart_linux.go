@@ -190,7 +190,8 @@ func pushSnapshotToKernel(ag *Agent, coll *ebpf.Collection, snap neutron.Snapsho
 	if trieMap == nil {
 		return 0, 0, nil, fmt.Errorf("%s map missing from collection", bpf.MapSubnetZoneTrie)
 	}
-	entries, ambiguities := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
+	entries, ambiguities := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers,
+		neutron.WithMetrics(ag.NeutronMetrics()))
 	nMac, err = kernelwriter.WriteMacTenantMap(macMap, ag.Metadata(), ag.Interner())
 	if err != nil {
 		return nMac, 0, ambiguities, fmt.Errorf("write mac_tenant_map (wrote %d): %w", nMac, err)

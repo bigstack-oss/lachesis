@@ -5,9 +5,28 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 )
+
+// BuildOpt configures optional behaviour of [BuildTrie] without
+// changing its required arguments. The variadic form keeps tests
+// (which don't observe metrics) free of extra parameters while
+// letting production callers opt into instrumentation.
+type BuildOpt func(*buildOpts)
+
+type buildOpts struct {
+	metrics *Metrics
+}
+
+// WithMetrics attaches a [*Metrics] sink that BuildTrie will use
+// to observe per-step durations via the
+// `cubecos_neutron_builder_step_duration_seconds` histogram.
+// Pass the *Metrics owned by the Agent; nil receivers no-op.
+func WithMetrics(m *Metrics) BuildOpt {
+	return func(o *buildOpts) { o.metrics = m }
+}
 
 // componentNeutron is the slog `component` attribute for all
 // Neutron-subsystem log calls. Matches the per-package convention
@@ -205,7 +224,12 @@ func IsKnownVMOwner(deviceOwner string) bool {
 // so that consecutive reconciliations against identical input
 // produce identical output, simplifying the change-detection logic
 // the kernel map writer will use.
-func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Router) ([]TrieEntry, []AmbiguityHit) {
+func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Router, opts ...BuildOpt) ([]TrieEntry, []AmbiguityHit) {
+	var bo buildOpts
+	for _, o := range opts {
+		o(&bo)
+	}
+
 	subnetsByNetwork := groupSubnetsByNetwork(subnets)
 	tenants := collectTenants(networks, ports, routers)
 	sharedPrefixes := buildSharedPrefixes(networks, subnetsByNetwork)
@@ -215,14 +239,21 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 	entries := make([]TrieEntry, 0,
 		len(tenants)*(1+len(sharedPrefixes)+len(infraPrefixes)+1))
 	var ambiguities []AmbiguityHit
+	// Aggregated per-step durations summed across all tenants; one
+	// histogram observation per step at the end so cardinality stays
+	// bounded regardless of tenant count.
+	var d1, d2, d3, d4, d5 time.Duration
 
 	for _, tenant := range tenants {
+		t0 := time.Now()
 		entries = append(entries, TrieEntry{tenant, catchall, bpf.ZoneExternal})
+		d1 += time.Since(t0)
 
 		// Step 2: owned, non-shared, non-external subnets. External
 		// networks (router:external=true) fall through to the
 		// Step-1 catchall — they classify as EXTERNAL even when an
 		// operator has marked them owned by some admin project.
+		t0 = time.Now()
 		for _, n := range networks {
 			if n.ProjectID != tenant || n.Shared || n.IsExternal {
 				continue
@@ -235,25 +266,31 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 				entries = append(entries, TrieEntry{tenant, p, bpf.ZoneSameTenant})
 			}
 		}
+		d2 += time.Since(t0)
 
 		// Step 3: shared subnets → SHARED, applied to every tenant.
 		// SHARED (not OTHER_TENANT) because the trie cannot resolve
 		// per-VM ownership inside the shared CIDR; the billing
 		// engine treats SHARED as its own category.
+		t0 = time.Now()
 		for _, p := range sharedPrefixes {
 			entries = append(entries, TrieEntry{tenant, p, bpf.ZoneShared})
 		}
+		d3 += time.Since(t0)
 
 		// Step 4: infra IPs, applied to every tenant.
+		t0 = time.Now()
 		for _, p := range infraPrefixes {
 			entries = append(entries, TrieEntry{tenant, p, bpf.ZoneInfra})
 		}
 		entries = append(entries, TrieEntry{tenant, metadataPrefix, bpf.ZoneInfra})
+		d4 += time.Since(t0)
 
 		// Step 5: extraroutes on this tenant's routers. The resolver
 		// returns a zone for each (destination, nexthop) by tracing
 		// router-interface peers until it lands on a directly-attached
 		// subnet or a compute:nova appliance (docs/DESIGN.md §5.3).
+		t0 = time.Now()
 		for _, r := range routers {
 			if r.ProjectID != tenant {
 				continue
@@ -283,7 +320,14 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 				}
 			}
 		}
+		d5 += time.Since(t0)
 	}
+
+	bo.metrics.ObserveBuilderStep("1_catchall", d1)
+	bo.metrics.ObserveBuilderStep("2_owned", d2)
+	bo.metrics.ObserveBuilderStep("3_shared", d3)
+	bo.metrics.ObserveBuilderStep("4_infra", d4)
+	bo.metrics.ObserveBuilderStep("5_extraroutes", d5)
 
 	sortEntries(entries)
 	return entries, ambiguities

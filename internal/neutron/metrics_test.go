@@ -133,4 +133,17 @@ func TestMetrics_NilReceiverSafe(t *testing.T) {
 	// construction in test paths.
 	m.RecordAPIError("ports", errors.New("x"))
 	m.RecordUnknownOwner("vendor:y")
+	m.ObserveBuilderStep("1_catchall", 0)
+}
+
+func TestMetrics_ObserveBuilderStepEmitsHistogram(t *testing.T) {
+	m := NewMetrics(func() time.Time { return time.Time{} })
+	m.ObserveBuilderStep("1_catchall", 100*time.Microsecond)
+	m.ObserveBuilderStep("2_owned", 250*time.Microsecond)
+	// Each step labels its own series. Five labels are wired by
+	// BuildTrie but only two have observations here.
+	reg := newRegistry(t, m)
+	if got := testutil.CollectAndCount(reg, "cubecos_neutron_builder_step_duration_seconds"); got != 2 {
+		t.Fatalf("histogram series count = %d, want 2", got)
+	}
 }
