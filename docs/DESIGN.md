@@ -240,12 +240,9 @@ Insertion examples:
 
 Empirically on a 27-tenant single-host OVN deployment: 9270 total entries, of which ~340 per tenant are global (catchall + metadata + shared + infra). That is `27 × 340 + 90 ≈ 9270` — i.e. **~96% of trie occupancy is per-tenant replication of identical global rows.** Adding compute hosts does not multiply this (every node loads the same cluster-wide Neutron snapshot), but adding tenants does. At realistic production tenant counts (≥200) the model overflows the 16384 trie cap and hard-fails at boot via `bpf.ValidateMapSizes`.
 
-**Dedup is planned for Sprint 4c**, *not* a deferred item: see `docs/sprint-plan.md` §4c. Two candidate shapes (decision in the 4c design phase):
+**Dedup is the focus of Sprint 4c**, *not* a deferred item: see `docs/sprint-plan.md` §4c. The chosen shape is **sentinel `tenant_id=0` rows in this same trie** for catchall / INFRA / SHARED, read with a fallback `bpf_map_lookup_elem` on first-lookup miss. Picked over a split-map alternative (`tenant_subnet_trie` + `global_zone_trie`) because pin-path / `ValidateMapSizes` / `LpmKey` surface area stays single-map, and `tenant_id=0` is already reserved by `metadata.TenantIDUnset` — the interner starts at `nextID=1`, so 0 is a natural "applies to all tenants" sentinel rather than a magic value. Cardinality reshapes from `O(T × G + Σ O_t)` to `O(G + Σ O_t)`. The hot-path cost is one extra BPF map lookup on the routed-fallback path; the MAC-first hot path is unchanged. Sprint 4c is also a hard dependency of Sprint 7 — incremental Kafka diffs are cheaper to write against the deduplicated shape than to migrate later.
 
-  - (a) Sentinel `tenant_id=0` rows in this same trie for catchall / INFRA / SHARED — read with a fallback `bpf_map_lookup_elem` on first-lookup miss.
-  - (b) Split into `tenant_subnet_trie` (keyed `(tenant_id, ip)`, SAME_TENANT only) + a new `global_zone_trie` (keyed `ip` only, holds INFRA / SHARED / catchall).
-
-Either reshapes cardinality from `O(T × G + Σ O_t)` to `O(G + Σ O_t)`. The hot-path cost is one extra BPF map lookup on the routed-fallback path; the MAC-first hot path is unchanged. Sprint 4c is also a hard dependency of Sprint 7 — incremental Kafka diffs are cheaper to write against the deduplicated shape than to migrate later.
+`max_entries` stays at **16,384** even after dedup. Headroom is cheap on an LPM_TRIE with `BPF_F_NO_PREALLOC` (entries are allocated on demand, not pre-reserved) and absorbs future per-tenant SAME_TENANT growth without another `task generate` cycle.
 
 #### `mac_tenant_map` — MAC-to-tenant lookup
 
