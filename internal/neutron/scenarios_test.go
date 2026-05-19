@@ -1,39 +1,35 @@
-package neutron
+package neutron_test
 
 // Golden-file scenario tests for BuildTrie. Each test reconstructs
-// the Neutron snapshot that would correspond to a documented
-// scenario (docs/DESIGN.md §B Scenarios A–L) and asserts the trie
-// rows the builder emits.
+// the Neutron snapshot that corresponds to a documented scenario
+// (docs/DESIGN.md §B Scenarios A–L) and asserts the trie rows the
+// builder emits.
 //
-// The scenarios exercise the four implemented trie-builder steps:
+// Lives in `neutron_test` (external test package) so it can import
+// the scenario DSL at internal/testenv/scenario, which itself
+// imports internal/neutron — avoiding an import cycle.
 //
-//	Step 1 (catchall): every test confirms 0.0.0.0/0 → EXTERNAL
-//	Step 2 (owned)   : non-shared, non-external subnets → SAME_TENANT
-//	Step 3 (shared)  : shared subnets → SHARED (uniform across tenants)
-//	Step 4 (infra)   : router/gateway/metadata /32s → INFRA
-//
-// Step 5 (static-route resolver) is intentionally omitted from the
-// current builder, so scenarios G, H, K, L from DESIGN.md are not
-// exercised here — they only become assertable once the multi-hop
-// resolver lands.
-//
-// Fixtures are in-Go struct literals rather than recorded JSON
-// because a future scenario DSL is expected to replace these tests;
-// minimising the throwaway surface keeps the eventual migration
-// small.
+// Snapshots are built via the [scenario] DSL — a thin declarative
+// wrapper around the four Neutron resource slices that hides MAC
+// addresses, wires DeviceID on router-interface ports, and links
+// VMs to their subnet implicitly. Direct struct literals lurk
+// nowhere; if a scenario can't be expressed through the DSL, the
+// right move is to grow the DSL, not write fixtures by hand.
 
 import (
 	"net/netip"
 	"testing"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/scenario"
 )
 
 // expects passes if BuildTrie's output contains every (tenant, prefix, zone)
 // row in want. Extra rows are tolerated — the trie may always carry
 // catchall + metadata INFRA + infra port /32s alongside the rows the
 // scenario specifically cares about.
-func expects(t *testing.T, got []TrieEntry, want []TrieEntry) {
+func expects(t *testing.T, got []neutron.TrieEntry, want []neutron.TrieEntry) {
 	t.Helper()
 	for _, w := range want {
 		if !containsEntry(got, w) {
@@ -46,7 +42,7 @@ func expects(t *testing.T, got []TrieEntry, want []TrieEntry) {
 // rejects fails if BuildTrie's output contains any row in deny.
 // Used to assert "this CIDR must NOT appear under this tenant with
 // this zone" — e.g. an external CIDR must not surface as OTHER_TENANT.
-func rejects(t *testing.T, got []TrieEntry, deny []TrieEntry) {
+func rejects(t *testing.T, got []neutron.TrieEntry, deny []neutron.TrieEntry) {
 	t.Helper()
 	for _, d := range deny {
 		if containsEntry(got, d) {
@@ -56,7 +52,7 @@ func rejects(t *testing.T, got []TrieEntry, deny []TrieEntry) {
 	}
 }
 
-func containsEntry(entries []TrieEntry, target TrieEntry) bool {
+func containsEntry(entries []neutron.TrieEntry, target neutron.TrieEntry) bool {
 	for _, e := range entries {
 		if e == target {
 			return true
@@ -67,57 +63,46 @@ func containsEntry(entries []TrieEntry, target TrieEntry) bool {
 
 func cidr(s string) netip.Prefix { return netip.MustParsePrefix(s) }
 
-func catchallRow(t string) TrieEntry {
-	return TrieEntry{TenantID: t, Prefix: cidr("0.0.0.0/0"), Zone: bpf.ZoneExternal}
+func catchallRow(t string) neutron.TrieEntry {
+	return neutron.TrieEntry{TenantID: t, Prefix: cidr("0.0.0.0/0"), Zone: bpf.ZoneExternal}
 }
 
-func metadataRow(t string) TrieEntry {
-	return TrieEntry{TenantID: t, Prefix: cidr("169.254.169.254/32"), Zone: bpf.ZoneInfra}
+func metadataRow(t string) neutron.TrieEntry {
+	return neutron.TrieEntry{TenantID: t, Prefix: cidr("169.254.169.254/32"), Zone: bpf.ZoneInfra}
+}
+
+func runScenario(snap neutron.Snapshot) []neutron.TrieEntry {
+	return neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
 }
 
 // ----- Scenario A — Same tenant, same subnet (direct L2) -----
 
-// Single tenant, single network, single /24 subnet, two VMs.
-// BuildTrie output for T1 must contain the SAME_TENANT /24 row for
-// the subnet — even though A's per-packet path is MAC-first and
-// never consults the trie, the trie has to be ready in case L2
-// resolution fails.
-
+// Single tenant, single network, single /24 subnet, two VMs. The
+// trie still emits the SAME_TENANT /24 row even though A's per-
+// packet path is MAC-first.
 func TestScenario_A_SameTenantSameSubnet(t *testing.T) {
-	snap := scenarioA()
-	got := BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
-	expects(t, got, []TrieEntry{
+	got := runScenario(scenarioA())
+	expects(t, got, []neutron.TrieEntry{
 		catchallRow("T1"),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 		metadataRow("T1"),
 	})
 }
 
-func scenarioA() Snapshot {
-	return Snapshot{
-		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
-		Subnets: []Subnet{
-			{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.1.0/24", IPVersion: 4},
-		},
-		Ports: []Port{
-			{ID: "p-vm-a", NetworkID: "n1", ProjectID: "T1", MACAddress: "fa:16:3e:00:00:01", DeviceOwner: "compute:nova",
-				FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.1.5"}}},
-			{ID: "p-vm-b", NetworkID: "n1", ProjectID: "T1", MACAddress: "fa:16:3e:00:00:02", DeviceOwner: "compute:nova",
-				FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.1.6"}}},
-		},
-	}
+func scenarioA() neutron.Snapshot {
+	b := scenario.New()
+	b.Network("n1", "T1").
+		Subnet("s1", "10.0.1.0/24", "").
+		VM("p-vm-a", "T1", "10.0.1.5").
+		VM("p-vm-b", "T1", "10.0.1.6")
+	return b.Build()
 }
 
 // ----- Scenario B — Same tenant, different subnets via router -----
 
-// T1 owns two subnets (s1 + s2) on different networks, plus a
-// router that interfaces both. BuildTrie produces SAME_TENANT for
-// both /24s; the router-interface ports contribute INFRA /32s.
-
 func TestScenario_B_SameTenantViaRouter(t *testing.T) {
-	snap := scenarioB()
-	got := BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
-	expects(t, got, []TrieEntry{
+	got := runScenario(scenarioB())
+	expects(t, got, []neutron.TrieEntry{
 		catchallRow("T1"),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 		{TenantID: "T1", Prefix: cidr("10.0.2.0/24"), Zone: bpf.ZoneSameTenant},
@@ -127,221 +112,259 @@ func TestScenario_B_SameTenantViaRouter(t *testing.T) {
 	})
 }
 
-func scenarioB() Snapshot {
-	return Snapshot{
-		Networks: []Network{
-			{ID: "n1", ProjectID: "T1"},
-			{ID: "n2", ProjectID: "T1"},
-		},
-		Subnets: []Subnet{
-			{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.1.0/24", GatewayIP: "10.0.1.1", IPVersion: 4},
-			{ID: "s2", NetworkID: "n2", ProjectID: "T1", CIDR: "10.0.2.0/24", GatewayIP: "10.0.2.1", IPVersion: 4},
-		},
-		Ports: []Port{
-			{ID: "p-r1-if1", NetworkID: "n1", ProjectID: "T1", MACAddress: "fa:16:3e:00:00:10", DeviceOwner: "network:router_interface",
-				FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.1.1"}}},
-			{ID: "p-r1-if2", NetworkID: "n2", ProjectID: "T1", MACAddress: "fa:16:3e:00:00:11", DeviceOwner: "network:router_interface",
-				FixedIPs: []FixedIP{{SubnetID: "s2", IPAddress: "10.0.2.1"}}},
-		},
-		Routers: []Router{{ID: "r1", ProjectID: "T1"}},
-	}
+func scenarioB() neutron.Snapshot {
+	b := scenario.New()
+	b.Network("n1", "T1").Subnet("s1", "10.0.1.0/24", "10.0.1.1")
+	b.Network("n2", "T1").Subnet("s2", "10.0.2.0/24", "10.0.2.1")
+	b.Router("r1", "T1").Attach("s1", "10.0.1.1").Attach("s2", "10.0.2.1")
+	return b.Build()
 }
 
 // ----- Scenario C — Cross-tenant via shared network -----
 
-// T1 and T2 each own their own subnets; T-shared (admin) owns a
-// shared network. From each tenant's view, the shared CIDR is
-// SHARED (not OTHER_TENANT — see DESIGN §5.2 Step 3 for why) while
-// the tenant's own subnet is SAME_TENANT.
-
+// T1 and T2 each own their own subnets; an admin-owned shared
+// network is visible to both. The shared CIDR is SHARED — never
+// OTHER_TENANT — for every tenant; the trie cannot resolve per-VM
+// ownership inside a shared /24 (DESIGN §5.2 Step 3).
 func TestScenario_C_CrossTenantViaShared(t *testing.T) {
-	snap := scenarioC()
-	got := BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
-	expects(t, got, []TrieEntry{
-		// T1's view
+	got := runScenario(scenarioC())
+	expects(t, got, []neutron.TrieEntry{
 		catchallRow("T1"),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 		{TenantID: "T1", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneShared},
-		// T2's view
 		catchallRow("T2"),
 		{TenantID: "T2", Prefix: cidr("10.0.2.0/24"), Zone: bpf.ZoneSameTenant},
 		{TenantID: "T2", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneShared},
 	})
-	// The shared CIDR must not appear as OTHER_TENANT — the design
-	// uses ZONE_SHARED specifically because the trie can't resolve
-	// per-VM ownership inside the shared /24.
-	rejects(t, got, []TrieEntry{
+	rejects(t, got, []neutron.TrieEntry{
 		{TenantID: "T1", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneOtherTenant},
 		{TenantID: "T2", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneOtherTenant},
 	})
 }
 
-func scenarioC() Snapshot {
-	return Snapshot{
-		Networks: []Network{
-			{ID: "n1", ProjectID: "T1"},
-			{ID: "n2", ProjectID: "T2"},
-			{ID: "n-shared", ProjectID: "T-admin", Shared: true},
-		},
-		Subnets: []Subnet{
-			{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.1.0/24", IPVersion: 4},
-			{ID: "s2", NetworkID: "n2", ProjectID: "T2", CIDR: "10.0.2.0/24", IPVersion: 4},
-			{ID: "s-shared", NetworkID: "n-shared", ProjectID: "T-admin", CIDR: "10.10.0.0/24", IPVersion: 4},
-		},
-		Ports: []Port{
-			{ID: "p-vm-a", NetworkID: "n1", ProjectID: "T1", MACAddress: "fa:16:3e:00:01:01", DeviceOwner: "compute:nova",
-				FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.1.5"}}},
-			{ID: "p-vm-x", NetworkID: "n2", ProjectID: "T2", MACAddress: "fa:16:3e:00:02:01", DeviceOwner: "compute:nova",
-				FixedIPs: []FixedIP{{SubnetID: "s2", IPAddress: "10.0.2.5"}}},
-		},
-	}
+func scenarioC() neutron.Snapshot {
+	b := scenario.New()
+	b.Network("n1", "T1").Subnet("s1", "10.0.1.0/24", "").VM("p-vm-a", "T1", "10.0.1.5")
+	b.Network("n2", "T2").Subnet("s2", "10.0.2.0/24", "").VM("p-vm-x", "T2", "10.0.2.5")
+	b.SharedNetwork("n-shared", "T-admin").Subnet("s-shared", "10.10.0.0/24", "")
+	return b.Build()
 }
 
 // ----- Scenario D — External egress (VM → internet) -----
 
 // T1 has an internal subnet, a router, and an external gateway
-// network (router:external=true). The external network's CIDR must
-// NOT appear in the trie at all — it falls through to the Step-1
-// catchall as EXTERNAL. The router_gateway port's /32 IS in the
-// trie as INFRA (it's the NAT-GW address from T1's perspective).
-
+// network. The external network's CIDR must NOT surface in the
+// trie — the catchall covers it as EXTERNAL.
 func TestScenario_D_ExternalEgress(t *testing.T) {
-	snap := scenarioD()
-	got := BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
-	expects(t, got, []TrieEntry{
+	got := runScenario(scenarioD())
+	expects(t, got, []neutron.TrieEntry{
 		catchallRow("T1"),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
-		{TenantID: "T1", Prefix: cidr("203.0.113.1/32"), Zone: bpf.ZoneInfra}, // router_gateway NAT IP
+		{TenantID: "T1", Prefix: cidr("203.0.113.1/32"), Zone: bpf.ZoneInfra},
 		metadataRow("T1"),
 	})
-	// External network's /24 must not surface in the trie.
-	rejects(t, got, []TrieEntry{
+	rejects(t, got, []neutron.TrieEntry{
 		{TenantID: "T1", Prefix: cidr("203.0.113.0/24"), Zone: bpf.ZoneSameTenant},
 		{TenantID: "T1", Prefix: cidr("203.0.113.0/24"), Zone: bpf.ZoneOtherTenant},
 		{TenantID: "T1", Prefix: cidr("203.0.113.0/24"), Zone: bpf.ZoneShared},
 	})
 }
 
-func scenarioD() Snapshot {
-	return Snapshot{
-		Networks: []Network{
-			{ID: "n1", ProjectID: "T1"},
-			{ID: "n-ext", ProjectID: "T-admin", IsExternal: true},
-		},
-		Subnets: []Subnet{
-			{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.1.0/24", IPVersion: 4},
-			{ID: "s-ext", NetworkID: "n-ext", ProjectID: "T-admin", CIDR: "203.0.113.0/24", IPVersion: 4},
-		},
-		Ports: []Port{
-			{ID: "p-vm-a", NetworkID: "n1", ProjectID: "T1", MACAddress: "fa:16:3e:00:01:01", DeviceOwner: "compute:nova",
-				FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.1.5"}}},
-			{ID: "p-r1-gw", NetworkID: "n-ext", ProjectID: "T1", MACAddress: "fa:16:3e:00:01:99", DeviceOwner: "network:router_gateway",
-				FixedIPs: []FixedIP{{SubnetID: "s-ext", IPAddress: "203.0.113.1"}}},
-		},
-		Routers: []Router{{ID: "r1", ProjectID: "T1", ExternalNetworkID: "n-ext"}},
-	}
+func scenarioD() neutron.Snapshot {
+	b := scenario.New()
+	b.Network("n1", "T1").Subnet("s1", "10.0.1.0/24", "").VM("p-vm-a", "T1", "10.0.1.5")
+	b.ExternalNetwork("n-ext", "T-admin").Subnet("s-ext", "203.0.113.0/24", "")
+	b.Router("r1", "T1").
+		Attach("s1", "10.0.1.1").
+		Attach("s-ext", "203.0.113.1").
+		ExternalGateway("n-ext")
+	return b.Build()
 }
 
 // ----- Scenario E — External ingress via floating IP -----
 
-// At the VM-A tap, the packet's src is the internet client (DNAT
-// already happened upstream); the trie sees `remote_ip=1.2.3.4` and
-// falls to catchall EXTERNAL. The FIP port itself (a
-// `network:floatingip` bookkeeping row) MUST NOT contribute a /32
-// INFRA entry — it's neither infra nor VM-like (see IsInfraPort /
-// IsVMPort partition).
-
+// FIP /32 must NOT classify as INFRA — `network:floatingip` ports
+// are neither infra nor VM-like (bookkeeping only, no L2 endpoint).
 func TestScenario_E_ExternalIngressViaFIP(t *testing.T) {
-	snap := scenarioE()
-	got := BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
-	expects(t, got, []TrieEntry{
+	got := runScenario(scenarioE())
+	expects(t, got, []neutron.TrieEntry{
 		catchallRow("T1"),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 		metadataRow("T1"),
 	})
-	// The FIP /32 must NOT be classified — bookkeeping port.
-	rejects(t, got, []TrieEntry{
+	rejects(t, got, []neutron.TrieEntry{
 		{TenantID: "T1", Prefix: cidr("203.0.113.5/32"), Zone: bpf.ZoneInfra},
 		{TenantID: "T1", Prefix: cidr("203.0.113.5/32"), Zone: bpf.ZoneSameTenant},
 	})
 }
 
-func scenarioE() Snapshot {
-	s := scenarioD()
-	// Add a FIP bookkeeping port on the external network.
-	s.Ports = append(s.Ports, Port{
-		ID: "p-fip", NetworkID: "n-ext", ProjectID: "T1",
-		MACAddress: "fa:16:3e:00:fa:01", DeviceOwner: "network:floatingip",
-		FixedIPs: []FixedIP{{SubnetID: "s-ext", IPAddress: "203.0.113.5"}},
-	})
-	return s
+func scenarioE() neutron.Snapshot {
+	b := scenario.New()
+	b.Network("n1", "T1").Subnet("s1", "10.0.1.0/24", "").VM("p-vm-a", "T1", "10.0.1.5")
+	ext := b.ExternalNetwork("n-ext", "T-admin").Subnet("s-ext", "203.0.113.0/24", "")
+	ext.FIP("p-fip", "203.0.113.5")
+	b.Router("r1", "T1").
+		Attach("s1", "10.0.1.1").
+		Attach("s-ext", "203.0.113.1").
+		ExternalGateway("n-ext")
+	return b.Build()
 }
 
-// ----- Scenario F — Octavia LB ports present in the snapshot -----
+// ----- Scenario F — Octavia ports present but VM-classified -----
 
-// The current builder stops short of full Octavia attribution
-// (the LB-owner branch from the design is deferred). For the trie,
-// the relevant check is that Octavia management ports don't
-// accidentally classify as INFRA or contribute spurious /32 rows. They're VM-like by the IsVMPort partition — the kernel
-// `mac_tenant_map` will hold their MACs (verified by
-// agent.populateMetadataFromPorts), but their IPs do NOT appear in
-// the trie.
-
+// Octavia management ports (device_owner="Octavia") are VM-like
+// for the IsVMPort partition — their MACs land in mac_tenant_map,
+// their IPs do NOT contribute /32 INFRA rows.
 func TestScenario_F_OctaviaPortsAreVMLikeNotInfra(t *testing.T) {
-	snap := scenarioF()
-	got := BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
-	// Octavia VIP and health-mgr /32 should NOT appear in the trie.
-	rejects(t, got, []TrieEntry{
-		{TenantID: "T1", Prefix: cidr("10.0.1.50/32"), Zone: bpf.ZoneInfra}, // Octavia VIP
-		{TenantID: "T1", Prefix: cidr("10.0.1.99/32"), Zone: bpf.ZoneInfra}, // health-mgr
+	got := runScenario(scenarioF())
+	rejects(t, got, []neutron.TrieEntry{
+		{TenantID: "T1", Prefix: cidr("10.0.1.50/32"), Zone: bpf.ZoneInfra},
+		{TenantID: "T1", Prefix: cidr("10.0.1.99/32"), Zone: bpf.ZoneInfra},
 	})
-	// The owning tenant's subnet IS in the trie (Step 2).
-	expects(t, got, []TrieEntry{
+	expects(t, got, []neutron.TrieEntry{
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 	})
 }
 
-func scenarioF() Snapshot {
-	return Snapshot{
-		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
-		Subnets: []Subnet{
-			{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.1.0/24", IPVersion: 4},
-		},
-		Ports: []Port{
-			{ID: "p-amphora", NetworkID: "n1", ProjectID: "T1", MACAddress: "fa:16:3e:0c:01:01", DeviceOwner: "Octavia",
-				FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.1.50"}}},
-			{ID: "p-octavia-hm", NetworkID: "n1", ProjectID: "T1", MACAddress: "fa:16:3e:0c:01:02", DeviceOwner: "Octavia:health-mgr",
-				FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.1.99"}}},
-		},
-	}
+func scenarioF() neutron.Snapshot {
+	b := scenario.New()
+	b.Network("n1", "T1").
+		Subnet("s1", "10.0.1.0/24", "").
+		Octavia("p-amphora", "T1", "10.0.1.50").
+		Octavia("p-octavia-hm", "T1", "10.0.1.99")
+	return b.Build()
 }
 
-// ----- Scenarios I, J — Same-host and Cross-host, same-tenant -----
+// ----- Scenario G — Single-hop static route (Step 5, simple case) -----
 
-// At the BuildTrie level, scenarios I and J produce the identical
-// trie as A. They differ at the kernel datapath level (one uses
-// OVS local switching, the other VXLAN-encapsulates between hosts),
-// but the trie content the userspace builder writes is the same.
-// Asserting the trie shape once is enough; the kernel-side
-// behaviour is exercised by the integration tests in
-// internal/testenv/classifier and internal/testenv/e2e.
+// T1's R1 routes 10.50.0.0/16 via R2's IP on a shared transit;
+// R2 (T2) has the destination network directly attached. Step C
+// of the resolver returns zone_for(T2, T1, net-T2) → OTHER_TENANT.
+func TestScenario_G_SingleHopStaticRoute(t *testing.T) {
+	got := runScenario(scenarioG())
+	expects(t, got, []neutron.TrieEntry{
+		{TenantID: "T1", Prefix: cidr("10.50.0.0/16"), Zone: bpf.ZoneOtherTenant},
+	})
+}
 
+func scenarioG() neutron.Snapshot {
+	b := scenario.New()
+	b.Network("n-T1", "T1").Subnet("s-T1", "10.0.0.0/24", "")
+	b.Network("n-T2", "T2").Subnet("s-T2", "10.50.0.0/16", "")
+	b.SharedNetwork("n-transit", "T-admin").Subnet("s-transit", "192.168.100.0/24", "")
+	b.Router("R1", "T1").
+		Attach("s-T1", "10.0.0.1").
+		Attach("s-transit", "192.168.100.10").
+		ExtraRoute("10.50.0.0/16", "192.168.100.20")
+	b.Router("R2", "T2").
+		Attach("s-T2", "10.50.0.1").
+		Attach("s-transit", "192.168.100.20")
+	return b.Build()
+}
+
+// ----- Scenarios I, J — Same-host / cross-host, same-tenant -----
+
+// At BuildTrie's level I and J produce the identical trie as A.
+// They differ at the kernel datapath layer (local vs VXLAN), not
+// at the metadata layer.
 func TestScenario_I_SameHostSameTenant(t *testing.T) {
-	snap := scenarioA() // identical trie to A
-	got := BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
-	expects(t, got, []TrieEntry{
+	got := runScenario(scenarioA())
+	expects(t, got, []neutron.TrieEntry{
 		catchallRow("T1"),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 	})
 }
 
 func TestScenario_J_CrossHostSameTenant(t *testing.T) {
-	// VXLAN is invisible to TC at the tap; from BuildTrie's perspective
-	// J is indistinguishable from A. The fixture is identical.
-	snap := scenarioA()
-	got := BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
-	expects(t, got, []TrieEntry{
+	got := runScenario(scenarioA())
+	expects(t, got, []neutron.TrieEntry{
 		catchallRow("T1"),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 	})
+}
+
+// ----- Scenario K — Multi-hop chain (5 routers, DESIGN §5.5) -----
+
+// Verbatim from the worked example: T1's R1 routes 10.99.0.0/16
+// via R2 in transit-A; each Ri.routes forwards onward through
+// transit-A/B/C/D until R5, which has the destination network
+// (net-T5) directly attached. Final classification:
+// zone_for(T5, T1, net-T5) → OTHER_TENANT.
+func TestScenario_K_MultiHopChain(t *testing.T) {
+	got := runScenario(scenarioK())
+	expects(t, got, []neutron.TrieEntry{
+		{TenantID: "T1", Prefix: cidr("10.99.0.0/16"), Zone: bpf.ZoneOtherTenant},
+	})
+	// The chain transits MUST NOT leak into T1's view as anything
+	// other than SHARED — they're shared transit networks and the
+	// resolver must not mis-classify them as SAME / OTHER on the
+	// chain hop.
+	rejects(t, got, []neutron.TrieEntry{
+		{TenantID: "T1", Prefix: cidr("10.99.0.0/16"), Zone: bpf.ZoneSameTenant},
+		{TenantID: "T1", Prefix: cidr("10.99.0.0/16"), Zone: bpf.ZoneShared},
+	})
+}
+
+func scenarioK() neutron.Snapshot {
+	b := scenario.New()
+	// Owned tenant networks (each Ti owns its own internal net).
+	b.Network("net-T1", "T1").Subnet("sub-T1", "10.1.0.0/24", "")
+	b.Network("net-T2", "T2").Subnet("sub-T2", "10.2.0.0/24", "")
+	b.Network("net-T3", "T3").Subnet("sub-T3", "10.3.0.0/24", "")
+	b.Network("net-T4", "T4").Subnet("sub-T4", "10.4.0.0/24", "")
+	b.Network("net-T5", "T5").Subnet("sub-T5", "10.99.0.0/16", "") // destination
+	// Shared transits A–D.
+	b.SharedNetwork("net-tA", "T-admin").Subnet("sub-tA", "10.10.1.0/24", "")
+	b.SharedNetwork("net-tB", "T-admin").Subnet("sub-tB", "10.10.2.0/24", "")
+	b.SharedNetwork("net-tC", "T-admin").Subnet("sub-tC", "10.10.3.0/24", "")
+	b.SharedNetwork("net-tD", "T-admin").Subnet("sub-tD", "10.10.4.0/24", "")
+	// Routers — each chained to next via a transit.
+	b.Router("R1", "T1").
+		Attach("sub-T1", "10.1.0.1").
+		Attach("sub-tA", "10.10.1.10").
+		ExtraRoute("10.99.0.0/16", "10.10.1.20")
+	b.Router("R2", "T2").
+		Attach("sub-T2", "10.2.0.1").
+		Attach("sub-tA", "10.10.1.20").
+		Attach("sub-tB", "10.10.2.20").
+		ExtraRoute("10.99.0.0/16", "10.10.2.30")
+	b.Router("R3", "T3").
+		Attach("sub-T3", "10.3.0.1").
+		Attach("sub-tB", "10.10.2.30").
+		Attach("sub-tC", "10.10.3.30").
+		ExtraRoute("10.99.0.0/16", "10.10.3.40")
+	b.Router("R4", "T4").
+		Attach("sub-T4", "10.4.0.1").
+		Attach("sub-tC", "10.10.3.40").
+		Attach("sub-tD", "10.10.4.40").
+		ExtraRoute("10.99.0.0/16", "10.10.4.50")
+	b.Router("R5", "T5").
+		Attach("sub-T5", "10.99.0.1").
+		Attach("sub-tD", "10.10.4.50")
+	return b.Build()
+}
+
+// ----- Scenario L — VM-appliance nexthop (Step B compute:nova) -----
+
+// T1's R1 routes 172.16.99.0/24 via a VM at 10.0.1.50 on T1's own
+// net-T1. The resolver's Step B compute:nova branch returns
+// zone_for(T1, T1, net-T1) → SAME_TENANT. Double-billing at the
+// appliance's own tap is documented in DESIGN.md §8 Tier 4 but is
+// not the trie builder's concern.
+func TestScenario_L_VMApplianceNexthop(t *testing.T) {
+	got := runScenario(scenarioL())
+	expects(t, got, []neutron.TrieEntry{
+		{TenantID: "T1", Prefix: cidr("172.16.99.0/24"), Zone: bpf.ZoneSameTenant},
+	})
+}
+
+func scenarioL() neutron.Snapshot {
+	b := scenario.New()
+	b.Network("net-T1", "T1").
+		Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
+		VM("vm-appliance", "T1", "10.0.1.50")
+	b.Router("R1", "T1").
+		Attach("sub-T1", "10.0.1.1").
+		ExtraRoute("172.16.99.0/24", "10.0.1.50")
+	return b.Build()
 }
