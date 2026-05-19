@@ -101,9 +101,12 @@ func WriteMacTenantMap(
 // encountered. As with WriteMacTenantMap, subsequent failures log
 // but do not interrupt the walk.
 //
-// Panics if any entry's TenantID is empty — the trie builder
-// (internal/neutron.BuildTrie) does not emit such rows and a caller
-// supplying one is misusing the API.
+// Entries with an empty TenantID are warn-logged and skipped —
+// the trie builder (internal/neutron.BuildTrie) does not emit
+// such rows, so reaching this branch indicates a caller bug, but
+// crashing the boot is a heavier response than the rest of the
+// writer's first-error-wins discipline implies. The skip keeps
+// behaviour consistent with the kernel-update failure path.
 func WriteSubnetZoneTrie(
 	trieMap MapUpdater,
 	entries []neutron.TrieEntry,
@@ -120,7 +123,12 @@ func WriteSubnetZoneTrie(
 	for i := range entries {
 		e := &entries[i]
 		if e.TenantID == "" {
-			panic(fmt.Sprintf("kernelwriter: TrieEntry %d has empty TenantID", i))
+			slog.Warn("kernelwriter: TrieEntry has empty TenantID; skipped",
+				"component", componentKernelWriter,
+				"index", i,
+				"prefix", e.Prefix.String(),
+				"zone", e.Zone)
+			continue
 		}
 		tid := interner.Intern(e.TenantID)
 		key := bpf.LpmKeyForPrefix(tid, e.Prefix)
