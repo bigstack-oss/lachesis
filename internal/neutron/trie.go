@@ -157,7 +157,13 @@ func IsKnownVMOwner(deviceOwner string) bool {
 // BuildTrie runs the cold-start 5-step algorithm of
 // docs/DESIGN.md §5.2 and returns a flat slice of [TrieEntry] for
 // every tenant that owns at least one network, port, or router in
-// the supplied Neutron snapshot.
+// the supplied Neutron snapshot. The second return aggregates every
+// Step C ambiguity-after-scoping incident encountered while
+// resolving extraroutes (DESIGN §5.6). Callers running in strict
+// mode (the default) refuse to start when the slice is non-empty;
+// callers running with --unsafe-allow-ambiguous-routes log + accept
+// the EXTERNAL fallback that the resolver already emitted for each
+// affected route.
 //
 // # Step coverage
 //
@@ -199,7 +205,7 @@ func IsKnownVMOwner(deviceOwner string) bool {
 // so that consecutive reconciliations against identical input
 // produce identical output, simplifying the change-detection logic
 // the kernel map writer will use.
-func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Router) []TrieEntry {
+func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Router) ([]TrieEntry, []AmbiguityHit) {
 	subnetsByNetwork := groupSubnetsByNetwork(subnets)
 	tenants := collectTenants(networks, ports, routers)
 	sharedPrefixes := buildSharedPrefixes(networks, subnetsByNetwork)
@@ -208,6 +214,7 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 
 	entries := make([]TrieEntry, 0,
 		len(tenants)*(1+len(sharedPrefixes)+len(infraPrefixes)+1))
+	var ambiguities []AmbiguityHit
 
 	for _, tenant := range tenants {
 		entries = append(entries, TrieEntry{tenant, catchall, bpf.ZoneExternal})
@@ -269,14 +276,17 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 				if !nh.Is4() {
 					continue // IPv6 nexthops deferred (DESIGN §13.2).
 				}
-				zone := ri.resolveStaticRouteZone(r, destination, nh)
+				zone, hit := ri.resolveStaticRouteZone(r, destination, nh)
 				entries = append(entries, TrieEntry{tenant, destination, zone})
+				if hit != nil {
+					ambiguities = append(ambiguities, *hit)
+				}
 			}
 		}
 	}
 
 	sortEntries(entries)
-	return entries
+	return entries, ambiguities
 }
 
 // groupSubnetsByNetwork indexes IPv4 subnets by their parent network

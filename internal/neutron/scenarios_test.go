@@ -72,7 +72,8 @@ func metadataRow(t string) neutron.TrieEntry {
 }
 
 func runScenario(snap neutron.Snapshot) []neutron.TrieEntry {
-	return neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
+	entries, _ := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
+	return entries
 }
 
 // ----- Scenario A — Same tenant, same subnet (direct L2) -----
@@ -367,4 +368,55 @@ func scenarioL() neutron.Snapshot {
 		Attach("sub-T1", "10.0.1.1").
 		ExtraRoute("172.16.99.0/24", "10.0.1.50")
 	return b.Build()
+}
+
+// ----- Slice-5 boundary: ambiguity surfacing -----
+
+// TestBuildTrie_SurfacesAmbiguityHit asserts BuildTrie's second
+// return aggregates every Step C ambiguity-after-scoping incident
+// (DESIGN §5.6). R1 (T1) routes 10.99.50.0/24 via R2, which has
+// two attached networks both covering the destination but owned
+// by different tenants — the resolver returns EXTERNAL and emits
+// an AmbiguityHit; BuildTrie collects it for the caller's strict-
+// mode policy check.
+func TestBuildTrie_SurfacesAmbiguityHit(t *testing.T) {
+	b := scenario.New()
+	b.Network("net-T2", "T2").Subnet("sub-T2", "10.99.0.0/16", "")
+	b.Network("net-T3", "T3").Subnet("sub-T3", "10.99.0.0/16", "")
+	b.SharedNetwork("transit", "T-admin").Subnet("sub-tr", "192.168.100.0/24", "")
+	b.Router("R1", "T1").
+		Attach("sub-tr", "192.168.100.10").
+		ExtraRoute("10.99.50.0/24", "192.168.100.20")
+	b.Router("R2", "T2").
+		Attach("sub-tr", "192.168.100.20").
+		Attach("sub-T2", "10.99.0.1").
+		Attach("sub-T3", "10.99.0.1")
+	snap := b.Build()
+
+	entries, hits := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
+
+	if len(hits) != 1 {
+		t.Fatalf("expected exactly 1 ambiguity hit, got %d: %+v", len(hits), hits)
+	}
+	hit := hits[0]
+	if hit.SourceTenant != "T1" || hit.RouterID != "R2" ||
+		hit.Destination != cidr("10.99.50.0/24") {
+		t.Errorf("unexpected hit shape: %+v", hit)
+	}
+	wantOwners := map[string]bool{"T2": true, "T3": true}
+	if len(hit.Owners) != 2 {
+		t.Errorf("expected 2 distinct owners, got %v", hit.Owners)
+	}
+	for _, o := range hit.Owners {
+		if !wantOwners[o] {
+			t.Errorf("unexpected owner %q in hit", o)
+		}
+	}
+	// And the trie entry still records EXTERNAL — the resolver doesn't
+	// drop the row, the caller (in strict mode) refuses to start.
+	if !containsEntry(entries, neutron.TrieEntry{
+		TenantID: "T1", Prefix: cidr("10.99.50.0/24"), Zone: bpf.ZoneExternal,
+	}) {
+		t.Errorf("ambiguous route should still emit EXTERNAL row in entries:\n%+v", entries)
+	}
 }

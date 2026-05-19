@@ -13,6 +13,20 @@ import (
 // docs/DESIGN.md §5.3).
 const maxStaticRouteHops = 16
 
+// AmbiguityHit records a Step C ambiguity-after-scoping incident
+// (docs/DESIGN.md §5.6): the resolver reached a router where
+// multiple candidate networks with distinct owners cover the same
+// destination CIDR, so no single zone can be picked honestly. The
+// resolver returns ZoneExternal and surfaces this struct to its
+// caller; BuildTrie collects every hit across all routes so the
+// boot path can refuse to start under strict-mode policy.
+type AmbiguityHit struct {
+	SourceTenant string
+	RouterID     string
+	Destination  netip.Prefix
+	Owners       []string
+}
+
 // resolveIndex bundles the Neutron snapshot in lookup-optimised
 // form so the per-route resolver runs in O(1) per step. Built once
 // per BuildTrie invocation and shared across every
@@ -73,17 +87,20 @@ func newResolveIndex(networks []Network, subnets []Subnet, ports []Port, routers
 
 // resolveStaticRouteZone implements the multi-hop trace of
 // docs/DESIGN.md §5.3 for one (destination, nexthop) pair on
-// router r. Returns the zone code to record in the trie. Any
-// unresolvable case (misconfig, cycle, MAX_HOPS exceeded, unknown
-// peer device type, ambiguity) returns ZoneExternal — the strict-
-// mode operator override that turns ambiguity into a startup
-// failure lives in BuildTrie's call site (added in a later slice),
-// not here.
+// router r. Returns the zone code to record in the trie, plus a
+// non-nil [*AmbiguityHit] when the trace bottomed out on a Step C
+// ambiguity (multiple candidate networks with distinct owners
+// covering the destination CIDR). For every other unresolvable
+// case (misconfig, cycle, MAX_HOPS exceeded, unknown peer device
+// type) the second return is nil and the zone is ZoneExternal.
+//
+// Strict-mode policy (refuse to start vs continue with EXTERNAL)
+// lives in BuildTrie's caller, not here.
 func (ri *resolveIndex) resolveStaticRouteZone(
 	r Router,
 	destination netip.Prefix,
 	initialNexthop netip.Addr,
-) bpf.ZoneCode {
+) (bpf.ZoneCode, *AmbiguityHit) {
 	sourceTenant := r.ProjectID
 	currentRouter := r
 	currentNexthop := initialNexthop
@@ -93,19 +110,19 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 		// Step A — anchor on the iface subnet whose CIDR contains currentNexthop.
 		ifaceSubnet, ok := ri.anchorSubnet(currentRouter.ID, currentNexthop)
 		if !ok {
-			return bpf.ZoneExternal
+			return bpf.ZoneExternal, nil
 		}
 
 		// Step B — identify the peer device at currentNexthop within the iface subnet.
 		port, ok := ri.portAt(ifaceSubnet.ID, currentNexthop.String())
 		if !ok {
-			return bpf.ZoneExternal
+			return bpf.ZoneExternal, nil
 		}
 		switch port.DeviceOwner {
 		case "network:router_interface":
 			nextRouter, ok := ri.routers[port.DeviceID]
 			if !ok {
-				return bpf.ZoneExternal
+				return bpf.ZoneExternal, nil
 			}
 			if _, seen := visited[nextRouter.ID]; seen {
 				slog.Warn("static-route cycle detected; falling back to EXTERNAL",
@@ -113,21 +130,21 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 					"source_tenant", sourceTenant,
 					"destination", destination.String(),
 					"router", nextRouter.ID)
-				return bpf.ZoneExternal
+				return bpf.ZoneExternal, nil
 			}
 			visited[nextRouter.ID] = struct{}{}
 
 			// Step C — is destination directly attached on nextRouter?
-			if zone, resolved := ri.resolveAtNextRouter(
+			if zone, resolved, hit := ri.resolveAtNextRouter(
 				nextRouter, ifaceSubnet, destination, sourceTenant); resolved {
-				return zone
+				return zone, hit
 			}
 
 			// Step D — follow nextRouter's own extraroutes (LPM among matches).
 			if nextRoute, ok := lpmMatchRoute(nextRouter.Routes, destination); ok {
 				nh, err := netip.ParseAddr(nextRoute.Nexthop)
 				if err != nil || !nh.Is4() {
-					return bpf.ZoneExternal
+					return bpf.ZoneExternal, nil
 				}
 				currentRouter = nextRouter
 				currentNexthop = nh
@@ -137,7 +154,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 			// Step E — default-route fallback. EXTERNAL whether or not nextRouter
 			// has external_gateway_info; the destination is unreachable per
 			// Neutron's topology view either way.
-			return bpf.ZoneExternal
+			return bpf.ZoneExternal, nil
 
 		case "compute:nova":
 			// VM-appliance nexthop: classify by the appliance's tenant
@@ -147,12 +164,12 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 			// tap is documented in DESIGN.md §8 Tier 4 and Scenario L.
 			ifaceNetwork, ok := ri.networks[ifaceSubnet.NetworkID]
 			if !ok {
-				return bpf.ZoneExternal
+				return bpf.ZoneExternal, nil
 			}
-			return zoneFor(port.ProjectID, sourceTenant, ifaceNetwork)
+			return zoneFor(port.ProjectID, sourceTenant, ifaceNetwork), nil
 
 		default:
-			return bpf.ZoneExternal
+			return bpf.ZoneExternal, nil
 		}
 	}
 
@@ -161,7 +178,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 		"source_tenant", sourceTenant,
 		"destination", destination.String(),
 		"max_hops", maxStaticRouteHops)
-	return bpf.ZoneExternal
+	return bpf.ZoneExternal, nil
 }
 
 // anchorSubnet picks the router's interface subnet whose CIDR
@@ -198,13 +215,20 @@ func (ri *resolveIndex) portAt(subnetID, ip string) (Port, bool) {
 // excluding the network we entered through. If exactly one
 // candidate (or several all with the same project_id) matches,
 // return that zone. If candidates have multiple distinct owners,
-// log the ambiguity and return EXTERNAL.
+// log the ambiguity, build an [AmbiguityHit] for the caller, and
+// return EXTERNAL.
+//
+// Returns are (zone, resolved, hit):
+//
+//   - (0, false, nil):       no candidate, caller proceeds to Step D
+//   - (zone, true, nil):     single-owner resolution
+//   - (EXTERNAL, true, hit): ambiguity; hit carries the candidate owners
 func (ri *resolveIndex) resolveAtNextRouter(
 	nextRouter Router,
 	enteredThrough Subnet,
 	destination netip.Prefix,
 	sourceTenant string,
-) (bpf.ZoneCode, bool) {
+) (bpf.ZoneCode, bool, *AmbiguityHit) {
 	var matchedNet Network
 	var matchedOwners []string
 	matched := false
@@ -230,7 +254,7 @@ func (ri *resolveIndex) resolveAtNextRouter(
 		}
 	}
 	if !matched {
-		return 0, false
+		return 0, false, nil
 	}
 	if len(matchedOwners) > 1 {
 		slog.Warn("static-route ambiguous owner; falling back to EXTERNAL",
@@ -239,9 +263,14 @@ func (ri *resolveIndex) resolveAtNextRouter(
 			"destination", destination.String(),
 			"router", nextRouter.ID,
 			"owners", matchedOwners)
-		return bpf.ZoneExternal, true
+		return bpf.ZoneExternal, true, &AmbiguityHit{
+			SourceTenant: sourceTenant,
+			RouterID:     nextRouter.ID,
+			Destination:  destination,
+			Owners:       append([]string(nil), matchedOwners...),
+		}
 	}
-	return zoneFor(matchedNet.ProjectID, sourceTenant, matchedNet), true
+	return zoneFor(matchedNet.ProjectID, sourceTenant, matchedNet), true, nil
 }
 
 // lpmMatchRoute returns the entry in routes whose Destination CIDR
