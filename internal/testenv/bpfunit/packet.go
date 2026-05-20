@@ -1,7 +1,6 @@
 package bpfunit
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 
@@ -106,9 +105,7 @@ func ARPFrame(srcMAC, dstMAC net.HardwareAddr) []byte {
 // MAC builds a hardware address from the low 48 bits of v in big-endian order.
 // Convenience for tests already working in u64-as-MAC form.
 func MAC(v uint64) net.HardwareAddr {
-	var m [6]byte
-	binary.BigEndian.PutUint16(m[0:2], uint16(v>>32))
-	binary.BigEndian.PutUint32(m[2:6], uint32(v))
+	m := MACBytes(v)
 	return m[:]
 }
 
