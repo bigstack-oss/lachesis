@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"embed"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -10,10 +9,8 @@ import (
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/web"
 )
-
-//go:embed templates/*.html
-var debugTemplatesFS embed.FS
 
 // zonesPage is the template data for the /debug/zones HTML view.
 type zonesPage struct {
@@ -41,7 +38,7 @@ var zonesTemplate = template.Must(template.New("zones.html").
 			return id
 		},
 	}).
-	ParseFS(debugTemplatesFS, "templates/zones.html"))
+	ParseFS(web.Templates, "templates/zones.html"))
 
 // handleDebugZones renders the per-tenant subnet-to-zone table. Reads
 // the trie row set atomically from the Agent; an empty/nil set renders
