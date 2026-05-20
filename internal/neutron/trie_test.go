@@ -46,9 +46,12 @@ func TestBuildTrie_Empty(t *testing.T) {
 	}
 }
 
-// TestBuildTrie_Step1Catchall asserts every tenant gets `0.0.0.0/0
-// → EXTERNAL`, regardless of which resource type their ProjectID
-// surfaces in.
+// TestBuildTrie_Step1Catchall asserts the global catchall row
+// `0.0.0.0/0 → EXTERNAL` is emitted exactly once with TenantID=""
+// regardless of which resource type a tenant's ProjectID surfaces
+// in. Under the trie-dedup model, per-tenant catchall rows would
+// be a regression — the kernel `lookup_zone` sentinel fallback
+// covers every tenant's view from the single global row.
 func TestBuildTrie_Step1Catchall(t *testing.T) {
 	got, _ := BuildTrie(
 		[]Network{{ID: "n1", ProjectID: "t-from-net"}},
@@ -57,9 +60,12 @@ func TestBuildTrie_Step1Catchall(t *testing.T) {
 		[]Router{{ID: "r1", ProjectID: "t-from-router"}},
 	)
 	want := mustPrefix(t, "0.0.0.0/0")
+	if !has(got, TrieEntry{"", want, bpf.ZoneExternal}) {
+		t.Errorf("global catchall row missing")
+	}
 	for _, tenant := range []string{"t-from-net", "t-from-port", "t-from-router"} {
-		if !has(got, TrieEntry{tenant, want, bpf.ZoneExternal}) {
-			t.Errorf("tenant %q missing catchall row", tenant)
+		if has(got, TrieEntry{tenant, want, bpf.ZoneExternal}) {
+			t.Errorf("per-tenant catchall row leaked for %q (dedup regression)", tenant)
 		}
 	}
 }
@@ -78,10 +84,11 @@ func TestBuildTrie_Step2OwnedSubnets(t *testing.T) {
 	}
 }
 
-// TestBuildTrie_SharedNetworkEmitsShared asserts that subnets on a
-// shared network produce a uniform SHARED row for every tenant —
-// owner and non-owner alike. SHARED (not SAME / not OTHER) reflects
-// the structural ambiguity: the trie cannot disambiguate per-VM
+// TestBuildTrie_SharedNetworkEmitsShared asserts a subnet on a
+// shared network emits exactly one SHARED row with TenantID="" —
+// the kernel sentinel fallback covers every tenant's view, owner
+// and non-owner alike. SHARED (not SAME / not OTHER) reflects the
+// structural ambiguity: the trie cannot disambiguate per-VM
 // ownership inside a shared CIDR, and guessing either side
 // systematically mis-bills the wrong direction.
 func TestBuildTrie_SharedNetworkEmitsShared(t *testing.T) {
@@ -96,24 +103,20 @@ func TestBuildTrie_SharedNetworkEmitsShared(t *testing.T) {
 		nil, nil,
 	)
 	shared := mustPrefix(t, "192.168.0.0/24")
-	// Owner T1 — not SAME (would be a guess), not OTHER (would be
-	// a guess), must be SHARED.
-	if has(got, TrieEntry{"T1", shared, bpf.ZoneSameTenant}) {
-		t.Errorf("shared subnet leaked into Step 2 for owner T1 as SAME_TENANT")
+	if !has(got, TrieEntry{"", shared, bpf.ZoneShared}) {
+		t.Errorf("global SHARED row missing for %v", shared)
 	}
-	if has(got, TrieEntry{"T1", shared, bpf.ZoneOtherTenant}) {
-		t.Errorf("shared subnet emitted as OTHER_TENANT for owner T1; expect SHARED")
-	}
-	if !has(got, TrieEntry{"T1", shared, bpf.ZoneShared}) {
-		t.Errorf("shared subnet not SHARED for owner T1")
-	}
-	// Non-owner T2 — also SHARED. The schema doesn't distinguish
-	// owner from non-owner in shared-network attribution.
-	if has(got, TrieEntry{"T2", shared, bpf.ZoneOtherTenant}) {
-		t.Errorf("shared subnet emitted as OTHER_TENANT for non-owner T2; expect SHARED")
-	}
-	if !has(got, TrieEntry{"T2", shared, bpf.ZoneShared}) {
-		t.Errorf("shared subnet not SHARED for non-owner T2")
+	for _, tenant := range []string{"T1", "T2"} {
+		if has(got, TrieEntry{tenant, shared, bpf.ZoneShared}) {
+			t.Errorf("per-tenant SHARED row leaked for %q (dedup regression)", tenant)
+		}
+		// SAME/OTHER guesses on shared CIDRs were never allowed.
+		if has(got, TrieEntry{tenant, shared, bpf.ZoneSameTenant}) {
+			t.Errorf("shared subnet emitted as SAME_TENANT under %q", tenant)
+		}
+		if has(got, TrieEntry{tenant, shared, bpf.ZoneOtherTenant}) {
+			t.Errorf("shared subnet emitted as OTHER_TENANT under %q", tenant)
+		}
 	}
 }
 
@@ -191,13 +194,13 @@ func TestBuildTrie_Step4InfraPorts(t *testing.T) {
 		nil,
 	)
 	for _, infraIP := range []string{"10.0.0.1", "192.0.2.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"} {
-		want := TrieEntry{"T1", netip.MustParsePrefix(infraIP + "/32"), bpf.ZoneInfra}
+		want := TrieEntry{"", netip.MustParsePrefix(infraIP + "/32"), bpf.ZoneInfra}
 		if !has(got, want) {
-			t.Errorf("missing INFRA row for %s\nentries: %+v", infraIP, got)
+			t.Errorf("missing global INFRA row for %s\nentries: %+v", infraIP, got)
 		}
 	}
 	for _, notInfra := range []string{"10.0.0.42", "10.0.0.99", "10.0.0.100", "203.0.113.7"} {
-		if has(got, TrieEntry{"T1", netip.MustParsePrefix(notInfra + "/32"), bpf.ZoneInfra}) {
+		if has(got, TrieEntry{"", netip.MustParsePrefix(notInfra + "/32"), bpf.ZoneInfra}) {
 			t.Errorf("non-infra IP %s leaked into INFRA", notInfra)
 		}
 	}
@@ -335,11 +338,11 @@ func TestBuildTrie_Step4GatewayIPAndMetadata(t *testing.T) {
 		[]Subnet{{ID: "s1", NetworkID: "n1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
 		nil, nil,
 	)
-	if !has(got, TrieEntry{"T1", netip.MustParsePrefix("10.0.0.1/32"), bpf.ZoneInfra}) {
-		t.Errorf("gateway IP /32 missing as INFRA")
+	if !has(got, TrieEntry{"", netip.MustParsePrefix("10.0.0.1/32"), bpf.ZoneInfra}) {
+		t.Errorf("global gateway IP /32 missing as INFRA")
 	}
-	if !has(got, TrieEntry{"T1", netip.MustParsePrefix("169.254.169.254/32"), bpf.ZoneInfra}) {
-		t.Errorf("Nova metadata IP missing as INFRA")
+	if !has(got, TrieEntry{"", netip.MustParsePrefix("169.254.169.254/32"), bpf.ZoneInfra}) {
+		t.Errorf("global Nova metadata IP missing as INFRA")
 	}
 }
 
@@ -470,9 +473,11 @@ func TestBuildTrie_Step5InvalidRouteSkipped(t *testing.T) {
 			t.Errorf("invalid route leaked into trie: %+v", e)
 		}
 	}
-	// T1 should have exactly catchall + metadata (no extraroutes survived).
-	if countTenant(got, "T1") != 2 {
-		t.Errorf("T1 expected 2 rows (catchall + metadata), got %d", countTenant(got, "T1"))
+	// T1 has no per-tenant rows: all extraroutes were invalid and
+	// no owned subnets exist. Globals (catchall + metadata) emit
+	// under TenantID="" not under T1.
+	if countTenant(got, "T1") != 0 {
+		t.Errorf("T1 expected 0 rows (all extraroutes invalid), got %d", countTenant(got, "T1"))
 	}
 }
 
@@ -507,10 +512,15 @@ func TestBuildTrie_Deterministic(t *testing.T) {
 // surfaces on every resource type (network / subnet / port /
 // router), collectTenants must dedupe it. A buggy implementation
 // that hashed by `(project_id, resource_kind)` would emit a
-// catchall per kind and inflate kernel-trie usage 4× per active
-// tenant. Paired with TestList*_TenantIDFallback (list_test.go),
-// which proves preferProjectID collapses `tenant_id`-only inputs
-// to the same string this test then sees.
+// per-tenant SAME_TENANT row per kind and inflate trie usage.
+// Paired with TestList*_TenantIDFallback (list_test.go), which
+// proves preferProjectID collapses `tenant_id`-only inputs to the
+// same string this test then sees.
+//
+// Under the trie-dedup model, globals emit under TenantID="" — so
+// the output has TWO distinct TenantID values for any non-empty
+// snapshot. The invariant being pinned here is "exactly one
+// non-empty tenant for this single-project snapshot".
 func TestBuildTrie_SingleProjectCollapsesToOneTenant(t *testing.T) {
 	got, _ := BuildTrie(
 		[]Network{{ID: "n1", ProjectID: "proj-X"}},
@@ -518,28 +528,36 @@ func TestBuildTrie_SingleProjectCollapsesToOneTenant(t *testing.T) {
 		[]Port{{ID: "p1", NetworkID: "n1", ProjectID: "proj-X", DeviceOwner: "compute:nova"}},
 		[]Router{{ID: "r1", ProjectID: "proj-X"}},
 	)
-	tenants := map[string]int{}
+	nonEmpty := map[string]int{}
 	for _, e := range got {
-		tenants[e.TenantID]++
+		if e.TenantID != "" {
+			nonEmpty[e.TenantID]++
+		}
 	}
-	if len(tenants) != 1 {
-		t.Fatalf("expected 1 tenant in output, got %d (%v)", len(tenants), tenants)
+	if len(nonEmpty) != 1 {
+		t.Fatalf("expected 1 distinct non-empty tenant, got %d (%v)", len(nonEmpty), nonEmpty)
 	}
-	if _, ok := tenants["proj-X"]; !ok {
-		t.Fatalf("expected tenant proj-X, got %v", tenants)
+	if _, ok := nonEmpty["proj-X"]; !ok {
+		t.Fatalf("expected tenant proj-X, got %v", nonEmpty)
 	}
 }
 
+// TestBuildTrie_TenantsFromAllResources pins the contract that
+// collectTenants picks up a ProjectID from any resource type
+// (network, port, router). Under the trie-dedup model, per-tenant
+// emission (Steps 2/5) is the only path that surfaces a tenant in
+// BuildTrie's entry slice — and the minimal fixture below
+// intentionally triggers neither — so the assertion is on
+// collectTenants directly. Globals emit under TenantID="" and tell
+// us nothing about which input tenants were recognized.
 func TestBuildTrie_TenantsFromAllResources(t *testing.T) {
-	got, _ := BuildTrie(
+	got := collectTenants(
 		[]Network{{ID: "n1", ProjectID: "T-net"}},
-		nil,
 		[]Port{{ProjectID: "T-port"}},
 		[]Router{{ProjectID: "T-router"}},
 	)
-	for _, t1 := range []string{"T-net", "T-port", "T-router"} {
-		if countTenant(got, t1) == 0 {
-			t.Errorf("tenant %q produced no entries", t1)
-		}
+	want := []string{"T-net", "T-port", "T-router"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("collectTenants = %v, want %v", got, want)
 	}
 }
