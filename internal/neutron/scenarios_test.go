@@ -18,6 +18,7 @@ package neutron_test
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
@@ -32,7 +33,7 @@ import (
 func expects(t *testing.T, got []neutron.TrieEntry, want []neutron.TrieEntry) {
 	t.Helper()
 	for _, w := range want {
-		if !containsEntry(got, w) {
+		if !slices.Contains(got, w) {
 			t.Errorf("missing expected row: tenant=%s prefix=%s zone=%v\nactual entries: %v",
 				w.TenantID, w.Prefix, w.Zone, got)
 		}
@@ -45,20 +46,11 @@ func expects(t *testing.T, got []neutron.TrieEntry, want []neutron.TrieEntry) {
 func rejects(t *testing.T, got []neutron.TrieEntry, deny []neutron.TrieEntry) {
 	t.Helper()
 	for _, d := range deny {
-		if containsEntry(got, d) {
+		if slices.Contains(got, d) {
 			t.Errorf("forbidden row present: tenant=%s prefix=%s zone=%v",
 				d.TenantID, d.Prefix, d.Zone)
 		}
 	}
-}
-
-func containsEntry(entries []neutron.TrieEntry, target neutron.TrieEntry) bool {
-	for _, e := range entries {
-		if e == target {
-			return true
-		}
-	}
-	return false
 }
 
 func cidr(s string) netip.Prefix { return netip.MustParsePrefix(s) }
@@ -427,7 +419,7 @@ func TestBuildTrie_SurfacesAmbiguityHit(t *testing.T) {
 	}
 	// And the trie entry still records EXTERNAL — the resolver doesn't
 	// drop the row, the caller (in strict mode) refuses to start.
-	if !containsEntry(entries, neutron.TrieEntry{
+	if !slices.Contains(entries, neutron.TrieEntry{
 		TenantID: "T1", Prefix: cidr("10.99.50.0/24"), Zone: bpf.ZoneExternal,
 	}) {
 		t.Errorf("ambiguous route should still emit EXTERNAL row in entries:\n%+v", entries)
