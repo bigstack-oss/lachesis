@@ -7,7 +7,6 @@
 package classifier_test
 
 import (
-	"encoding/binary"
 	"net"
 	"testing"
 
@@ -129,7 +128,10 @@ func TestHybridZoneLookup(t *testing.T) {
 				t.Errorf("verdict = %d, want 0 (TC_ACT_OK)", verdict)
 			}
 
-			zone, ok := findZone(telMap, tc.src, tc.dst, tc.wantDir)
+			zone, ok, err := bpfunit.FindZone(telMap, tc.src, tc.dst, tc.wantDir)
+			if err != nil {
+				t.Fatalf("find zone: %v", err)
+			}
 			if !ok {
 				t.Fatalf("no telemetry_map entry for src=%012x dst=%012x dir=%d",
 					tc.src, tc.dst, tc.wantDir)
@@ -139,31 +141,4 @@ func TestHybridZoneLookup(t *testing.T) {
 			}
 		})
 	}
-}
-
-// findZone scans telemetry_map for an entry matching (src, dst, direction)
-// and returns the recorded DstZone. The map is PERCPU_HASH so the value
-// slot is per-CPU; we only care about the key here.
-func findZone(m *ebpf.Map, src, dst uint64, dir bpf.Direction) (bpf.ZoneCode, bool) {
-	srcB := macToArr(src)
-	dstB := macToArr(dst)
-	var key bpf.FlowKey
-	var vals []bpf.FlowMetrics // discard
-	iter := m.Iterate()
-	for iter.Next(&key, &vals) {
-		if key.SrcMac == srcB && key.DstMac == dstB && key.Direction == dir {
-			return key.DstZone, true
-		}
-	}
-	return 0, false
-}
-
-// macToArr converts the low 48 bits of v into a 6-byte MAC array in
-// big-endian order. The encoding matches bpfunit.MAC so flow_key entries
-// can be looked up by the same u64 value used to create the frame.
-func macToArr(v uint64) [6]uint8 {
-	var b [6]uint8
-	binary.BigEndian.PutUint16(b[0:2], uint16(v>>32))
-	binary.BigEndian.PutUint32(b[2:6], uint32(v))
-	return b
 }

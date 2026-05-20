@@ -118,7 +118,10 @@ func TestSubnetZoneTrie_LPMByteOrder(t *testing.T) {
 			if verdict != 0 {
 				t.Errorf("verdict = %d, want 0 (TC_ACT_OK)", verdict)
 			}
-			zone, ok := findZone(telMap, trieMacVM, trieMacRouter, bpf.DirectionIngress)
+			zone, ok, err := bpfunit.FindZone(telMap, trieMacVM, trieMacRouter, bpf.DirectionIngress)
+			if err != nil {
+				t.Fatalf("find zone: %v", err)
+			}
 			if !ok {
 				t.Fatalf("no telemetry_map entry for dst=%s", tc.dstIP)
 			}
@@ -129,31 +132,9 @@ func TestSubnetZoneTrie_LPMByteOrder(t *testing.T) {
 			// flow_key includes dst_zone, so naturally-distinct keys
 			// would also work — but explicit drain keeps the test
 			// independent of that detail.
-			drainTelemetryByMACs(t, telMap, trieMacVM, trieMacRouter)
+			if err := bpfunit.DrainTelemetryByMACs(telMap, trieMacVM, trieMacRouter); err != nil {
+				t.Fatalf("drain telemetry_map: %v", err)
+			}
 		})
-	}
-}
-
-// drainTelemetryByMACs removes every entry in telemetry_map whose
-// (SrcMac, DstMac) pair matches the supplied MACs. PERCPU_HASH
-// requires Delete by key only; the per-CPU value slot is freed
-// with it.
-func drainTelemetryByMACs(t *testing.T, m *ebpf.Map, src, dst uint64) {
-	t.Helper()
-	srcB := macToArr(src)
-	dstB := macToArr(dst)
-	var key bpf.FlowKey
-	var vals []bpf.FlowMetrics
-	iter := m.Iterate()
-	var toDelete []bpf.FlowKey
-	for iter.Next(&key, &vals) {
-		if key.SrcMac == srcB && key.DstMac == dstB {
-			toDelete = append(toDelete, key)
-		}
-	}
-	for i := range toDelete {
-		if err := m.Delete(&toDelete[i]); err != nil {
-			t.Fatalf("delete telemetry_map entry: %v", err)
-		}
 	}
 }
