@@ -270,7 +270,7 @@ func New(opts Options) (*Agent, error) {
 	}
 
 	mgr := runtime.New(opts.ConfigPath, opts.Config, opts.Log)
-	handler := buildHTTPHandler(reg, mgr)
+	handler := a.buildHTTPHandler(reg, mgr)
 
 	ln, err := net.Listen("tcp", opts.Config.HTTP.Listen)
 	if err != nil {
@@ -314,11 +314,14 @@ func buildRegistry(
 // buildHTTPHandler returns the mux the HTTP server will serve.
 // Centralising the route table here is the seam future subsystems
 // (e.g. a /healthz, a /reload, a /pprof under debug) attach to —
-// rather than each one widening [New].
-func buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager) http.Handler {
+// rather than each one widening [New]. The Agent receiver gives
+// /debug/* handlers access to userspace state (snapshot, trie
+// entries) without threading parameters through the call chain.
+func (a *Agent) buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.Handle("/debug/", mgr.DebugHandler())
+	mux.HandleFunc("/debug/zones", a.handleDebugZones)
 	return mux
 }
 
