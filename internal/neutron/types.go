@@ -75,13 +75,25 @@ type FixedIP struct {
 	IPAddress string
 }
 
-// Router is the trie-builder view of a Neutron router. The
-// external-gateway and extra-routes fields are populated only when
+// Project is the trie-builder view of a Keystone project. Carried in
+// [Snapshot.Projects] so the /debug HTML pages can show human
+// names alongside the UUIDs the Neutron resources reference.
+type Project struct {
+	ID   string
+	Name string
+}
+
+// Router is the trie-builder view of a Neutron router. Name is
+// the operator-assigned label; not used by trie classification but
+// surfaced in /debug UIs to make sense of which router is which.
+//
+// The external-gateway and extra-routes fields are populated only when
 // present in the API response; absence is the common case for
 // internal-only routers.
 type Router struct {
 	ID        string
 	ProjectID string
+	Name      string
 	// ExternalNetworkID is the router's upstream network when it
 	// has a `gateway_info.network_id` set; empty otherwise. The
 	// builder uses this to attribute traffic leaving the cluster.

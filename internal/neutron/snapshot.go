@@ -18,6 +18,23 @@ type Snapshot struct {
 	Subnets  []Subnet
 	Ports    []Port
 	Routers  []Router
+	// Projects is the Keystone project list. Carried alongside the
+	// Neutron resources because Neutron returns project_id as a bare
+	// UUID; consumers that need a human-readable label (e.g. /debug
+	// HTML pages, log enrichment) resolve through this slice.
+	Projects []Project
+}
+
+// ProjectName returns the Keystone project's name for id, or id
+// itself if no matching project is present. Linear scan — projects
+// are O(tens), so the constant factor beats a precomputed map.
+func (s Snapshot) ProjectName(id string) string {
+	for _, p := range s.Projects {
+		if p.ID == id {
+			return p.Name
+		}
+	}
+	return id
 }
 
 // FetchSnapshot issues the four list calls in sequence and returns
@@ -43,6 +60,9 @@ func FetchSnapshot(ctx context.Context, c *Client) (Snapshot, error) {
 	}
 	if s.Routers, err = c.ListRouters(ctx); err != nil {
 		return s, fmt.Errorf("list routers: %w", err)
+	}
+	if s.Projects, err = c.ListProjects(ctx); err != nil {
+		return s, fmt.Errorf("list projects: %w", err)
 	}
 	return s, nil
 }

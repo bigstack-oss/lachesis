@@ -96,6 +96,13 @@ func (ns *neutronStub) serveKeystone(w http.ResponseWriter) {
 						map[string]any{"interface": "internal", "region": "R1", "region_id": "R1", "url": ns.URL + "/"},
 					},
 				},
+				map[string]any{
+					"type": "identity",
+					"name": "keystone",
+					"endpoints": []any{
+						map[string]any{"interface": "internal", "region": "R1", "region_id": "R1", "url": ns.URL + "/v3"},
+					},
+				},
 			},
 		},
 	})

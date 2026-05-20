@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/projects"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/external"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/routers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/networks"
@@ -123,9 +124,30 @@ func (c *Client) ListRouters(ctx context.Context) ([]Router, error) {
 		out[i] = Router{
 			ID:                r.ID,
 			ProjectID:         preferProjectID(r.ProjectID, r.TenantID),
+			Name:              r.Name,
 			ExternalNetworkID: r.GatewayInfo.NetworkID,
 			Routes:            routes,
 		}
+	}
+	return out, nil
+}
+
+// ListProjects returns every Keystone project the agent's project is
+// authorised to see. Used by /debug pages to display project names
+// alongside the UUIDs Neutron resources carry. Pagination is drained
+// inside the call.
+func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
+	pages, err := projects.List(c.identity, projects.ListOpts{}).AllPages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("keystone: list projects: %w", err)
+	}
+	gcs, err := projects.ExtractProjects(pages)
+	if err != nil {
+		return nil, fmt.Errorf("keystone: extract projects: %w", err)
+	}
+	out := make([]Project, len(gcs))
+	for i, p := range gcs {
+		out[i] = Project{ID: p.ID, Name: p.Name}
 	}
 	return out, nil
 }
