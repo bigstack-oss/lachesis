@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
@@ -145,7 +144,10 @@ func TestKernelWriter_RoundTrip(t *testing.T) {
 			if verdict != 0 {
 				t.Errorf("verdict = %d, want 0 (TC_ACT_OK)", verdict)
 			}
-			zone, ok := findZone(telMap, tc.src, tc.dst, tc.wantDir)
+			zone, ok, err := bpfunit.FindZone(telMap, tc.src, tc.dst, tc.wantDir)
+			if err != nil {
+				t.Fatalf("find zone: %v", err)
+			}
 			if !ok {
 				t.Fatalf("no telemetry_map entry for src=%012x dst=%012x", tc.src, tc.dst)
 			}
@@ -154,53 +156,9 @@ func TestKernelWriter_RoundTrip(t *testing.T) {
 			}
 			// Drain so a /24 hit doesn't carry over to a later case
 			// that uses the same (src, dst) pair.
-			drainTelemetryByMACs(t, telMap, tc.src, tc.dst)
+			if err := bpfunit.DrainTelemetryByMACs(telMap, tc.src, tc.dst); err != nil {
+				t.Fatalf("drain telemetry_map: %v", err)
+			}
 		})
-	}
-}
-
-// findZone scans telemetry_map for an entry matching (src, dst, dir)
-// and returns the recorded DstZone. Mirrors the helper in
-// internal/testenv/classifier.
-func findZone(m *ebpf.Map, src, dst uint64, dir bpf.Direction) (bpf.ZoneCode, bool) {
-	srcB := macToArr(src)
-	dstB := macToArr(dst)
-	var key bpf.FlowKey
-	var vals []bpf.FlowMetrics
-	iter := m.Iterate()
-	for iter.Next(&key, &vals) {
-		if key.SrcMac == srcB && key.DstMac == dstB && key.Direction == dir {
-			return key.DstZone, true
-		}
-	}
-	return 0, false
-}
-
-func drainTelemetryByMACs(t *testing.T, m *ebpf.Map, src, dst uint64) {
-	t.Helper()
-	srcB := macToArr(src)
-	dstB := macToArr(dst)
-	var key bpf.FlowKey
-	var vals []bpf.FlowMetrics
-	iter := m.Iterate()
-	var toDelete []bpf.FlowKey
-	for iter.Next(&key, &vals) {
-		if key.SrcMac == srcB && key.DstMac == dstB {
-			toDelete = append(toDelete, key)
-		}
-	}
-	for i := range toDelete {
-		if err := m.Delete(&toDelete[i]); err != nil {
-			t.Fatalf("delete telemetry_map: %v", err)
-		}
-	}
-}
-
-// macToArr converts a uint64 MAC (low 48 bits) into a big-endian
-// 6-byte array. Mirrors the helper in internal/testenv/classifier.
-func macToArr(v uint64) [6]uint8 {
-	return [6]uint8{
-		uint8(v >> 40), uint8(v >> 32), uint8(v >> 24),
-		uint8(v >> 16), uint8(v >> 8), uint8(v),
 	}
 }
