@@ -17,3 +17,12 @@ import "embed"
 //
 //go:embed templates/*.html
 var Templates embed.FS
+
+// Static contains the vendored browser-side assets — currently
+// the Cytoscape.js graph renderer used by /debug/topology.
+// Served through [http.FileServer] under /debug/static/. Air-gapped
+// hosts get the file from the agent itself so no network fetch is
+// required at page load.
+//
+//go:embed static
+var Static embed.FS

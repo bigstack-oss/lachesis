@@ -40,6 +40,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/web"
 )
 
 // Options bundles the inputs to [New]. ConfigPath is the YAML file
@@ -322,6 +323,10 @@ func (a *Agent) buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager)
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.Handle("/debug/", mgr.DebugHandler())
 	mux.HandleFunc("/debug/zones", a.handleDebugZones)
+	// /debug/static/<file> → vendored browser assets. StripPrefix maps
+	// the URL path to the embed.FS root (which carries `static/...`
+	// directly). FileServer adds Content-Type from the extension.
+	mux.Handle("/debug/static/", http.StripPrefix("/debug/", http.FileServer(http.FS(web.Static))))
 	return mux
 }
 
