@@ -82,6 +82,30 @@ const (
 	DirectionEgress  = telemetryTcDirectionTC_DIR_EGRESS
 )
 
+// String returns the short canonical name of the zone code —
+// "EXTERNAL", "SAME_TENANT", etc. — stripping the C-side `ZONE_`
+// prefix. Returned by [fmt.Stringer]; used by /debug HTML rendering,
+// log enrichment, and anywhere the zone needs a human-readable form.
+// Unknown codes return "ZONE(<n>)" so a future kernel-side addition
+// surfaces visibly rather than silently misclassifying.
+func (z ZoneCode) String() string {
+	switch z {
+	case ZoneExternal:
+		return "EXTERNAL"
+	case ZoneSameTenant:
+		return "SAME_TENANT"
+	case ZoneOtherTenant:
+		return "OTHER_TENANT"
+	case ZoneInfra:
+		return "INFRA"
+	case ZoneMiss:
+		return "MISS"
+	case ZoneShared:
+		return "SHARED"
+	}
+	return fmt.Sprintf("ZONE(%d)", uint8(z))
+}
+
 // ProgramIngress and ProgramEgress are the SEC("tc") function names
 // of the ingress and egress telemetry programs in bpf/telemetry.c.
 // Loaders use these names to look up [*ebpf.Program] handles from a

@@ -9,6 +9,28 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+func TestZoneCode_String(t *testing.T) {
+	cases := []struct {
+		code ZoneCode
+		want string
+	}{
+		{ZoneExternal, "EXTERNAL"},
+		{ZoneSameTenant, "SAME_TENANT"},
+		{ZoneOtherTenant, "OTHER_TENANT"},
+		{ZoneInfra, "INFRA"},
+		{ZoneMiss, "MISS"},
+		{ZoneShared, "SHARED"},
+	}
+	for _, tc := range cases {
+		if got := tc.code.String(); got != tc.want {
+			t.Errorf("ZoneCode(%d).String() = %q, want %q", uint8(tc.code), got, tc.want)
+		}
+	}
+	if got := ZoneCode(99).String(); got != "ZONE(99)" {
+		t.Errorf("unknown code: got %q, want ZONE(99)", got)
+	}
+}
+
 func TestMACKey(t *testing.T) {
 	tests := []struct {
 		name string
