@@ -323,6 +323,7 @@ func (a *Agent) buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager)
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.Handle("/debug/", mgr.DebugHandler())
 	mux.HandleFunc("/debug/zones", a.handleDebugZones)
+	mux.HandleFunc("/debug/topology", a.handleDebugTopology)
 	// /debug/static/<file> → vendored browser assets. StripPrefix maps
 	// the URL path to the embed.FS root (which carries `static/...`
 	// directly). FileServer adds Content-Type from the extension.
