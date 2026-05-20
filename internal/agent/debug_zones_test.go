@@ -83,19 +83,38 @@ func TestBuildZonesPage_TenantsSortedAndUnique(t *testing.T) {
 		{TenantID: "T1", Prefix: netip.MustParsePrefix("10.1.0.0/24"), Zone: bpf.ZoneSameTenant},
 		{TenantID: "T1", Prefix: netip.MustParsePrefix("10.2.0.0/24"), Zone: bpf.ZoneSameTenant},
 	}
-	page := buildZonesPage(entries, time.Time{})
+	snap := &neutron.Snapshot{Projects: []neutron.Project{
+		{ID: "T1", Name: "tenant-one"},
+		{ID: "T2", Name: "tenant-two"},
+	}}
+	page := buildZonesPage(entries, snap, time.Time{})
 
 	want := []string{"", "T1", "T2"}
 	if len(page.Tenants) != len(want) {
 		t.Fatalf("Tenants = %v, want %v", page.Tenants, want)
 	}
 	for i, w := range want {
-		if page.Tenants[i] != w {
-			t.Errorf("Tenants[%d] = %q, want %q", i, page.Tenants[i], w)
+		if page.Tenants[i].ID != w {
+			t.Errorf("Tenants[%d].ID = %q, want %q", i, page.Tenants[i].ID, w)
 		}
+	}
+	if page.Tenants[1].Label != "tenant-one (T1)" {
+		t.Errorf("Tenants[1].Label = %q, want %q", page.Tenants[1].Label, "tenant-one (T1)")
+	}
+	if page.Tenants[0].Label != "(global)" {
+		t.Errorf("Tenants[0].Label = %q, want %q", page.Tenants[0].Label, "(global)")
 	}
 	if got := len(page.Rows); got != len(entries) {
 		t.Errorf("Rows len = %d, want %d", got, len(entries))
+	}
+	// TenantName resolved correctly per row.
+	for _, row := range page.Rows {
+		if row.Tenant == "T1" && row.TenantName != "tenant-one" {
+			t.Errorf("T1 row TenantName = %q, want tenant-one", row.TenantName)
+		}
+		if row.Tenant == "" && row.TenantName != "(global)" {
+			t.Errorf("global row TenantName = %q, want (global)", row.TenantName)
+		}
 	}
 }
 
