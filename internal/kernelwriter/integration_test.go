@@ -72,13 +72,22 @@ func TestKernelWriter_RoundTrip(t *testing.T) {
 		t.Fatalf("WriteMacTenantMap wrote %d entries, want 3", n)
 	}
 
-	// Hand-build a TrieEntry slice for projA covering the three LPM
-	// regimes. BuildTrie's output is exercised separately by its own
-	// unit tests; this test focuses on the writer + kernel path.
+	// Hand-build a TrieEntry slice covering the three LPM regimes
+	// in their post-dedup shape:
+	//
+	//   - SAME_TENANT: per-tenant, written under projA. First
+	//     trie lookup (vm_tid=projA) hits directly.
+	//   - INFRA + EXTERNAL catchall: global, written at TenantID=""
+	//     (interner resolves to tenant_id=0). First lookup
+	//     (vm_tid=projA) misses; sentinel fallback (tenant_id=0)
+	//     hits — exercises the slice-3 two-lookup path.
+	//
+	// BuildTrie's output is exercised separately by its own unit
+	// tests; this test focuses on the writer + kernel path.
 	entries := []neutron.TrieEntry{
-		{TenantID: projA, Prefix: netip.MustParsePrefix("0.0.0.0/0"), Zone: bpf.ZoneExternal},
+		{TenantID: "", Prefix: netip.MustParsePrefix("0.0.0.0/0"), Zone: bpf.ZoneExternal},
 		{TenantID: projA, Prefix: netip.MustParsePrefix("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
-		{TenantID: projA, Prefix: netip.MustParsePrefix("169.254.169.254/32"), Zone: bpf.ZoneInfra},
+		{TenantID: "", Prefix: netip.MustParsePrefix("169.254.169.254/32"), Zone: bpf.ZoneInfra},
 	}
 	if n, err := kernelwriter.WriteSubnetZoneTrie(trieMap, entries, interner); err != nil {
 		t.Fatalf("WriteSubnetZoneTrie: %v (wrote=%d)", err, n)

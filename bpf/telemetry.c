@@ -91,18 +91,24 @@ struct {
  * userspace agent at startup and updated incrementally via the metadata
  * event stream.
  *
- * Sizing: per docs/DESIGN.md §5.2, each tenant emits roughly
- *   1 catchall + N_owned_subnets + N_shared_subnets +
- *   N_infra_ports + 1 metadata
- * trie rows. Empirically on a 27-tenant OVN-Yoga single-host
- * deployment Steps 1–4 produce ~340 effective rows/tenant — nearly
- * all of that is Step 4 (every router_interface / router_gateway /
- * distributed-DHCP /32 + every subnet gateway, replicated per
- * tenant). 16384 caps the trie at ~48 tenants of this shape;
- * deployments above that trip ValidateMapSizes at boot.
- * docs/sprint-plan.md §4c (trie dedup for global zone entries)
- * removes the per-tenant replication and reshapes cardinality to
- * O(G + Σ O_t); after 4c lands this cap can drop back near 4096.
+ * # Cardinality
+ *
+ * Trie dedup (sentinel tenant_id=0) emits the global rows —
+ * catchall, SHARED, INFRA /32s, and the Nova metadata /32 —
+ * exactly once with tenant_id=0; only SAME_TENANT subnets and
+ * per-tenant extraroutes scale with tenant count. Per
+ * docs/DESIGN.md §3.1 cardinality is O(G + Σ O_t), where G is
+ * the global-row count and O_t the per-tenant SAME_TENANT rows.
+ *
+ * # Sizing
+ *
+ * 16384 is the retained cap. Empirically a 37-tenant OVN-Yoga
+ * single-host deployment drops from ~14252 entries (pre-dedup)
+ * to well under 1000 (post-dedup); 16384 leaves an order of
+ * magnitude of headroom for future per-tenant SAME_TENANT growth
+ * (more owned subnets, more extraroutes) without a `task generate`
+ * cycle. Headroom is cheap on an LPM_TRIE with BPF_F_NO_PREALLOC
+ * — entries are allocated on demand, not pre-reserved.
  */
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
@@ -150,7 +156,17 @@ static __always_inline __u64 mac_to_u64(const __u8 mac[6])
  *   1. vm_mac must be a known VM in mac_tenant_map, otherwise ZONE_MISS.
  *   2. Direct-L2 fast path: if peer_mac is also a known VM, compare
  *      tenants exactly. No trie consulted, no CIDR ambiguity.
- *   3. Routed fallback: LPM trie keyed on (vm_tenant_id, remote_ip).
+ *   3. Routed fallback: LPM trie keyed on (vm_tenant_id, remote_ip);
+ *      hits SAME_TENANT rows and per-tenant extraroute rows.
+ *   4. Sentinel fallback: if (3) misses, re-key with tenant_id=0
+ *      and look up again. Trie-dedup writes global rows (catchall,
+ *      SHARED, INFRA, metadata) once at tenant_id=0; the catchall
+ *      guarantees this second lookup hits in steady state, so
+ *      ZONE_MISS here means the trie hasn't been populated yet
+ *      (cold-start race) or a bug, not a normal miss.
+ *
+ * Userspace contract: see internal/neutron.BuildTrie (per-tenant
+ * vs TenantID="" emission rules) and docs/DESIGN.md §3.1.
  */
 static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
 					const __u8 peer_mac[6],
@@ -181,6 +197,15 @@ static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
 		.ip        = remote_ip_be,
 	};
 	__u8 *zone = bpf_map_lookup_elem(&subnet_zone_trie, &lk);
+	if (zone)
+		return *zone;
+
+	/* Sentinel fallback. Same key, tenant_id rewritten to 0; the
+	 * verifier is happy with a second lookup on the same stack-
+	 * allocated struct. Catchall at 0.0.0.0/0 guarantees a hit
+	 * in steady state. */
+	lk.tenant_id = 0;
+	zone = bpf_map_lookup_elem(&subnet_zone_trie, &lk);
 	return zone ? *zone : ZONE_MISS;
 }
 
