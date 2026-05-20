@@ -324,6 +324,9 @@ func (a *Agent) buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager)
 	mux.Handle("/debug/", mgr.DebugHandler())
 	mux.HandleFunc("/debug/zones", a.handleDebugZones)
 	mux.HandleFunc("/debug/topology", a.handleDebugTopology)
+	// Per-tenant focused topology view. The {tenant} pattern is a
+	// Go 1.22+ ServeMux capture; r.PathValue("tenant") retrieves it.
+	mux.HandleFunc("/debug/topology/{tenant}", a.handleDebugTopologyTenant)
 	// /debug/static/<file> → vendored browser assets. StripPrefix maps
 	// the URL path to the embed.FS root (which carries `static/...`
 	// directly). FileServer adds Content-Type from the extension.

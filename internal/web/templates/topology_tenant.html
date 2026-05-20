@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Topology — {{ if .TenantName }}{{ .TenantName }}{{ else }}{{ .TenantID }}{{ end }}</title>
+<style>
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 1rem 1.5rem; color: #222; }
+  h1 { font-size: 1.2rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1rem; margin: 1.5rem 0 0.5rem; border-bottom: 1px solid #ddd; padding-bottom: 0.2rem; }
+  h3 { font-size: 0.95rem; margin: 0 0 0.35rem; font-weight: 600; }
+  h1 .uuid { color: #888; font-size: 0.8rem; font-weight: normal; margin-left: 0.5rem; }
+  .meta { color: #666; font-size: 0.85rem; margin-bottom: 0.4rem; }
+  .summary { color: #444; font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .summary .badge { display: inline-block; margin-right: 0.75rem; }
+  .summary .cross { color: #d80; font-weight: 600; }
+  nav a { margin-right: 1rem; font-size: 0.85rem; }
+  table { border-collapse: collapse; font-size: 0.85rem; width: 100%; max-width: 80rem; }
+  th, td { padding: 3px 10px; text-align: left; border: 1px solid #ddd; vertical-align: top; }
+  th { background: #f4f4f4; }
+  tbody tr:nth-child(even) { background: #fafafa; }
+  td.uuid, span.uuid { color: #888; font-size: 0.78rem; }
+  td.muted { color: #888; }
+  .kind-shared { color: #888; }
+  .kind-external { color: #b22; }
+  .cross-mark { color: #d80; font-weight: 600; margin-left: 0.4rem; }
+  .router-card { margin-bottom: 1.2rem; padding: 0.5rem 0.75rem; border: 1px solid #e4e4e4; border-radius: 4px; background: #fafafa; max-width: 80rem; }
+  .router-card .ext { color: #b22; font-size: 0.85rem; margin-bottom: 0.3rem; }
+  .router-card .ext.none { color: #888; }
+  .router-card .empty { color: #888; font-size: 0.85rem; }
+  .router-card table { font-size: 0.8rem; margin-top: 0.25rem; }
+  .router-card .subhead { font-size: 0.78rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 0.35rem; }
+  #cy { width: 100%; height: 50vh; border: 1px solid #ddd; background: #fafafa; }
+  .hint { font-size: 0.75rem; color: #888; margin-top: 0.25rem; }
+  .graph-legend { font-size: 0.78rem; color: #555; margin-top: 0.4rem; display: flex; flex-wrap: wrap; gap: 1rem 1.25rem; }
+  .graph-legend .swatch { display: inline-block; width: 16px; height: 12px; border: 1px solid #234; vertical-align: middle; margin-right: 4px; }
+  .graph-legend .swatch.net      { background: #357; }
+  .graph-legend .swatch.shared   { background: #888; border-color: #555; }
+  .graph-legend .swatch.external { background: #b22; border-color: #811; }
+  .graph-legend .swatch.router   { background: #2a6; border-color: #184; border-radius: 50%; width: 14px; height: 14px; }
+  .graph-legend .swatch.boundary { background: #fff; border: 2px dashed #888; }
+  .graph-legend .edge-attach { display: inline-block; width: 24px; border-top: 2px solid #357; vertical-align: middle; margin-right: 4px; }
+  .graph-legend .edge-extra  { display: inline-block; width: 24px; border-top: 2px dotted #d80; vertical-align: middle; margin-right: 4px; }
+  #node-info { font-size: 0.82rem; color: #333; background: #f4f4f4; border: 1px solid #ddd; padding: 0.5rem 0.75rem; margin-top: 0.5rem; min-height: 1.8rem; max-width: 60rem; }
+  #node-info .placeholder { color: #888; }
+  #node-info .label { color: #666; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; display: inline-block; min-width: 5rem; }
+  #node-info .uuid { color: #555; }
+  .empty { color: #888; font-style: italic; margin-top: 1rem; }
+  .err { background: #fee; border: 1px solid #b22; padding: 0.75rem 1rem; color: #900; font-size: 0.85rem; margin-bottom: 1rem; }
+  a.tenant-link { color: #246; text-decoration: none; }
+  a.tenant-link:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav><a href="/debug/topology">← directory</a><a href="/debug/zones">zones</a><a href="/debug/config">config</a></nav>
+<h1>
+  {{ if .TenantName }}{{ .TenantName }}{{ else }}<span class="uuid">{{ .TenantID }}</span>{{ end }}
+  {{ if .TenantName }}<span class="uuid">{{ .TenantID }}</span>{{ end }}
+</h1>
+<div class="meta">
+  Last neutron sync:
+  {{- if .LastSync.IsZero }} never
+  {{- else }} {{ .LastSync.UTC.Format "2006-01-02T15:04:05Z" }}
+  {{- end }}
+</div>
+
+{{ if .NotFound }}
+<p class="empty">No Neutron resources owned by this tenant, and no cross-tenant edges touching it. <a href="/debug/topology">← back to directory</a></p>
+{{ else }}
+
+<div class="summary">
+  <span class="badge">{{ .Summary.Networks }} network{{ if ne .Summary.Networks 1 }}s{{ end }}</span>
+  <span class="badge">{{ .Summary.Routers }} router{{ if ne .Summary.Routers 1 }}s{{ end }}</span>
+  <span class="badge">{{ .Summary.Attachments }} attachment{{ if ne .Summary.Attachments 1 }}s{{ end }}</span>
+  <span class="badge">{{ .Summary.Extraroutes }} extraroute{{ if ne .Summary.Extraroutes 1 }}s{{ end }}</span>
+  {{ if .Summary.CrossAttach }}<span class="badge cross">{{ .Summary.CrossAttach }} cross-tenant attach</span>{{ end }}
+  {{ if .Summary.CrossExtraroute }}<span class="badge cross">{{ .Summary.CrossExtraroute }} cross-tenant extraroute</span>{{ end }}
+</div>
+
+{{ if .CrossGraph.Nodes }}
+<h2>Cross-tenant relationships</h2>
+<div id="cy"></div>
+<div class="graph-legend">
+  <span><span class="swatch net"></span>internal network</span>
+  <span><span class="swatch shared"></span>shared network</span>
+  <span><span class="swatch external"></span>external network</span>
+  <span><span class="swatch router"></span>internal router</span>
+  <span><span class="swatch boundary"></span>boundary (other tenant)</span>
+  <span><span class="edge-attach"></span>attach (router → network)</span>
+  <span><span class="edge-extra"></span>extraroute (router → next-hop router)</span>
+</div>
+<div id="node-info"><span class="placeholder">Hover a node for details · click a dashed boundary node to drill into that tenant · scroll to zoom · drag to pan</span></div>
+{{ end }}
+
+{{ if .Networks }}
+<h2>Networks ({{ len .Networks }})</h2>
+<table>
+<thead><tr><th>Name</th><th>CIDRs</th><th>Flags</th><th>ID</th></tr></thead>
+<tbody>
+{{- range .Networks }}
+<tr>
+  <td>{{ .Name }}</td>
+  <td>{{ range $i, $c := .CIDRs }}{{ if $i }}, {{ end }}{{ $c }}{{ end }}</td>
+  <td class="kind-{{ .Kind }}">{{ if .Kind }}{{ .Kind }}{{ end }}</td>
+  <td class="uuid">{{ .ID }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ end }}
+
+{{ if .Routers }}
+<h2>Routers ({{ len .Routers }})</h2>
+{{- range .Routers }}
+<div class="router-card">
+  <h3>{{ .ID }}</h3>
+  {{ if .ExternalGatewayID }}
+  <div class="ext">external gateway → {{ if .ExternalGatewayName }}{{ .ExternalGatewayName }}{{ else }}{{ .ExternalGatewayID }}{{ end }} <span class="uuid">({{ .ExternalGatewayID }})</span></div>
+  {{ else }}
+  <div class="ext none">no external gateway</div>
+  {{ end }}
+
+  <div class="subhead">Attachments {{ if .Attachments }}({{ len .Attachments }}){{ end }}</div>
+  {{ if .Attachments }}
+  <table>
+  <thead><tr><th>Network</th><th>IP</th><th>Network ID</th></tr></thead>
+  <tbody>
+  {{- range .Attachments }}
+  <tr>
+    <td>{{ .NetworkName }}{{ if .CrossTenant }}<a class="tenant-link cross-mark" href="/debug/topology/{{ .NetworkTenantID }}" title="cross-tenant: network owned by {{ .NetworkTenantName }}">→ [{{ .NetworkTenantName }}]</a>{{ end }}</td>
+    <td>{{ .IP }}</td>
+    <td class="uuid">{{ .NetworkID }}</td>
+  </tr>
+  {{- end }}
+  </tbody>
+  </table>
+  {{ else }}
+  <div class="empty">none</div>
+  {{ end }}
+
+  <div class="subhead">Extraroutes {{ if .Extraroutes }}({{ len .Extraroutes }}){{ end }}</div>
+  {{ if .Extraroutes }}
+  <table>
+  <thead><tr><th>Destination</th><th>Nexthop</th><th>Next router</th></tr></thead>
+  <tbody>
+  {{- range .Extraroutes }}
+  <tr>
+    <td>{{ .Destination }}</td>
+    <td>{{ .Nexthop }}</td>
+    <td>
+      {{ if .NextRouterID }}
+        <span class="uuid">{{ .NextRouterID }}</span>
+        {{ if .CrossTenant }}<a class="tenant-link cross-mark" href="/debug/topology/{{ .NextRouterTenantID }}" title="cross-tenant: next router owned by {{ .NextRouterTenantName }}">→ [{{ .NextRouterTenantName }}]</a>{{ end }}
+      {{ else }}
+        <span class="muted">(unresolved — nexthop is not a known router_interface)</span>
+      {{ end }}
+    </td>
+  </tr>
+  {{- end }}
+  </tbody>
+  </table>
+  {{ else }}
+  <div class="empty">none</div>
+  {{ end }}
+</div>
+{{- end }}
+{{ end }}
+
+{{ if .Extraroutes }}
+<h2>Cross-tenant extraroutes ({{ len .Extraroutes }})</h2>
+<table>
+<thead><tr>
+  <th>Dir</th><th>Source router</th><th>Source tenant</th>
+  <th>Destination</th><th>via</th>
+  <th>Target router</th><th>Target tenant</th>
+</tr></thead>
+<tbody>
+{{- range .Extraroutes }}
+<tr>
+  <td>{{ .Direction }}</td>
+  <td class="uuid">{{ .SourceRouterID }}</td>
+  <td><a class="tenant-link" href="/debug/topology/{{ .SourceTenantID }}">{{ .SourceTenantName }}</a></td>
+  <td>{{ .Destination }}</td>
+  <td>{{ .Nexthop }}</td>
+  <td class="uuid">{{ .TargetRouterID }}</td>
+  <td><a class="tenant-link" href="/debug/topology/{{ .TargetTenantID }}">{{ .TargetTenantName }}</a></td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ end }}
+
+{{ if .CrossGraph.Nodes }}
+<script src="/debug/static/cytoscape.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  try {
+    var data = {{ .CrossGraphJSON }};
+    var elements = data.nodes.map(function (n) { return { data: n }; })
+                       .concat(data.edges.map(function (e) { return { data: e }; }));
+
+    var cy = cytoscape({
+      container: document.getElementById('cy'),
+      elements: elements,
+      style: [
+        { selector: 'node', style: {
+            'label': 'data(label)', 'font-size': 12,
+            'text-valign': 'center', 'text-halign': 'center',
+            'text-wrap': 'wrap', 'text-max-width': 160,
+            'color': '#fff', 'border-width': 1,
+            'shape': 'round-rectangle' } },
+        { selector: 'node[kind="network"]', style: {
+            'background-color': '#357', 'border-color': '#234',
+            'width': 170, 'height': 52 } },
+        { selector: 'node[kind="network-shared"]', style: {
+            'background-color': '#888', 'border-color': '#555',
+            'width': 170, 'height': 52 } },
+        { selector: 'node[kind="network-external"]', style: {
+            'background-color': '#b22', 'border-color': '#811',
+            'width': 170, 'height': 52 } },
+        { selector: 'node[kind="router"]', style: {
+            'background-color': '#2a6', 'border-color': '#184',
+            'width': 110, 'height': 44, 'shape': 'ellipse' } },
+        { selector: 'node[kind="network-boundary"]', style: {
+            'background-color': '#fff', 'border-color': '#888',
+            'border-style': 'dashed', 'border-width': 2,
+            'color': '#444', 'width': 180, 'height': 60 } },
+        { selector: 'node[kind="router-boundary"]', style: {
+            'background-color': '#fff', 'border-color': '#888',
+            'border-style': 'dashed', 'border-width': 2,
+            'color': '#444', 'width': 140, 'height': 52,
+            'shape': 'ellipse' } },
+        { selector: 'edge', style: {
+            'curve-style': 'bezier', 'target-arrow-shape': 'triangle',
+            'width': 2, 'line-color': '#357', 'target-arrow-color': '#357',
+            'label': 'data(label)', 'font-size': 10,
+            'text-rotation': 'autorotate', 'color': '#555' } },
+        { selector: 'edge[kind="extraroute"]', style: {
+            'line-color': '#d80', 'target-arrow-color': '#d80',
+            'line-style': 'dotted' } }
+      ],
+      layout: {
+        name: 'cose',
+        animate: false,
+        nodeRepulsion: 14000,
+        idealEdgeLength: 140,
+        gravity: 0.4,
+        numIter: 1500
+      }
+    });
+
+    cy.on('tap', 'node[kind$="-boundary"]', function (evt) {
+      var t = evt.target.data('tenant');
+      if (t) window.location.href = '/debug/topology/' + encodeURIComponent(t);
+    });
+
+    // Hover info: lock the panel onto the most-recently-hovered
+    // node. Leaving the node keeps the panel populated so an
+    // operator can read it while moving the mouse off the canvas.
+    var infoEl = document.getElementById('node-info');
+    function escapeHTML(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function kindHuman(k) {
+      switch (k) {
+        case 'network':          return 'internal network';
+        case 'network-shared':   return 'shared network';
+        case 'network-external': return 'external network';
+        case 'router':           return 'internal router';
+        case 'network-boundary': return 'network (other tenant)';
+        case 'router-boundary':  return 'router (other tenant)';
+      }
+      return k;
+    }
+    cy.on('mouseover', 'node', function (evt) {
+      var d = evt.target.data();
+      var rows = [];
+      rows.push('<div><span class="label">Kind</span>' + escapeHTML(kindHuman(d.kind)) + '</div>');
+      if (d.name) {
+        rows.push('<div><span class="label">Name</span>' + escapeHTML(d.name) + '</div>');
+      }
+      rows.push('<div><span class="label">ID</span><span class="uuid">' + escapeHTML(d.id) + '</span></div>');
+      var tenantBit = d.tenantName ? (escapeHTML(d.tenantName) + ' <span class="uuid">(' + escapeHTML(d.tenant) + ')</span>')
+                                   : '<span class="uuid">' + escapeHTML(d.tenant) + '</span>';
+      rows.push('<div><span class="label">Project</span>' + tenantBit + '</div>');
+      if (d.cidrs && d.cidrs.length) {
+        rows.push('<div><span class="label">CIDRs</span>' + d.cidrs.map(escapeHTML).join(', ') + '</div>');
+      }
+      infoEl.innerHTML = rows.join('');
+    });
+  } catch (err) {
+    var box = document.createElement('div');
+    box.className = 'err';
+    box.textContent = 'Render error: ' + (err && err.message ? err.message : String(err));
+    document.body.insertBefore(box, document.body.firstChild);
+    if (window.console) console.error(err);
+  }
+});
+</script>
+{{ end }}
+
+{{ end }}{{/* not NotFound */}}
+</body>
+</html>
