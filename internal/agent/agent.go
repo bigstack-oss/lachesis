@@ -124,6 +124,19 @@ type Agent struct {
 	// and the incremental Kafka updater share it.
 	interner *metadata.TenantInterner
 
+	// neutronSnapshot is the userspace copy of the most-recently
+	// consumed Neutron resource bundle. Cold-start populates it
+	// after the kernel maps are written; the future Kafka updater
+	// swaps it in atomically. Read by the /debug/topology HTML
+	// page; nil means neutron is disabled or has not yet synced.
+	neutronSnapshot atomic.Pointer[neutron.Snapshot]
+	// trieEntries is the deduped row set the kernel
+	// `subnet_zone_trie` was last written with. Read by the
+	// /debug/zones HTML page so operators can see the
+	// (tenant, prefix, zone) classification the kernel will apply.
+	// Same lifecycle as [neutronSnapshot].
+	trieEntries atomic.Pointer[[]neutron.TrieEntry]
+
 	// walRecBuf is the reused SnapshotForWAL destination so a
 	// steady-state flush does not allocate a fresh records slice.
 	// Owned solely by the WAL flush goroutine; no lock needed.
@@ -177,6 +190,38 @@ func (a *Agent) Metadata() *metadata.ShardedMetadataMap { return a.meta }
 // boot; see the doc on [metadata.TenantInterner] for why that is
 // correctness-safe.
 func (a *Agent) Interner() *metadata.TenantInterner { return a.interner }
+
+// SetNeutronSnapshot atomically replaces the snapshot the
+// /debug/topology page renders from. Cold-start calls this once the
+// kernel maps have been written; the future Kafka updater calls it
+// on each successful incremental sync.
+func (a *Agent) SetNeutronSnapshot(s *neutron.Snapshot) {
+	a.neutronSnapshot.Store(s)
+}
+
+// NeutronSnapshot returns the snapshot last set by
+// [SetNeutronSnapshot], or nil if neutron is disabled or has not
+// yet synced.
+func (a *Agent) NeutronSnapshot() *neutron.Snapshot {
+	return a.neutronSnapshot.Load()
+}
+
+// SetTrieEntries atomically replaces the trie row set the
+// /debug/zones page renders from. Same lifecycle as
+// [SetNeutronSnapshot].
+func (a *Agent) SetTrieEntries(entries []neutron.TrieEntry) {
+	a.trieEntries.Store(&entries)
+}
+
+// TrieEntries returns the trie row set last set by
+// [SetTrieEntries], or nil if none has been written yet.
+func (a *Agent) TrieEntries() []neutron.TrieEntry {
+	p := a.trieEntries.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
+}
 
 // New constructs the agent. The HTTP listener is opened immediately so
 // callers can use [Agent.Addr] before [Agent.Run] starts serving — useful
