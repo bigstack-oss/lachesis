@@ -63,12 +63,17 @@ func containsEntry(entries []neutron.TrieEntry, target neutron.TrieEntry) bool {
 
 func cidr(s string) netip.Prefix { return netip.MustParsePrefix(s) }
 
-func catchallRow(t string) neutron.TrieEntry {
-	return neutron.TrieEntry{TenantID: t, Prefix: cidr("0.0.0.0/0"), Zone: bpf.ZoneExternal}
+// catchallRow and metadataRow build the global rows BuildTrie
+// emits exactly once per snapshot under the trie-dedup model. The
+// kernel `lookup_zone` reads them via the sentinel-fallback key
+// `tenant_id=0`, so they cover every tenant's view from a single
+// entry.
+func catchallRow() neutron.TrieEntry {
+	return neutron.TrieEntry{TenantID: "", Prefix: cidr("0.0.0.0/0"), Zone: bpf.ZoneExternal}
 }
 
-func metadataRow(t string) neutron.TrieEntry {
-	return neutron.TrieEntry{TenantID: t, Prefix: cidr("169.254.169.254/32"), Zone: bpf.ZoneInfra}
+func metadataRow() neutron.TrieEntry {
+	return neutron.TrieEntry{TenantID: "", Prefix: cidr("169.254.169.254/32"), Zone: bpf.ZoneInfra}
 }
 
 func runScenario(snap neutron.Snapshot) []neutron.TrieEntry {
@@ -84,9 +89,9 @@ func runScenario(snap neutron.Snapshot) []neutron.TrieEntry {
 func TestScenario_A_SameTenantSameSubnet(t *testing.T) {
 	got := runScenario(scenarioA())
 	expects(t, got, []neutron.TrieEntry{
-		catchallRow("T1"),
+		catchallRow(),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
-		metadataRow("T1"),
+		metadataRow(),
 	})
 }
 
@@ -104,12 +109,12 @@ func scenarioA() neutron.Snapshot {
 func TestScenario_B_SameTenantViaRouter(t *testing.T) {
 	got := runScenario(scenarioB())
 	expects(t, got, []neutron.TrieEntry{
-		catchallRow("T1"),
+		catchallRow(),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 		{TenantID: "T1", Prefix: cidr("10.0.2.0/24"), Zone: bpf.ZoneSameTenant},
-		{TenantID: "T1", Prefix: cidr("10.0.1.1/32"), Zone: bpf.ZoneInfra}, // router IF on subnet1
-		{TenantID: "T1", Prefix: cidr("10.0.2.1/32"), Zone: bpf.ZoneInfra}, // router IF on subnet2
-		metadataRow("T1"),
+		{TenantID: "", Prefix: cidr("10.0.1.1/32"), Zone: bpf.ZoneInfra}, // router IF on subnet1 (global)
+		{TenantID: "", Prefix: cidr("10.0.2.1/32"), Zone: bpf.ZoneInfra}, // router IF on subnet2 (global)
+		metadataRow(),
 	})
 }
 
@@ -130,14 +135,15 @@ func scenarioB() neutron.Snapshot {
 func TestScenario_C_CrossTenantViaShared(t *testing.T) {
 	got := runScenario(scenarioC())
 	expects(t, got, []neutron.TrieEntry{
-		catchallRow("T1"),
+		catchallRow(),
+		{TenantID: "", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneShared}, // global
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
-		{TenantID: "T1", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneShared},
-		catchallRow("T2"),
 		{TenantID: "T2", Prefix: cidr("10.0.2.0/24"), Zone: bpf.ZoneSameTenant},
-		{TenantID: "T2", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneShared},
 	})
 	rejects(t, got, []neutron.TrieEntry{
+		// Per-tenant copies of the shared row would defeat the trie dedup.
+		{TenantID: "T1", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneShared},
+		{TenantID: "T2", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneShared},
 		{TenantID: "T1", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneOtherTenant},
 		{TenantID: "T2", Prefix: cidr("10.10.0.0/24"), Zone: bpf.ZoneOtherTenant},
 	})
@@ -159,15 +165,16 @@ func scenarioC() neutron.Snapshot {
 func TestScenario_D_ExternalEgress(t *testing.T) {
 	got := runScenario(scenarioD())
 	expects(t, got, []neutron.TrieEntry{
-		catchallRow("T1"),
+		catchallRow(),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
-		{TenantID: "T1", Prefix: cidr("203.0.113.1/32"), Zone: bpf.ZoneInfra},
-		metadataRow("T1"),
+		{TenantID: "", Prefix: cidr("203.0.113.1/32"), Zone: bpf.ZoneInfra}, // external GW IF (global)
+		metadataRow(),
 	})
 	rejects(t, got, []neutron.TrieEntry{
 		{TenantID: "T1", Prefix: cidr("203.0.113.0/24"), Zone: bpf.ZoneSameTenant},
 		{TenantID: "T1", Prefix: cidr("203.0.113.0/24"), Zone: bpf.ZoneOtherTenant},
 		{TenantID: "T1", Prefix: cidr("203.0.113.0/24"), Zone: bpf.ZoneShared},
+		{TenantID: "", Prefix: cidr("203.0.113.0/24"), Zone: bpf.ZoneShared},
 	})
 }
 
@@ -189,11 +196,15 @@ func scenarioD() neutron.Snapshot {
 func TestScenario_E_ExternalIngressViaFIP(t *testing.T) {
 	got := runScenario(scenarioE())
 	expects(t, got, []neutron.TrieEntry{
-		catchallRow("T1"),
+		catchallRow(),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
-		metadataRow("T1"),
+		metadataRow(),
 	})
 	rejects(t, got, []neutron.TrieEntry{
+		// FIP /32 must NOT classify as INFRA under any tenant or
+		// the global sentinel — `network:floatingip` is bookkeeping,
+		// not a real L2 endpoint.
+		{TenantID: "", Prefix: cidr("203.0.113.5/32"), Zone: bpf.ZoneInfra},
 		{TenantID: "T1", Prefix: cidr("203.0.113.5/32"), Zone: bpf.ZoneInfra},
 		{TenantID: "T1", Prefix: cidr("203.0.113.5/32"), Zone: bpf.ZoneSameTenant},
 	})
@@ -219,6 +230,8 @@ func scenarioE() neutron.Snapshot {
 func TestScenario_F_OctaviaPortsAreVMLikeNotInfra(t *testing.T) {
 	got := runScenario(scenarioF())
 	rejects(t, got, []neutron.TrieEntry{
+		{TenantID: "", Prefix: cidr("10.0.1.50/32"), Zone: bpf.ZoneInfra},
+		{TenantID: "", Prefix: cidr("10.0.1.99/32"), Zone: bpf.ZoneInfra},
 		{TenantID: "T1", Prefix: cidr("10.0.1.50/32"), Zone: bpf.ZoneInfra},
 		{TenantID: "T1", Prefix: cidr("10.0.1.99/32"), Zone: bpf.ZoneInfra},
 	})
@@ -271,7 +284,7 @@ func scenarioG() neutron.Snapshot {
 func TestScenario_I_SameHostSameTenant(t *testing.T) {
 	got := runScenario(scenarioA())
 	expects(t, got, []neutron.TrieEntry{
-		catchallRow("T1"),
+		catchallRow(),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 	})
 }
@@ -279,7 +292,7 @@ func TestScenario_I_SameHostSameTenant(t *testing.T) {
 func TestScenario_J_CrossHostSameTenant(t *testing.T) {
 	got := runScenario(scenarioA())
 	expects(t, got, []neutron.TrieEntry{
-		catchallRow("T1"),
+		catchallRow(),
 		{TenantID: "T1", Prefix: cidr("10.0.1.0/24"), Zone: bpf.ZoneSameTenant},
 	})
 }
@@ -419,4 +432,54 @@ func TestBuildTrie_SurfacesAmbiguityHit(t *testing.T) {
 	}) {
 		t.Errorf("ambiguous route should still emit EXTERNAL row in entries:\n%+v", entries)
 	}
+}
+
+// TestBuildTrie_GlobalsDedupedAcrossTenants pins the
+// emission-uniqueness invariant: every "global" row (catchall,
+// SHARED, INFRA, metadata) is emitted exactly once with
+// TenantID="" regardless of tenant count, and SAME_TENANT rows
+// are emitted exactly per owning tenant. The kernel `lookup_zone`
+// sentinel-fallback (tenant_id=0) reads the global rows for any
+// tenant whose first lookup misses; per-tenant replication of
+// globals would defeat the dedup and re-introduce the O(T × G)
+// cardinality blowup.
+func TestBuildTrie_GlobalsDedupedAcrossTenants(t *testing.T) {
+	// Scenario C carries 3 tenants (T1, T2, T-admin), 1 shared
+	// CIDR, and 2 owned subnets — enough to distinguish globals
+	// from per-tenant rows.
+	got := runScenario(scenarioC())
+
+	cases := []struct {
+		name   string
+		prefix netip.Prefix
+		want   string
+	}{
+		{"catchall", cidr("0.0.0.0/0"), ""},
+		{"metadata", cidr("169.254.169.254/32"), ""},
+		{"shared", cidr("10.10.0.0/24"), ""},
+		{"T1 owned", cidr("10.0.1.0/24"), "T1"},
+		{"T2 owned", cidr("10.0.2.0/24"), "T2"},
+	}
+	for _, tc := range cases {
+		rows := filterByPrefix(got, tc.prefix)
+		if len(rows) != 1 {
+			t.Errorf("%s: %d rows for %v, want exactly 1\nrows: %+v",
+				tc.name, len(rows), tc.prefix, rows)
+			continue
+		}
+		if rows[0].TenantID != tc.want {
+			t.Errorf("%s: row tenant = %q, want %q (row: %+v)",
+				tc.name, rows[0].TenantID, tc.want, rows[0])
+		}
+	}
+}
+
+func filterByPrefix(entries []neutron.TrieEntry, prefix netip.Prefix) []neutron.TrieEntry {
+	var out []neutron.TrieEntry
+	for _, e := range entries {
+		if e.Prefix == prefix {
+			out = append(out, e)
+		}
+	}
+	return out
 }

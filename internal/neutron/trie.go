@@ -176,22 +176,40 @@ func IsKnownVMOwner(deviceOwner string) bool {
 // BuildTrie runs the cold-start 5-step algorithm of
 // docs/DESIGN.md §5.2 (Step 5 delegates to the multi-hop static-
 // route resolver of §5.3) and returns a flat slice of [TrieEntry]
-// for every tenant that owns at least one network, port, or router
-// in the supplied Neutron snapshot. The second return aggregates
-// every Step C ambiguity-after-scoping incident encountered while
-// resolving extraroutes (DESIGN §5.6). Callers running in strict
-// mode (the default) refuse to start when the slice is non-empty;
-// callers running with --unsafe-allow-ambiguous-routes log + accept
-// the EXTERNAL fallback that the resolver already emitted for each
-// affected route.
+// in two shapes:
+//
+//   - Global rows (Steps 1, 3, 4): catchall, shared subnets,
+//     infrastructure /32s, and the Nova metadata /32 are emitted
+//     exactly once with TenantID="" (the writer resolves this to
+//     [metadata.TenantIDUnset], the kernel sentinel u32 = 0).
+//     The kernel `lookup_zone` consults these rows on first-
+//     lookup miss using `tenant_id=0` as the fallback key — see
+//     `bpf/telemetry.c` and `docs/DESIGN.md` §3.1.
+//   - Per-tenant rows (Steps 2, 5): owned subnets and extraroutes
+//     emit one [TrieEntry] per (owning-tenant, prefix). These are
+//     the only entries that scale with tenant count, so total
+//     trie cardinality is `O(G + Σ O_t)` rather than the
+//     pre-dedup `O(T × G + Σ O_t)`.
+//
+// Globals are skipped entirely when no tenants are present —
+// there is no kernel consumer (`mac_tenant_map` is empty) and
+// writing them would waste trie capacity.
+//
+// The second return aggregates every Step C ambiguity-after-scoping
+// incident encountered while resolving extraroutes (DESIGN §5.6).
+// Callers running in strict mode (the default) refuse to start when
+// the slice is non-empty; callers running with
+// --unsafe-allow-ambiguous-routes log + accept the EXTERNAL
+// fallback that the resolver already emitted for each affected route.
 //
 // # Step coverage
 //
-//  1. Catchall:   each tenant gets `0.0.0.0/0 → EXTERNAL`.
+//  1. Catchall:   `0.0.0.0/0 → EXTERNAL`, emitted once with
+//     TenantID="".
 //  2. Owned:      each tenant's non-shared, non-external subnets →
-//     SAME_TENANT.
-//  3. Shared:     every non-external shared subnet → SHARED, applied
-//     uniformly to every tenant. SHARED is a distinct
+//     SAME_TENANT. Per-tenant.
+//  3. Shared:     every non-external shared subnet → SHARED,
+//     emitted once with TenantID="". SHARED is a distinct
 //     zone (not SAME / not OTHER) because the LPM trie
 //     cannot resolve per-VM ownership inside a shared
 //     /24; the MAC-first hot path classifies L2 traffic
@@ -199,7 +217,8 @@ func IsKnownVMOwner(deviceOwner string) bool {
 //     case honestly rather than guessing. See
 //     docs/DESIGN.md §5.2 Step 3.
 //  4. Infra:      router / DHCP / metadata port IPs + subnet gateway
-//     IPs + 169.254.169.254 → INFRA for every tenant.
+//     IPs + 169.254.169.254 → INFRA, emitted once with
+//     TenantID="".
 //  5. Extraroutes: for each router R owned by the tenant, walk
 //     every (destination, nexthop) entry in R.Routes through
 //     [resolveStaticRouteZone] (docs/DESIGN.md §5.3). The resolver
@@ -224,7 +243,8 @@ func IsKnownVMOwner(deviceOwner string) bool {
 // The returned slice is sorted by (TenantID, prefix-string, Zone)
 // so that consecutive reconciliations against identical input
 // produce identical output, simplifying the change-detection logic
-// the kernel map writer will use.
+// the kernel map writer will use. Global rows (TenantID="") sort
+// first; per-tenant runs follow in tenant-ID order.
 func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Router, opts ...BuildOpt) ([]TrieEntry, []AmbiguityHit) {
 	var bo buildOpts
 	for _, o := range opts {
@@ -237,24 +257,51 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 	infraPrefixes := buildInfraPrefixes(subnets, ports)
 	ri := newResolveIndex(networks, subnets, ports, routers)
 
+	// Capacity hint: globals + an over-approximation of per-tenant
+	// rows (every IPv4 subnet may emit one SAME_TENANT row). Extra-
+	// routes are typically few; append will grow if not enough.
 	entries := make([]TrieEntry, 0,
-		len(tenants)*(1+len(sharedPrefixes)+len(infraPrefixes)+1))
+		2+len(sharedPrefixes)+len(infraPrefixes)+len(subnets))
 	var ambiguities []AmbiguityHit
-	// Aggregated per-step durations summed across all tenants; one
-	// histogram observation per step at the end so cardinality stays
-	// bounded regardless of tenant count.
+	// Per-step durations. Steps 1/3/4 are emitted once (single
+	// observation each); Steps 2/5 are summed across tenants.
 	var d1, d2, d3, d4, d5 time.Duration
 
-	for _, tenant := range tenants {
+	// Steps 1, 3, 4 — global rows emitted once with TenantID="".
+	// Skipped when no tenants exist: the kernel `mac_tenant_map`
+	// would be empty, so `lookup_zone` returns ZONE_MISS at the
+	// MAC-first probe before the trie is ever consulted.
+	if len(tenants) > 0 {
 		t0 := time.Now()
-		entries = append(entries, TrieEntry{tenant, catchall, bpf.ZoneExternal})
-		d1 += time.Since(t0)
+		entries = append(entries, TrieEntry{"", catchall, bpf.ZoneExternal})
+		d1 = time.Since(t0)
 
+		// Step 3: shared subnets → SHARED, single row each. The
+		// trie cannot resolve per-VM ownership inside the shared
+		// CIDR; the billing engine treats SHARED as its own
+		// category.
+		t0 = time.Now()
+		for _, p := range sharedPrefixes {
+			entries = append(entries, TrieEntry{"", p, bpf.ZoneShared})
+		}
+		d3 = time.Since(t0)
+
+		// Step 4: infra /32s, single row each.
+		t0 = time.Now()
+		for _, p := range infraPrefixes {
+			entries = append(entries, TrieEntry{"", p, bpf.ZoneInfra})
+		}
+		entries = append(entries, TrieEntry{"", metadataPrefix, bpf.ZoneInfra})
+		d4 = time.Since(t0)
+	}
+
+	// Steps 2, 5 — per-tenant rows.
+	for _, tenant := range tenants {
 		// Step 2: owned, non-shared, non-external subnets. External
 		// networks (router:external=true) fall through to the
 		// Step-1 catchall — they classify as EXTERNAL even when an
 		// operator has marked them owned by some admin project.
-		t0 = time.Now()
+		t0 := time.Now()
 		for _, n := range networks {
 			if n.ProjectID != tenant || n.Shared || n.IsExternal {
 				continue
@@ -268,24 +315,6 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 			}
 		}
 		d2 += time.Since(t0)
-
-		// Step 3: shared subnets → SHARED, applied to every tenant.
-		// SHARED (not OTHER_TENANT) because the trie cannot resolve
-		// per-VM ownership inside the shared CIDR; the billing
-		// engine treats SHARED as its own category.
-		t0 = time.Now()
-		for _, p := range sharedPrefixes {
-			entries = append(entries, TrieEntry{tenant, p, bpf.ZoneShared})
-		}
-		d3 += time.Since(t0)
-
-		// Step 4: infra IPs, applied to every tenant.
-		t0 = time.Now()
-		for _, p := range infraPrefixes {
-			entries = append(entries, TrieEntry{tenant, p, bpf.ZoneInfra})
-		}
-		entries = append(entries, TrieEntry{tenant, metadataPrefix, bpf.ZoneInfra})
-		d4 += time.Since(t0)
 
 		// Step 5: extraroutes on this tenant's routers. The resolver
 		// returns a zone for each (destination, nexthop) by tracing

@@ -175,27 +175,39 @@ func TestWriteSubnetZoneTrie_HappyPath(t *testing.T) {
 	}
 }
 
-func TestWriteSubnetZoneTrie_EmptyTenantWarnsAndSkips(t *testing.T) {
-	// An empty TenantID is a caller bug (BuildTrie never emits such
-	// rows), but the writer warn-logs + skips rather than panicking
-	// — consistent with the rest of the writer's first-error-wins
-	// discipline. Valid entries on either side of the empty one are
-	// still written.
+func TestWriteSubnetZoneTrie_EmptyTenantWritesAsSentinel(t *testing.T) {
+	// Empty TenantID is the valid sentinel for a global row
+	// (catchall / SHARED / INFRA / metadata). The interner maps
+	// "" → metadata.TenantIDUnset = 0, which the C-side lookup_zone
+	// uses as the fallback key on first-lookup miss. Verify the
+	// writer accepts the row and lands it at tenant_id=0 in the
+	// trie map.
 	fm := &fakeMap{}
 	entries := []neutron.TrieEntry{
 		{TenantID: "p", Prefix: netip.MustParsePrefix("10.0.0.0/24"), Zone: bpf.ZoneSameTenant},
-		{TenantID: "", Prefix: netip.MustParsePrefix("0.0.0.0/0"), Zone: bpf.ZoneExternal}, // skipped
+		{TenantID: "", Prefix: netip.MustParsePrefix("0.0.0.0/0"), Zone: bpf.ZoneExternal},
 		{TenantID: "p", Prefix: netip.MustParsePrefix("192.0.2.0/24"), Zone: bpf.ZoneOtherTenant},
 	}
 	n, err := WriteSubnetZoneTrie(fm, entries, metadata.NewTenantInterner())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if n != 2 {
-		t.Errorf("written = %d, want 2 (empty-TenantID entry should be skipped, others written)", n)
+	if n != 3 {
+		t.Errorf("written = %d, want 3 (sentinel row writes alongside per-tenant rows)", n)
 	}
-	if len(fm.updates) != 2 {
-		t.Errorf("fakeMap.updates len = %d, want 2", len(fm.updates))
+	if len(fm.updates) != 3 {
+		t.Fatalf("fakeMap.updates len = %d, want 3", len(fm.updates))
+	}
+	// The catchall row must have landed at tenant_id=0 (sentinel).
+	var sawSentinel bool
+	for _, u := range fm.updates {
+		k := u.key.(bpf.LpmKey)
+		if k.Prefixlen == bpf.LpmKeyTenantBits && k.TenantId == metadata.TenantIDUnset {
+			sawSentinel = true
+		}
+	}
+	if !sawSentinel {
+		t.Errorf("catchall row did not land at tenant_id=0; updates=%+v", fm.updates)
 	}
 }
 
