@@ -37,6 +37,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/web"
 )
@@ -72,7 +73,7 @@ func TestRenderLivePages(t *testing.T) {
 		len(anomalies.Cycles), len(anomalies.Ambiguities), len(anomalies.DanglingRoutes),
 		len(anomalies.ZeroTrieTenants), len(anomalies.DuplicateRouterMACs), anomalies.Total())
 
-	a := &Agent{}
+	a := &Agent{meta: metadata.New()}
 	a.SetNeutronSnapshot(&snap)
 	a.SetTrieEntries(entries)
 	a.SetAnomalies(&anomalies)
@@ -82,6 +83,7 @@ func TestRenderLivePages(t *testing.T) {
 	mux.HandleFunc("/debug/topology", a.handleDebugTopology)
 	mux.HandleFunc("/debug/topology/{tenant}", a.handleDebugTopologyTenant)
 	mux.HandleFunc("/debug/zones", a.handleDebugZones)
+	mux.HandleFunc("/debug/lookup", a.handleDebugLookup)
 	mux.Handle("/debug/static/", http.StripPrefix("/debug/", http.FileServer(http.FS(web.Static))))
 
 	srv := httptest.NewServer(mux)
@@ -91,6 +93,8 @@ func TestRenderLivePages(t *testing.T) {
 	t.Logf("  ┌─ Render harness ready ──────────────────────────────────")
 	t.Logf("  │  Topology: %s/debug/topology", srv.URL)
 	t.Logf("  │  Zones:    %s/debug/zones", srv.URL)
+	t.Logf("  │  Lookup:   %s/debug/lookup?ip=<addr>[&tenant=<uuid>]", srv.URL)
+	t.Logf("  │  Lookup:   %s/debug/lookup?mac=<addr>", srv.URL)
 	t.Logf("  │")
 	t.Logf("  │  Press Ctrl-C when done. (30-min context cap.)")
 	t.Logf("  └─────────────────────────────────────────────────────────")
