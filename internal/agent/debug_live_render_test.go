@@ -64,12 +64,18 @@ func TestRenderLivePages(t *testing.T) {
 	t.Logf("snapshot: networks=%d subnets=%d ports=%d routers=%d",
 		len(snap.Networks), len(snap.Subnets), len(snap.Ports), len(snap.Routers))
 
-	entries, ambiguities := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
-	t.Logf("trie: entries=%d ambiguities=%d", len(entries), len(ambiguities))
+	entries, ambiguities, cycles := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
+	t.Logf("trie: entries=%d ambiguities=%d cycles=%d", len(entries), len(ambiguities), len(cycles))
+
+	anomalies := neutron.DetectAnomalies(snap, entries, cycles, ambiguities)
+	t.Logf("anomalies: cycles=%d ambiguities=%d dangling=%d zero-trie=%d dup-mac=%d (total=%d)",
+		len(anomalies.Cycles), len(anomalies.Ambiguities), len(anomalies.DanglingRoutes),
+		len(anomalies.ZeroTrieTenants), len(anomalies.DuplicateRouterMACs), anomalies.Total())
 
 	a := &Agent{}
 	a.SetNeutronSnapshot(&snap)
 	a.SetTrieEntries(entries)
+	a.SetAnomalies(&anomalies)
 	a.MarkNeutronSync(time.Now())
 
 	mux := http.NewServeMux()

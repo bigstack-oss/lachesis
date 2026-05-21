@@ -137,6 +137,12 @@ type Agent struct {
 	// (tenant, prefix, zone) classification the kernel will apply.
 	// Same lifecycle as [neutronSnapshot].
 	trieEntries atomic.Pointer[[]neutron.TrieEntry]
+	// anomalies bundles every health issue [neutron.DetectAnomalies]
+	// derived from the last cold-start: static-route cycles,
+	// ambiguities, dangling extraroutes, zero-trie tenants, and
+	// duplicate router MACs. Read by the /debug landing page.
+	// Same lifecycle as [neutronSnapshot]; nil before first sync.
+	anomalies atomic.Pointer[neutron.Anomalies]
 
 	// walRecBuf is the reused SnapshotForWAL destination so a
 	// steady-state flush does not allocate a fresh records slice.
@@ -222,6 +228,20 @@ func (a *Agent) TrieEntries() []neutron.TrieEntry {
 		return nil
 	}
 	return *p
+}
+
+// SetAnomalies atomically replaces the anomaly bundle the /debug
+// landing page renders from. Cold-start calls this after the
+// kernel maps have been written; the future Kafka updater calls it
+// on each successful incremental sync.
+func (a *Agent) SetAnomalies(an *neutron.Anomalies) {
+	a.anomalies.Store(an)
+}
+
+// Anomalies returns the anomaly bundle last set by [SetAnomalies],
+// or nil if neutron is disabled or has not yet synced.
+func (a *Agent) Anomalies() *neutron.Anomalies {
+	return a.anomalies.Load()
 }
 
 // New constructs the agent. The HTTP listener is opened immediately so

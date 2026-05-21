@@ -202,6 +202,13 @@ func IsKnownVMOwner(deviceOwner string) bool {
 // --unsafe-allow-ambiguous-routes log + accept the EXTERNAL
 // fallback that the resolver already emitted for each affected route.
 //
+// The third return aggregates every static-route cycle the resolver
+// encountered (a trace attempted to revisit a router on its path).
+// These do not block boot — the resolver already fell back to
+// EXTERNAL for each — but [DetectAnomalies] surfaces them on the
+// /debug landing page so an operator can fix the underlying
+// misconfiguration.
+//
 // # Step coverage
 //
 //  1. Catchall:   `0.0.0.0/0 → EXTERNAL`, emitted once with
@@ -245,7 +252,7 @@ func IsKnownVMOwner(deviceOwner string) bool {
 // produce identical output, simplifying the change-detection logic
 // the kernel map writer will use. Global rows (TenantID="") sort
 // first; per-tenant runs follow in tenant-ID order.
-func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Router, opts ...BuildOpt) ([]TrieEntry, []AmbiguityHit) {
+func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Router, opts ...BuildOpt) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
 	var bo buildOpts
 	for _, o := range opts {
 		o(&bo)
@@ -263,6 +270,7 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 	entries := make([]TrieEntry, 0,
 		2+len(sharedPrefixes)+len(infraPrefixes)+len(subnets))
 	var ambiguities []AmbiguityHit
+	var cycles []CycleHit
 	// Per-step durations. Steps 1/3/4 are emitted once (single
 	// observation each); Steps 2/5 are summed across tenants.
 	var d1, d2, d3, d4, d5 time.Duration
@@ -343,10 +351,13 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 				if !nh.Is4() {
 					continue // IPv6 nexthops deferred (DESIGN §13.2).
 				}
-				zone, hit := ri.resolveStaticRouteZone(r, destination, nh)
+				zone, ambHit, cycHit := ri.resolveStaticRouteZone(r, destination, nh)
 				entries = append(entries, TrieEntry{tenant, destination, zone})
-				if hit != nil {
-					ambiguities = append(ambiguities, *hit)
+				if ambHit != nil {
+					ambiguities = append(ambiguities, *ambHit)
+				}
+				if cycHit != nil {
+					cycles = append(cycles, *cycHit)
 				}
 			}
 		}
@@ -360,7 +371,7 @@ func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Rou
 	bo.metrics.ObserveBuilderStep("5_extraroutes", d5)
 
 	sortEntries(entries)
-	return entries, ambiguities
+	return entries, ambiguities, cycles
 }
 
 // groupSubnetsByNetwork indexes IPv4 subnets by their parent network
