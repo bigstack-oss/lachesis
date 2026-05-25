@@ -87,9 +87,23 @@ var catchall = netip.MustParsePrefix("0.0.0.0/0")
 // fixed_ip — i.e. an address on the external network used to NAT
 // into a tenant VM. Marking the /32 as INFRA would label any
 // VM-to-FIP traffic as infrastructure; letting the catchall handle
-// it (EXTERNAL) is more honest. In practice dst=FIP rarely reaches
-// the trie at the VM tap (NAT translation usually intervenes
-// upstream), but the distinction matters when it does.
+// it (EXTERNAL) is more honest.
+//
+// Where dst=FIP can appear at the trie:
+//
+//   - Inbound (external → VM via FIP): never queries the FIP.
+//     The router DNATs dst to the internal VM IP before the packet
+//     reaches the destination tap, and the directional swap keys
+//     the trie on saddr (the external sender) anyway. The trie
+//     lookup is (dst_tenant, external_src_ip) → catchall EXTERNAL.
+//   - Outbound (VM → any FIP): reaches the trie at the source VM
+//     tap as (src_tenant, FIP_addr). Falls to catchall → EXTERNAL.
+//     Correct for cross-tenant-to-FIP (the packet does leave the
+//     source tenant's network via the external fabric); under-
+//     attributes the rare hairpin case where src_tenant owns the
+//     FIP. Closing that gap needs a per-tenant /32 → SAME_TENANT
+//     row per FIP owner — see Step 6 (or deferred, if not yet
+//     wired).
 func IsInfraPort(deviceOwner string) bool {
 	if !strings.HasPrefix(deviceOwner, "network:") {
 		return false
