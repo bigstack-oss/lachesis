@@ -117,36 +117,48 @@ func (a *Agent) handleDebugLookup(w http.ResponseWriter, r *http.Request) {
 		writeLookupError(w, http.StatusBadRequest, "provide ?ip=<addr> or ?mac=<addr>")
 		return
 	}
-	if ip != "" && mac != "" {
-		writeLookupError(w, http.StatusBadRequest, "specify either ?ip or ?mac, not both")
+	result, errMsg := a.runLookup(ip, mac, tenant)
+	if errMsg != "" {
+		writeLookupError(w, http.StatusBadRequest, errMsg)
 		return
 	}
+	writeLookupJSON(w, http.StatusOK, result)
+}
 
+// runLookup performs the validation + dispatch shared by the JSON
+// endpoint (/debug/lookup) and the landing page (/debug). Returns
+// either a populated [lookupResult] and "", or a zero result and a
+// human-readable error string. Empty ip and empty mac both yield
+// ("", "") — the caller decides whether that's a 400 or "form
+// rendered without a result".
+func (a *Agent) runLookup(ip, mac, tenant string) (lookupResult, string) {
+	if ip == "" && mac == "" {
+		return lookupResult{}, ""
+	}
+	if ip != "" && mac != "" {
+		return lookupResult{}, "specify either ip or mac, not both"
+	}
 	result := lookupResult{Query: lookupQuery{IP: ip, MAC: mac, Tenant: tenant}}
-
 	if ip != "" {
 		addr, err := netip.ParseAddr(ip)
 		if err != nil {
-			writeLookupError(w, http.StatusBadRequest, "invalid ip: "+err.Error())
-			return
+			return lookupResult{}, "invalid ip: " + err.Error()
 		}
 		a.fillIPLookup(&result, addr, tenant)
-	} else {
-		hw, err := net.ParseMAC(mac)
-		if err != nil || len(hw) != 6 {
-			msg := "invalid mac"
-			if err != nil {
-				msg += ": " + err.Error()
-			}
-			writeLookupError(w, http.StatusBadRequest, msg)
-			return
-		}
-		canon := hw.String() // canonical lowercase colon-separated
-		result.Query.MAC = canon
-		a.fillMACLookup(&result, hw, canon)
+		return result, ""
 	}
-
-	writeLookupJSON(w, http.StatusOK, result)
+	hw, err := net.ParseMAC(mac)
+	if err != nil || len(hw) != 6 {
+		msg := "invalid mac"
+		if err != nil {
+			msg += ": " + err.Error()
+		}
+		return lookupResult{}, msg
+	}
+	canon := hw.String()
+	result.Query.MAC = canon
+	a.fillMACLookup(&result, hw, canon)
+	return result, ""
 }
 
 // fillIPLookup populates the Zone and Neutron sections of result

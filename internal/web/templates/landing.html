@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>/debug — Telemetry Agent</title>
+<style>
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 1rem 1.5rem; color: #222; }
+  h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1rem; margin: 1.5rem 0 0.5rem; border-bottom: 1px solid #ddd; padding-bottom: 0.2rem; }
+  h3 { font-size: 0.9rem; margin: 0.9rem 0 0.3rem; font-weight: 600; }
+  .meta { color: #666; font-size: 0.85rem; margin-bottom: 1rem; }
+  nav a { margin-right: 1rem; font-size: 0.85rem; }
+  table { border-collapse: collapse; font-size: 0.85rem; }
+  th, td { padding: 3px 10px; text-align: left; border: 1px solid #ddd; vertical-align: top; }
+  th { background: #f4f4f4; }
+  tbody tr:nth-child(even) { background: #fafafa; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.uuid, span.uuid { color: #888; font-size: 0.78rem; }
+  .empty { color: #888; font-style: italic; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.8rem; background: #eef4ff; color: #246; }
+  .badge.warn { background: #fee; color: #900; }
+  .badge.ok { background: #efe; color: #060; }
+  form.lookup { display: flex; flex-wrap: wrap; gap: 0.4rem 0.75rem; align-items: center; margin: 0.4rem 0 0.6rem; }
+  form.lookup label { font-size: 0.85rem; color: #444; }
+  form.lookup input { font-family: inherit; padding: 3px 6px; border: 1px solid #bbb; min-width: 14rem; }
+  form.lookup button { font-family: inherit; padding: 4px 12px; border: 1px solid #246; background: #246; color: #fff; cursor: pointer; }
+  form.lookup button:hover { background: #357; }
+  .lookup-err { background: #fee; border: 1px solid #b22; padding: 0.5rem 0.75rem; color: #900; font-size: 0.85rem; margin: 0.4rem 0; }
+  .lookup-result { background: #fafafa; border: 1px solid #ddd; padding: 0.6rem 0.8rem; margin-top: 0.5rem; max-width: 60rem; }
+  .lookup-result h3 { margin-top: 0; }
+  .lookup-result .label { color: #666; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; display: inline-block; min-width: 5.5rem; }
+  .lookup-result .row { margin: 2px 0; }
+  .help { font-size: 0.8rem; color: #666; margin: 0.4rem 0 0.8rem; max-width: 60rem; }
+  .zone-EXTERNAL    { color: #b22; }
+  .zone-SAME_TENANT { color: #2a6; }
+  .zone-OTHER_TENANT { color: #d80; }
+  .zone-INFRA       { color: #44a; }
+  .zone-SHARED      { color: #888; }
+</style>
+</head>
+<body>
+<nav><a href="/debug/topology">topology</a><a href="/debug/zones">zones</a><a href="/debug/config">config</a></nav>
+<h1>Telemetry Agent — /debug</h1>
+<div class="meta">
+  Last neutron sync:
+  {{- if .LastSync.IsZero }} <span class="badge warn">never</span> &nbsp; cold-start has not completed
+  {{- else }} {{ .LastSync.UTC.Format "2006-01-02T15:04:05Z" }} <span class="badge {{ if .SyncStale }}warn{{ else }}ok{{ end }}">{{ .SyncAgeText }}</span>
+  {{- end }}
+</div>
+
+<h2>Health</h2>
+<table>
+<tr><th>Tenants</th><td class="num">{{ .Counts.Tenants }}</td></tr>
+<tr><th>Networks</th><td class="num">{{ .Counts.Networks }}</td></tr>
+<tr><th>Subnets</th><td class="num">{{ .Counts.Subnets }}</td></tr>
+<tr><th>Ports</th><td class="num">{{ .Counts.Ports }}</td></tr>
+<tr><th>Routers</th><td class="num">{{ .Counts.Routers }}</td></tr>
+<tr><th>Trie rows</th><td class="num">{{ .Counts.TrieRows }}</td></tr>
+</table>
+
+<h2>Anomalies <span class="badge {{ if gt .Counts.Anomalies 0 }}warn{{ else }}ok{{ end }}">{{ .Counts.Anomalies }}</span></h2>
+
+<h3>Static-route cycles ({{ len .CycleRows }})</h3>
+{{ if .CycleRows }}
+<table>
+<thead><tr><th>Source tenant</th><th>Source router</th><th>Destination</th><th>Loop router</th></tr></thead>
+<tbody>
+{{- range .CycleRows }}
+<tr>
+  <td>{{ if .SourceTenantName }}{{ .SourceTenantName }}{{ else }}<span class="uuid">{{ .SourceTenant }}</span>{{ end }}</td>
+  <td class="uuid">{{ .SourceRouter }}</td>
+  <td>{{ .Destination }}</td>
+  <td class="uuid">{{ .LoopRouter }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+<h3>Static-route ambiguities ({{ len .AmbiguityRows }})</h3>
+{{ if .AmbiguityRows }}
+<table>
+<thead><tr><th>Source tenant</th><th>Router</th><th>Destination</th><th>Candidate owners</th></tr></thead>
+<tbody>
+{{- range .AmbiguityRows }}
+<tr>
+  <td>{{ if .SourceTenantName }}{{ .SourceTenantName }}{{ else }}<span class="uuid">{{ .SourceTenant }}</span>{{ end }}</td>
+  <td class="uuid">{{ .RouterID }}</td>
+  <td>{{ .Destination }}</td>
+  <td>{{ .OwnersDisplay }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+<h3>Dangling extraroutes ({{ len .DanglingRows }})</h3>
+{{ if .DanglingRows }}
+<table>
+<thead><tr><th>Source tenant</th><th>Router</th><th>Destination</th><th>Nexthop (unresolved)</th></tr></thead>
+<tbody>
+{{- range .DanglingRows }}
+<tr>
+  <td>{{ if .SourceTenantName }}{{ .SourceTenantName }}{{ else }}<span class="uuid">{{ .SourceTenant }}</span>{{ end }}</td>
+  <td class="uuid">{{ .SourceRouter }}</td>
+  <td>{{ .Destination }}</td>
+  <td>{{ .Nexthop }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+<h3>Zero-trie tenants ({{ len .ZeroTrieRows }})</h3>
+{{ if .ZeroTrieRows }}
+<p class="help">
+  These tenants own Neutron resources but have no trie rows. Their L3-routed
+  intra-cluster traffic will fall through to the catchall and classify as
+  EXTERNAL until cold-start sees their subnets.
+</p>
+<table>
+<thead><tr><th>Tenant</th><th class="num">Networks</th><th class="num">Routers</th><th class="num">VM ports</th></tr></thead>
+<tbody>
+{{- range .ZeroTrieRows }}
+<tr>
+  <td>{{ if .TenantName }}{{ .TenantName }}{{ else }}<span class="uuid">{{ .TenantID }}</span>{{ end }}</td>
+  <td class="num">{{ .Networks }}</td>
+  <td class="num">{{ .Routers }}</td>
+  <td class="num">{{ .Ports }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+<h3>Duplicate router MACs ({{ len .DupMACRows }})</h3>
+{{ if .DupMACRows }}
+<p class="help">
+  On pure-OVN deployments every logical router interface has a unique MAC.
+  Duplicates indicate DVR (not supported), a snapshot defect, or schema drift.
+</p>
+<table>
+<thead><tr><th>MAC</th><th>Ports</th><th>Routers</th></tr></thead>
+<tbody>
+{{- range .DupMACRows }}
+<tr>
+  <td>{{ .MAC }}</td>
+  <td class="uuid">{{ .PortsDisplay }}</td>
+  <td class="uuid">{{ .RoutersDisplay }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+<h2>Lookup</h2>
+<p class="help">
+  Resolve an IP against the per-tenant trie + Neutron snapshot, or a MAC
+  against the userspace <code>mac_tenant_map</code>. Same backend as
+  <code>/debug/lookup</code> (JSON).
+</p>
+<form class="lookup" method="get" action="/debug">
+  <label>IP <input name="ip" value="{{ .LookupQuery.IP }}" placeholder="10.0.0.5"></label>
+  <label>Tenant <input name="tenant" value="{{ .LookupQuery.Tenant }}" placeholder="optional project UUID"></label>
+  <label>or MAC <input name="mac" value="{{ .LookupQuery.MAC }}" placeholder="fa:16:3e:00:00:01"></label>
+  <button type="submit">Look up</button>
+</form>
+
+{{ if .LookupError }}
+<div class="lookup-err">{{ .LookupError }}</div>
+{{ end }}
+
+{{ if .LookupResult }}
+<div class="lookup-result">
+  <h3>Result</h3>
+
+  {{ if .LookupResult.Zone }}
+  <div class="row"><span class="label">Zone</span>
+    <span class="zone-{{ .LookupResult.Zone.Code }}"><strong>{{ .LookupResult.Zone.Code }}</strong></span>
+    via {{ .LookupResult.Zone.Via }}
+  </div>
+  <div class="row"><span class="label">Matched</span>
+    {{ .LookupResult.Zone.Match.Prefix }} →
+    <span class="zone-{{ .LookupResult.Zone.Match.Zone }}">{{ .LookupResult.Zone.Match.Zone }}</span>
+    {{ if .LookupResult.Zone.Match.TenantID }}
+      (tenant {{ if .LookupResult.Zone.Match.TenantName }}{{ .LookupResult.Zone.Match.TenantName }} {{ end }}<span class="uuid">{{ .LookupResult.Zone.Match.TenantID }}</span>)
+    {{ else }}
+      (global)
+    {{ end }}
+  </div>
+  {{ end }}
+
+  {{ with .LookupResult.Neutron }}
+    {{ if .Subnet }}
+    <div class="row"><span class="label">Subnet</span>
+      {{ .Subnet.CIDR }}{{ if .Subnet.GatewayIP }} (gw {{ .Subnet.GatewayIP }}){{ end }}
+      <span class="uuid">{{ .Subnet.ID }}</span>
+    </div>
+    {{ end }}
+    {{ if .Network }}
+    <div class="row"><span class="label">Network</span>
+      {{ if .Network.Name }}{{ .Network.Name }}{{ end }}
+      {{ if .Network.Shared }}<span class="badge">shared</span>{{ end }}
+      {{ if .Network.IsExternal }}<span class="badge warn">external</span>{{ end }}
+      <span class="uuid">{{ .Network.ID }}</span>
+    </div>
+    {{ end }}
+    {{ if .Port }}
+    <div class="row"><span class="label">Port</span>
+      {{ if .Port.DeviceOwner }}{{ .Port.DeviceOwner }}{{ end }}
+      {{ if .Port.MAC }}@ {{ .Port.MAC }}{{ end }}
+      <span class="uuid">{{ .Port.ID }}</span>
+    </div>
+    {{ end }}
+    {{ if .Owner }}
+    <div class="row"><span class="label">Owner</span>
+      {{ if .Owner.Name }}{{ .Owner.Name }} {{ end }}<span class="uuid">{{ .Owner.ID }}</span>
+    </div>
+    {{ end }}
+  {{ end }}
+
+  {{ with .LookupResult.MAC }}
+    <div class="row"><span class="label">MAC map</span>
+      {{ if .Found }}
+        tenant {{ if .TenantName }}{{ .TenantName }} {{ end }}<span class="uuid">{{ .TenantID }}</span>
+        {{ if .IsAmphora }}<span class="badge">amphora</span>{{ end }}
+      {{ else }}
+        <span class="empty">not in mac_tenant_map</span>
+      {{ end }}
+    </div>
+  {{ end }}
+</div>
+{{ end }}
+
+</body>
+</html>

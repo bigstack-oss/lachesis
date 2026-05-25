@@ -342,6 +342,7 @@ func (a *Agent) buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.Handle("/debug/", mgr.DebugHandler())
+	mux.HandleFunc("/debug", a.handleDebugLanding)
 	mux.HandleFunc("/debug/zones", a.handleDebugZones)
 	mux.HandleFunc("/debug/topology", a.handleDebugTopology)
 	// Per-tenant focused topology view. The {tenant} pattern is a

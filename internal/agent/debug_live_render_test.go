@@ -80,6 +80,7 @@ func TestRenderLivePages(t *testing.T) {
 	a.MarkNeutronSync(time.Now())
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/debug", a.handleDebugLanding)
 	mux.HandleFunc("/debug/topology", a.handleDebugTopology)
 	mux.HandleFunc("/debug/topology/{tenant}", a.handleDebugTopologyTenant)
 	mux.HandleFunc("/debug/zones", a.handleDebugZones)
@@ -91,6 +92,7 @@ func TestRenderLivePages(t *testing.T) {
 
 	t.Logf("")
 	t.Logf("  ┌─ Render harness ready ──────────────────────────────────")
+	t.Logf("  │  Landing:  %s/debug", srv.URL)
 	t.Logf("  │  Topology: %s/debug/topology", srv.URL)
 	t.Logf("  │  Zones:    %s/debug/zones", srv.URL)
 	t.Logf("  │  Lookup:   %s/debug/lookup?ip=<addr>[&tenant=<uuid>]", srv.URL)
