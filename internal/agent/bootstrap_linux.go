@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
@@ -24,14 +25,15 @@ import (
 // It returns the Agent plus an [io.Closer] that releases the BPF
 // collection — call its Close after [Agent.Run] returns.
 //
-// Order (docs/DESIGN.md §9):
+// Phases (see [boot.Phase] and docs/DESIGN.md §9):
 //
-//  1. Load BPF collection (with map-size parity check)
-//  2. Construct Agent (empty metadata + interner)
-//  3. Neutron cold-start: populate ag.Metadata() + push kernel maps
-//  4. Attach TC clsact (only now do packets start classifying)
-//  5. WAL restore — GlobalState filled before the scraper goroutine
-//     starts in Agent.Run
+//  1. [boot.PhaseBPFLoaded]      — collection loaded + map-size validated
+//  2. [boot.PhaseMetadataReady]  — Neutron cold-start populated the
+//     LPM trie and mac_tenant_map
+//  3. [boot.PhaseAttached]       — TC clsact attached; packets begin
+//     classifying against the populated trie
+//  4. [boot.PhaseStateRestored]  — WAL load complete; GlobalState
+//     seeded so the first scrape computes deltas correctly
 //
 // Neutron is fetched BEFORE TC attach so the very first packet sees
 // a populated trie; mis-classified flows become permanent entries
@@ -59,11 +61,17 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		return nil, nil, fmt.Errorf("remove memlock rlimit: %w", err)
 	}
 
+	seq := boot.New()
+
 	coll, err := loadCollection()
 	if err != nil {
 		return nil, nil, err
 	}
 	closer := collectionCloser{coll}
+	if err := seq.Advance(boot.PhaseBPFLoaded); err != nil {
+		closer.Close()
+		return nil, nil, err
+	}
 
 	reader, err := readerFromCollection(coll)
 	if err != nil {
@@ -86,8 +94,16 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		closer.Close()
 		return nil, nil, fmt.Errorf("neutron cold-start: %w", err)
 	}
+	if err := seq.Advance(boot.PhaseMetadataReady); err != nil {
+		closer.Close()
+		return nil, nil, err
+	}
 
 	if err := attachIfRequested(cfg.BPF.AttachInterface, coll); err != nil {
+		closer.Close()
+		return nil, nil, err
+	}
+	if err := seq.Advance(boot.PhaseAttached); err != nil {
 		closer.Close()
 		return nil, nil, err
 	}
@@ -99,6 +115,10 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		// the agent can run correctly with a fresh state.
 		slog.Warn("restore failed; agent will start with empty state",
 			"component", componentWAL, "err", err)
+	}
+	if err := seq.Advance(boot.PhaseStateRestored); err != nil {
+		closer.Close()
+		return nil, nil, err
 	}
 
 	return ag, closer, nil
