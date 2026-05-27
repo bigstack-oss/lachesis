@@ -40,6 +40,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
 
 // Options bundles the inputs to [New]. ConfigPath is the YAML file
@@ -104,6 +105,7 @@ type Agent struct {
 	walMetrics     *wal.Metrics
 	neutronMetrics *neutron.Metrics
 	bpfMapMetrics  *bpf.MapMetrics
+	zombieMetrics  *zombie.Metrics
 
 	// lastNeutronSync is the unix-nanos timestamp of the most
 	// recent successful Neutron cold-start or full-resync. Read by
@@ -146,6 +148,11 @@ func (a *Agent) NeutronMetrics() *neutron.Metrics { return a.neutronMetrics }
 // and any subsequent incremental update set the current-entries
 // gauge after each successful kernel push.
 func (a *Agent) BPFMapMetrics() *bpf.MapMetrics { return a.bpfMapMetrics }
+
+// ZombieMetrics returns the zombie-hunter instrument bundle. The
+// boot path records the orphan-cleanup count once, after [Hunt]
+// runs and the agent has been constructed.
+func (a *Agent) ZombieMetrics() *zombie.Metrics { return a.zombieMetrics }
 
 // MarkNeutronSync records `t` as the most recent successful Neutron
 // sync. Read by the `cubecos_neutron_sync_age_seconds` gauge.
@@ -198,6 +205,7 @@ func New(opts Options) (*Agent, error) {
 	col := metrics.New(st, sc, opts.resolverOrDefault(meta))
 
 	walMx := wal.NewMetrics()
+	zombieMx := zombie.NewMetrics()
 	bpfMx := bpf.NewMapMetrics()
 	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
 	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
@@ -214,12 +222,13 @@ func New(opts Options) (*Agent, error) {
 		log:           opts.Log,
 		walMetrics:    walMx,
 		bpfMapMetrics: bpfMx,
+		zombieMetrics: zombieMx,
 		meta:          meta,
 		interner:      interner,
 	}
 	a.neutronMetrics = neutron.NewMetrics(a.lastNeutronSyncTime)
 
-	reg, err := buildRegistry(col, walMx, a.neutronMetrics, bpfMx)
+	reg, err := buildRegistry(col, walMx, a.neutronMetrics, bpfMx, zombieMx)
 	if err != nil {
 		return nil, err
 	}
@@ -247,6 +256,7 @@ func buildRegistry(
 	walMx *wal.Metrics,
 	neutronMx *neutron.Metrics,
 	bpfMx *bpf.MapMetrics,
+	zombieMx *zombie.Metrics,
 ) (*prometheus.Registry, error) {
 	reg := prometheus.NewRegistry()
 	if err := reg.Register(col); err != nil {
@@ -256,6 +266,7 @@ func buildRegistry(
 		"wal":     walMx.Collectors(),
 		"neutron": neutronMx.Collectors(),
 		"bpf":     bpfMx.Collectors(),
+		"zombie":  zombieMx.Collectors(),
 	} {
 		for _, c := range bundle {
 			if err := reg.Register(c); err != nil {

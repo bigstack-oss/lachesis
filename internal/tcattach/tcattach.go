@@ -34,6 +34,18 @@ const (
 // up parallel filters.
 const FilterHandle = 1
 
+// FilterIngressName and FilterEgressName are the labels the agent
+// installs on its clsact ingress and egress filters. Constants are
+// exported because the zombie hunter needs the same vocabulary to
+// recognise orphan filters from a previous (crashed) agent run.
+//
+// Changing either name silently breaks zombie cleanup — keep them
+// in sync with internal/zombie's match rule.
+const (
+	FilterIngressName = "telemetry_in"
+	FilterEgressName  = "telemetry_out"
+)
+
 // Replace installs (or replaces) the clsact qdisc on link and binds
 // prog as a BPF filter at the named direction with the given filter
 // name. The qdisc and filter are both replaced rather than added,
