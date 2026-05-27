@@ -17,7 +17,10 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
+
+const componentZombie = "zombie"
 
 // Bootstrap is the agent's single startup sequence: parse args,
 // initialise logging, lift the memlock rlimit, load BPF, populate
@@ -63,6 +66,16 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 
 	seq := boot.New()
 
+	zombiesCleaned, zerr := zombie.Hunt()
+	switch {
+	case zerr != nil:
+		slog.Warn("hunt encountered errors; continuing with partial cleanup",
+			"component", componentZombie, "cleaned", zombiesCleaned, "err", zerr)
+	case zombiesCleaned > 0:
+		slog.Info("removed orphan filters from a previous run",
+			"component", componentZombie, "cleaned", zombiesCleaned)
+	}
+
 	coll, err := loadCollection()
 	if err != nil {
 		return nil, nil, err
@@ -89,6 +102,7 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		closer.Close()
 		return nil, nil, err
 	}
+	ag.ZombieMetrics().RecordCleaned(zombiesCleaned)
 
 	if err := coldStartNeutron(ctx, cfg.Neutron, ag, coll); err != nil {
 		closer.Close()
