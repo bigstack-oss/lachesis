@@ -393,6 +393,74 @@ func TestAgent_WALFinalFlushOnShutdown(t *testing.T) {
 	}
 }
 
+// TestAgent_WALFinalFlushOnServerError proves H1: when the HTTP server
+// fails on its own (here, the listener is closed out from under it),
+// Run still drains the workers and runs the WAL final flush rather than
+// returning immediately and leaking goroutines. Without the drain on
+// the srvErr path, the seeded delta would never reach disk.
+func TestAgent_WALFinalFlushOnServerError(t *testing.T) {
+	walPath := filepath.Join(t.TempDir(), "wal.json")
+
+	r := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{
+		{
+			SrcMac:    [6]uint8{0xaa, 0, 0, 0, 0, 1},
+			DstMac:    [6]uint8{0xaa, 0, 0, 0, 0, 2},
+			EthProto:  0x0800,
+			Direction: bpf.DirectionEgress,
+			DstZone:   bpf.ZoneExternal,
+		}: {Bytes: 4242, Packets: 7, LastSeenNs: 1},
+	}}
+
+	cfg := config.Defaults()
+	cfg.HTTP.Listen = "127.0.0.1:0"
+	cfg.Scrape.Interval = 25 * time.Millisecond
+	cfg.WAL.Path = walPath
+	cfg.WAL.FlushInterval = 30 * time.Second // only the final flush writes
+	cfg.WAL.Enabled = true
+
+	log, err := logging.Init(cfg.Logging, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	ag, err := agent.New(agent.Options{Config: cfg, Reader: r, Log: log})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	// Run with a context we never cancel — the only way out is the
+	// server-error path triggered by closing the listener below.
+	runErr := make(chan error, 1)
+	go func() { runErr <- ag.Run(context.Background()) }()
+
+	// Let the scraper absorb the seeded delta, then kill the server.
+	time.Sleep(150 * time.Millisecond)
+	if err := ag.CloseListenerForTest(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	select {
+	case err := <-runErr:
+		if err == nil {
+			t.Error("Run returned nil; expected the server error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit within 2s of server failure")
+	}
+
+	res, err := wal.Load(walPath)
+	if err != nil {
+		t.Fatalf("wal.Load: %v", err)
+	}
+	if res.Source != wal.LoadFromPrimary || len(res.Records) == 0 {
+		t.Fatalf("final flush did not run on server error: source=%v records=%d",
+			res.Source, len(res.Records))
+	}
+	if res.Records[0].Counter.Total.Bytes != 4242 {
+		t.Errorf("final flush Total.Bytes = %d, want 4242",
+			res.Records[0].Counter.Total.Bytes)
+	}
+}
+
 // mustGetMetrics polls /metrics until predicate matches or deadline
 // elapses. Returns the last body seen.
 func mustGetMetrics(t *testing.T, addr string, timeout time.Duration, predicate func(string) bool) string {
