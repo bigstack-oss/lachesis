@@ -36,11 +36,12 @@ const FilterHandle = 1
 
 // FilterIngressName and FilterEgressName are the labels the agent
 // installs on its clsact ingress and egress filters. Constants are
-// exported because the zombie hunter needs the same vocabulary to
-// recognise orphan filters from a previous (crashed) agent run.
+// exported because both the zombie hunter and the netlink-driven
+// dynamic attacher need the same vocabulary to recognise filters
+// the agent owns.
 //
-// Changing either name silently breaks zombie cleanup — keep them
-// in sync with internal/zombie's match rule.
+// Changing either name silently breaks zombie cleanup and dynamic
+// attach — keep them in sync with the consumers.
 const (
 	FilterIngressName = "telemetry_in"
 	FilterEgressName  = "telemetry_out"
