@@ -41,10 +41,10 @@ bpf:
   # convention for VM ports.
   attach_prefixes: ["tap"]
 
-  # Explicit allowlist of interface names to attach to, in addition
-  # to the prefix match above. Use for outliers (e.g. a dedicated
-  # test interface). Empty by default; uncomment to populate.
-  # attach_interfaces: ["eth1"]
+  # Explicit allowlist of interface names to attach to, in addition to
+  # the prefix match above — e.g. ["eth1"] for an outlier interface
+  # that does not match any prefix. Empty by default.
+  attach_interfaces: []
 
 scrape:
   # Cadence at which the scraper drains the BPF map and applies
