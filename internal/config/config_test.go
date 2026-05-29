@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestExampleYAMLMatchesDefaults(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("example YAML must validate: %v", err)
 	}
-	if cfg != config.Defaults() {
+	if !reflect.DeepEqual(cfg, config.Defaults()) {
 		t.Errorf("example YAML drift:\n  yaml:     %+v\n  defaults: %+v", cfg, config.Defaults())
 	}
 }
@@ -46,7 +47,7 @@ func TestLoadDefaultsOnly(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := config.Defaults()
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("cfg = %+v, want %+v", cfg, want)
 	}
 }

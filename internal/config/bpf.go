@@ -11,17 +11,31 @@ type BPFConfig struct {
 	// PinPath is the BPF FS directory under which maps and programs are
 	// pinned. Must be absolute.
 	PinPath string `yaml:"pin_path"`
-	// AttachInterface is the name of the host interface the telemetry
-	// programs are attached to via TC clsact. Empty disables attach —
-	// useful for tests that perform their own attach and for hosts
-	// where attach is managed out-of-band. Multi-interface attach and
-	// netlink-driven auto-attach land in a later sprint.
+	// AttachInterface is a single-interface static attach kept for
+	// backwards compatibility with pre-Sprint-5 deployments. Empty
+	// disables it. When set, the agent logs a deprecation warning at
+	// boot — production deployments should rely on the netlink
+	// subscriber's allowlist instead. Slated for removal in a
+	// follow-up sprint.
+	//
+	// Deprecated: use AttachPrefixes / AttachInterfaces.
 	AttachInterface string `yaml:"attach_interface"`
+	// AttachPrefixes is the list of interface-name prefixes the
+	// netlink subscriber treats as eligible for attach. A new
+	// interface matches when its name starts with any prefix here.
+	// Default: ["tap"] — the OVN/Neutron convention for VM ports.
+	AttachPrefixes []string `yaml:"attach_prefixes"`
+	// AttachInterfaces is an explicit allowlist of interface names
+	// the netlink subscriber will attach to even when they do not
+	// match a prefix. Empty by default. Use for outliers such as a
+	// dedicated test interface.
+	AttachInterfaces []string `yaml:"attach_interfaces"`
 }
 
 func bpfDefaults() BPFConfig {
 	return BPFConfig{
-		PinPath: "/sys/fs/bpf/telemetry",
+		PinPath:        "/sys/fs/bpf/telemetry",
+		AttachPrefixes: []string{"tap"},
 	}
 }
 
