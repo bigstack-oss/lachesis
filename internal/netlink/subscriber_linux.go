@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 
 	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink"
@@ -81,10 +82,31 @@ func (s *linuxSubscriber) Run(ctx context.Context) error {
 	done := make(chan struct{})
 	defer close(done)
 
-	subErr := make(chan error, 1)
+	// netlink's receive goroutine invokes ErrorCallback for two very
+	// different classes of error. Most are transient and continue-able:
+	// a stray NLMSG_ERROR, a wrong-portid message, a dump interrupt, or
+	// a per-message deserialize failure on an exotic link — after any of
+	// these the library logs and keeps reading. Exactly one is fatal:
+	// the socket Receive() failing, after which the library closes ch.
+	//
+	// So we must NOT treat a callback as fatal — doing that would let a
+	// single odd message permanently kill tap discovery (new VMs would
+	// never get TC filters, their traffic silently uncounted). We log
+	// every callback, remember the last error, and rely on ch closing as
+	// the one true fatal signal. The store is non-blocking, so a burst of
+	// callbacks can never wedge the library's receive goroutine.
+	var (
+		mu      sync.Mutex
+		lastErr error
+	)
 	if err := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
-		ListExisting:  true,
-		ErrorCallback: func(err error) { subErr <- err },
+		ListExisting: true,
+		ErrorCallback: func(err error) {
+			slog.Warn("event error (continuing)", "component", component, "err", err)
+			mu.Lock()
+			lastErr = err
+			mu.Unlock()
+		},
 	}); err != nil {
 		return fmt.Errorf("netlink: LinkSubscribe: %w", err)
 	}
@@ -99,14 +121,18 @@ func (s *linuxSubscriber) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			slog.Info("subscriber stopping", "component", component, "attached", s.opts.Registry.Len())
 			return nil
-		case err := <-subErr:
-			// netlink reported an asynchronous socket error.
-			// Treat as fatal — the subscriber is no longer
-			// receiving events and downstream attaches will
-			// silently fail.
-			return fmt.Errorf("netlink: socket error: %w", err)
 		case ev, ok := <-ch:
 			if !ok {
+				// The library closed ch: the netlink socket died.
+				// This is the genuine fatal condition. Surface the
+				// last callback error (the Receive failure) as the
+				// cause if we captured one.
+				mu.Lock()
+				err := lastErr
+				mu.Unlock()
+				if err != nil {
+					return fmt.Errorf("netlink: socket closed: %w", err)
+				}
 				return nil
 			}
 			s.handle(ev)
