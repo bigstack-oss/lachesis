@@ -412,6 +412,7 @@ func collectTenants(networks []Network, ports []Port, routers []Router) []string
 // CIDRs is leaving the cloud and should classify as EXTERNAL, not
 // OTHER_TENANT. Step-1 catchall covers them.
 func buildSharedPrefixes(networks []Network, subnetsByNetwork map[string][]Subnet) []netip.Prefix {
+	seen := make(map[netip.Prefix]struct{})
 	var out []netip.Prefix
 	for _, n := range networks {
 		if !n.Shared || n.IsExternal {
@@ -422,14 +423,32 @@ func buildSharedPrefixes(networks []Network, subnetsByNetwork map[string][]Subne
 			if !ok {
 				continue
 			}
+			if _, dup := seen[p]; dup {
+				continue
+			}
+			seen[p] = struct{}{}
 			out = append(out, p)
 		}
 	}
 	return out
 }
 
+// buildInfraPrefixes collects the global INFRA /32s from infra-port
+// fixed IPs and subnet gateway IPs. These two sources overlap heavily:
+// a router-interface port's fixed IP is almost always the subnet's
+// gateway IP, so a naive append emits each gateway /32 twice. We
+// de-duplicate so the global INFRA rows stay single-copy, keeping the
+// trie's deduped O(G + Σ O_t) cardinality and an accurate entry count.
 func buildInfraPrefixes(subnets []Subnet, ports []Port) []netip.Prefix {
+	seen := make(map[netip.Prefix]struct{})
 	var out []netip.Prefix
+	add := func(prefix netip.Prefix) {
+		if _, dup := seen[prefix]; dup {
+			return
+		}
+		seen[prefix] = struct{}{}
+		out = append(out, prefix)
+	}
 	for _, p := range ports {
 		if !IsInfraPort(p.DeviceOwner) {
 			continue
@@ -439,7 +458,7 @@ func buildInfraPrefixes(subnets []Subnet, ports []Port) []netip.Prefix {
 			if !ok {
 				continue
 			}
-			out = append(out, prefix)
+			add(prefix)
 		}
 	}
 	for _, s := range subnets {
@@ -450,7 +469,7 @@ func buildInfraPrefixes(subnets []Subnet, ports []Port) []netip.Prefix {
 		if !ok {
 			continue
 		}
-		out = append(out, prefix)
+		add(prefix)
 	}
 	return out
 }
@@ -458,6 +477,13 @@ func buildInfraPrefixes(subnets []Subnet, ports []Port) []netip.Prefix {
 // parsePrefixV4 parses a CIDR string and returns the prefix if it is
 // IPv4. IPv6 prefixes return ok=false silently — they are filtered,
 // not malformed. Malformed strings emit a warn-level log.
+//
+// The result is canonicalized with Masked() so host bits are zeroed
+// before the prefix becomes an LPM key. Subnet CIDRs from Neutron are
+// usually already canonical, but operator-authored extraroute
+// destinations (Step 5) are not guaranteed to be — a key like
+// 10.0.0.5/24 with dirty host bits would land at the wrong trie node
+// and miss on the routed-fallback lookup (ZONE_MISS → misbilling).
 func parsePrefixV4(s string) (netip.Prefix, bool) {
 	p, err := netip.ParsePrefix(s)
 	if err != nil {
@@ -468,7 +494,7 @@ func parsePrefixV4(s string) (netip.Prefix, bool) {
 	if !p.Addr().Is4() {
 		return netip.Prefix{}, false
 	}
-	return p, true
+	return p.Masked(), true
 }
 
 // parseAddrV4AsPrefix parses a bare IPv4 address into a /32 prefix.
