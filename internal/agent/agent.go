@@ -371,7 +371,9 @@ func (a *Agent) SeedState(records []state.Record) {
 // in-flight scrapes, waits for the scraper goroutine to finish its
 // current Tick (so callers can safely release BPF resources without
 // racing the kernel-map read), then lets the WAL flush goroutine
-// run its final flush.
+// run its final flush. The same drain runs if the HTTP server itself
+// fails, so a server crash never leaks the worker goroutines or skips
+// the final WAL flush.
 //
 // TC programs are not detached on shutdown — the qdisc and filter
 // outlive the process. The next agent start replaces them via
@@ -380,15 +382,23 @@ func (a *Agent) SeedState(records []state.Record) {
 func (a *Agent) Run(ctx context.Context) error {
 	a.runtime.InstallSIGHUP(ctx)
 
+	// runCtx derives from the caller's ctx so that an HTTP server
+	// failure can tear down the scraper, WAL, and netlink goroutines
+	// the same way a caller cancellation does. Without it, the srvErr
+	// exit path below would return while those goroutines run on against
+	// a live context — leaking them and skipping the WAL final flush.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	scraperDone := make(chan struct{})
 	go func() {
-		a.scraper.Run(ctx)
+		a.scraper.Run(runCtx)
 		close(scraperDone)
 	}()
 
 	walDone := make(chan struct{})
 	if a.cfg.WAL.Enabled {
-		go a.walFlushLoop(ctx, walDone)
+		go a.walFlushLoop(runCtx, walDone)
 	} else {
 		close(walDone)
 	}
@@ -397,7 +407,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.netlinkSubscriber != nil {
 		go func() {
 			defer close(netlinkDone)
-			if err := a.netlinkSubscriber.Run(ctx); err != nil {
+			if err := a.netlinkSubscriber.Run(runCtx); err != nil {
 				slog.Error("subscriber exited", "component", "netlink", "err", err)
 			}
 		}()
@@ -425,6 +435,14 @@ func (a *Agent) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		return a.shutdown(srvErr, scraperDone, walDone, netlinkDone)
 	case err := <-srvErr:
+		// The HTTP server failed on its own (the listener died, say).
+		// srvErr is already drained, so we can't route through the full
+		// shutdown (which reads it). Cancel the workers and drain them
+		// directly — including the WAL final flush — so a server crash
+		// doesn't leak goroutines or lose the last deltas.
+		slog.Info("shutdown initiated by server error", "component", componentAgent)
+		cancel()
+		a.drainWorkers(scraperDone, walDone, netlinkDone)
 		return err
 	}
 }
@@ -481,9 +499,7 @@ func (a *Agent) flushWAL() error {
 // kernel-map read, and the latest in-memory state could be lost).
 func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone, netlinkDone <-chan struct{}) error {
 	slog.Info("shutdown initiated", "component", componentAgent)
-	defer a.awaitWAL(walDone)
-	defer a.awaitScraper(scraperDone)
-	defer a.awaitNetlink(netlinkDone)
+	defer a.drainWorkers(scraperDone, walDone, netlinkDone)
 
 	httpCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -493,6 +509,19 @@ func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone, netlinkDone 
 	<-srvErr
 	slog.Info("http server stopped", "component", componentAgent)
 	return nil
+}
+
+// drainWorkers waits for the netlink, scraper, and WAL goroutines to
+// exit, in that order. Scraper drains before WAL so the latest deltas
+// land in state before the WAL final flush captures them. Used by both
+// shutdown paths (caller-ctx cancel and HTTP server failure), so the
+// goroutine teardown and final flush are identical regardless of why
+// the agent is stopping. The caller must have cancelled the workers'
+// context first.
+func (a *Agent) drainWorkers(scraperDone, walDone, netlinkDone <-chan struct{}) {
+	a.awaitNetlink(netlinkDone)
+	a.awaitScraper(scraperDone)
+	a.awaitWAL(walDone)
 }
 
 // awaitScraper blocks until the scraper goroutine has exited its
