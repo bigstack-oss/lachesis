@@ -35,6 +35,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
+	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
@@ -106,6 +107,18 @@ type Agent struct {
 	neutronMetrics *neutron.Metrics
 	bpfMapMetrics  *bpf.MapMetrics
 	zombieMetrics  *zombie.Metrics
+	netlinkMetrics *cnetlink.Metrics
+
+	// netlinkRegistry tracks interfaces currently carrying telemetry
+	// programs. Owned by the netlink subscriber (when non-nil) but
+	// also read by the netlink metrics for its current-size gauge.
+	netlinkRegistry *cnetlink.Registry
+
+	// netlinkSubscriber listens for RTM_NEWLINK/DELLINK and attaches
+	// TC programs to discovered taps. Set by Linux Bootstrap when
+	// AttachPrefixes / AttachInterfaces are configured; nil on
+	// darwin and in unit tests that don't need it.
+	netlinkSubscriber cnetlink.Subscriber
 
 	// lastNeutronSync is the unix-nanos timestamp of the most
 	// recent successful Neutron cold-start or full-resync. Read by
@@ -153,6 +166,21 @@ func (a *Agent) BPFMapMetrics() *bpf.MapMetrics { return a.bpfMapMetrics }
 // boot path records the orphan-cleanup count once, after [Hunt]
 // runs and the agent has been constructed.
 func (a *Agent) ZombieMetrics() *zombie.Metrics { return a.zombieMetrics }
+
+// NetlinkRegistry returns the Interface Registry shared between the
+// netlink subscriber and the cubecos_attached_interfaces gauge.
+// Never nil.
+func (a *Agent) NetlinkRegistry() *cnetlink.Registry { return a.netlinkRegistry }
+
+// NetlinkMetrics returns the netlink-subscriber instrument bundle.
+// Never nil.
+func (a *Agent) NetlinkMetrics() *cnetlink.Metrics { return a.netlinkMetrics }
+
+// SetNetlinkSubscriber wires a subscriber that [Agent.Run] will
+// start after WAL restore. Intended for Linux Bootstrap; cross-
+// platform New leaves the field nil. Idempotent; calling twice
+// replaces the previous value (useful in tests).
+func (a *Agent) SetNetlinkSubscriber(s cnetlink.Subscriber) { a.netlinkSubscriber = s }
 
 // MarkNeutronSync records `t` as the most recent successful Neutron
 // sync. Read by the `cubecos_neutron_sync_age_seconds` gauge.
@@ -206,6 +234,8 @@ func New(opts Options) (*Agent, error) {
 
 	walMx := wal.NewMetrics()
 	zombieMx := zombie.NewMetrics()
+	nlReg := cnetlink.NewRegistry()
+	nlMx := cnetlink.NewMetrics(nlReg.Len)
 	bpfMx := bpf.NewMapMetrics()
 	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
 	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
@@ -215,20 +245,22 @@ func New(opts Options) (*Agent, error) {
 	bpfMx.SetCurrent(bpf.MapSubnetZoneTrie, 0)
 
 	a := &Agent{
-		cfg:           opts.Config,
-		state:         st,
-		scraper:       sc,
-		collector:     col,
-		log:           opts.Log,
-		walMetrics:    walMx,
-		bpfMapMetrics: bpfMx,
-		zombieMetrics: zombieMx,
-		meta:          meta,
-		interner:      interner,
+		cfg:             opts.Config,
+		state:           st,
+		scraper:         sc,
+		collector:       col,
+		log:             opts.Log,
+		walMetrics:      walMx,
+		bpfMapMetrics:   bpfMx,
+		zombieMetrics:   zombieMx,
+		netlinkMetrics:  nlMx,
+		netlinkRegistry: nlReg,
+		meta:            meta,
+		interner:        interner,
 	}
 	a.neutronMetrics = neutron.NewMetrics(a.lastNeutronSyncTime)
 
-	reg, err := buildRegistry(col, walMx, a.neutronMetrics, bpfMx, zombieMx)
+	reg, err := buildRegistry(col, walMx, a.neutronMetrics, bpfMx, zombieMx, nlMx)
 	if err != nil {
 		return nil, err
 	}
@@ -257,6 +289,7 @@ func buildRegistry(
 	neutronMx *neutron.Metrics,
 	bpfMx *bpf.MapMetrics,
 	zombieMx *zombie.Metrics,
+	nlMx *cnetlink.Metrics,
 ) (*prometheus.Registry, error) {
 	reg := prometheus.NewRegistry()
 	if err := reg.Register(col); err != nil {
@@ -267,6 +300,7 @@ func buildRegistry(
 		"neutron": neutronMx.Collectors(),
 		"bpf":     bpfMx.Collectors(),
 		"zombie":  zombieMx.Collectors(),
+		"netlink": nlMx.Collectors(),
 	} {
 		for _, c := range bundle {
 			if err := reg.Register(c); err != nil {
@@ -359,6 +393,18 @@ func (a *Agent) Run(ctx context.Context) error {
 		close(walDone)
 	}
 
+	netlinkDone := make(chan struct{})
+	if a.netlinkSubscriber != nil {
+		go func() {
+			defer close(netlinkDone)
+			if err := a.netlinkSubscriber.Run(ctx); err != nil {
+				slog.Error("subscriber exited", "component", "netlink", "err", err)
+			}
+		}()
+	} else {
+		close(netlinkDone)
+	}
+
 	srvErr := make(chan error, 1)
 	go func() {
 		if err := a.server.Serve(a.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -377,7 +423,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		return a.shutdown(srvErr, scraperDone, walDone)
+		return a.shutdown(srvErr, scraperDone, walDone, netlinkDone)
 	case err := <-srvErr:
 		return err
 	}
@@ -433,10 +479,11 @@ func (a *Agent) flushWAL() error {
 // drains are deferred so they run even on an HTTP shutdown error
 // (otherwise the BPF-collection close in main could race the
 // kernel-map read, and the latest in-memory state could be lost).
-func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone <-chan struct{}) error {
+func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone, netlinkDone <-chan struct{}) error {
 	slog.Info("shutdown initiated", "component", componentAgent)
 	defer a.awaitWAL(walDone)
 	defer a.awaitScraper(scraperDone)
+	defer a.awaitNetlink(netlinkDone)
 
 	httpCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -458,6 +505,22 @@ func (a *Agent) awaitScraper(scraperDone <-chan struct{}) {
 		slog.Info("scraper stopped", "component", componentAgent)
 	case <-time.After(shutdownTimeout):
 		slog.Warn("scraper did not exit within shutdown budget",
+			"component", componentAgent,
+			"budget", shutdownTimeout)
+	}
+}
+
+// awaitNetlink blocks until the netlink subscriber goroutine has
+// exited, or shutdownTimeout elapses. The subscriber owns no
+// kernel state that needs draining; this wait only matters for
+// goroutine hygiene so the next agent boot does not race a
+// lingering RTM_NEWLINK handler.
+func (a *Agent) awaitNetlink(netlinkDone <-chan struct{}) {
+	select {
+	case <-netlinkDone:
+		slog.Info("netlink subscriber stopped", "component", componentAgent)
+	case <-time.After(shutdownTimeout):
+		slog.Warn("netlink subscriber did not exit within shutdown budget",
 			"component", componentAgent,
 			"budget", shutdownTimeout)
 	}

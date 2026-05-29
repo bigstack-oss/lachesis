@@ -16,11 +16,15 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
+	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
 
-const componentZombie = "zombie"
+const (
+	componentZombie  = "zombie"
+	componentNetlink = "netlink"
+)
 
 // Bootstrap is the agent's single startup sequence: parse args,
 // initialise logging, lift the memlock rlimit, load BPF, populate
@@ -122,6 +126,13 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		return nil, nil, err
 	}
 
+	if sub, err := buildNetlinkSubscriber(ag, cfg.BPF, coll); err != nil {
+		closer.Close()
+		return nil, nil, err
+	} else if sub != nil {
+		ag.SetNetlinkSubscriber(sub)
+	}
+
 	if err := restoreFromWAL(ag, cfg.WAL); err != nil {
 		// WAL restore failure is non-fatal — the design says "if
 		// both fail, start empty and log the loss" (§3.2).
@@ -211,16 +222,52 @@ func readerFromCollection(coll *ebpf.Collection) (*BPFMapReader, error) {
 	return NewBPFMapReader(m)
 }
 
+// buildNetlinkSubscriber constructs the RTM_NEWLINK/DELLINK
+// subscriber when the BPFConfig allowlist is non-empty. Returns a
+// nil Subscriber (no error) when both lists are empty — that means
+// the operator opted out of dynamic discovery, and only the
+// deprecated static AttachInterface (if set) is in play.
+func buildNetlinkSubscriber(ag *Agent, bpfCfg config.BPFConfig, coll *ebpf.Collection) (cnetlink.Subscriber, error) {
+	if len(bpfCfg.AttachPrefixes) == 0 && len(bpfCfg.AttachInterfaces) == 0 {
+		slog.Info("no allowlist configured; subscriber disabled",
+			"component", componentNetlink)
+		return nil, nil
+	}
+	ingress := coll.Programs[bpf.ProgramIngress]
+	egress := coll.Programs[bpf.ProgramEgress]
+	if ingress == nil || egress == nil {
+		return nil, fmt.Errorf("netlink subscriber: %s / %s not present in BPF collection",
+			bpf.ProgramIngress, bpf.ProgramEgress)
+	}
+	sub, err := cnetlink.New(cnetlink.Options{
+		Ingress:  ingress,
+		Egress:   egress,
+		Prefixes: bpfCfg.AttachPrefixes,
+		Explicit: bpfCfg.AttachInterfaces,
+		Registry: ag.NetlinkRegistry(),
+		Metrics:  ag.NetlinkMetrics(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("netlink subscriber: %w", err)
+	}
+	return sub, nil
+}
+
 // attachIfRequested installs the telemetry programs on iface via TC
 // clsact when iface is set, otherwise logs that attach was deferred
 // to an out-of-band actor. The latter is the normal mode for the
 // integration test (testenv attaches its own copy).
+//
+// Deprecated: prefer the netlink subscriber's allowlist over a
+// single static interface. When set, the agent emits a one-shot
+// warn log so operators notice they are on the legacy path.
 func attachIfRequested(iface string, coll *ebpf.Collection) error {
 	if iface == "" {
-		slog.Info("no attach interface configured; assuming external attach",
-			"component", componentAgent)
+		slog.Info("no static attach interface configured", "component", componentAgent)
 		return nil
 	}
+	slog.Warn("BPFConfig.AttachInterface is deprecated; configure attach_prefixes / attach_interfaces instead",
+		"component", componentAgent, "interface", iface)
 	ingress := coll.Programs[bpf.ProgramIngress]
 	egress := coll.Programs[bpf.ProgramEgress]
 	if ingress == nil || egress == nil {
