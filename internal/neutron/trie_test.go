@@ -335,6 +335,70 @@ func TestBuildTrie_Step4GatewayIPAndMetadata(t *testing.T) {
 	}
 }
 
+// TestBuildTrie_GatewayIPDeduped asserts the global INFRA /32 for a
+// gateway is emitted exactly once even when a router-interface port's
+// fixed IP equals the subnet gateway IP (the common case). Before the
+// dedup fix this row was emitted twice — once from the port, once from
+// the gateway — inflating the entry count and capacity accounting.
+func TestBuildTrie_GatewayIPDeduped(t *testing.T) {
+	got, _ := BuildTrie(
+		[]Network{{ID: "n1", ProjectID: "T1"}},
+		[]Subnet{{ID: "s1", NetworkID: "n1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
+		[]Port{{DeviceOwner: "network:router_interface", FixedIPs: []FixedIP{{IPAddress: "10.0.0.1"}}}},
+		nil,
+	)
+	want := TrieEntry{"", netip.MustParsePrefix("10.0.0.1/32"), bpf.ZoneInfra}
+	n := 0
+	for _, e := range got {
+		if e == want {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("gateway /32 INFRA row count = %d, want 1 (dedup of port fixed-IP vs subnet gateway)", n)
+	}
+}
+
+// TestBuildTrie_NonCanonicalExtrarouteMasked asserts an operator-typed
+// extraroute destination with dirty host bits (10.9.9.9/24) is
+// canonicalized to its network address (10.9.9.0/24) before becoming a
+// trie entry. A non-canonical prefix would land at the wrong LPM node
+// and miss on the routed-fallback lookup.
+func TestBuildTrie_NonCanonicalExtrarouteMasked(t *testing.T) {
+	got, _ := BuildTrie(
+		[]Network{{ID: "n1", ProjectID: "T1"}},
+		[]Subnet{{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
+		[]Port{{
+			DeviceOwner: "network:router_interface",
+			DeviceID:    "r1",
+			NetworkID:   "n1",
+			FixedIPs:    []FixedIP{{IPAddress: "10.0.0.1"}},
+		}},
+		[]Router{{
+			ID:        "r1",
+			ProjectID: "T1",
+			Routes:    []Route{{Destination: "10.9.9.9/24", Nexthop: "10.0.0.50"}},
+		}},
+	)
+	canonical := netip.MustParsePrefix("10.9.9.0/24")
+	dirty := netip.PrefixFrom(netip.MustParseAddr("10.9.9.9"), 24)
+	var sawCanonical, sawDirty bool
+	for _, e := range got {
+		if e.Prefix == canonical {
+			sawCanonical = true
+		}
+		if e.Prefix == dirty {
+			sawDirty = true
+		}
+	}
+	if sawDirty {
+		t.Errorf("trie contains non-canonical prefix %v (host bits not masked)", dirty)
+	}
+	if !sawCanonical {
+		t.Errorf("trie missing canonicalized extraroute prefix %v; entries=%v", canonical, got)
+	}
+}
+
 func TestBuildTrie_SkipsIPv6(t *testing.T) {
 	got, _ := BuildTrie(
 		[]Network{{ID: "n1", ProjectID: "T1"}},
