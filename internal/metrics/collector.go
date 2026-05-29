@@ -98,9 +98,14 @@ type aggValue struct {
 	packets uint64
 }
 
-// New constructs a Collector. The TenantResolver is required —
-// callers without a live resolver should pass [UnknownTenant]{}.
+// New constructs a Collector. A nil resolver falls back to
+// [UnknownTenant]{} so a missed wiring degrades to "unknown" labels
+// rather than a nil-pointer panic inside the locked Collect loop on
+// the first scrape.
 func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Collector {
+	if resolver == nil {
+		resolver = UnknownTenant{}
+	}
 	return &Collector{
 		state:    st,
 		scraper:  sc,
@@ -143,9 +148,12 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scrapeLastOKDesc
 }
 
-// Collect implements [prometheus.Collector]. The GlobalState walk is
-// guarded by the state's RLock and runs to completion before the
-// (allocating) per-flow emission begins.
+// Collect implements [prometheus.Collector]. It copies GlobalState
+// into a reusable buffer via Snapshot — which holds the state RLock
+// for the entire walk — and then does the allocating per-flow emission
+// lock-free over that copy. Collect itself never locks GlobalState, so
+// it cannot deadlock against the scraper writer or race a concurrent
+// map iteration.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectMu.Lock()
 	defer c.collectMu.Unlock()
