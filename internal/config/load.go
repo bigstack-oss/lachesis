@@ -142,6 +142,12 @@ func applyEnv(cfg *Config, prefix string, getenv func(string) string) error {
 	if v := getenv(prefix + "_BPF_ATTACH_INTERFACE"); v != "" {
 		cfg.BPF.AttachInterface = v
 	}
+	if v := getenv(prefix + "_BPF_ATTACH_PREFIXES"); v != "" {
+		cfg.BPF.AttachPrefixes = splitList(v)
+	}
+	if v := getenv(prefix + "_BPF_ATTACH_INTERFACES"); v != "" {
+		cfg.BPF.AttachInterfaces = splitList(v)
+	}
 	if v := getenv(prefix + "_SCRAPE_INTERVAL"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -222,6 +228,15 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 		"BPF FS pin directory"+envHint("BPF_PIN_PATH"))
 	fs.StringVar(&cfg.BPF.AttachInterface, "bpf-attach-interface", cfg.BPF.AttachInterface,
 		"Host interface to attach TC clsact + telemetry programs on; empty disables attach"+envHint("BPF_ATTACH_INTERFACE"))
+	// The allowlist fields are []string; bind them via comma-separated
+	// scratch strings and split back after Parse (the flag package has
+	// no native string-slice). Defaults round-trip through Join/split.
+	prefixesFlag := strings.Join(cfg.BPF.AttachPrefixes, ",")
+	fs.StringVar(&prefixesFlag, "bpf-attach-prefixes", prefixesFlag,
+		"Comma-separated interface-name prefixes the netlink subscriber attaches to"+envHint("BPF_ATTACH_PREFIXES"))
+	interfacesFlag := strings.Join(cfg.BPF.AttachInterfaces, ",")
+	fs.StringVar(&interfacesFlag, "bpf-attach-interfaces", interfacesFlag,
+		"Comma-separated explicit interface-name allowlist for the netlink subscriber"+envHint("BPF_ATTACH_INTERFACES"))
 	fs.DurationVar(&cfg.Scrape.Interval, "scrape-interval", cfg.Scrape.Interval,
 		"Scrape interval"+envHint("SCRAPE_INTERVAL"))
 	fs.StringVar(&cfg.Logging.Level, "log-level", cfg.Logging.Level,
@@ -240,5 +255,31 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 		"Absolute path to admin-openrc-style credentials file"+envHint("NEUTRON_CREDENTIALS_FILE"))
 	fs.BoolVar(&cfg.Neutron.UnsafeAllowAmbiguousRoutes, "unsafe-allow-ambiguous-routes", cfg.Neutron.UnsafeAllowAmbiguousRoutes,
 		"Allow boot to continue when BuildTrie reports static-route Step C ambiguities; default false (strict)"+envHint("NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES"))
-	return fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Only overwrite when the flag carried a value, so an unset flag
+	// leaves the default / YAML / env-resolved slice untouched — and
+	// in particular preserves the empty-but-non-nil AttachInterfaces
+	// default that the example-YAML drift test depends on. This mirrors
+	// applyEnv's `if v != ""` guard above.
+	if prefixesFlag != "" {
+		cfg.BPF.AttachPrefixes = splitList(prefixesFlag)
+	}
+	if interfacesFlag != "" {
+		cfg.BPF.AttachInterfaces = splitList(interfacesFlag)
+	}
+	return nil
+}
+
+// splitList parses a comma-separated flag/env value into a trimmed,
+// empty-free string slice.
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

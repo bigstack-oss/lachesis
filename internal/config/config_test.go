@@ -333,6 +333,49 @@ http:
 	}
 }
 
+// TestLoadAttachAllowlistFromEnvAndFlags covers the env + flag bindings
+// for the supported attach allowlist (attach_prefixes / attach_interfaces).
+// Before these bindings existed only the deprecated single attach_interface
+// was reachable outside YAML, so a non-YAML deployment had no way to reach
+// the supported allowlist.
+func TestLoadAttachAllowlistFromEnvAndFlags(t *testing.T) {
+	clearEnv(t)
+	// Env: comma-separated lists, trimmed, override the ["tap"] default.
+	t.Setenv("CUBECOS_BPF_ATTACH_PREFIXES", "tap, qvo")
+	t.Setenv("CUBECOS_BPF_ATTACH_INTERFACES", "veth-test")
+	cfg, err := config.Load(config.Options{}, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.BPF.AttachPrefixes, []string{"tap", "qvo"}) {
+		t.Errorf("AttachPrefixes = %v, want [tap qvo]", cfg.BPF.AttachPrefixes)
+	}
+	if !reflect.DeepEqual(cfg.BPF.AttachInterfaces, []string{"veth-test"}) {
+		t.Errorf("AttachInterfaces = %v, want [veth-test]", cfg.BPF.AttachInterfaces)
+	}
+
+	// Flag wins over env.
+	clearEnv(t)
+	t.Setenv("CUBECOS_BPF_ATTACH_PREFIXES", "qvo")
+	cfg, err = config.Load(config.Options{}, []string{"-bpf-attach-prefixes", "tap,eth"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.BPF.AttachPrefixes, []string{"tap", "eth"}) {
+		t.Errorf("flag should win: AttachPrefixes = %v, want [tap eth]", cfg.BPF.AttachPrefixes)
+	}
+
+	// Default preserved when neither env nor flag is set.
+	clearEnv(t)
+	cfg, err = config.Load(config.Options{}, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.BPF.AttachPrefixes, []string{"tap"}) {
+		t.Errorf("default AttachPrefixes = %v, want [tap]", cfg.BPF.AttachPrefixes)
+	}
+}
+
 // clearEnv removes any CUBECOS_* env vars set by the host or earlier tests
 // so each test sees a clean slate.
 func clearEnv(t *testing.T) {
@@ -342,6 +385,8 @@ func clearEnv(t *testing.T) {
 		"CUBECOS_HTTP_LISTEN",
 		"CUBECOS_BPF_PIN_PATH",
 		"CUBECOS_BPF_ATTACH_INTERFACE",
+		"CUBECOS_BPF_ATTACH_PREFIXES",
+		"CUBECOS_BPF_ATTACH_INTERFACES",
 		"CUBECOS_SCRAPE_INTERVAL",
 		"CUBECOS_LOG_LEVEL",
 		"CUBECOS_LOG_FORMAT",
