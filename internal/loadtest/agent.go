@@ -24,15 +24,20 @@ const agentTermGrace = 3 * time.Second
 const agentReadyPoll = 100 * time.Millisecond
 
 // writeAgentConfig writes a minimal YAML config that points the
-// agent at the host-side veth and asks for an ephemeral listener.
-// Returns the path; caller is responsible for os.Remove.
+// agent's netlink subscriber at the host-side veth (via the supported
+// attach_interfaces allowlist, not the deprecated single
+// attach_interface) and asks for an ephemeral listener. The veth
+// already exists when the agent boots, so the subscriber's
+// ListExisting replay attaches to it. Returns the path; caller is
+// responsible for os.Remove.
 func writeAgentConfig(iface, httpAddr string) (string, error) {
 	body := fmt.Sprintf(`version: "1"
 http:
   listen: %q
 bpf:
   pin_path: /sys/fs/bpf/cubecos-loadtest
-  attach_interface: %q
+  attach_interfaces:
+    - %q
 scrape:
   interval: 1s
 logging:
