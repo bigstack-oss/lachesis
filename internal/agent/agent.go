@@ -130,8 +130,8 @@ type Agent struct {
 	lastNeutronSync atomic.Int64
 
 	// meta is the userspace MAC → TenantMeta store. Constructed
-	// empty in [New]; populated by Bootstrap from Neutron and
-	// from Kafka events in later sprints. The metrics Collector's
+	// empty in [New]; populated by Bootstrap from Neutron and, in
+	// a future change, from Kafka events. The metrics Collector's
 	// Resolver reads it on every emission.
 	meta *metadata.ShardedMetadataMap
 	// interner assigns the u32 tenant_id values the kernel maps

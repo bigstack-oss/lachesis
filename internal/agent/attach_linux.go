@@ -17,8 +17,9 @@ import (
 // telemetry filters. The filter names come from [tcattach] so the
 // zombie hunter recognises them as the agent's own.
 //
-// Today this is a single-interface attach with no netlink-driven
-// auto-attach; that arrives in Sprint 5c.
+// This backs the deprecated static single-interface attach
+// ([config.BPFConfig.AttachInterface]); dynamic, netlink-driven
+// attach of new interfaces is handled by the netlink subscriber.
 func AttachClsact(ifaceName string, ingress, egress *ebpf.Program) error {
 	link, err := netlink.LinkByName(ifaceName)
 	if err != nil {

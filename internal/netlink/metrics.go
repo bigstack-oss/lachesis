@@ -6,7 +6,8 @@ import "github.com/prometheus/client_golang/prometheus"
 // Construct with [NewMetrics], register the slice from
 // [Metrics.Collectors] with the agent's registry.
 //
-// The two instruments mirror docs/sprint-plan.md §5:
+// The two instruments are cataloged in docs/DESIGN.md §11.4
+// (health metrics):
 //
 //   - cubecos_tc_attach_failures_total{iface_kind}  per-attempt
 //     failure counter, labelled by iface_kind for which the attach

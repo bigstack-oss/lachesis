@@ -1,9 +1,9 @@
 // Package config holds the runtime configuration for the agent.
 //
 // The configuration is structured as nested sections — one Go file per
-// section (http.go, bpf.go, scrape.go, logging.go) — plus a top-level
-// version envelope. Each section owns its type, defaults, and Validate
-// method; this file aggregates them.
+// section (http.go, bpf.go, scrape.go, logging.go, wal.go, neutron.go) —
+// plus a top-level version envelope. Each section owns its type,
+// defaults, and Validate method; this file aggregates them.
 //
 // Sources, in order of priority (later overrides earlier):
 //
