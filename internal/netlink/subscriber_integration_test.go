@@ -52,8 +52,7 @@ func TestSubscriber_AttachesNewTap(t *testing.T) {
 
 	registry := cnetlink.NewRegistry()
 	sub, err := cnetlink.New(cnetlink.Options{
-		Ingress:  prog,
-		Egress:   prog,
+		Attacher: tcattach.NewLinkAttacher(prog, prog),
 		Prefixes: []string{"tap-"},
 		Registry: registry,
 	})
@@ -141,8 +140,7 @@ func TestSubscriber_ForgetsOnDelLink(t *testing.T) {
 
 	registry := cnetlink.NewRegistry()
 	sub, err := cnetlink.New(cnetlink.Options{
-		Ingress:  prog,
-		Egress:   prog,
+		Attacher: tcattach.NewLinkAttacher(prog, prog),
 		Prefixes: []string{"tap-"},
 		Registry: registry,
 	})
@@ -219,8 +217,7 @@ func TestSubscriber_IgnoresNonAllowlist(t *testing.T) {
 
 	registry := cnetlink.NewRegistry()
 	sub, err := cnetlink.New(cnetlink.Options{
-		Ingress:  prog,
-		Egress:   prog,
+		Attacher: tcattach.NewLinkAttacher(prog, prog),
 		Prefixes: []string{"tap-"},
 		Registry: registry,
 	})

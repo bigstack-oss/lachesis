@@ -17,6 +17,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
@@ -247,8 +248,7 @@ func buildNetlinkSubscriber(ag *Agent, bpfCfg config.BPFConfig, coll *ebpf.Colle
 			bpf.ProgramIngress, bpf.ProgramEgress)
 	}
 	sub, err := cnetlink.New(cnetlink.Options{
-		Ingress:  ingress,
-		Egress:   egress,
+		Attacher: tcattach.NewLinkAttacher(ingress, egress),
 		Prefixes: bpfCfg.AttachPrefixes,
 		Explicit: bpfCfg.AttachInterfaces,
 		Registry: ag.NetlinkRegistry(),
@@ -281,7 +281,7 @@ func attachIfRequested(iface string, coll *ebpf.Collection) error {
 		return fmt.Errorf("%s / %s not present in BPF collection",
 			bpf.ProgramIngress, bpf.ProgramEgress)
 	}
-	if err := AttachClsact(iface, ingress, egress); err != nil {
+	if err := tcattach.NewLinkAttacher(ingress, egress).AttachLink(iface); err != nil {
 		return fmt.Errorf("attach clsact: %w", err)
 	}
 	slog.Info("attached telemetry programs", "component", componentAgent, "interface", iface)

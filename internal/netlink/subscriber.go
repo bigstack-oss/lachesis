@@ -12,3 +12,16 @@ type Subscriber interface {
 	// socket failed.
 	Run(ctx context.Context) error
 }
+
+// Attacher attaches the telemetry programs to a matched interface by
+// name. It is the seam that keeps this package (L3) from depending on
+// the L1 TC-attach machinery: the subscriber calls AttachLink on a
+// match and the agent composition root supplies the implementation
+// (over internal/tcattach), so neither *ebpf.Program nor internal/tcattach
+// appears in this package.
+type Attacher interface {
+	// AttachLink attaches the telemetry programs to the named
+	// interface. A non-nil error leaves the interface unregistered;
+	// the subscriber records an attach failure and moves on.
+	AttachLink(name string) error
+}
