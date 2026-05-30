@@ -154,7 +154,7 @@ func (a *Agent) NeutronMetrics() *neutron.Metrics { return a.mx.neutron }
 // BPFMapMetrics returns the BPF-map instrument bundle. Cold-start
 // and any subsequent incremental update set the current-entries
 // gauge after each successful kernel push.
-func (a *Agent) BPFMapMetrics() *bpf.MapMetrics { return a.mx.bpf }
+func (a *Agent) BPFMapMetrics() *bpf.Metrics { return a.mx.bpf }
 
 // ZombieMetrics returns the zombie-hunter instrument bundle. The
 // boot path records the orphan-cleanup count once, after [Hunt]
@@ -230,7 +230,7 @@ func New(opts Options) (*Agent, error) {
 	zombieMx := zombie.NewMetrics()
 	nlReg := cnetlink.NewRegistry()
 	nlMx := cnetlink.NewMetrics(nlReg.Len)
-	bpfMx := bpf.NewMapMetrics()
+	bpfMx := bpf.NewMetrics()
 	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
 	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
 	// Both current_entries seed at 0; cold-start will overwrite after
@@ -283,7 +283,7 @@ func New(opts Options) (*Agent, error) {
 type subsystemMetrics struct {
 	wal      *wal.Metrics
 	neutron  *neutron.Metrics
-	bpf      *bpf.MapMetrics
+	bpf      *bpf.Metrics
 	zombie   *zombie.Metrics
 	netlink  *cnetlink.Metrics
 	registry *cnetlink.Registry

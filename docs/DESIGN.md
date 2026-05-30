@@ -1425,6 +1425,18 @@ Explicitly out of MVP scope. Documented so future contributors know it's open by
 | 1 | IPv6 zone resolution | All v6 traffic currently classifies as ZONE_MISS. Retrofit path: add a second LPM trie keyed `(tenant_id, u8[16])` alongside the existing v4 trie; branch in `lookup_zone()` on `eth_proto`. The 5-step cold-start algorithm (§5.2) is IP-version-agnostic — only insertion code changes. Estimated ~1 sprint, low risk |
 | 2 | Traditional Neutron (OVS-agent + L3-agent + qrouter namespaces, with or without DVR) | Tested OVN deployments (single-node and 3-node HA) run OpenStack Yoga with OVN ML2 — verified empirically. Traditional Neutron is therefore out of scope. If a future deployment requires it, the cold-start algorithm needs a "Step 6 — DVR per-host MAC enumeration" reinstated (using the `dvr-mac-addresses` Neutron extension); see git history of this file for the removed text. Estimated ~1 sprint to re-add |
 
+### 13.3 Construction Conventions
+
+Several constructor idioms coexist *by design*. New code matches the closest existing one rather than inventing a sixth, and the outliers below are deliberately **not** normalised — converting them only churns tests for no behavioural gain.
+
+| Idiom | Used by | When |
+|---|---|---|
+| Options struct | `agent.New(Options)`, `netlink.New(Options)`, `config.Load(Options, …)` | More than ~2 inputs, or any optional / defaulted field. The reference pattern — reach for it first |
+| Positional params | `scraper.New(reader, st, interval)`, `metadata.NewResolver(m)` | ≤2 unambiguous required args, no options |
+| Bare `New()` | `state.New`, `boot.New`, `metadata.New`, `netlink.NewRegistry`, every per-package `NewMetrics` | Zero-config value types. Metric bundles are uniformly `type Metrics` + `NewMetrics()` |
+| Functional options | `neutron.BuildTrie(…, WithMetrics(m))` | Reserved for `BuildTrie` alone — keeps its many test call-sites argument-free; not spread to other constructors |
+| `Run(Config)` | `perfbench.Run`, `loadtest.Run` | Single-shot CLI harnesses, not long-lived services |
+
 ---
 
 ## Appendix A — Design Decisions Table

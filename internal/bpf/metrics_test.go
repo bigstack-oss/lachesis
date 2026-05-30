@@ -8,8 +8,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-func TestMapMetrics_SetMaxAndCurrent(t *testing.T) {
-	m := NewMapMetrics()
+func TestMetrics_SetMaxAndCurrent(t *testing.T) {
+	m := NewMetrics()
 	m.SetMax(MapMacTenant, MapMacTenantMaxEntries)
 	m.SetMax(MapSubnetZoneTrie, MapSubnetZoneTrieMaxEntries)
 	m.SetCurrent(MapMacTenant, 17)
@@ -35,8 +35,8 @@ cubecos_bpf_map_max_entries{map="subnet_zone_trie"} 16384
 	}
 }
 
-func TestMapMetrics_NilReceiverSafe(t *testing.T) {
-	var m *MapMetrics
+func TestMetrics_NilReceiverSafe(t *testing.T) {
+	var m *Metrics
 	m.SetMax(MapMacTenant, 100)
 	m.SetCurrent(MapSubnetZoneTrie, 50)
 }

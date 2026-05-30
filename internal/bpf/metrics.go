@@ -2,7 +2,7 @@ package bpf
 
 import "github.com/prometheus/client_golang/prometheus"
 
-// MapMetrics holds Prometheus instruments for the kernel BPF maps
+// Metrics holds Prometheus instruments for the kernel BPF maps
 // the agent populates. The `current_entries` value is updated by the
 // userspace writer (kernelwriter) after each successful map push;
 // it's a userspace-tracked count, not a kernel-side ground truth,
@@ -15,16 +15,16 @@ import "github.com/prometheus/client_golang/prometheus"
 //
 //   - cubecos_bpf_map_max_entries{map}      gauge (static capacity)
 //   - cubecos_bpf_map_current_entries{map}  gauge (last-written count)
-type MapMetrics struct {
+type Metrics struct {
 	maxEntries     *prometheus.GaugeVec
 	currentEntries *prometheus.GaugeVec
 }
 
-// NewMapMetrics constructs the bundle. Callers populate static max
+// NewMetrics constructs the bundle. Callers populate static max
 // values immediately after construction via [SetMax], then update
 // current values via [SetCurrent] after each kernel write.
-func NewMapMetrics() *MapMetrics {
-	return &MapMetrics{
+func NewMetrics() *Metrics {
+	return &Metrics{
 		maxEntries: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "cubecos_bpf_map_max_entries",
 			Help: "Compiled-in max_entries of each BPF map the agent populates.",
@@ -37,12 +37,12 @@ func NewMapMetrics() *MapMetrics {
 }
 
 // Collectors returns the underlying prometheus.Collector values.
-func (m *MapMetrics) Collectors() []prometheus.Collector {
+func (m *Metrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{m.maxEntries, m.currentEntries}
 }
 
 // SetMax records the static capacity of mapName.
-func (m *MapMetrics) SetMax(mapName string, max float64) {
+func (m *Metrics) SetMax(mapName string, max float64) {
 	if m == nil {
 		return
 	}
@@ -52,7 +52,7 @@ func (m *MapMetrics) SetMax(mapName string, max float64) {
 // SetCurrent records the userspace-tracked entry count of mapName.
 // Call after a successful push so the dashboard's fill-ratio panel
 // reflects the new state.
-func (m *MapMetrics) SetCurrent(mapName string, current float64) {
+func (m *Metrics) SetCurrent(mapName string, current float64) {
 	if m == nil {
 		return
 	}
