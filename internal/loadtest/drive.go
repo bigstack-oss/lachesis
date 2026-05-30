@@ -92,6 +92,12 @@ func sustainedTCPSend(ctx context.Context, src *tns.NS, dstIP net.IP, dstPort ui
 // serveSink starts a discarding TCP listener. Returns the bound
 // address and a stop function that closes the listener and any
 // in-flight connections.
+//
+// This deliberately duplicates testenv/traffic.ServeTCPSink rather
+// than importing it: that helper takes a *testing.T and so links the
+// testing package, which would pull test-only flags into the loadtest
+// CLI binary. The shared logic is a few lines of accept-and-discard;
+// keep the two in sync.
 func serveSink() (net.Addr, func()) {
 	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {

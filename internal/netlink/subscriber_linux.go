@@ -186,14 +186,11 @@ func (s *linuxSubscriber) onNewLink(link netlink.Link, name string) {
 	if s.opts.Registry.IsAttached(name) {
 		return
 	}
-	if err := tcattach.Replace(link, s.opts.Ingress, tcattach.Ingress, tcattach.FilterIngressName); err != nil {
-		slog.Warn("ingress attach failed",
-			"component", component, "iface", name, "err", err)
-		s.opts.Metrics.recordAttachFailure(s.kindFor(name))
-		return
-	}
-	if err := tcattach.Replace(link, s.opts.Egress, tcattach.Egress, tcattach.FilterEgressName); err != nil {
-		slog.Warn("egress attach failed",
+	// AttachTelemetry is all-or-nothing: on a partial failure it rolls
+	// back, so the link is left unattached and the Registry/gauge stay
+	// consistent with reality.
+	if err := tcattach.AttachTelemetry(link, s.opts.Ingress, s.opts.Egress); err != nil {
+		slog.Warn("attach failed",
 			"component", component, "iface", name, "err", err)
 		s.opts.Metrics.recordAttachFailure(s.kindFor(name))
 		return
