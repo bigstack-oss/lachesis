@@ -44,7 +44,8 @@ type resolveIndex struct {
 // snapshot. IPv6 fixed-IPs and subnets are admitted to the maps
 // without filtering — anchorSubnet checks IPVersion at lookup time
 // so resolveStaticRouteZone safely operates only on IPv4 chains.
-func newResolveIndex(networks []Network, subnets []Subnet, ports []Port, routers []Router) *resolveIndex {
+func newResolveIndex(snap Snapshot) *resolveIndex {
+	networks, subnets, ports, routers := snap.Networks, snap.Subnets, snap.Ports, snap.Routers
 	ri := &resolveIndex{
 		routers:       make(map[string]Router, len(routers)),
 		subnets:       make(map[string]Subnet, len(subnets)),

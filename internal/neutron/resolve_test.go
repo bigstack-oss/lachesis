@@ -42,7 +42,7 @@ func (f *fixture) addRouter(id, project string, routes ...Route) {
 }
 
 func (f *fixture) index() *resolveIndex {
-	return newResolveIndex(f.networks, f.subnets, f.ports, f.routers)
+	return newResolveIndex(Snapshot{Networks: f.networks, Subnets: f.subnets, Ports: f.ports, Routers: f.routers})
 }
 
 func fip(subnetID, ip string) FixedIP { return FixedIP{SubnetID: subnetID, IPAddress: ip} }

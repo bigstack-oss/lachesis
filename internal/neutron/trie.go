@@ -245,17 +245,18 @@ func IsKnownVMOwner(deviceOwner string) bool {
 // produce identical output, simplifying the change-detection logic
 // the kernel map writer will use. Global rows (TenantID="") sort
 // first; per-tenant runs follow in tenant-ID order.
-func BuildTrie(networks []Network, subnets []Subnet, ports []Port, routers []Router, opts ...BuildOpt) ([]TrieEntry, []AmbiguityHit) {
+func BuildTrie(snap Snapshot, opts ...BuildOpt) ([]TrieEntry, []AmbiguityHit) {
 	var bo buildOpts
 	for _, o := range opts {
 		o(&bo)
 	}
+	networks, subnets, ports, routers := snap.Networks, snap.Subnets, snap.Ports, snap.Routers
 
 	subnetsByNetwork := groupSubnetsByNetwork(subnets)
 	tenants := collectTenants(networks, ports, routers)
 	sharedPrefixes := buildSharedPrefixes(networks, subnetsByNetwork)
 	infraPrefixes := buildInfraPrefixes(subnets, ports)
-	ri := newResolveIndex(networks, subnets, ports, routers)
+	ri := newResolveIndex(snap)
 
 	// Capacity hint: globals + an over-approximation of per-tenant
 	// rows (every IPv4 subnet may emit one SAME_TENANT row). Extra-

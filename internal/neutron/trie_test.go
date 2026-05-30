@@ -29,7 +29,7 @@ func mustPrefix(t *testing.T, s string) netip.Prefix {
 }
 
 func TestBuildTrie_Empty(t *testing.T) {
-	got, _ := BuildTrie(nil, nil, nil, nil)
+	got, _ := BuildTrie(Snapshot{})
 	if len(got) != 0 {
 		t.Fatalf("BuildTrie(empty) = %v, want empty", got)
 	}
@@ -42,12 +42,11 @@ func TestBuildTrie_Empty(t *testing.T) {
 // be a regression — the kernel `lookup_zone` sentinel fallback
 // covers every tenant's view from the single global row.
 func TestBuildTrie_Step1Catchall(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{{ID: "n1", ProjectID: "t-from-net"}},
-		nil,
-		[]Port{{ID: "p1", ProjectID: "t-from-port"}},
-		[]Router{{ID: "r1", ProjectID: "t-from-router"}},
-	)
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "t-from-net"}},
+		Ports:    []Port{{ID: "p1", ProjectID: "t-from-port"}},
+		Routers:  []Router{{ID: "r1", ProjectID: "t-from-router"}},
+	})
 	want := mustPrefix(t, "0.0.0.0/0")
 	if !slices.Contains(got,TrieEntry{"", want, bpf.ZoneExternal}) {
 		t.Errorf("global catchall row missing")
@@ -63,11 +62,10 @@ func TestBuildTrie_Step1Catchall(t *testing.T) {
 // with one non-shared subnet. Expected: catchall + SAME_TENANT for
 // the subnet's CIDR + metadata INFRA.
 func TestBuildTrie_Step2OwnedSubnets(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{{ID: "n1", ProjectID: "T1", Shared: false}},
-		[]Subnet{{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.0.0/24", IPVersion: 4}},
-		nil, nil,
-	)
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "T1", Shared: false}},
+		Subnets:  []Subnet{{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.0.0/24", IPVersion: 4}},
+	})
 	if !slices.Contains(got,TrieEntry{"T1", mustPrefix(t, "10.0.0.0/24"), bpf.ZoneSameTenant}) {
 		t.Fatalf("missing SAME_TENANT row\n%+v", got)
 	}
@@ -81,16 +79,15 @@ func TestBuildTrie_Step2OwnedSubnets(t *testing.T) {
 // ownership inside a shared CIDR, and guessing either side
 // systematically mis-bills the wrong direction.
 func TestBuildTrie_SharedNetworkEmitsShared(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{
 			{ID: "n-shared", ProjectID: "T1", Shared: true},
 			{ID: "n-own", ProjectID: "T2"},
 		},
-		[]Subnet{
+		Subnets: []Subnet{
 			{ID: "s-shared", NetworkID: "n-shared", ProjectID: "T1", CIDR: "192.168.0.0/24", IPVersion: 4},
 		},
-		nil, nil,
-	)
+	})
 	shared := mustPrefix(t, "192.168.0.0/24")
 	if !slices.Contains(got,TrieEntry{"", shared, bpf.ZoneShared}) {
 		t.Errorf("global SHARED row missing for %v", shared)
@@ -115,16 +112,15 @@ func TestBuildTrie_SharedNetworkEmitsShared(t *testing.T) {
 // the floating-IP-pool CIDR; the catchall then EXTERNAL-classifies
 // any address in that pool correctly via fallthrough.
 func TestBuildTrie_ExternalNetworkSkipsStep3(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{
 			{ID: "n-ext", ProjectID: "T-admin", Shared: true, IsExternal: true},
 			{ID: "n-own", ProjectID: "T1"},
 		},
-		[]Subnet{
+		Subnets: []Subnet{
 			{ID: "s-ext", NetworkID: "n-ext", CIDR: "203.0.113.0/24", IPVersion: 4},
 		},
-		nil, nil,
-	)
+	})
 	extCIDR := mustPrefix(t, "203.0.113.0/24")
 	for _, e := range got {
 		if e.Prefix == extCIDR {
@@ -138,15 +134,14 @@ func TestBuildTrie_ExternalNetworkSkipsStep3(t *testing.T) {
 // a SAME_TENANT row. (Some operators mark an admin-owned external
 // network as Shared=false; we still want EXTERNAL classification.)
 func TestBuildTrie_ExternalNetworkSkipsStep2(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{
 			{ID: "n-ext", ProjectID: "T-admin", Shared: false, IsExternal: true},
 		},
-		[]Subnet{
+		Subnets: []Subnet{
 			{ID: "s-ext", NetworkID: "n-ext", CIDR: "203.0.113.0/24", IPVersion: 4},
 		},
-		nil, nil,
-	)
+	})
 	for _, e := range got {
 		if e.Prefix == mustPrefix(t, "203.0.113.0/24") {
 			t.Errorf("external CIDR leaked into trie: %+v", e)
@@ -176,12 +171,10 @@ func TestBuildTrie_Step4InfraPorts(t *testing.T) {
 		{DeviceOwner: "Octavia", FixedIPs: []FixedIP{{IPAddress: "10.0.0.99"}}},
 		{DeviceOwner: "manila:share", FixedIPs: []FixedIP{{IPAddress: "10.0.0.100"}}},
 	}
-	got, _ := BuildTrie(
-		[]Network{{ID: "n1", ProjectID: "T1"}},
-		nil,
-		append(ports, Port{ProjectID: "T1"}), // ensure tenant gets enumerated
-		nil,
-	)
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
+		Ports:    append(ports, Port{ProjectID: "T1"}), // ensure tenant gets enumerated
+	})
 	for _, infraIP := range []string{"10.0.0.1", "192.0.2.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"} {
 		want := TrieEntry{"", netip.MustParsePrefix(infraIP + "/32"), bpf.ZoneInfra}
 		if !slices.Contains(got,want) {
@@ -322,11 +315,10 @@ func TestIsInfraPort(t *testing.T) {
 }
 
 func TestBuildTrie_Step4GatewayIPAndMetadata(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{{ID: "n1", ProjectID: "T1"}},
-		[]Subnet{{ID: "s1", NetworkID: "n1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
-		nil, nil,
-	)
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
+		Subnets:  []Subnet{{ID: "s1", NetworkID: "n1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
+	})
 	if !slices.Contains(got,TrieEntry{"", netip.MustParsePrefix("10.0.0.1/32"), bpf.ZoneInfra}) {
 		t.Errorf("global gateway IP /32 missing as INFRA")
 	}
@@ -341,12 +333,11 @@ func TestBuildTrie_Step4GatewayIPAndMetadata(t *testing.T) {
 // dedup fix this row was emitted twice — once from the port, once from
 // the gateway — inflating the entry count and capacity accounting.
 func TestBuildTrie_GatewayIPDeduped(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{{ID: "n1", ProjectID: "T1"}},
-		[]Subnet{{ID: "s1", NetworkID: "n1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
-		[]Port{{DeviceOwner: "network:router_interface", FixedIPs: []FixedIP{{IPAddress: "10.0.0.1"}}}},
-		nil,
-	)
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
+		Subnets:  []Subnet{{ID: "s1", NetworkID: "n1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
+		Ports:    []Port{{DeviceOwner: "network:router_interface", FixedIPs: []FixedIP{{IPAddress: "10.0.0.1"}}}},
+	})
 	want := TrieEntry{"", netip.MustParsePrefix("10.0.0.1/32"), bpf.ZoneInfra}
 	n := 0
 	for _, e := range got {
@@ -365,21 +356,21 @@ func TestBuildTrie_GatewayIPDeduped(t *testing.T) {
 // trie entry. A non-canonical prefix would land at the wrong LPM node
 // and miss on the routed-fallback lookup.
 func TestBuildTrie_NonCanonicalExtrarouteMasked(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{{ID: "n1", ProjectID: "T1"}},
-		[]Subnet{{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
-		[]Port{{
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
+		Subnets:  []Subnet{{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
+		Ports: []Port{{
 			DeviceOwner: "network:router_interface",
 			DeviceID:    "r1",
 			NetworkID:   "n1",
 			FixedIPs:    []FixedIP{{IPAddress: "10.0.0.1"}},
 		}},
-		[]Router{{
+		Routers: []Router{{
 			ID:        "r1",
 			ProjectID: "T1",
 			Routes:    []Route{{Destination: "10.9.9.9/24", Nexthop: "10.0.0.50"}},
 		}},
-	)
+	})
 	canonical := netip.MustParsePrefix("10.9.9.0/24")
 	dirty := netip.PrefixFrom(netip.MustParseAddr("10.9.9.9"), 24)
 	var sawCanonical, sawDirty bool
@@ -400,21 +391,20 @@ func TestBuildTrie_NonCanonicalExtrarouteMasked(t *testing.T) {
 }
 
 func TestBuildTrie_SkipsIPv6(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{{ID: "n1", ProjectID: "T1"}},
-		[]Subnet{
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
+		Subnets: []Subnet{
 			{ID: "s4", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.0.0/24", IPVersion: 4},
 			{ID: "s6", NetworkID: "n1", ProjectID: "T1", CIDR: "fd00::/64", IPVersion: 6},
 		},
-		[]Port{{
+		Ports: []Port{{
 			DeviceOwner: "network:router_interface",
 			FixedIPs: []FixedIP{
 				{IPAddress: "10.0.0.1"},
 				{IPAddress: "fd00::1"},
 			},
 		}},
-		nil,
-	)
+	})
 	for _, e := range got {
 		if !e.Prefix.Addr().Is4() {
 			t.Errorf("IPv6 entry leaked: %+v", e)
@@ -427,14 +417,13 @@ func TestBuildTrie_SkipsIPv6(t *testing.T) {
 }
 
 func TestBuildTrie_MalformedCIDRSkipped(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{{ID: "n1", ProjectID: "T1"}},
-		[]Subnet{
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
+		Subnets: []Subnet{
 			{ID: "s-bad", NetworkID: "n1", ProjectID: "T1", CIDR: "not-a-cidr", IPVersion: 4},
 			{ID: "s-good", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.0.0/24", IPVersion: 4},
 		},
-		nil, nil,
-	)
+	})
 	if !slices.Contains(got,TrieEntry{"T1", mustPrefix(t, "10.0.0.0/24"), bpf.ZoneSameTenant}) {
 		t.Fatalf("good CIDR should still be present after a sibling parse failure")
 	}
@@ -449,10 +438,10 @@ func TestBuildTrie_MalformedCIDRSkipped(t *testing.T) {
 // extraroute 172.16.99.0/24 via a compute:nova port on R1's own
 // net-T1. zoneFor(T1, T1, net-T1) returns SAME_TENANT.
 func TestBuildTrie_Step5EmitsExtraroute(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{{ID: "net-T1", ProjectID: "T1"}},
-		[]Subnet{{ID: "sub-T1", NetworkID: "net-T1", ProjectID: "T1", CIDR: "10.0.1.0/24", IPVersion: 4}},
-		[]Port{
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "net-T1", ProjectID: "T1"}},
+		Subnets:  []Subnet{{ID: "sub-T1", NetworkID: "net-T1", ProjectID: "T1", CIDR: "10.0.1.0/24", IPVersion: 4}},
+		Ports: []Port{
 			{ID: "p-R1", NetworkID: "net-T1", ProjectID: "T1",
 				DeviceOwner: "network:router_interface", DeviceID: "R1",
 				FixedIPs: []FixedIP{{SubnetID: "sub-T1", IPAddress: "10.0.1.1"}}},
@@ -460,11 +449,11 @@ func TestBuildTrie_Step5EmitsExtraroute(t *testing.T) {
 				DeviceOwner: "compute:nova", DeviceID: "instance-uuid",
 				FixedIPs: []FixedIP{{SubnetID: "sub-T1", IPAddress: "10.0.1.50"}}},
 		},
-		[]Router{{
+		Routers: []Router{{
 			ID: "R1", ProjectID: "T1",
 			Routes: []Route{{Destination: "172.16.99.0/24", Nexthop: "10.0.1.50"}},
 		}},
-	)
+	})
 	want := TrieEntry{TenantID: "T1", Prefix: mustPrefix(t, "172.16.99.0/24"), Zone: bpf.ZoneSameTenant}
 	found := false
 	for _, e := range got {
@@ -483,13 +472,12 @@ func TestBuildTrie_Step5EmitsExtraroute(t *testing.T) {
 // subnets) classifies EXTERNAL — the resolver's catchall return —
 // rather than being silently dropped.
 func TestBuildTrie_Step5UnresolvableFallsBackExternal(t *testing.T) {
-	got, _ := BuildTrie(
-		nil, nil, nil,
-		[]Router{{
+	got, _ := BuildTrie(Snapshot{
+		Routers: []Router{{
 			ID: "R1", ProjectID: "T1",
 			Routes: []Route{{Destination: "10.99.0.0/16", Nexthop: "10.0.0.2"}},
 		}},
-	)
+	})
 	want := TrieEntry{TenantID: "T1", Prefix: mustPrefix(t, "10.99.0.0/16"), Zone: bpf.ZoneExternal}
 	found := false
 	for _, e := range got {
@@ -508,16 +496,15 @@ func TestBuildTrie_Step5UnresolvableFallsBackExternal(t *testing.T) {
 // (matching the Step 2/4 invalid-CIDR pattern), so a single stale
 // route can't block boot.
 func TestBuildTrie_Step5InvalidRouteSkipped(t *testing.T) {
-	got, _ := BuildTrie(
-		nil, nil, nil,
-		[]Router{{
+	got, _ := BuildTrie(Snapshot{
+		Routers: []Router{{
 			ID: "R1", ProjectID: "T1",
 			Routes: []Route{
 				{Destination: "not-a-cidr", Nexthop: "10.0.0.2"},
 				{Destination: "10.99.0.0/16", Nexthop: "not-an-ip"},
 			},
 		}},
-	)
+	})
 	for _, e := range got {
 		if e.TenantID == "T1" && e.Prefix.String() == "10.99.0.0/16" {
 			// Permitted: a valid CIDR with an unparseable nexthop is
@@ -546,8 +533,8 @@ func TestBuildTrie_Deterministic(t *testing.T) {
 		{ID: "s2", NetworkID: "n2", ProjectID: "T2", CIDR: "10.2.0.0/24", IPVersion: 4},
 		{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.1.0.0/24", IPVersion: 4},
 	}
-	first, _ := BuildTrie(nets, subs, nil, nil)
-	second, _ := BuildTrie(nets, subs, nil, nil)
+	first, _ := BuildTrie(Snapshot{Networks: nets, Subnets: subs})
+	second, _ := BuildTrie(Snapshot{Networks: nets, Subnets: subs})
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("non-deterministic output:\nfirst:  %+v\nsecond: %+v", first, second)
 	}
@@ -575,12 +562,12 @@ func TestBuildTrie_Deterministic(t *testing.T) {
 // snapshot. The invariant being pinned here is "exactly one
 // non-empty tenant for this single-project snapshot".
 func TestBuildTrie_SingleProjectCollapsesToOneTenant(t *testing.T) {
-	got, _ := BuildTrie(
-		[]Network{{ID: "n1", ProjectID: "proj-X"}},
-		[]Subnet{{ID: "s1", NetworkID: "n1", ProjectID: "proj-X", CIDR: "10.0.0.0/24", IPVersion: 4}},
-		[]Port{{ID: "p1", NetworkID: "n1", ProjectID: "proj-X", DeviceOwner: "compute:nova"}},
-		[]Router{{ID: "r1", ProjectID: "proj-X"}},
-	)
+	got, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "proj-X"}},
+		Subnets:  []Subnet{{ID: "s1", NetworkID: "n1", ProjectID: "proj-X", CIDR: "10.0.0.0/24", IPVersion: 4}},
+		Ports:    []Port{{ID: "p1", NetworkID: "n1", ProjectID: "proj-X", DeviceOwner: "compute:nova"}},
+		Routers:  []Router{{ID: "r1", ProjectID: "proj-X"}},
+	})
 	nonEmpty := map[string]int{}
 	for _, e := range got {
 		if e.TenantID != "" {
