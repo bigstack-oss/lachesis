@@ -21,11 +21,6 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
 
-const (
-	componentZombie  = "zombie"
-	componentNetlink = "netlink"
-)
-
 // Bootstrap is the agent's single startup sequence: parse args,
 // initialise logging, lift the memlock rlimit, load BPF, populate
 // the kernel maps from Neutron, attach TC, then build the [Agent].
@@ -85,14 +80,25 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		return nil, nil, err
 	}
 	closer := collectionCloser{coll}
+	// The BPF collection is a kernel resource. Release it on any
+	// failure past this point, but hand it to the caller intact on
+	// success (they Close it after Run returns). The sentinel keeps
+	// that one invariant in a single place instead of repeating
+	// closer.Close() on every error branch below — and so an error
+	// path added later cannot forget to release the collection.
+	success := false
+	defer func() {
+		if !success {
+			closer.Close()
+		}
+	}()
+
 	if err := seq.Advance(boot.PhaseBPFLoaded); err != nil {
-		closer.Close()
 		return nil, nil, err
 	}
 
 	reader, err := readerFromCollection(coll)
 	if err != nil {
-		closer.Close()
 		return nil, nil, err
 	}
 
@@ -103,22 +109,18 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		Log:        log,
 	})
 	if err != nil {
-		closer.Close()
 		return nil, nil, err
 	}
 	ag.ZombieMetrics().RecordCleaned(zombiesCleaned)
 
 	if err := coldStartNeutron(ctx, cfg.Neutron, ag, coll); err != nil {
-		closer.Close()
 		return nil, nil, fmt.Errorf("neutron cold-start: %w", err)
 	}
 	if err := seq.Advance(boot.PhaseMetadataReady); err != nil {
-		closer.Close()
 		return nil, nil, err
 	}
 
 	if err := attachIfRequested(cfg.BPF.AttachInterface, coll); err != nil {
-		closer.Close()
 		return nil, nil, err
 	}
 	if cfg.BPF.AttachInterface != "" {
@@ -129,12 +131,10 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		ag.NetlinkRegistry().MarkAttached(cfg.BPF.AttachInterface)
 	}
 	if err := seq.Advance(boot.PhaseAttached); err != nil {
-		closer.Close()
 		return nil, nil, err
 	}
 
 	if sub, err := buildNetlinkSubscriber(ag, cfg.BPF, coll); err != nil {
-		closer.Close()
 		return nil, nil, err
 	} else if sub != nil {
 		ag.SetNetlinkSubscriber(sub)
@@ -149,10 +149,10 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 			"component", componentWAL, "err", err)
 	}
 	if err := seq.Advance(boot.PhaseStateRestored); err != nil {
-		closer.Close()
 		return nil, nil, err
 	}
 
+	success = true
 	return ag, closer, nil
 }
 
