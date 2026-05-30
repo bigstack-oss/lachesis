@@ -69,26 +69,43 @@ func WriteMacTenantMap(
 		return 0, errors.New("kernelwriter: TenantInterner is nil")
 	}
 
-	var firstErr error
-	var written int
+	// Snapshot the (mac, tenant_id) pairs under the shard locks first,
+	// then issue the kernel Updates outside any lock. A BPF map Update
+	// is a syscall (IO), and the locking guideline forbids holding a
+	// mutex across IO: doing the Update inside snap.Range would hold the
+	// shard RLock for the whole syscall and block a concurrent
+	// Kafka-driven Insert/MarkDelete on that shard for the duration of a
+	// bulk push. Interning is a cheap userspace map op, so it stays in
+	// the snapshot pass. This runs at cold-start / on Kafka updates, not
+	// on the scrape or packet hot path, so the snapshot slice is fine.
+	type macTenant struct {
+		mac uint64
+		tid uint32
+	}
+	var pairs []macTenant
 	snap.Range(func(mac uint64, meta *metadata.TenantMeta) bool {
 		if meta.ProjectID == "" {
 			return true
 		}
-		tid := interner.Intern(meta.ProjectID)
-		k, v := mac, tid
+		pairs = append(pairs, macTenant{mac, interner.Intern(meta.ProjectID)})
+		return true
+	})
+
+	var firstErr error
+	var written int
+	for _, p := range pairs {
+		k, v := p.mac, p.tid
 		if err := macMap.Update(&k, &v, ebpf.UpdateAny); err != nil {
-			wrapped := fmt.Errorf("mac_tenant_map update mac=%012x tenant_id=%d: %w", mac, tid, err)
+			wrapped := fmt.Errorf("mac_tenant_map update mac=%012x tenant_id=%d: %w", p.mac, p.tid, err)
 			slog.Warn("mac_tenant_map write failed",
 				"component", componentKernelWriter, "err", wrapped)
 			if firstErr == nil {
 				firstErr = wrapped
 			}
-			return true
+			continue
 		}
 		written++
-		return true
-	})
+	}
 	return written, firstErr
 }
 
