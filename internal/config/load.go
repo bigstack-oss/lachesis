@@ -74,6 +74,13 @@ func Load(opts Options, args []string) (Config, error) {
 //
 // Argument order matches [Load] (opts first, args second) so the
 // two functions read consistently at call sites.
+//
+// Invariant: this MUST return the same path [Load] actually reads YAML
+// from. SIGHUP reload watches this result while [Load] loaded its own
+// internally-resolved path, so any divergence would make reload
+// re-read a different file than the one that booted the agent. Both
+// delegate to findConfigPath; keep it that way. Pinned by
+// TestFindConfigPathMatchesLoad.
 func FindConfigPath(opts Options, args []string) string {
 	if opts.EnvPrefix == "" {
 		opts.EnvPrefix = DefaultEnvPrefix
