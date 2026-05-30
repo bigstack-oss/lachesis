@@ -226,14 +226,14 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 **Goal.** Promote the boot-order ordering 4a wired into `Bootstrap` into an inspectable, explicit-sync-point machine; replace the single static `BPFConfig.AttachInterface` with netlink-driven dynamic attach.
 
 **Scope.**
-- `internal/boot/`: sequenced phase machine with explicit sync points between goroutines (closes Implementation Contract #4). 4a already enforces metadata-before-attach as a straight-line call sequence; this sprint formalizes it so adding Kafka (Sprint 7) and GC (Sprint 6) plug into named sync gates rather than dropping into `Bootstrap` ad-hoc.
+- `internal/boot/`: sequenced phase machine that validates the step-by-one phase order and logs each transition. **Decision (this stage): kept straight-line, not a cross-goroutine barrier.** `Bootstrap` advances every phase inline in one goroutine and returns before `Run` spawns the scraper/WAL/netlink consumers, so the ordering (Implementation Contract #4) holds structurally — see DESIGN §13.1. Promoting `Sequencer` to channel-backed `Await`/`Fail` sync gates is deferred to when Kafka (Sprint 7) and GC (Sprint 6) advance/await phases from their own goroutines and actually need to block on a named gate (DESIGN §13.2 #3) — building the barrier now would be machinery with no concurrent caller.
 - `internal/zombie/`: scan `tc filter` for orphan `tc_telemetry_in/out`, delete on startup.
 - `internal/netlink/`: subscribe to `RTM_NEWLINK/DELLINK`; attach BPF on new taps, clean registry on delete.
 - Interface Registry: in-memory map of attached taps.
 - Deprecate `BPFConfig.AttachInterface` (currently a single static string in `internal/config/bpf.go:19`) in favour of the Netlink Watcher's tap-discovery loop. Keep the field for one release with a deprecation log; remove in a follow-up.
 - Health metrics: `cubecos_zombie_filters_cleaned_total`, `cubecos_tc_attach_failures_total{iface_kind="tap|other"}`.
 
-**Done when.** Crash-then-restart leaves no double-attach (verified by `tc filter show` + `cubecos_zombie_filters_cleaned_total>0`); new tap appears → BPF attached automatically with <1s latency; all five §13.1 contracts that touch boot order have a corresponding `internal/boot/` sync gate test.
+**Done when.** Crash-then-restart leaves no double-attach (verified by `tc filter show` + `cubecos_zombie_filters_cleaned_total>0`); new tap appears → BPF attached automatically with <1s latency; `boot.Sequencer` rejects a skipped/rewound `Advance` (negative test in `internal/boot/`). The cross-goroutine sync-gate tests ship with the barrier itself when it lands (DESIGN §13.2 #3).
 
 **LOC.** ~500 (originally ~450; +50 for the `AttachInterface` deprecation + sync-point formalization on top of the ordering 4a already established).
 
