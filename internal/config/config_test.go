@@ -301,6 +301,38 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestFindConfigPathMatchesLoad pins the invariant that FindConfigPath
+// returns the exact path Load reads YAML from. runtime.New watches
+// FindConfigPath's result for SIGHUP reload while Load loaded its own
+// internally-resolved path; a divergence would make reload re-read a
+// different file than the one that booted the agent. The two share
+// findConfigPath today, but nothing else enforces the agreement.
+func TestFindConfigPathMatchesLoad(t *testing.T) {
+	clearEnv(t)
+	path := writeYAML(t, `
+version: "1"
+http:
+  listen: ":9610"
+`)
+	for _, args := range [][]string{
+		{"-config", path},
+		{"-config=" + path},
+	} {
+		if got := config.FindConfigPath(config.Options{}, args); got != path {
+			t.Errorf("FindConfigPath(%v) = %q, want %q", args, got, path)
+		}
+		// The marker listen value Defaults() never produces proves Load
+		// actually read the file at FindConfigPath's path.
+		cfg, err := config.Load(config.Options{}, args)
+		if err != nil {
+			t.Fatalf("Load(%v): %v", args, err)
+		}
+		if cfg.HTTP.Listen != ":9610" {
+			t.Errorf("Load(%v) read a different file: HTTP.Listen = %q, want :9610", args, cfg.HTTP.Listen)
+		}
+	}
+}
+
 // clearEnv removes any CUBECOS_* env vars set by the host or earlier tests
 // so each test sees a clean slate.
 func clearEnv(t *testing.T) {

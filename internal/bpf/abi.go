@@ -9,6 +9,17 @@
 // All declarations here must stay in lockstep with bpf/telemetry.c. The
 // struct layouts and constant values cross the kernel↔userspace boundary;
 // silent skew between sides produces incorrect metrics.
+//
+// Layering: this package is L1, but its pure ABI surface — the FlowKey /
+// FlowMetrics / LpmKey types, the Zone* and Direction constants, and MACKey
+// — is a dependency-free kernel↔userspace data contract that L2 (metadata,
+// neutron), L3 (state) and L4 (metrics, wal) all import by design. Those
+// imports are NOT L*→L1 layer violations: the types are a shared schema,
+// not the data plane. Only the loader half (LoadTelemetry, ValidateMapSizes,
+// the Map* name constants, Metrics) touches L1 machinery, and it is used
+// solely by the agent composition root. So: don't "fix" the cross-layer
+// imports by hiding the ABI types, and never hand-copy the generated struct
+// layouts — silent skew corrupts metrics, per the lockstep rule above.
 package bpf
 
 import (
