@@ -91,11 +91,15 @@ func TestLpmKeyForPrefix_IPv6Panics(t *testing.T) {
 	LpmKeyForPrefix(1, netip.MustParsePrefix("fd00::/64"))
 }
 
-// makeSpec returns a minimal CollectionSpec with mac_tenant_map and
-// subnet_zone_trie sized as supplied. Used by ValidateMapSizes tests.
+// makeSpec returns a minimal CollectionSpec with telemetry_map,
+// mac_tenant_map, and subnet_zone_trie. mac_tenant_map and
+// subnet_zone_trie are sized as supplied; telemetry_map is always at
+// its expected size so the existing mac/trie drift tests stay focused
+// on the map they name. Used by ValidateMapSizes tests.
 func makeSpec(macMax, trieMax uint32) *ebpf.CollectionSpec {
 	return &ebpf.CollectionSpec{
 		Maps: map[string]*ebpf.MapSpec{
+			MapTelemetry:      {MaxEntries: MapTelemetryMaxEntries},
 			MapMacTenant:      {MaxEntries: macMax},
 			MapSubnetZoneTrie: {MaxEntries: trieMax},
 		},
@@ -106,6 +110,18 @@ func TestValidateMapSizes_OK(t *testing.T) {
 	spec := makeSpec(MapMacTenantMaxEntries, MapSubnetZoneTrieMaxEntries)
 	if err := ValidateMapSizes(spec); err != nil {
 		t.Fatalf("ValidateMapSizes on matching spec: %v", err)
+	}
+}
+
+func TestValidateMapSizes_TelemetryDrift(t *testing.T) {
+	spec := makeSpec(MapMacTenantMaxEntries, MapSubnetZoneTrieMaxEntries)
+	spec.Maps[MapTelemetry].MaxEntries = MapTelemetryMaxEntries / 2 // simulate stale .o
+	err := ValidateMapSizes(spec)
+	if err == nil {
+		t.Fatal("drifted telemetry_map should error")
+	}
+	if !strings.Contains(err.Error(), MapTelemetry) {
+		t.Errorf("error should name the offending map: %v", err)
 	}
 }
 
