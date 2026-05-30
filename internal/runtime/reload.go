@@ -171,11 +171,20 @@ func (m *Manager) handlePutLogLevel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Hold m.mu across both the level-var update and the m.current
+	// write so they move together. Reload takes the same lock while it
+	// reads m.current.Logging.Level to detect a transition and calls
+	// SetLevel; without the lock here, a concurrent SIGHUP reload could
+	// interleave and leave the live level var disagreeing with the
+	// snapshot (and mislog the transition). SetLevel is an atomic
+	// LevelVar store, not IO, so holding the lock across it is cheap and
+	// cannot deadlock against Reload.
+	m.mu.Lock()
 	if err := m.log.SetLevel(body.Level); err != nil {
+		m.mu.Unlock()
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	m.mu.Lock()
 	m.current.Logging.Level = body.Level
 	m.mu.Unlock()
 
