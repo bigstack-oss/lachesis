@@ -1,15 +1,19 @@
 // Package boot tracks the agent's startup phases as a single
-// monotonically advancing sequence. Sprint 5a establishes the
-// machinery; Sprint 6 will add Await/Fail so consumer goroutines
-// (GC, Kafka) can block on a named phase instead of relying on
-// undocumented startup ordering.
+// monotonically advancing sequence. The phases formalise
+// docs/DESIGN.md §9: BPF loaded, Neutron metadata pushed to the
+// kernel maps, TC clsact attached, WAL restored. Each phase records
+// that an externally observable guarantee now holds — once
+// [Sequencer.Advance] returns, the previous phase's invariant is
+// established and code paths that depend on it may proceed.
 //
-// The phases formalise docs/DESIGN.md §9: BPF loaded, Neutron
-// metadata pushed to the kernel maps, TC clsact attached, WAL
-// restored. Each phase records that an externally observable
-// guarantee now holds — once [Sequencer.Advance] returns, the
-// previous phase's invariant is established and code paths that
-// depend on it may proceed.
+// The sequencer currently records and validates phase transitions;
+// it is not yet a cross-goroutine barrier. Today the boot ordering
+// is guaranteed structurally: Bootstrap advances every phase inline
+// in a single goroutine and returns before Run spawns the scraper,
+// WAL flush, and netlink goroutines, so none of them can observe an
+// out-of-order phase. A future change may add Await/Fail backed by
+// per-phase channels so consumer goroutines block on a named phase
+// directly rather than relying on that straight-line execution order.
 package boot
 
 import (

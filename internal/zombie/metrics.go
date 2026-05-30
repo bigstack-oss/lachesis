@@ -8,7 +8,8 @@ import "github.com/prometheus/client_golang/prometheus"
 // call [Metrics.RecordCleaned] once with the count returned by
 // [Hunt].
 //
-// The single instrument mirrors docs/sprint-plan.md §5:
+// The single instrument is cataloged in docs/DESIGN.md §11.4
+// (health metrics):
 //
 //   - cubecos_zombie_filters_cleaned_total  orphan TC filters
 //     deleted at startup

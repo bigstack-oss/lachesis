@@ -87,9 +87,9 @@ type Router struct {
 	// builder uses this to attribute traffic leaving the cluster.
 	ExternalNetworkID string
 	// Routes are operator-configured static routes. Empty on most
-	// routers. The multi-hop static-route resolver (DESIGN §5.3)
-	// walks these; the current builder stubs that step and emits
-	// no trie rows from extra routes.
+	// routers. BuildTrie walks these through the multi-hop
+	// static-route resolver (DESIGN §5.3), emitting one trie row per
+	// route (EXTERNAL when the next hop cannot be resolved).
 	Routes []Route
 }
 

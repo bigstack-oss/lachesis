@@ -1,6 +1,6 @@
 // Package netlink discovers tap interfaces via RTM_NEWLINK / RTM_DELLINK
 // and dynamically attaches the telemetry TC programs to each match,
-// replacing Sprint-4-era static [config.BPFConfig.AttachInterface]
+// replacing the earlier static [config.BPFConfig.AttachInterface]
 // single-interface attach.
 //
 // Cross-platform surface (this file and registry.go) is pure data

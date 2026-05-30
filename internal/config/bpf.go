@@ -13,11 +13,10 @@ type BPFConfig struct {
 	// pinned. Must be absolute.
 	PinPath string `yaml:"pin_path"`
 	// AttachInterface is a single-interface static attach kept for
-	// backwards compatibility with pre-Sprint-5 deployments. Empty
-	// disables it. When set, the agent logs a deprecation warning at
-	// boot — production deployments should rely on the netlink
-	// subscriber's allowlist instead. Slated for removal in a
-	// follow-up sprint.
+	// backwards compatibility with older deployments. Empty disables
+	// it. When set, the agent logs a deprecation warning at boot —
+	// production deployments should rely on the netlink subscriber's
+	// allowlist instead. Slated for removal in a future release.
 	//
 	// Deprecated: use AttachPrefixes / AttachInterfaces.
 	AttachInterface string `yaml:"attach_interface"`
