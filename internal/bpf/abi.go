@@ -115,7 +115,13 @@ const (
 //     denominator to compute "% of map occupied".
 //
 // Sizing rationale lives in bpf/telemetry.c above each map decl.
+//
+// MapTelemetryMaxEntries mirrors telemetry_map's max_entries. It is
+// the denominator for the pressure-relief GC fill-ratio (docs/DESIGN.md
+// §3.1), so a stale `.o` that changed it would skew the >80% eviction
+// trigger — hence it is drift-checked alongside the other two.
 const (
+	MapTelemetryMaxEntries      = 65536
 	MapSubnetZoneTrieMaxEntries = 16384
 	MapMacTenantMaxEntries      = 8192
 )
@@ -182,9 +188,9 @@ func LoadTelemetry() (*ebpf.CollectionSpec, error) {
 }
 
 // ValidateMapSizes ensures the compiled BPF spec's `max_entries`
-// values for `mac_tenant_map` and `subnet_zone_trie` match the
-// Go-side intent in [MapMacTenantMaxEntries] and
-// [MapSubnetZoneTrieMaxEntries].
+// values for `telemetry_map`, `mac_tenant_map`, and `subnet_zone_trie`
+// match the Go-side intent in [MapTelemetryMaxEntries],
+// [MapMacTenantMaxEntries], and [MapSubnetZoneTrieMaxEntries].
 //
 // Mismatch indicates a stale BPF object — typically a developer
 // who bumped the size in bpf/telemetry.c without re-running
@@ -204,6 +210,7 @@ func ValidateMapSizes(spec *ebpf.CollectionSpec) error {
 	}
 	var problems []string
 	for _, c := range []check{
+		{MapTelemetry, MapTelemetryMaxEntries},
 		{MapMacTenant, MapMacTenantMaxEntries},
 		{MapSubnetZoneTrie, MapSubnetZoneTrieMaxEntries},
 	} {

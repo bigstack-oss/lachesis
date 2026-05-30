@@ -121,6 +121,13 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		closer.Close()
 		return nil, nil, err
 	}
+	if cfg.BPF.AttachInterface != "" {
+		// Record the deprecated static attach in the Registry so the
+		// cubecos_attached_interfaces gauge counts it, and so the
+		// netlink subscriber's ListExisting replay sees it as already
+		// attached and skips a redundant (idempotent) FilterReplace.
+		ag.NetlinkRegistry().MarkAttached(cfg.BPF.AttachInterface)
+	}
 	if err := seq.Advance(boot.PhaseAttached); err != nil {
 		closer.Close()
 		return nil, nil, err
