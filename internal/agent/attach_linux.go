@@ -25,11 +25,5 @@ func AttachClsact(ifaceName string, ingress, egress *ebpf.Program) error {
 	if err != nil {
 		return fmt.Errorf("agent: lookup interface %s: %w", ifaceName, err)
 	}
-	if err := tcattach.Replace(link, ingress, tcattach.Ingress, tcattach.FilterIngressName); err != nil {
-		return err
-	}
-	if err := tcattach.Replace(link, egress, tcattach.Egress, tcattach.FilterEgressName); err != nil {
-		return err
-	}
-	return nil
+	return tcattach.AttachTelemetry(link, ingress, egress)
 }
