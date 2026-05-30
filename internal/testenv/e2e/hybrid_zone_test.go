@@ -3,7 +3,6 @@
 package e2e_test
 
 import (
-	"encoding/binary"
 	"net"
 	"testing"
 
@@ -137,9 +136,11 @@ func TestE2E_HybridZone_SameTenantNoTrie(t *testing.T) {
 
 // macAddrToU64 packs a 6-byte MAC into the low 48 bits of a u64 in
 // big-endian order, matching the encoding used by mac_tenant_map.
+// Delegates to [bpf.MACKey] so the test shares the production MAC→u64
+// contract rather than re-deriving it.
 func macAddrToU64(m net.HardwareAddr) uint64 {
 	if len(m) != 6 {
 		return 0
 	}
-	return uint64(binary.BigEndian.Uint16(m[0:2]))<<32 | uint64(binary.BigEndian.Uint32(m[2:6]))
+	return bpf.MACKey([6]uint8(m))
 }

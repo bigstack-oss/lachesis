@@ -238,8 +238,7 @@ func (ri *resolveIndex) resolveAtNextRouter(
 		if !ok || s.IPVersion != 4 || s.NetworkID == enteredThrough.NetworkID {
 			continue
 		}
-		sp, err := netip.ParsePrefix(s.CIDR)
-		if err != nil || sp.Bits() > destination.Bits() || !sp.Contains(destination.Addr()) {
+		if _, ok := supernetOf(s.CIDR, destination); !ok {
 			continue
 		}
 		n, ok := ri.networks[s.NetworkID]
@@ -274,6 +273,21 @@ func (ri *resolveIndex) resolveAtNextRouter(
 	return zoneFor(matchedNet.ProjectID, sourceTenant, matchedNet), true, nil
 }
 
+// supernetOf parses cidr and reports whether it is an equal-or-shorter
+// supernet of dst — a valid LPM match covering all of dst. An
+// unparseable cidr is treated as no match. On a match it also returns
+// the parsed prefix so callers can compare prefix lengths for
+// longest-match selection. Shared by Step C's interface-subnet scan
+// ([resolveIndex.resolveAtNextRouter]) and Step D's extraroute LPM
+// ([lpmMatchRoute]) so the superset rule has a single definition.
+func supernetOf(cidr string, dst netip.Prefix) (netip.Prefix, bool) {
+	p, err := netip.ParsePrefix(cidr)
+	if err != nil || p.Bits() > dst.Bits() || !p.Contains(dst.Addr()) {
+		return netip.Prefix{}, false
+	}
+	return p, true
+}
+
 // lpmMatchRoute returns the entry in routes whose Destination CIDR
 // is a supernet of (or equal to) destination, picking the longest
 // matching prefix.
@@ -281,8 +295,8 @@ func lpmMatchRoute(routes []Route, destination netip.Prefix) (Route, bool) {
 	best := Route{}
 	bestBits := -1
 	for _, r := range routes {
-		rp, err := netip.ParsePrefix(r.Destination)
-		if err != nil || rp.Bits() > destination.Bits() || !rp.Contains(destination.Addr()) {
+		rp, ok := supernetOf(r.Destination, destination)
+		if !ok {
 			continue
 		}
 		if rp.Bits() > bestBits {
