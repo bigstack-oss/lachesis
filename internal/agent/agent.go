@@ -99,20 +99,14 @@ type Agent struct {
 	scraper   *scraper.Scraper
 	collector *metrics.Collector
 	runtime   *runtime.Manager
-	log       *logging.Handle
 	listener  net.Listener
 	server    *http.Server
 
-	walMetrics     *wal.Metrics
-	neutronMetrics *neutron.Metrics
-	bpfMapMetrics  *bpf.MapMetrics
-	zombieMetrics  *zombie.Metrics
-	netlinkMetrics *cnetlink.Metrics
-
-	// netlinkRegistry tracks interfaces currently carrying telemetry
-	// programs. Owned by the netlink subscriber (when non-nil) but
-	// also read by the netlink metrics for its current-size gauge.
-	netlinkRegistry *cnetlink.Registry
+	// mx bundles the per-subsystem Prometheus instruments and the
+	// netlink Interface Registry. Grouping them makes subsystemMetrics
+	// the single place touched when a subsystem is added and gives
+	// [Agent.buildRegistry] one ordered registration list.
+	mx subsystemMetrics
 
 	// netlinkSubscriber listens for RTM_NEWLINK/DELLINK and attaches
 	// TC programs to discovered taps. Set by Linux Bootstrap when
@@ -149,32 +143,32 @@ type Agent struct {
 // with its prometheus.Registry. Exposed so the boot path can record
 // load-fallback observations on the same Metrics that the periodic
 // flush will later contribute timings to.
-func (a *Agent) WALMetrics() *wal.Metrics { return a.walMetrics }
+func (a *Agent) WALMetrics() *wal.Metrics { return a.mx.wal }
 
 // NeutronMetrics returns the Neutron-subsystem instrument bundle.
 // The cold-start path uses it to record API errors and
 // unknown-owner admissions; sync_age reads the agent's
 // [Agent.lastNeutronSync] timestamp at scrape time.
-func (a *Agent) NeutronMetrics() *neutron.Metrics { return a.neutronMetrics }
+func (a *Agent) NeutronMetrics() *neutron.Metrics { return a.mx.neutron }
 
 // BPFMapMetrics returns the BPF-map instrument bundle. Cold-start
 // and any subsequent incremental update set the current-entries
 // gauge after each successful kernel push.
-func (a *Agent) BPFMapMetrics() *bpf.MapMetrics { return a.bpfMapMetrics }
+func (a *Agent) BPFMapMetrics() *bpf.MapMetrics { return a.mx.bpf }
 
 // ZombieMetrics returns the zombie-hunter instrument bundle. The
 // boot path records the orphan-cleanup count once, after [Hunt]
 // runs and the agent has been constructed.
-func (a *Agent) ZombieMetrics() *zombie.Metrics { return a.zombieMetrics }
+func (a *Agent) ZombieMetrics() *zombie.Metrics { return a.mx.zombie }
 
 // NetlinkRegistry returns the Interface Registry shared between the
 // netlink subscriber and the cubecos_attached_interfaces gauge.
 // Never nil.
-func (a *Agent) NetlinkRegistry() *cnetlink.Registry { return a.netlinkRegistry }
+func (a *Agent) NetlinkRegistry() *cnetlink.Registry { return a.mx.registry }
 
 // NetlinkMetrics returns the netlink-subscriber instrument bundle.
 // Never nil.
-func (a *Agent) NetlinkMetrics() *cnetlink.Metrics { return a.netlinkMetrics }
+func (a *Agent) NetlinkMetrics() *cnetlink.Metrics { return a.mx.netlink }
 
 // SetNetlinkSubscriber wires a subscriber that [Agent.Run] will
 // start after WAL restore. Intended for Linux Bootstrap; cross-
@@ -245,22 +239,23 @@ func New(opts Options) (*Agent, error) {
 	bpfMx.SetCurrent(bpf.MapSubnetZoneTrie, 0)
 
 	a := &Agent{
-		cfg:             opts.Config,
-		state:           st,
-		scraper:         sc,
-		collector:       col,
-		log:             opts.Log,
-		walMetrics:      walMx,
-		bpfMapMetrics:   bpfMx,
-		zombieMetrics:   zombieMx,
-		netlinkMetrics:  nlMx,
-		netlinkRegistry: nlReg,
-		meta:            meta,
-		interner:        interner,
+		cfg:       opts.Config,
+		state:     st,
+		scraper:   sc,
+		collector: col,
+		mx: subsystemMetrics{
+			wal:      walMx,
+			bpf:      bpfMx,
+			zombie:   zombieMx,
+			netlink:  nlMx,
+			registry: nlReg,
+		},
+		meta:     meta,
+		interner: interner,
 	}
-	a.neutronMetrics = neutron.NewMetrics(a.lastNeutronSyncTime)
+	a.mx.neutron = neutron.NewMetrics(a.lastNeutronSyncTime)
 
-	reg, err := buildRegistry(col, walMx, a.neutronMetrics, bpfMx, zombieMx, nlMx)
+	reg, err := a.buildRegistry()
 	if err != nil {
 		return nil, err
 	}
@@ -279,32 +274,55 @@ func New(opts Options) (*Agent, error) {
 	return a, nil
 }
 
+// subsystemMetrics bundles the per-subsystem Prometheus instrument
+// sets the agent registers alongside its custom Collector, plus the
+// netlink Interface Registry shared with the
+// cubecos_attached_interfaces gauge. The registry is owned by the
+// netlink subscriber (when non-nil) but also read by the netlink
+// metrics for its current-size gauge.
+type subsystemMetrics struct {
+	wal      *wal.Metrics
+	neutron  *neutron.Metrics
+	bpf      *bpf.MapMetrics
+	zombie   *zombie.Metrics
+	netlink  *cnetlink.Metrics
+	registry *cnetlink.Registry
+}
+
+// labelledCollectors pairs a subsystem label with its instruments;
+// the label names the subsystem in registration-error messages.
+type labelledCollectors struct {
+	label      string
+	collectors []prometheus.Collector
+}
+
+// registrations returns every subsystem's instruments in a stable
+// order. The fixed order keeps a duplicate-registration error naming
+// the same subsystem on every run, and makes adding a subsystem a
+// one-line change here.
+func (m subsystemMetrics) registrations() []labelledCollectors {
+	return []labelledCollectors{
+		{"wal", m.wal.Collectors()},
+		{"neutron", m.neutron.Collectors()},
+		{"bpf", m.bpf.Collectors()},
+		{"zombie", m.zombie.Collectors()},
+		{"netlink", m.netlink.Collectors()},
+	}
+}
+
 // buildRegistry creates a fresh Prometheus registry and binds the
-// agent's custom Collector plus the WAL instruments to it. The two
-// register in tandem so /metrics is the single endpoint operators
-// scrape — billing and WAL health on one wire.
-func buildRegistry(
-	col *metrics.Collector,
-	walMx *wal.Metrics,
-	neutronMx *neutron.Metrics,
-	bpfMx *bpf.MapMetrics,
-	zombieMx *zombie.Metrics,
-	nlMx *cnetlink.Metrics,
-) (*prometheus.Registry, error) {
+// agent's custom Collector plus every subsystem instrument bundle to
+// it, so /metrics is the single endpoint operators scrape — billing
+// and subsystem health on one wire.
+func (a *Agent) buildRegistry() (*prometheus.Registry, error) {
 	reg := prometheus.NewRegistry()
-	if err := reg.Register(col); err != nil {
+	if err := reg.Register(a.collector); err != nil {
 		return nil, fmt.Errorf("agent: register collector: %w", err)
 	}
-	for label, bundle := range map[string][]prometheus.Collector{
-		"wal":     walMx.Collectors(),
-		"neutron": neutronMx.Collectors(),
-		"bpf":     bpfMx.Collectors(),
-		"zombie":  zombieMx.Collectors(),
-		"netlink": nlMx.Collectors(),
-	} {
-		for _, c := range bundle {
+	for _, r := range a.mx.registrations() {
+		for _, c := range r.collectors {
 			if err := reg.Register(c); err != nil {
-				return nil, fmt.Errorf("agent: register %s metric: %w", label, err)
+				return nil, fmt.Errorf("agent: register %s metric: %w", r.label, err)
 			}
 		}
 	}
@@ -354,6 +372,8 @@ const (
 	componentAgent   = "agent"
 	componentWAL     = "wal"
 	componentNeutron = "neutron"
+	componentZombie  = "zombie"
+	componentNetlink = "netlink"
 )
 
 // SeedState seeds the agent's [state.GlobalState] from records,
@@ -408,7 +428,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		go func() {
 			defer close(netlinkDone)
 			if err := a.netlinkSubscriber.Run(runCtx); err != nil {
-				slog.Error("subscriber exited", "component", "netlink", "err", err)
+				slog.Error("subscriber exited", "component", componentNetlink, "err", err)
 			}
 		}()
 	} else {
@@ -482,8 +502,8 @@ func (a *Agent) walFlushLoop(ctx context.Context, done chan<- struct{}) {
 func (a *Agent) flushWAL() error {
 	copyStart := time.Now()
 	a.walRecBuf = a.state.SnapshotForWAL(a.walRecBuf[:0])
-	a.walMetrics.ObserveCopy(time.Since(copyStart))
-	return wal.Save(a.cfg.WAL.Path, "", a.walRecBuf, a.walMetrics)
+	a.mx.wal.ObserveCopy(time.Since(copyStart))
+	return wal.Save(a.cfg.WAL.Path, "", a.walRecBuf, a.mx.wal)
 }
 
 // shutdown drains the HTTP server, awaits the scraper, then awaits
@@ -519,55 +539,26 @@ func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone, netlinkDone 
 // the agent is stopping. The caller must have cancelled the workers'
 // context first.
 func (a *Agent) drainWorkers(scraperDone, walDone, netlinkDone <-chan struct{}) {
-	a.awaitNetlink(netlinkDone)
-	a.awaitScraper(scraperDone)
-	a.awaitWAL(walDone)
-}
-
-// awaitScraper blocks until the scraper goroutine has exited its
-// current Tick, or shutdownTimeout elapses. Always runs as part of
-// shutdown so a slow HTTP drain does not leave the scraper holding
-// a BPF map read while the caller closes the collection.
-func (a *Agent) awaitScraper(scraperDone <-chan struct{}) {
-	select {
-	case <-scraperDone:
-		slog.Info("scraper stopped", "component", componentAgent)
-	case <-time.After(shutdownTimeout):
-		slog.Warn("scraper did not exit within shutdown budget",
-			"component", componentAgent,
-			"budget", shutdownTimeout)
-	}
-}
-
-// awaitNetlink blocks until the netlink subscriber goroutine has
-// exited, or shutdownTimeout elapses. The subscriber owns no
-// kernel state that needs draining; this wait only matters for
-// goroutine hygiene so the next agent boot does not race a
-// lingering RTM_NEWLINK handler.
-func (a *Agent) awaitNetlink(netlinkDone <-chan struct{}) {
-	select {
-	case <-netlinkDone:
-		slog.Info("netlink subscriber stopped", "component", componentAgent)
-	case <-time.After(shutdownTimeout):
-		slog.Warn("netlink subscriber did not exit within shutdown budget",
-			"component", componentAgent,
-			"budget", shutdownTimeout)
-	}
-}
-
-// awaitWAL blocks until the WAL flush goroutine has run its final
-// flush and exited, or shutdownTimeout elapses. The final flush is
-// best-effort: a timeout here means we lose the last in-memory
-// deltas the periodic flush did not capture (≤flush_interval of
-// data), which is the design's stated worst case.
-func (a *Agent) awaitWAL(walDone <-chan struct{}) {
-	select {
-	case <-walDone:
-		slog.Info("wal stopped", "component", componentAgent)
-	case <-time.After(shutdownTimeout):
-		slog.Warn("wal did not exit within shutdown budget",
-			"component", componentAgent,
-			"budget", shutdownTimeout)
-	}
+	a.await("netlink subscriber", netlinkDone)
+	a.await("scraper", scraperDone)
+	a.await("wal", walDone)
 	slog.Info("shutdown complete", "component", componentAgent)
+}
+
+// await blocks until done is closed or shutdownTimeout elapses,
+// logging which goroutine stopped or timed out. drainWorkers calls it
+// once per drained goroutine (netlink subscriber, scraper, WAL flush)
+// so a slow HTTP drain never leaves a goroutine holding a BPF map read
+// while the caller closes the collection. A WAL-flush timeout is the
+// design's stated worst case: the last ≤flush_interval of in-memory
+// deltas are lost.
+func (a *Agent) await(name string, done <-chan struct{}) {
+	select {
+	case <-done:
+		slog.Info(name+" stopped", "component", componentAgent)
+	case <-time.After(shutdownTimeout):
+		slog.Warn(name+" did not exit within shutdown budget",
+			"component", componentAgent,
+			"budget", shutdownTimeout)
+	}
 }
