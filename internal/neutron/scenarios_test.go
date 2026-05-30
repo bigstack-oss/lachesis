@@ -69,7 +69,7 @@ func metadataRow() neutron.TrieEntry {
 }
 
 func runScenario(snap neutron.Snapshot) []neutron.TrieEntry {
-	entries, _ := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
+	entries, _ := neutron.BuildTrie(snap)
 	return entries
 }
 
@@ -398,7 +398,7 @@ func TestBuildTrie_SurfacesAmbiguityHit(t *testing.T) {
 		Attach("sub-T3", "10.99.0.1")
 	snap := b.Build()
 
-	entries, hits := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
+	entries, hits := neutron.BuildTrie(snap)
 
 	if len(hits) != 1 {
 		t.Fatalf("expected exactly 1 ambiguity hit, got %d: %+v", len(hits), hits)

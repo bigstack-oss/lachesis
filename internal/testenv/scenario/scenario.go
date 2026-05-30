@@ -18,7 +18,7 @@
 //	        Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
 //	        VM("vm-a", "T1", "10.0.1.5").
 //	    Build()
-//	got := neutron.BuildTrie(snap.Networks, snap.Subnets, snap.Ports, snap.Routers)
+//	got := neutron.BuildTrie(snap)
 package scenario
 
 import (
