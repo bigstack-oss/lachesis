@@ -23,6 +23,14 @@ func ShouldAttach(iface string, prefixes, explicit []string) bool {
 			return true
 		}
 	}
+	return matchesPrefix(iface, prefixes)
+}
+
+// matchesPrefix reports whether iface starts with any non-empty entry
+// in prefixes. An empty prefix string is skipped, not treated as a
+// wildcard. Shared by [ShouldAttach] and the metric-label classifier so
+// the two never disagree about what counts as a prefix match.
+func matchesPrefix(iface string, prefixes []string) bool {
 	for _, p := range prefixes {
 		if p != "" && strings.HasPrefix(iface, p) {
 			return true
