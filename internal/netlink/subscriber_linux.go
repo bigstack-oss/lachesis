@@ -19,6 +19,21 @@ import (
 
 const component = "netlink"
 
+// eventChanDepth bounds the buffered link events between the netlink
+// library's receive goroutine and our consume loop. The library runs
+// its own goroutine that does the socket Receive and feeds this channel
+// (see LinkSubscribeWithOptions), so while we are busy attaching one tap
+// the library keeps draining the kernel socket into this buffer. The
+// depth therefore sets how large a burst of NEWLINK events — e.g. a
+// mass VM launch on one host — we absorb before backpressure reaches
+// the socket. Sized for hundreds of simultaneous taps with headroom;
+// 64 (the previous value) could overflow during a node-wide boot.
+//
+// If sustained churn does outrun attach throughput and the socket
+// overflows, the library reports a fatal Receive error (ENOBUFS), which
+// surfaces as a logged subscriber exit — never a silent miss.
+const eventChanDepth = 512
+
 // Options bundles the inputs to [New]. All fields are required
 // except Metrics, which may be nil for tests.
 type Options struct {
@@ -78,7 +93,7 @@ func New(opts Options) (Subscriber, error) {
 // Run drives the subscriber until ctx is cancelled. Returns nil on
 // clean shutdown.
 func (s *linuxSubscriber) Run(ctx context.Context) error {
-	ch := make(chan netlink.LinkUpdate, 64)
+	ch := make(chan netlink.LinkUpdate, eventChanDepth)
 	done := make(chan struct{})
 	defer close(done)
 
@@ -116,6 +131,13 @@ func (s *linuxSubscriber) Run(ctx context.Context) error {
 		"prefixes", s.opts.Prefixes,
 		"explicit", s.opts.Explicit)
 
+	// Attach synchronously on this goroutine. We deliberately do NOT
+	// fan out to a worker goroutine: all netlink work must stay on the
+	// one goroutine the caller controls (the integration harness pins it
+	// to a network namespace, and a spawned goroutine would escape that
+	// pin and operate in the wrong netns). Burst absorption comes from
+	// the buffered ch above, which the library's own receive goroutine
+	// keeps filling while we attach.
 	for {
 		select {
 		case <-ctx.Done():
@@ -193,16 +215,13 @@ func (s *linuxSubscriber) onDelLink(name string) {
 		"component", component, "iface", name)
 }
 
-// kindFor returns the iface_kind label value for metrics: "tap"
-// when name matched a prefix, "other" when name matched the
-// explicit allowlist. Implementation: an explicit-list match wins
-// only if the name is NOT also a prefix match, so the label is
-// stable for any given interface across the subscriber's lifetime.
+// kindFor returns the iface_kind label value for metrics: "tap" when
+// name matched a prefix, "other" otherwise (i.e. an explicit-list
+// match). It reuses the same prefix matcher as [ShouldAttach] so the
+// label can never drift from the actual match policy.
 func (s *linuxSubscriber) kindFor(name string) string {
-	for _, p := range s.opts.Prefixes {
-		if p != "" && len(name) >= len(p) && name[:len(p)] == p {
-			return "tap"
-		}
+	if matchesPrefix(name, s.opts.Prefixes) {
+		return "tap"
 	}
 	return "other"
 }
