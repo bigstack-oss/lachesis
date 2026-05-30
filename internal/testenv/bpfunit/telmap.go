@@ -11,8 +11,9 @@ import (
 
 // MACBytes converts the low 48 bits of v into a 6-byte array in big-endian
 // order — the layout used by [bpf.FlowKey.SrcMac] / [bpf.FlowKey.DstMac].
-// Sibling of [MAC] for callers that need the array form rather than the
-// [net.HardwareAddr] slice.
+// It is the exact inverse of [bpf.MACKey] (the forward MAC→u64 contract);
+// keep the two in sync. Sibling of [MAC] for callers that need the array
+// form rather than the [net.HardwareAddr] slice.
 func MACBytes(v uint64) [6]byte {
 	var b [6]byte
 	binary.BigEndian.PutUint16(b[0:2], uint16(v>>32))
