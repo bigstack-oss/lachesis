@@ -16,7 +16,6 @@ package neutron
 type Network struct {
 	ID        string
 	ProjectID string
-	Name      string
 	// Shared indicates the network can be attached to by any
 	// project. Used by §5.2 Step 3 of the trie builder (shared
 	// networks contribute OTHER_TENANT entries rather than per-tenant

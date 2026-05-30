@@ -38,7 +38,6 @@ func (c *Client) ListNetworks(ctx context.Context) ([]Network, error) {
 		out[i] = Network{
 			ID:         n.ID,
 			ProjectID:  preferProjectID(n.ProjectID, n.TenantID),
-			Name:       n.Name,
 			Shared:     n.Shared,
 			IsExternal: n.External,
 		}
