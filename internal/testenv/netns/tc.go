@@ -27,8 +27,8 @@ const (
 // same name.
 //
 // Thin wrapper over [tcattach.Replace]; intended for tests only.
-// Production code paths add error recovery and retries via the
-// agent package's AttachClsact.
+// Production code attaches both directions together with rollback via
+// [tcattach.AttachTelemetry] / [tcattach.LinkAttacher].
 func AttachBPF(link netlink.Link, prog *ebpf.Program, dir TCDirection, name string) error {
 	return tcattach.Replace(link, prog, dir, name)
 }

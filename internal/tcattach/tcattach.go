@@ -82,6 +82,32 @@ func AttachTelemetry(link netlink.Link, ingress, egress *ebpf.Program) error {
 	return nil
 }
 
+// LinkAttacher attaches the telemetry programs to an interface looked
+// up by name. It adapts the by-name attach to a single-method seam so
+// the L3 netlink subscriber can drive attach through an interface
+// without importing this (L1) package or holding *ebpf.Program — the
+// agent composition root wires a LinkAttacher in as that interface.
+type LinkAttacher struct {
+	ingress, egress *ebpf.Program
+}
+
+// NewLinkAttacher returns a LinkAttacher bound to the ingress and
+// egress telemetry programs.
+func NewLinkAttacher(ingress, egress *ebpf.Program) *LinkAttacher {
+	return &LinkAttacher{ingress: ingress, egress: egress}
+}
+
+// AttachLink looks up the named interface and attaches both telemetry
+// programs via [AttachTelemetry] (all-or-nothing). Returns an error if
+// the interface is missing or either attach fails.
+func (a *LinkAttacher) AttachLink(name string) error {
+	link, err := netlink.LinkByName(name)
+	if err != nil {
+		return fmt.Errorf("tcattach: lookup interface %s: %w", name, err)
+	}
+	return AttachTelemetry(link, a.ingress, a.egress)
+}
+
 // clsactHandle is the kernel-reserved TC handle for the clsact
 // qdisc. The 0xffff:0 pair is defined as TC_H_CLSACT in the kernel
 // header include/uapi/linux/pkt_sched.h; the kernel matches on it

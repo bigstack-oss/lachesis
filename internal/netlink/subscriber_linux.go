@@ -10,11 +10,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
-
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
 )
 
 const component = "netlink"
@@ -37,10 +34,10 @@ const eventChanDepth = 512
 // Options bundles the inputs to [New]. All fields are required
 // except Metrics, which may be nil for tests.
 type Options struct {
-	// Ingress and Egress are the TC BPF programs to attach at the
-	// clsact ingress and egress hooks of each matched link.
-	Ingress *ebpf.Program
-	Egress  *ebpf.Program
+	// Attacher attaches the telemetry programs to a matched link.
+	// The agent supplies an implementation over internal/tcattach so
+	// this package stays free of the L1 attach machinery.
+	Attacher Attacher
 
 	// Prefixes and Explicit form the allowlist evaluated by
 	// [ShouldAttach]. At least one must be non-empty or the
@@ -57,8 +54,8 @@ type Options struct {
 }
 
 func (o Options) validate() error {
-	if o.Ingress == nil || o.Egress == nil {
-		return errors.New("netlink: Ingress and Egress programs are required")
+	if o.Attacher == nil {
+		return errors.New("netlink: Attacher is required")
 	}
 	if o.Registry == nil {
 		return errors.New("netlink: Registry is required")
@@ -172,24 +169,25 @@ func (s *linuxSubscriber) handle(ev netlink.LinkUpdate) {
 	}
 	switch ev.Header.Type {
 	case unix.RTM_NEWLINK:
-		s.onNewLink(ev.Link, name)
+		s.onNewLink(name)
 	case unix.RTM_DELLINK:
 		s.onDelLink(name)
 	}
 }
 
-// onNewLink attaches the telemetry programs to link. Idempotent
-// at the tcattach level: a second NEWLINK for an already-attached
-// interface is a netlink no-op via FilterReplace, so we skip the
-// round-trip when the Registry already records us as attached.
-func (s *linuxSubscriber) onNewLink(link netlink.Link, name string) {
+// onNewLink attaches the telemetry programs to the named interface.
+// Idempotent at the attach level: a second NEWLINK for an
+// already-attached interface is a netlink no-op via FilterReplace, so
+// we skip the round-trip when the Registry already records us as
+// attached.
+func (s *linuxSubscriber) onNewLink(name string) {
 	if s.opts.Registry.IsAttached(name) {
 		return
 	}
-	// AttachTelemetry is all-or-nothing: on a partial failure it rolls
-	// back, so the link is left unattached and the Registry/gauge stay
+	// AttachLink is all-or-nothing: on a partial failure it rolls back,
+	// so the link is left unattached and the Registry/gauge stay
 	// consistent with reality.
-	if err := tcattach.AttachTelemetry(link, s.opts.Ingress, s.opts.Egress); err != nil {
+	if err := s.opts.Attacher.AttachLink(name); err != nil {
 		slog.Warn("attach failed",
 			"component", component, "iface", name, "err", err)
 		s.opts.Metrics.recordAttachFailure(s.kindFor(name))
