@@ -31,8 +31,8 @@ editing `prometheus.yml` and reloading
 # 1. Build the agent binary into ./build/agent (from repo root)
 task binary
 
-# 2. Pick a real interface to attach TC clsact on
-export CUBECOS_BPF_ATTACH_INTERFACE=eth0   # adjust to your host
+# 2. Pick the interface(s) to attach TC clsact on (comma-separated allowlist)
+export CUBECOS_BPF_ATTACH_INTERFACES=eth0   # adjust to your host
 
 # 3. Bring up everything, including the agent
 docker compose --profile full up

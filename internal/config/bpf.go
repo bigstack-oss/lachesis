@@ -12,14 +12,6 @@ type BPFConfig struct {
 	// PinPath is the BPF FS directory under which maps and programs are
 	// pinned. Must be absolute.
 	PinPath string `yaml:"pin_path"`
-	// AttachInterface is a single-interface static attach kept for
-	// backwards compatibility with older deployments. Empty disables
-	// it. When set, the agent logs a deprecation warning at boot —
-	// production deployments should rely on the netlink subscriber's
-	// allowlist instead. Slated for removal in a future release.
-	//
-	// Deprecated: use AttachPrefixes / AttachInterfaces.
-	AttachInterface string `yaml:"attach_interface"`
 	// AttachPrefixes is the list of interface-name prefixes the
 	// netlink subscriber treats as eligible for attach. A new
 	// interface matches when its name starts with any prefix here.

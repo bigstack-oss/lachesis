@@ -121,16 +121,6 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		return nil, nil, err
 	}
 
-	if err := attachIfRequested(cfg.BPF.AttachInterface, coll); err != nil {
-		return nil, nil, err
-	}
-	if cfg.BPF.AttachInterface != "" {
-		// Record the deprecated static attach in the Registry so the
-		// cubecos_attached_interfaces gauge counts it, and so the
-		// netlink subscriber's ListExisting replay sees it as already
-		// attached and skips a redundant (idempotent) FilterReplace.
-		ag.NetlinkRegistry().MarkAttached(cfg.BPF.AttachInterface)
-	}
 	if err := seq.Advance(boot.PhaseAttached); err != nil {
 		return nil, nil, err
 	}
@@ -233,8 +223,8 @@ func readerFromCollection(coll *ebpf.Collection) (*BPFMapReader, error) {
 // buildNetlinkSubscriber constructs the RTM_NEWLINK/DELLINK
 // subscriber when the BPFConfig allowlist is non-empty. Returns a
 // nil Subscriber (no error) when both lists are empty — that means
-// the operator opted out of dynamic discovery, and only the
-// deprecated static AttachInterface (if set) is in play.
+// the operator opted out of dynamic discovery and attach is managed
+// out-of-band (e.g. the integration tests attach their own filters).
 func buildNetlinkSubscriber(ag *Agent, bpfCfg config.BPFConfig, coll *ebpf.Collection) (cnetlink.Subscriber, error) {
 	if len(bpfCfg.AttachPrefixes) == 0 && len(bpfCfg.AttachInterfaces) == 0 {
 		slog.Info("no allowlist configured; subscriber disabled",
@@ -258,34 +248,6 @@ func buildNetlinkSubscriber(ag *Agent, bpfCfg config.BPFConfig, coll *ebpf.Colle
 		return nil, fmt.Errorf("netlink subscriber: %w", err)
 	}
 	return sub, nil
-}
-
-// attachIfRequested installs the telemetry programs on iface via TC
-// clsact when iface is set, otherwise logs that attach was deferred
-// to an out-of-band actor. The latter is the normal mode for the
-// integration test (testenv attaches its own copy).
-//
-// Deprecated: prefer the netlink subscriber's allowlist over a
-// single static interface. When set, the agent emits a one-shot
-// warn log so operators notice they are on the legacy path.
-func attachIfRequested(iface string, coll *ebpf.Collection) error {
-	if iface == "" {
-		slog.Info("no static attach interface configured", "component", componentAgent)
-		return nil
-	}
-	slog.Warn("BPFConfig.AttachInterface is deprecated; configure attach_prefixes / attach_interfaces instead",
-		"component", componentAgent, "interface", iface)
-	ingress := coll.Programs[bpf.ProgramIngress]
-	egress := coll.Programs[bpf.ProgramEgress]
-	if ingress == nil || egress == nil {
-		return fmt.Errorf("%s / %s not present in BPF collection",
-			bpf.ProgramIngress, bpf.ProgramEgress)
-	}
-	if err := tcattach.NewLinkAttacher(ingress, egress).AttachLink(iface); err != nil {
-		return fmt.Errorf("attach clsact: %w", err)
-	}
-	slog.Info("attached telemetry programs", "component", componentAgent, "interface", iface)
-	return nil
 }
 
 // collectionCloser adapts [*ebpf.Collection] to [io.Closer]. The

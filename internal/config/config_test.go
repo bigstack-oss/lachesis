@@ -334,10 +334,8 @@ http:
 }
 
 // TestLoadAttachAllowlistFromEnvAndFlags covers the env + flag bindings
-// for the supported attach allowlist (attach_prefixes / attach_interfaces).
-// Before these bindings existed only the deprecated single attach_interface
-// was reachable outside YAML, so a non-YAML deployment had no way to reach
-// the supported allowlist.
+// for the attach allowlist (attach_prefixes / attach_interfaces) — the
+// way a non-YAML deployment reaches the allowlist.
 func TestLoadAttachAllowlistFromEnvAndFlags(t *testing.T) {
 	clearEnv(t)
 	// Env: comma-separated lists, trimmed, override the ["tap"] default.
@@ -384,7 +382,6 @@ func clearEnv(t *testing.T) {
 		"CUBECOS_CONFIG",
 		"CUBECOS_HTTP_LISTEN",
 		"CUBECOS_BPF_PIN_PATH",
-		"CUBECOS_BPF_ATTACH_INTERFACE",
 		"CUBECOS_BPF_ATTACH_PREFIXES",
 		"CUBECOS_BPF_ATTACH_INTERFACES",
 		"CUBECOS_SCRAPE_INTERVAL",

@@ -27,14 +27,6 @@ bpf:
   # Env: CUBECOS_BPF_PIN_PATH   Flag: -bpf-pin-path
   pin_path: "/sys/fs/bpf/telemetry"
 
-  # Deprecated single-interface static attach. Kept for backwards
-  # compatibility with pre-Sprint-5 deployments. When set, the agent
-  # logs a deprecation warning at boot. Production deployments should
-  # rely on attach_prefixes / attach_interfaces (below) — the netlink
-  # subscriber discovers taps as they appear.
-  # Env: CUBECOS_BPF_ATTACH_INTERFACE   Flag: -bpf-attach-interface
-  attach_interface: ""
-
   # Interface-name prefixes the netlink subscriber treats as eligible
   # for telemetry attach. A new link matches when its name starts
   # with any prefix here. Default ["tap"] is the OVN/Neutron
