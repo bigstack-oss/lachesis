@@ -62,7 +62,7 @@ func TestHunt_DeletesOrphanFilters(t *testing.T) {
 	}
 	defer netlink.LinkDel(host)
 
-	prog := drv.Program("tc_noop_in")
+	prog := drv.Program(fixtures.ProgNoopIn)
 	if prog == nil {
 		t.Fatal("tc_noop_in program missing from collection")
 	}
@@ -85,8 +85,8 @@ func TestHunt_DeletesOrphanFilters(t *testing.T) {
 	}
 
 	var (
-		cleaned  int
-		huntErr  error
+		cleaned int
+		huntErr error
 	)
 	if err := ns.Do(func() error {
 		cleaned, huntErr = zombie.Hunt()
@@ -144,7 +144,7 @@ func TestHunt_LeavesUnrelatedFiltersAlone(t *testing.T) {
 	}
 	defer netlink.LinkDel(host)
 
-	prog := drv.Program("tc_noop_in")
+	prog := drv.Program(fixtures.ProgNoopIn)
 	if prog == nil {
 		t.Fatal("tc_noop_in program missing")
 	}

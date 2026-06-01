@@ -12,12 +12,10 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
 )
 
-const component = "zombie"
-
 // Hunt enumerates every TC filter the kernel knows about and
 // deletes any whose name matches the agent's own telemetry filters
-// (see [tcattach.FilterIngressName] / [tcattach.FilterEgressName]).
-// It returns the count of filters successfully deleted.
+// (see [tcattach.Hooks]). It returns the count of filters
+// successfully deleted.
 //
 // Hunt is best-effort. Per-link netlink errors during enumeration
 // are expected — most links have no clsact qdisc and FilterList
@@ -32,14 +30,16 @@ func Hunt() (int, error) {
 		return 0, fmt.Errorf("zombie: list links: %w", err)
 	}
 
-	parents := []uint32{netlink.HANDLE_MIN_INGRESS, netlink.HANDLE_MIN_EGRESS}
 	var (
 		cleaned int
 		delErrs []error
 	)
 	for _, link := range links {
-		for _, parent := range parents {
-			filters, ferr := netlink.FilterList(link, parent)
+		// Iterate the agent's own (name, parent) hook table so the
+		// hunt scans exactly the clsact slots tcattach attaches to —
+		// a hook-location change is then a single edit in tcattach.
+		for _, hook := range tcattach.Hooks {
+			filters, ferr := netlink.FilterList(link, hook.Parent)
 			if ferr != nil {
 				// No clsact on this link/parent — most links are
 				// in this state. Move on without noise.
@@ -82,5 +82,5 @@ func isTelemetryOrphan(f netlink.Filter) bool {
 	if !ok {
 		return false
 	}
-	return bf.Name == tcattach.FilterIngressName || bf.Name == tcattach.FilterEgressName
+	return tcattach.IsTelemetryFilterName(bf.Name)
 }

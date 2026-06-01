@@ -289,24 +289,19 @@ type subsystemMetrics struct {
 	registry *cnetlink.Registry
 }
 
-// labelledCollectors pairs a subsystem label with its instruments;
-// the label names the subsystem in registration-error messages.
-type labelledCollectors struct {
-	label      string
-	collectors []prometheus.Collector
-}
-
 // registrations returns every subsystem's instruments in a stable
 // order. The fixed order keeps a duplicate-registration error naming
 // the same subsystem on every run, and makes adding a subsystem a
-// one-line change here.
+// one-line change here. Labels reuse the component* vocabulary
+// (schema.go) so a registration error and the subsystem's log lines
+// name it identically.
 func (m subsystemMetrics) registrations() []labelledCollectors {
 	return []labelledCollectors{
-		{"wal", m.wal.Collectors()},
-		{"neutron", m.neutron.Collectors()},
-		{"bpf", m.bpf.Collectors()},
-		{"zombie", m.zombie.Collectors()},
-		{"netlink", m.netlink.Collectors()},
+		{componentWAL, m.wal.Collectors()},
+		{componentNeutron, m.neutron.Collectors()},
+		{componentBPF, m.bpf.Collectors()},
+		{componentZombie, m.zombie.Collectors()},
+		{componentNetlink, m.netlink.Collectors()},
 	}
 }
 
@@ -340,41 +335,12 @@ func buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager) http.Handl
 	return mux
 }
 
-// httpReadHeaderTimeout bounds how long the HTTP server will wait
-// for request headers before tearing the connection down. Standard
-// guard against slow-header attacks (Slowloris); set above the
-// Prometheus scrape's typical RTT but well below operator patience.
-const httpReadHeaderTimeout = 5 * time.Second
-
 // Addr returns the address the HTTP server is bound to. Stable as
 // soon as [New] returns; remains valid after Run starts and after it
 // returns.
 func (a *Agent) Addr() string {
 	return a.listener.Addr().String()
 }
-
-// shutdownTimeout caps the time spent gracefully draining the HTTP
-// server and the scraper goroutine on shutdown. The HTTP server uses
-// the full budget; the scraper gets a fresh budget after the server
-// has stopped — its in-flight Tick is bounded by the configured
-// scrape interval, not the shutdown budget.
-const shutdownTimeout = 5 * time.Second
-
-// Component values for the "component" slog attribute. Logs are
-// tagged by the **subsystem they're about**, not by the package or
-// file that emits them — so the WAL flush goroutine in agent.go
-// tags componentWAL, the Neutron cold-start orchestrator in
-// coldstart_linux.go tags componentNeutron, and so on. An operator
-// filtering `component=<subsystem>` sees the full story of that
-// subsystem regardless of code location; grep-by-message-text is
-// the recommended way to find the emission site in code.
-const (
-	componentAgent   = "agent"
-	componentWAL     = "wal"
-	componentNeutron = "neutron"
-	componentZombie  = "zombie"
-	componentNetlink = "netlink"
-)
 
 // SeedState seeds the agent's [state.GlobalState] from records,
 // intended to run between [New] and [Run] (for example, after a

@@ -32,13 +32,6 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 )
 
-// Component values for the "component" slog attribute. Reload logs
-// cover the SIGHUP path; debug logs cover the /debug HTTP handlers.
-const (
-	componentReload = "reload"
-	componentDebug  = "debug"
-)
-
 // Manager owns the agent's runtime configuration state. Construct one in
 // main after [config.Load] and [logging.Init], then call [Manager.InstallSIGHUP]
 // and mount [Manager.DebugHandler] on the HTTP server.

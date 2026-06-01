@@ -35,7 +35,7 @@ func TestDriver_RunNoop(t *testing.T) {
 		12345, 80, nil,
 	)
 
-	verdict, err := drv.Run("tc_noop_in", frame)
+	verdict, err := drv.Run(fixtures.ProgNoopIn, frame)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestDriver_RunNoop(t *testing.T) {
 		t.Errorf("verdict = %d, want 0 (TC_ACT_OK)", verdict)
 	}
 
-	m := drv.Map("run_count")
+	m := drv.Map(fixtures.MapRunCount)
 	if m == nil {
 		t.Fatal("run_count map not loaded")
 	}
@@ -80,7 +80,7 @@ func TestDriver_RunRepeat(t *testing.T) {
 	)
 
 	const count = 100_000
-	total, perRun, err := drv.RunRepeat("tc_noop_in", frame, count)
+	total, perRun, err := drv.RunRepeat(fixtures.ProgNoopIn, frame, count)
 	if err != nil {
 		t.Fatalf("run repeat: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestDriver_RunRepeat(t *testing.T) {
 	// near-zero); the correctness signal is the counter check below.
 	t.Logf("noop x%d: total=%v per-run=%v", count, total, perRun)
 
-	m := drv.Map("run_count")
+	m := drv.Map(fixtures.MapRunCount)
 	var key uint32 = 0
 	var val uint64
 	if err := m.Lookup(&key, &val); err != nil {
@@ -118,7 +118,7 @@ func TestDriver_NonIP_PassesThrough(t *testing.T) {
 		bpfunit.MAC(0xAABBCCDDEEFF),
 		bpfunit.MAC(0xFFFFFFFFFFFF),
 	)
-	verdict, err := drv.Run("tc_noop_in", frame)
+	verdict, err := drv.Run(fixtures.ProgNoopIn, frame)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

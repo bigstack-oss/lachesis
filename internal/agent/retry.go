@@ -9,16 +9,6 @@ import (
 	"github.com/gophercloud/gophercloud/v2"
 )
 
-// neutronBackoffInitial / neutronBackoffMax bound the exponential
-// backoff used while waiting for Neutron at cold-start.
-// docs/DESIGN.md §9 specifies "fail-closed" — the agent must not
-// start without metadata — so the loop never times out on its own;
-// only ctx cancellation breaks it.
-const (
-	neutronBackoffInitial = 1 * time.Second
-	neutronBackoffMax     = 30 * time.Second
-)
-
 // retryWithBackoff invokes fetch repeatedly with exponential backoff
 // (`initial`, doubling, capped at `max`) until it returns nil or
 // ctx is cancelled. Errors classified as non-retryable by

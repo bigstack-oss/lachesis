@@ -49,7 +49,7 @@ func TestHybridZoneLookup(t *testing.T) {
 	// Populate mac_tenant_map. Intentionally leave the LPM trie empty:
 	// the SAME/OTHER cases must succeed without it, resolved by the
 	// direct mac_tenant_map lookup alone.
-	macMap := drv.Map("mac_tenant_map")
+	macMap := drv.Map(bpf.MapMacTenant)
 	if macMap == nil {
 		t.Fatal("mac_tenant_map not loaded")
 	}

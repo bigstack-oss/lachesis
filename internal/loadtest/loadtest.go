@@ -15,27 +15,9 @@ package loadtest
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/cilium/ebpf/rlimit"
 )
-
-// Config bundles the inputs the harness needs. cmd/loadtest fills
-// each field from a CLI flag of the same purpose.
-type Config struct {
-	// AgentBin is the path to the agent binary the harness will fork.
-	AgentBin string
-	// Duration is how long sustained traffic runs and /proc is sampled.
-	Duration time.Duration
-	// Workers is the number of concurrent long-lived TCP streams.
-	Workers int
-	// RSSLimitMB and CPULimitPct are the upper bounds the agent must
-	// stay under; the harness exits non-zero if either is exceeded.
-	RSSLimitMB  uint64
-	CPULimitPct float64
-	// HTTPAddr is where the agent's /metrics endpoint will be reachable.
-	HTTPAddr string
-}
 
 // Run executes the full harness once and returns nil on PASS, an
 // error on FAIL or on setup/measurement failure.
@@ -60,24 +42,6 @@ func Run(cfg Config) error {
 		return err
 	}
 	return report(cfg, r)
-}
-
-// agentReadyTimeout bounds how long Run will wait for the freshly
-// spawned agent's /metrics endpoint to answer. Generous enough to
-// cover a cold Docker layer cache, tight enough that a wedged agent
-// fails the harness fast.
-const agentReadyTimeout = 10 * time.Second
-
-// minBytes is the liveness floor on the agent's observed traffic.
-// Below this the BPF program likely never fired (broken attach,
-// kernel path skipped clsact) and the resource budget is meaningless.
-const minBytes uint64 = 1 << 20
-
-// Result is what driveLoad measures across one window.
-type Result struct {
-	RSSPeakKB uint64
-	CPUAvgPct float64
-	BytesObs  uint64
 }
 
 // report prints the verdict and returns a non-nil error if any

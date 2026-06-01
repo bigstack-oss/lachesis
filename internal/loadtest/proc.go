@@ -15,12 +15,6 @@ import (
 	"time"
 )
 
-// clkTck is the sysconf(_SC_CLK_TCK) value: jiffies per second.
-// Hard-coded to 100, which is the kernel default and what every
-// glibc on every distribution we ship to reports. If we ever land
-// on a kernel where CONFIG_HZ ≠ 100, this becomes a cgo call.
-const clkTck = 100
-
 // procSample is one point-in-time observation of an agent process's
 // resource use.
 type procSample struct {

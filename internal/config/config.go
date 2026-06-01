@@ -28,10 +28,6 @@ package config
 
 import "fmt"
 
-// Version is the configuration schema version this binary understands.
-// Bumped only on breaking schema changes; consumers gate on it.
-const Version = "1"
-
 // Config is the agent's complete runtime configuration.
 type Config struct {
 	Version string        `yaml:"version"`

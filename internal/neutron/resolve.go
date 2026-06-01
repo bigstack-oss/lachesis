@@ -7,26 +7,6 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 )
 
-// maxStaticRouteHops bounds the multi-hop trace. Real OpenStack
-// deployments rarely exceed 3–4 hops; 16 is generous and an
-// exceedance almost certainly indicates a routing misconfig (per
-// docs/DESIGN.md §5.3).
-const maxStaticRouteHops = 16
-
-// AmbiguityHit records a Step C ambiguity-after-scoping incident
-// (docs/DESIGN.md §5.6): the resolver reached a router where
-// multiple candidate networks with distinct owners cover the same
-// destination CIDR, so no single zone can be picked honestly. The
-// resolver returns ZoneExternal and surfaces this struct to its
-// caller; BuildTrie collects every hit across all routes so the
-// boot path can refuse to start under strict-mode policy.
-type AmbiguityHit struct {
-	SourceTenant string
-	RouterID     string
-	Destination  netip.Prefix
-	Owners       []string
-}
-
 // resolveIndex bundles the Neutron snapshot in lookup-optimised
 // form so the per-route resolver runs in O(1) per step. Built once
 // per BuildTrie invocation and shared across every
@@ -63,7 +43,7 @@ func newResolveIndex(snap Snapshot) *resolveIndex {
 		ri.routers[r.ID] = r
 	}
 	for _, p := range ports {
-		if p.DeviceOwner == "network:router_interface" && p.DeviceID != "" {
+		if p.DeviceOwner == deviceOwnerRouterInterface && p.DeviceID != "" {
 			for _, fip := range p.FixedIPs {
 				if fip.SubnetID == "" {
 					continue
@@ -120,7 +100,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 			return bpf.ZoneExternal, nil
 		}
 		switch port.DeviceOwner {
-		case "network:router_interface":
+		case deviceOwnerRouterInterface:
 			nextRouter, ok := ri.routers[port.DeviceID]
 			if !ok {
 				return bpf.ZoneExternal, nil

@@ -84,20 +84,6 @@ type Collector struct {
 	aggBuf map[aggKey]aggValue
 }
 
-// aggKey is the granularity at which Collect aggregates per-flow
-// state for Prometheus emission. tenant is the resolver output.
-type aggKey struct {
-	tenant string
-	zone   bpf.ZoneCode
-	dir    bpf.Direction
-}
-
-// aggValue holds the summed per-tuple counters.
-type aggValue struct {
-	bytes   uint64
-	packets uint64
-}
-
 // New constructs a Collector. A nil resolver falls back to
 // [UnknownTenant]{} so a missed wiring degrades to "unknown" labels
 // rather than a nil-pointer panic inside the locked Collect loop on

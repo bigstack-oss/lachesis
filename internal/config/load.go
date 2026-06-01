@@ -10,9 +10,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultEnvPrefix is used when [Options.EnvPrefix] is empty.
-const DefaultEnvPrefix = "CUBECOS"
-
 // Options customizes how [Load] resolves the configuration. The zero
 // value is acceptable; missing fields are filled in with defaults.
 type Options struct {
@@ -47,7 +44,7 @@ func Load(opts Options, args []string) (Config, error) {
 
 	cfg := Defaults()
 
-	configPath := findConfigPath(args, opts.Getenv(opts.EnvPrefix+"_CONFIG"))
+	configPath := findConfigPath(args, opts.Getenv(opts.EnvPrefix+"_"+envConfig))
 
 	if configPath != "" {
 		loaded, err := LoadYAML(configPath)
@@ -88,7 +85,7 @@ func FindConfigPath(opts Options, args []string) string {
 	if opts.Getenv == nil {
 		opts.Getenv = os.Getenv
 	}
-	return findConfigPath(args, opts.Getenv(opts.EnvPrefix+"_CONFIG"))
+	return findConfigPath(args, opts.Getenv(opts.EnvPrefix+"_"+envConfig))
 }
 
 // LoadYAML reads and parses a YAML config file, starting from [Defaults]
@@ -133,65 +130,62 @@ func findConfigPath(args []string, envFallback string) string {
 // Each section's env-var bindings are declared here together so the
 // "what is configurable from the environment" question has one answer.
 func applyEnv(cfg *Config, prefix string, getenv func(string) string) error {
-	if v := getenv(prefix + "_HTTP_LISTEN"); v != "" {
+	if v := getenv(prefix + "_" + envHTTPListen); v != "" {
 		cfg.HTTP.Listen = v
 	}
-	if v := getenv(prefix + "_BPF_PIN_PATH"); v != "" {
+	if v := getenv(prefix + "_" + envBPFPinPath); v != "" {
 		cfg.BPF.PinPath = v
 	}
-	if v := getenv(prefix + "_BPF_ATTACH_INTERFACE"); v != "" {
-		cfg.BPF.AttachInterface = v
-	}
-	if v := getenv(prefix + "_BPF_ATTACH_PREFIXES"); v != "" {
+	if v := getenv(prefix + "_" + envBPFAttachPrefixes); v != "" {
 		cfg.BPF.AttachPrefixes = splitList(v)
 	}
-	if v := getenv(prefix + "_BPF_ATTACH_INTERFACES"); v != "" {
+	if v := getenv(prefix + "_" + envBPFAttachInterfaces); v != "" {
 		cfg.BPF.AttachInterfaces = splitList(v)
 	}
-	if v := getenv(prefix + "_SCRAPE_INTERVAL"); v != "" {
+	if v := getenv(prefix + "_" + envScrapeInterval); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
-			return fmt.Errorf("%s_SCRAPE_INTERVAL=%q: %w", prefix, v, err)
+			return fmt.Errorf("%s_%s=%q: %w", prefix, envScrapeInterval, v, err)
 		}
 		cfg.Scrape.Interval = d
 	}
-	if v := getenv(prefix + "_LOG_LEVEL"); v != "" {
+	if v := getenv(prefix + "_" + envLogLevel); v != "" {
 		cfg.Logging.Level = v
 	}
-	if v := getenv(prefix + "_LOG_FORMAT"); v != "" {
+	if v := getenv(prefix + "_" + envLogFormat); v != "" {
 		cfg.Logging.Format = v
 	}
-	if v := getenv(prefix + "_WAL_PATH"); v != "" {
+	if v := getenv(prefix + "_" + envWALPath); v != "" {
 		cfg.WAL.Path = v
 	}
-	if v := getenv(prefix + "_WAL_FLUSH_INTERVAL"); v != "" {
+	if v := getenv(prefix + "_" + envWALFlushInterval); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
-			return fmt.Errorf("%s_WAL_FLUSH_INTERVAL=%q: %w", prefix, v, err)
+			return fmt.Errorf("%s_%s=%q: %w", prefix, envWALFlushInterval, v, err)
 		}
 		cfg.WAL.FlushInterval = d
 	}
-	if v := getenv(prefix + "_WAL_ENABLED"); v != "" {
+	if v := getenv(prefix + "_" + envWALEnabled); v != "" {
 		b, err := parseBool(v)
 		if err != nil {
-			return fmt.Errorf("%s_WAL_ENABLED=%q: %w", prefix, v, err)
+			return fmt.Errorf("%s_%s=%q: %w", prefix, envWALEnabled, v, err)
 		}
 		cfg.WAL.Enabled = b
 	}
-	if v := getenv(prefix + "_NEUTRON_ENABLED"); v != "" {
+	if v := getenv(prefix + "_" + envNeutronEnabled); v != "" {
 		b, err := parseBool(v)
 		if err != nil {
-			return fmt.Errorf("%s_NEUTRON_ENABLED=%q: %w", prefix, v, err)
+			return fmt.Errorf("%s_%s=%q: %w", prefix, envNeutronEnabled, v, err)
 		}
 		cfg.Neutron.Enabled = b
 	}
-	if v := getenv(prefix + "_NEUTRON_CREDENTIALS_FILE"); v != "" {
+	if v := getenv(prefix + "_" + envNeutronCredentialsFile); v != "" {
 		cfg.Neutron.CredentialsFile = v
 	}
-	if v := getenv(prefix + "_NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES"); v != "" {
+	if v := getenv(prefix + "_" + envNeutronUnsafeAllowAmbiguousRoutes); v != "" {
 		b, err := parseBool(v)
 		if err != nil {
-			return fmt.Errorf("%s_NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES=%q: %w", prefix, v, err)
+			return fmt.Errorf("%s_%s=%q: %w", prefix, envNeutronUnsafeAllowAmbiguousRoutes, v, err)
 		}
 		cfg.Neutron.UnsafeAllowAmbiguousRoutes = b
 	}
@@ -221,40 +215,38 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 		return fmt.Sprintf(" (env: %s_%s)", envPrefix, suffix)
 	}
 	fs.StringVar(configPath, "config", *configPath,
-		"Path to YAML config file"+envHint("CONFIG"))
+		"Path to YAML config file"+envHint(envConfig))
 	fs.StringVar(&cfg.HTTP.Listen, "http-listen", cfg.HTTP.Listen,
-		"HTTP listen address"+envHint("HTTP_LISTEN"))
+		"HTTP listen address"+envHint(envHTTPListen))
 	fs.StringVar(&cfg.BPF.PinPath, "bpf-pin-path", cfg.BPF.PinPath,
-		"BPF FS pin directory"+envHint("BPF_PIN_PATH"))
-	fs.StringVar(&cfg.BPF.AttachInterface, "bpf-attach-interface", cfg.BPF.AttachInterface,
-		"Host interface to attach TC clsact + telemetry programs on; empty disables attach"+envHint("BPF_ATTACH_INTERFACE"))
+		"BPF FS pin directory"+envHint(envBPFPinPath))
 	// The allowlist fields are []string; bind them via comma-separated
 	// scratch strings and split back after Parse (the flag package has
 	// no native string-slice). Defaults round-trip through Join/split.
 	prefixesFlag := strings.Join(cfg.BPF.AttachPrefixes, ",")
 	fs.StringVar(&prefixesFlag, "bpf-attach-prefixes", prefixesFlag,
-		"Comma-separated interface-name prefixes the netlink subscriber attaches to"+envHint("BPF_ATTACH_PREFIXES"))
+		"Comma-separated interface-name prefixes the netlink subscriber attaches to"+envHint(envBPFAttachPrefixes))
 	interfacesFlag := strings.Join(cfg.BPF.AttachInterfaces, ",")
 	fs.StringVar(&interfacesFlag, "bpf-attach-interfaces", interfacesFlag,
-		"Comma-separated explicit interface-name allowlist for the netlink subscriber"+envHint("BPF_ATTACH_INTERFACES"))
+		"Comma-separated explicit interface-name allowlist for the netlink subscriber"+envHint(envBPFAttachInterfaces))
 	fs.DurationVar(&cfg.Scrape.Interval, "scrape-interval", cfg.Scrape.Interval,
-		"Scrape interval"+envHint("SCRAPE_INTERVAL"))
+		"Scrape interval"+envHint(envScrapeInterval))
 	fs.StringVar(&cfg.Logging.Level, "log-level", cfg.Logging.Level,
-		"Log level: debug, info, warn, error"+envHint("LOG_LEVEL"))
+		"Log level: debug, info, warn, error"+envHint(envLogLevel))
 	fs.StringVar(&cfg.Logging.Format, "log-format", cfg.Logging.Format,
-		"Log format: json, text"+envHint("LOG_FORMAT"))
+		"Log format: json, text"+envHint(envLogFormat))
 	fs.StringVar(&cfg.WAL.Path, "wal-path", cfg.WAL.Path,
-		"WAL snapshot file (absolute path)"+envHint("WAL_PATH"))
+		"WAL snapshot file (absolute path)"+envHint(envWALPath))
 	fs.DurationVar(&cfg.WAL.FlushInterval, "wal-flush-interval", cfg.WAL.FlushInterval,
-		"WAL flush cadence"+envHint("WAL_FLUSH_INTERVAL"))
+		"WAL flush cadence"+envHint(envWALFlushInterval))
 	fs.BoolVar(&cfg.WAL.Enabled, "wal-enabled", cfg.WAL.Enabled,
-		"Enable WAL persistence (boot-restore + periodic flush)"+envHint("WAL_ENABLED"))
+		"Enable WAL persistence (boot-restore + periodic flush)"+envHint(envWALEnabled))
 	fs.BoolVar(&cfg.Neutron.Enabled, "neutron-enabled", cfg.Neutron.Enabled,
-		"Enable Neutron cold-start (boot-blocking)"+envHint("NEUTRON_ENABLED"))
+		"Enable Neutron cold-start (boot-blocking)"+envHint(envNeutronEnabled))
 	fs.StringVar(&cfg.Neutron.CredentialsFile, "neutron-credentials-file", cfg.Neutron.CredentialsFile,
-		"Absolute path to admin-openrc-style credentials file"+envHint("NEUTRON_CREDENTIALS_FILE"))
+		"Absolute path to admin-openrc-style credentials file"+envHint(envNeutronCredentialsFile))
 	fs.BoolVar(&cfg.Neutron.UnsafeAllowAmbiguousRoutes, "unsafe-allow-ambiguous-routes", cfg.Neutron.UnsafeAllowAmbiguousRoutes,
-		"Allow boot to continue when BuildTrie reports static-route Step C ambiguities; default false (strict)"+envHint("NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES"))
+		"Allow boot to continue when BuildTrie reports static-route Step C ambiguities; default false (strict)"+envHint(envNeutronUnsafeAllowAmbiguousRoutes))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

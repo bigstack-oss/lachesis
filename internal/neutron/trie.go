@@ -28,11 +28,6 @@ func WithMetrics(m *Metrics) BuildOpt {
 	return func(o *buildOpts) { o.metrics = m }
 }
 
-// componentNeutron is the slog `component` attribute for all
-// Neutron-subsystem log calls. Matches the per-package convention
-// the rest of the codebase follows.
-const componentNeutron = "neutron"
-
 // TrieEntry is one row destined for the kernel `subnet_zone_trie`:
 // the tenant whose perspective the entry applies to, the IPv4
 // prefix to match, and the resolved zone code. TenantID is the
@@ -43,14 +38,6 @@ type TrieEntry struct {
 	Prefix   netip.Prefix
 	Zone     bpf.ZoneCode
 }
-
-// metadataPrefix is the cloud-init / Nova metadata service IP. Always
-// INFRA from every tenant's perspective (docs/DESIGN.md §5.2 Step 4).
-var metadataPrefix = netip.MustParsePrefix("169.254.169.254/32")
-
-// catchall is the 0.0.0.0/0 → EXTERNAL Step-1 entry. Every uncovered
-// destination falls through to this row.
-var catchall = netip.MustParsePrefix("0.0.0.0/0")
 
 // IsInfraPort classifies a Neutron port as infrastructure when its
 // `device_owner` lives in Neutron's reserved `network:` namespace,
@@ -91,7 +78,7 @@ var catchall = netip.MustParsePrefix("0.0.0.0/0")
 // the trie at the VM tap (NAT translation usually intervenes
 // upstream), but the distinction matters when it does.
 func IsInfraPort(deviceOwner string) bool {
-	if !strings.HasPrefix(deviceOwner, "network:") {
+	if !strings.HasPrefix(deviceOwner, deviceOwnerNetworkPrefix) {
 		return false
 	}
 	if deviceOwner == "network:floatingip" {
@@ -128,7 +115,7 @@ func IsVMPort(deviceOwner string) bool {
 	if deviceOwner == "" {
 		return false
 	}
-	if strings.HasPrefix(deviceOwner, "network:") {
+	if strings.HasPrefix(deviceOwner, deviceOwnerNetworkPrefix) {
 		return false
 	}
 	return true
@@ -354,11 +341,11 @@ func BuildTrie(snap Snapshot, opts ...BuildOpt) ([]TrieEntry, []AmbiguityHit) {
 		d5 += time.Since(t0)
 	}
 
-	bo.metrics.ObserveBuilderStep("1_catchall", d1)
-	bo.metrics.ObserveBuilderStep("2_owned", d2)
-	bo.metrics.ObserveBuilderStep("3_shared", d3)
-	bo.metrics.ObserveBuilderStep("4_infra", d4)
-	bo.metrics.ObserveBuilderStep("5_extraroutes", d5)
+	bo.metrics.ObserveBuilderStep(stepCatchall, d1)
+	bo.metrics.ObserveBuilderStep(stepOwned, d2)
+	bo.metrics.ObserveBuilderStep(stepShared, d3)
+	bo.metrics.ObserveBuilderStep(stepInfra, d4)
+	bo.metrics.ObserveBuilderStep(stepExtraRoutes, d5)
 
 	sortEntries(entries)
 	return entries, ambiguities

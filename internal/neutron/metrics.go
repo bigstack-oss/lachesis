@@ -70,10 +70,10 @@ func (m *Metrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{m.syncAge, m.apiErrors, m.unknownOwners, m.builderStep}
 }
 
-// ObserveBuilderStep records the duration of one BuildTrie step
-// (labels: "1_catchall", "2_owned", "3_shared", "4_infra",
-// "5_extraroutes"). nil receivers no-op so the builder can be
-// called without metrics in tests.
+// ObserveBuilderStep records the duration of one BuildTrie step. The
+// step label is one of the step* consts in schema.go (stepCatchall,
+// stepOwned, stepShared, stepInfra, stepExtraRoutes). nil receivers
+// no-op so the builder can be called without metrics in tests.
 func (m *Metrics) ObserveBuilderStep(step string, d time.Duration) {
 	if m == nil {
 		return
