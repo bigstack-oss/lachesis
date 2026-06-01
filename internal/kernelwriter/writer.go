@@ -34,11 +34,6 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 )
 
-// componentKernelWriter is the slog `component` attribute used by
-// log calls in this package. Matches the per-package convention
-// the rest of the codebase follows.
-const componentKernelWriter = "kernelwriter"
-
 // MapUpdater is the subset of [*ebpf.Map] the writers depend on.
 // Defined as an interface so unit tests can mock without needing a
 // real kernel BPF environment.

@@ -12,22 +12,10 @@ import (
 	"time"
 )
 
-// agentTermGrace is how long stopAgent waits between SIGTERM and
-// SIGKILL. The agent's own shutdown budget is bounded by its
-// internal HTTP + scraper drain (~5s in production); this gives it
-// a bit longer to exit cleanly before we kill the process group.
-const agentTermGrace = 3 * time.Second
-
-// agentReadyPoll is the inter-poll sleep waitForAgent uses while
-// the /metrics endpoint is still warming up. Short enough that the
-// harness's effective startup latency is sub-second.
-const agentReadyPoll = 100 * time.Millisecond
-
 // writeAgentConfig writes a minimal YAML config that points the
-// agent's netlink subscriber at the host-side veth (via the supported
-// attach_interfaces allowlist, not the deprecated single
-// attach_interface) and asks for an ephemeral listener. The veth
-// already exists when the agent boots, so the subscriber's
+// agent's netlink subscriber at the host-side veth (via the
+// attach_interfaces allowlist) and asks for an ephemeral listener.
+// The veth already exists when the agent boots, so the subscriber's
 // ListExisting replay attaches to it. Returns the path; caller is
 // responsible for os.Remove.
 func writeAgentConfig(iface, httpAddr string) (string, error) {

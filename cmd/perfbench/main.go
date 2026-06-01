@@ -17,6 +17,7 @@ import (
 	"os"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/perfbench"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit/fixtures"
 )
 
 func main() {
@@ -35,7 +36,7 @@ func parseFlags() (perfbench.Config, string) {
 	var (
 		repeat  = flag.Uint("repeat", 1_000_000, "number of program executions")
 		output  = flag.String("output", "human", "output format: human|json")
-		program = flag.String("program", "tc_noop_in", "BPF program name to bench")
+		program = flag.String("program", fixtures.ProgNoopIn, "BPF program name to bench")
 	)
 	flag.Parse()
 	return perfbench.Config{

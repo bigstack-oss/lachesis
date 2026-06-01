@@ -2,11 +2,6 @@ package metadata
 
 import "sync"
 
-// TenantIDUnset is the reserved [TenantInterner] result for an empty
-// ProjectID input. Real interned IDs start at 1 so the zero value of
-// a `uint32` field never collides with a valid tenant.
-const TenantIDUnset uint32 = 0
-
 // TenantInterner assigns and remembers stable u32 identifiers for
 // Keystone project UUIDs. The kernel `mac_tenant_map` and
 // `subnet_zone_trie` are both keyed on `__u32 tenant_id`; the

@@ -66,7 +66,7 @@ func TestE2E_HybridZone_SameTenantNoTrie(t *testing.T) {
 	defer netlink.LinkDel(host)
 
 	const tenant uint32 = 100
-	macMap := drv.Map("mac_tenant_map")
+	macMap := drv.Map(bpf.MapMacTenant)
 	if macMap == nil {
 		t.Fatal("mac_tenant_map not loaded")
 	}

@@ -28,11 +28,11 @@ func NewMetrics() *Metrics {
 		maxEntries: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "cubecos_bpf_map_max_entries",
 			Help: "Compiled-in max_entries of each BPF map the agent populates.",
-		}, []string{"map"}),
+		}, []string{labelMap}),
 		currentEntries: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "cubecos_bpf_map_current_entries",
 			Help: "Userspace-tracked entry count of each BPF map after the most recent push.",
-		}, []string{"map"}),
+		}, []string{labelMap}),
 	}
 }
 

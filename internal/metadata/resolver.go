@@ -2,13 +2,6 @@ package metadata
 
 import "github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 
-// unknownTenantID is the `tenant_id` Prometheus label emitted when a
-// VM MAC is not in the map. Mirrors `metrics.UnknownTenant{}` — both
-// producers must emit the same string, because Prometheus `rate()`
-// queries during cold-start span the transition from "unknown" to
-// resolved project UUIDs.
-const unknownTenantID = "unknown"
-
 // Resolver implements `metrics.TenantResolver` against a
 // [*ShardedMetadataMap]. It picks the VM-side MAC out of a
 // [bpf.FlowKey] per the directional swap (CLAUDE.md "Critical

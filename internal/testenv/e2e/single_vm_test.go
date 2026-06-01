@@ -65,7 +65,7 @@ func TestE2E_SingleVM_NoopCounter(t *testing.T) {
 	}
 	defer netlink.LinkDel(host)
 
-	prog := drv.Program("tc_noop_in")
+	prog := drv.Program(fixtures.ProgNoopIn)
 	if prog == nil {
 		t.Fatal("tc_noop_in program missing from collection")
 	}
@@ -82,7 +82,7 @@ func TestE2E_SingleVM_NoopCounter(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 
-	m := drv.Map("run_count")
+	m := drv.Map(fixtures.MapRunCount)
 	var key uint32
 	var val uint64
 	if err := m.Lookup(&key, &val); err != nil {

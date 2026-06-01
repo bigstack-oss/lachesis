@@ -18,35 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Direction selects which clsact hook a filter attaches to.
-type Direction int
-
-// Ingress and Egress are the clsact hook positions a BPF filter can
-// occupy on a link.
-const (
-	Ingress Direction = iota
-	Egress
-)
-
-// FilterHandle is the TC filter handle the agent and testenv use
-// for their direct-action filters. Kept fixed so a re-attach
-// (FilterReplace) always lands on the same slot rather than piling
-// up parallel filters.
-const FilterHandle = 1
-
-// FilterIngressName and FilterEgressName are the labels the agent
-// installs on its clsact ingress and egress filters. Constants are
-// exported because both the zombie hunter and the netlink-driven
-// dynamic attacher need the same vocabulary to recognise filters
-// the agent owns.
-//
-// Changing either name silently breaks zombie cleanup and dynamic
-// attach — keep them in sync with the consumers.
-const (
-	FilterIngressName = "telemetry_in"
-	FilterEgressName  = "telemetry_out"
-)
-
 // Replace installs (or replaces) the clsact qdisc on link and binds
 // prog as a BPF filter at the named direction with the given filter
 // name. The qdisc and filter are both replaced rather than added,
@@ -80,6 +51,18 @@ func AttachTelemetry(link netlink.Link, ingress, egress *ebpf.Program) error {
 		return err
 	}
 	return nil
+}
+
+// IsTelemetryFilterName reports whether name is one the agent installs
+// on a clsact hook (see [Hooks]). The zombie hunter uses it to
+// recognise orphaned telemetry filters left by a previous crash.
+func IsTelemetryFilterName(name string) bool {
+	for _, h := range Hooks {
+		if name == h.Name {
+			return true
+		}
+	}
+	return false
 }
 
 // LinkAttacher attaches the telemetry programs to an interface looked

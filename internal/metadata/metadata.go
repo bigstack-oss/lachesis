@@ -34,35 +34,6 @@ import (
 	"time"
 )
 
-// TenantMeta is the userspace metadata associated with a single VM
-// MAC. Once stored in a [ShardedMetadataMap] it must be treated as
-// immutable — see the package doc, invariant (1).
-//
-// docs/DESIGN.md §3.2 also enumerates a `VMName` field for log /
-// dashboard enrichment. It is omitted here until a consumer arrives
-// (likely a `/debug` endpoint), to keep the set of immutable fields
-// minimal.
-type TenantMeta struct {
-	// ProjectID is the Keystone project UUID (e.g.
-	// "8e1b...c4f2"). It is emitted as the `tenant_id` Prometheus
-	// label and is the user-visible billing identity.
-	ProjectID string
-	// IsAmphora marks an Octavia load-balancer Amphora port. The
-	// per-packet hot path branches on this flag to attribute LB
-	// traffic to the load-balancer owner rather than the admin
-	// project that owns the Amphora itself (docs/DESIGN.md §7).
-	IsAmphora bool
-	// DeleteAt is zero for live entries. The 60 s Lingering Ghost
-	// (docs/DESIGN.md §3.3) sets it to `now+60s` on a Neutron
-	// `port.deleted` / `subnet.deleted` event; the GC drops the
-	// entry once `DeleteAt < now`.
-	DeleteAt time.Time
-}
-
-// numShards is the fixed shard count. Must be a power of two so the
-// `mac & (numShards-1)` index is a single AND.
-const numShards = 64
-
 // ShardedMetadataMap is the userspace MAC→[*TenantMeta] store. Safe
 // for concurrent use; see package doc for the immutability and
 // superset-of-mac_tenant_map invariants.

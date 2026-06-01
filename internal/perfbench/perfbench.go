@@ -21,26 +21,6 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit/fixtures"
 )
 
-// Config bundles the inputs to [Run].
-type Config struct {
-	// Repeat is the number of BPF_PROG_TEST_RUN executions to
-	// average over.
-	Repeat uint32
-	// Program is the BPF program name to bench (entry-point symbol
-	// from the noop fixture, e.g. "tc_noop_in").
-	Program string
-}
-
-// Result is a single perfbench measurement. JSON tags expose the
-// CI-ingestion shape.
-type Result struct {
-	Program   string `json:"program"`
-	FrameSize int    `json:"frame_size_bytes"`
-	Repeat    uint32 `json:"repeat"`
-	TotalNs   int64  `json:"total_ns"`
-	PerRunNs  int64  `json:"per_run_ns"`
-}
-
 // Run lifts the memlock rlimit, loads the noop fixture, and runs
 // cfg.Program through BPF_PROG_TEST_RUN cfg.Repeat times. Returns
 // the kernel-measured timing.
@@ -85,14 +65,14 @@ func Run(cfg Config) (Result, error) {
 // a hard signal.
 func Emit(w io.Writer, format string, r Result) error {
 	switch format {
-	case "json":
+	case formatJSON:
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(r); err != nil {
 			return fmt.Errorf("encode: %w", err)
 		}
 		return nil
-	case "human":
+	case formatHuman:
 		return writeHuman(w, r)
 	default:
 		return fmt.Errorf("bad output format %q (want human|json)", format)

@@ -8,12 +8,6 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack"
 )
 
-// defaultInterface is the Keystone endpoint-catalog interface the
-// agent picks when the operator does not override it. Compute-node
-// agents talk to OpenStack over the internal interface; public is
-// only meaningful for off-cluster clients.
-const defaultInterface = "internal"
-
 // Client is the agent's Neutron API handle. Internally it wraps a
 // [gophercloud.ServiceClient]; gophercloud owns Keystone v3
 // authentication, token caching, and reactive 401-driven reauth

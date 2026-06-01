@@ -49,17 +49,6 @@ func driveLoad(cfg Config, e *env) (Result, error) {
 	return Result{RSSPeakKB: rssPeakKB, CPUAvgPct: cpuAvgPct, BytesObs: bytesObs}, nil
 }
 
-// workerChunkSize is the per-write payload for each TCP worker.
-// Large enough that the kernel can push it as a single packet on a
-// loopback or veth path, small enough that we cycle through the
-// write loop frequently and surface backpressure quickly.
-const workerChunkSize = 64 * 1024
-
-// workerDialTimeout bounds how long a worker waits to establish its
-// long-lived TCP connection to the sink. The sink is in-process so
-// healthy dials complete instantly; this is a hung-stack guard.
-const workerDialTimeout = 5 * time.Second
-
 // sustainedTCPSend opens one long-lived TCP connection from inside ns
 // and writes [workerChunkSize] chunks back-to-back until ctx is
 // cancelled. Using a single connection per worker (vs. dial-write-

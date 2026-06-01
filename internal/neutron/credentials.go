@@ -111,10 +111,10 @@ func ParseOpenRC(path string) (Credentials, error) {
 		Interface:     env["OS_INTERFACE"],
 	}
 	if c.UserDomain == "" {
-		c.UserDomain = "default"
+		c.UserDomain = defaultDomain
 	}
 	if c.ProjectDomain == "" {
-		c.ProjectDomain = "default"
+		c.ProjectDomain = defaultDomain
 	}
 	if err := c.requireFields(path); err != nil {
 		return Credentials{}, err

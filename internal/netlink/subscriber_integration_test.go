@@ -39,7 +39,7 @@ func TestSubscriber_AttachesNewTap(t *testing.T) {
 	}
 	defer drv.Close()
 
-	prog := drv.Program("tc_noop_in")
+	prog := drv.Program(fixtures.ProgNoopIn)
 	if prog == nil {
 		t.Fatal("tc_noop_in missing")
 	}
@@ -130,7 +130,7 @@ func TestSubscriber_ForgetsOnDelLink(t *testing.T) {
 		t.Fatalf("driver: %v", err)
 	}
 	defer drv.Close()
-	prog := drv.Program("tc_noop_in")
+	prog := drv.Program(fixtures.ProgNoopIn)
 
 	ns, err := tns.New()
 	if err != nil {
@@ -207,7 +207,7 @@ func TestSubscriber_IgnoresNonAllowlist(t *testing.T) {
 		t.Fatalf("driver: %v", err)
 	}
 	defer drv.Close()
-	prog := drv.Program("tc_noop_in")
+	prog := drv.Program(fixtures.ProgNoopIn)
 
 	ns, err := tns.New()
 	if err != nil {
