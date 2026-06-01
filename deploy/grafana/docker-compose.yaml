@@ -70,10 +70,10 @@ services:
       - /sys/fs/bpf:/sys/fs/bpf
       - /sys/kernel/btf:/sys/kernel/btf:ro
     environment:
-      # Override these to attach to a real host interface. Empty means
-      # the agent assumes an external attach (BPF won't capture traffic
-      # unless something else attaches the programs).
-      CUBECOS_BPF_ATTACH_INTERFACE: "${CUBECOS_BPF_ATTACH_INTERFACE:-}"
+      # Override these to attach to real host interfaces (comma-separated
+      # allowlist). Empty means the agent assumes an external attach (BPF
+      # won't capture traffic unless something else attaches the programs).
+      CUBECOS_BPF_ATTACH_INTERFACES: "${CUBECOS_BPF_ATTACH_INTERFACES:-}"
       CUBECOS_HTTP_LISTEN: "${CUBECOS_HTTP_LISTEN:-:9090}"
     command: ["/usr/local/bin/cubecos-agent"]
 

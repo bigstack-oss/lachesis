@@ -230,7 +230,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 - `internal/zombie/`: scan `tc filter` for orphan `tc_telemetry_in/out`, delete on startup.
 - `internal/netlink/`: subscribe to `RTM_NEWLINK/DELLINK`; attach BPF on new taps, clean registry on delete.
 - Interface Registry: in-memory map of attached taps.
-- Deprecate `BPFConfig.AttachInterface` (currently a single static string in `internal/config/bpf.go:19`) in favour of the Netlink Watcher's tap-discovery loop. Keep the field for one release with a deprecation log; remove in a follow-up.
+- Deprecate `BPFConfig.AttachInterface` (currently a single static string in `internal/config/bpf.go:19`) in favour of the Netlink Watcher's tap-discovery loop. Keep the field for one release with a deprecation log; remove in a follow-up. **Done (2026-06-01):** the follow-up landed — the field, its `attach_interface` YAML key, its env/flag bindings, and the static-attach boot step are removed; dynamic attach via the netlink subscriber's allowlist is now the only path.
 - Health metrics: `cubecos_zombie_filters_cleaned_total`, `cubecos_tc_attach_failures_total{iface_kind="tap|other"}`.
 
 **Done when.** Crash-then-restart leaves no double-attach (verified by `tc filter show` + `cubecos_zombie_filters_cleaned_total>0`); new tap appears → BPF attached automatically with <1s latency; `boot.Sequencer` rejects a skipped/rewound `Advance` (negative test in `internal/boot/`). The cross-goroutine sync-gate tests ship with the barrier itself when it lands (DESIGN §13.2 #3).
