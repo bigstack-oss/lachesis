@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 )
 
 // procSample is one point-in-time observation of an agent process's
@@ -150,7 +152,7 @@ func sumBytesTotal(httpAddr string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	re := regexp.MustCompile(`cubecos_bytes_total\{[^}]*\} (\d+(?:\.\d+e\+?\d+)?)`)
+	re := regexp.MustCompile(regexp.QuoteMeta(metrics.MetricBytesTotal) + `\{[^}]*\} (\d+(?:\.\d+e\+?\d+)?)`)
 	var total uint64
 	for _, m := range re.FindAllStringSubmatch(string(b), -1) {
 		f, err := strconv.ParseFloat(m[1], 64)

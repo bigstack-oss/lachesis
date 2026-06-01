@@ -98,7 +98,7 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		resolver: resolver,
 		aggBuf:   make(map[aggKey]aggValue),
 		bytesDesc: prometheus.NewDesc(
-			"cubecos_bytes_total",
+			MetricBytesTotal,
 			"Network bytes observed by the agent, cumulative since first sight.",
 			[]string{"tenant_id", "zone", "direction"}, nil,
 		),

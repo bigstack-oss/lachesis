@@ -10,36 +10,40 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 )
 
-// writeAgentConfig writes a minimal YAML config that points the
-// agent's netlink subscriber at the host-side veth (via the
-// attach_interfaces allowlist) and asks for an ephemeral listener.
-// The veth already exists when the agent boots, so the subscriber's
-// ListExisting replay attaches to it. Returns the path; caller is
-// responsible for os.Remove.
+// writeAgentConfig writes a YAML config that points the agent's netlink
+// subscriber at the host-side veth (via the attach_interfaces allowlist)
+// and asks for an ephemeral listener. It marshals the agent's own
+// [config.Config] (starting from [config.Defaults]) rather than a hand-
+// written template, so the harness can never drift from the real config
+// schema. The veth already exists when the agent boots, so the
+// subscriber's ListExisting replay attaches to it. Returns the path;
+// caller is responsible for os.Remove.
 func writeAgentConfig(iface, httpAddr string) (string, error) {
-	body := fmt.Sprintf(`version: "1"
-http:
-  listen: %q
-bpf:
-  pin_path: /sys/fs/bpf/cubecos-loadtest
-  attach_interfaces:
-    - %q
-scrape:
-  interval: 1s
-logging:
-  level: warn
-  format: text
-wal:
-  enabled: false
-`, httpAddr, iface)
+	cfg := config.Defaults()
+	cfg.HTTP.Listen = httpAddr
+	cfg.BPF.PinPath = "/sys/fs/bpf/cubecos-loadtest"
+	cfg.BPF.AttachInterfaces = []string{iface}
+	cfg.Scrape.Interval = time.Second
+	cfg.Logging.Level = "warn"
+	cfg.Logging.Format = "text"
+	cfg.WAL.Enabled = false
+
+	body, err := yaml.Marshal(cfg)
+	if err != nil {
+		return "", fmt.Errorf("marshal agent config: %w", err)
+	}
 	dir, err := os.MkdirTemp("", "cubecos-loadtest-")
 	if err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, "agent.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(path, body, 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
