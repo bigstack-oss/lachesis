@@ -22,19 +22,23 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
 
-// Bootstrap is the agent's single startup sequence: parse args,
-// initialise logging, lift the memlock rlimit, load BPF, populate
-// the kernel maps from Neutron, attach TC, then build the [Agent].
-// It returns the Agent plus an [io.Closer] that releases the BPF
-// collection — call its Close after [Agent.Run] returns.
+// Bootstrap runs the agent's startup sequence and returns a ready
+// [Agent] plus an [io.Closer] that releases the BPF collection — call
+// its Close after [Agent.Run] returns.
+//
+// The body is a flat, ordered list of named steps executed by
+// [bootstrapper.run]; each step does one part of the sequence and
+// advances the [boot.Sequencer] to the phase it establishes. Read the
+// list here for the order; read the individual step methods for what
+// each one guarantees.
 //
 // Phases (see [boot.Phase] and docs/DESIGN.md §9):
 //
 //  1. [boot.PhaseBPFLoaded]      — collection loaded + map-size validated
 //  2. [boot.PhaseMetadataReady]  — Neutron cold-start populated the
 //     LPM trie and mac_tenant_map
-//  3. [boot.PhaseAttached]       — TC clsact attached; packets begin
-//     classifying against the populated trie
+//  3. [boot.PhaseAttached]       — netlink subscriber wired; the TC
+//     attach itself happens dynamically once [Agent.Run] starts it
 //  4. [boot.PhaseStateRestored]  — WAL load complete; GlobalState
 //     seeded so the first scrape computes deltas correctly
 //
@@ -49,102 +53,175 @@ import (
 // cross-platform path used by unit tests constructs [Agent] directly
 // via [New] with a synthetic [scraper.MapReader].
 //
-// Errors are wrapped with the phase they failed in so the caller
-// need not understand the internals to print a useful message.
+// Errors are wrapped with the step they failed in so the caller need
+// not understand the internals to print a useful message.
 func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
-	cfg, err := config.Load(config.Options{}, args)
+	b := &bootstrapper{ctx: ctx, args: args, seq: boot.New()}
+	return b.run([]step{
+		{"prepare process", b.prepareProcess},
+		{"hunt zombies", b.huntZombies},
+		{"load BPF collection", b.loadBPF},
+		{"build agent", b.buildAgent},
+		{"cold-start Neutron", b.coldStart},
+		{"subscribe netlink", b.subscribeNetlink},
+		{"restore WAL", b.restoreWAL},
+	})
+}
+
+// step is one named entry in the [Bootstrap] sequence. name labels a
+// failure; fn does the work and advances the [boot.Sequencer] when it
+// establishes a phase.
+type step struct {
+	name string
+	fn   func() error
+}
+
+// bootstrapper carries the state shared across the [Bootstrap] steps.
+// Each step reads what earlier steps stored and writes what later
+// steps need; the step list in [Bootstrap] is the authoritative
+// order. It exists so every step can be a uniform func() error and
+// Bootstrap can stay a flat list rather than a thread of locals.
+type bootstrapper struct {
+	ctx  context.Context
+	args []string
+
+	seq  *boot.Sequencer
+	cfg  config.Config
+	log  *logging.Handle
+	coll *ebpf.Collection
+	ag   *Agent
+
+	zombiesCleaned int
+}
+
+// run executes steps in order, stopping at the first failure. On any
+// error it releases the BPF collection — a no-op until [loadBPF]
+// stores one, so an early failure is safe — and wraps the error with
+// the failing step's name. On success it hands the live collection to
+// the caller as an [io.Closer] to close after [Agent.Run] returns.
+func (b *bootstrapper) run(steps []step) (*Agent, io.Closer, error) {
+	for _, s := range steps {
+		if err := s.fn(); err != nil {
+			b.closeCollection()
+			return nil, nil, fmt.Errorf("bootstrap: %s: %w", s.name, err)
+		}
+	}
+	return b.ag, collectionCloser{b.coll}, nil
+}
+
+// prepareProcess parses configuration, initialises logging, and lifts
+// the memlock rlimit so the kernel will accept the BPF maps. These are
+// process-wide prerequisites, independent of the agent's data plane.
+func (b *bootstrapper) prepareProcess() error {
+	cfg, err := config.Load(config.Options{}, b.args)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	log, err := logging.Init(cfg.Logging, os.Stderr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("init logging: %w", err)
+		return fmt.Errorf("init logging: %w", err)
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
-		return nil, nil, fmt.Errorf("remove memlock rlimit: %w", err)
+		return fmt.Errorf("remove memlock rlimit: %w", err)
 	}
+	b.cfg, b.log = cfg, log
+	return nil
+}
 
-	seq := boot.New()
-
-	zombiesCleaned, zerr := zombie.Hunt()
+// huntZombies removes TC filters orphaned by a previous crash, before
+// any program is loaded (docs/DESIGN.md §9 step 1). Hunt errors are
+// non-fatal — a partial cleanup still leaves a working agent — so the
+// count is stashed for [buildAgent] to record once the metrics exist.
+func (b *bootstrapper) huntZombies() error {
+	cleaned, err := zombie.Hunt()
 	switch {
-	case zerr != nil:
+	case err != nil:
 		slog.Warn("hunt encountered errors; continuing with partial cleanup",
-			"component", componentZombie, "cleaned", zombiesCleaned, "err", zerr)
-	case zombiesCleaned > 0:
+			"component", componentZombie, "cleaned", cleaned, "err", err)
+	case cleaned > 0:
 		slog.Info("removed orphan filters from a previous run",
-			"component", componentZombie, "cleaned", zombiesCleaned)
+			"component", componentZombie, "cleaned", cleaned)
 	}
+	b.zombiesCleaned = cleaned
+	return nil
+}
 
+// loadBPF loads and validates the embedded BPF collection, then
+// advances to [boot.PhaseBPFLoaded].
+func (b *bootstrapper) loadBPF() error {
 	coll, err := loadCollection()
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
-	closer := collectionCloser{coll}
-	// The BPF collection is a kernel resource. Release it on any
-	// failure past this point, but hand it to the caller intact on
-	// success (they Close it after Run returns). The sentinel keeps
-	// that one invariant in a single place instead of repeating
-	// closer.Close() on every error branch below — and so an error
-	// path added later cannot forget to release the collection.
-	success := false
-	defer func() {
-		if !success {
-			closer.Close()
-		}
-	}()
+	b.coll = coll
+	return b.seq.Advance(boot.PhaseBPFLoaded)
+}
 
-	if err := seq.Advance(boot.PhaseBPFLoaded); err != nil {
-		return nil, nil, err
-	}
-
-	reader, err := readerFromCollection(coll)
+// buildAgent wires the map reader over the loaded collection and
+// constructs the [Agent], then records the orphan-filter count
+// [huntZombies] found on the agent's zombie metrics.
+func (b *bootstrapper) buildAgent() error {
+	reader, err := readerFromCollection(b.coll)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
-
 	ag, err := New(Options{
-		Config:     cfg,
-		ConfigPath: config.FindConfigPath(config.Options{}, args),
+		Config:     b.cfg,
+		ConfigPath: config.FindConfigPath(config.Options{}, b.args),
 		Reader:     reader,
-		Log:        log,
+		Log:        b.log,
 	})
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
-	ag.ZombieMetrics().RecordCleaned(zombiesCleaned)
+	ag.ZombieMetrics().RecordCleaned(b.zombiesCleaned)
+	b.ag = ag
+	return nil
+}
 
-	if err := coldStartNeutron(ctx, cfg.Neutron, ag, coll); err != nil {
-		return nil, nil, fmt.Errorf("neutron cold-start: %w", err)
+// coldStart fetches the Neutron snapshot and pushes it into the kernel
+// maps, then advances to [boot.PhaseMetadataReady]. Runs before attach
+// so the first packet classifies against a populated trie.
+func (b *bootstrapper) coldStart() error {
+	if err := coldStartNeutron(b.ctx, b.cfg.Neutron, b.ag, b.coll); err != nil {
+		return err
 	}
-	if err := seq.Advance(boot.PhaseMetadataReady); err != nil {
-		return nil, nil, err
-	}
+	return b.seq.Advance(boot.PhaseMetadataReady)
+}
 
-	if err := seq.Advance(boot.PhaseAttached); err != nil {
-		return nil, nil, err
+// subscribeNetlink builds the RTM_NEWLINK/DELLINK subscriber (when an
+// attach allowlist is configured) and hands it to the agent, then
+// advances to [boot.PhaseAttached]. The subscriber is only started
+// later by [Agent.Run]; this step just wires it.
+func (b *bootstrapper) subscribeNetlink() error {
+	sub, err := buildNetlinkSubscriber(b.ag, b.cfg.BPF, b.coll)
+	if err != nil {
+		return err
 	}
-
-	if sub, err := buildNetlinkSubscriber(ag, cfg.BPF, coll); err != nil {
-		return nil, nil, err
-	} else if sub != nil {
-		ag.SetNetlinkSubscriber(sub)
+	if sub != nil {
+		b.ag.SetNetlinkSubscriber(sub)
 	}
+	return b.seq.Advance(boot.PhaseAttached)
+}
 
-	if err := restoreFromWAL(ag, cfg.WAL); err != nil {
-		// WAL restore failure is non-fatal — the design says "if
-		// both fail, start empty and log the loss" (§3.2).
-		// Surfacing as an error would block startup even though
-		// the agent can run correctly with a fresh state.
+// restoreWAL seeds GlobalState from the on-disk snapshot and advances
+// to [boot.PhaseStateRestored]. A restore failure is non-fatal — the
+// design says start empty and log the loss (§3.2) — so it is logged
+// rather than returned, and the phase still advances.
+func (b *bootstrapper) restoreWAL() error {
+	if err := restoreFromWAL(b.ag, b.cfg.WAL); err != nil {
 		slog.Warn("restore failed; agent will start with empty state",
 			"component", componentWAL, "err", err)
 	}
-	if err := seq.Advance(boot.PhaseStateRestored); err != nil {
-		return nil, nil, err
-	}
+	return b.seq.Advance(boot.PhaseStateRestored)
+}
 
-	success = true
-	return ag, closer, nil
+// closeCollection releases the BPF collection if [loadBPF] stored one.
+// Safe before loadBPF runs (coll is nil) and on any error path.
+func (b *bootstrapper) closeCollection() {
+	if b.coll != nil {
+		b.coll.Close()
+	}
 }
 
 // restoreFromWAL reads the on-disk snapshot (if enabled) and seeds
