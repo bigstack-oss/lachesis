@@ -95,7 +95,10 @@ type VethSpec struct {
 // the caller's current namespace. Both ends get the specified MAC + IP and
 // are brought up. Returns the outer link for further configuration (e.g.,
 // attaching TC filters).
-func (n *NS) AddVeth(spec VethSpec) (netlink.Link, error) {
+//
+// If any step after the pair is created fails, the half-built pair is torn
+// down before returning, so a failed call leaves no orphan links behind.
+func (n *NS) AddVeth(spec VethSpec) (_ netlink.Link, err error) {
 	// netlink convention: LinkAttrs.Name is the "primary" link, PeerName is
 	// the "other end" of the pair. We make the primary the side we'll move
 	// into the namespace, so the names track the action: "create the
@@ -108,9 +111,28 @@ func (n *NS) AddVeth(spec VethSpec) (netlink.Link, error) {
 		PeerName:         spec.OuterName,
 		PeerHardwareAddr: spec.OuterMAC,
 	}
-	if err := netlink.LinkAdd(veth); err != nil {
+	if err = netlink.LinkAdd(veth); err != nil {
 		return nil, fmt.Errorf("netns: add veth %s<->%s: %w", spec.InnerName, spec.OuterName, err)
 	}
+
+	// The pair now exists. Until it is fully configured, tear it down on any
+	// failure — deleting either end removes the whole pair, so we delete by
+	// whichever end is still reachable in the caller's namespace: both ends
+	// until the inner one is moved into n, only the outer one afterwards.
+	// Looking the link up at teardown time (rather than capturing a handle)
+	// keeps cleanup correct even when the failing step is the lookup itself.
+	teardownNames := []string{spec.InnerName, spec.OuterName}
+	defer func() {
+		if err == nil {
+			return
+		}
+		for _, name := range teardownNames {
+			if l, lookupErr := netlink.LinkByName(name); lookupErr == nil {
+				_ = netlink.LinkDel(l)
+				return
+			}
+		}
+	}()
 
 	innerSide, err := netlink.LinkByName(spec.InnerName)
 	if err != nil {
@@ -118,16 +140,15 @@ func (n *NS) AddVeth(spec VethSpec) (netlink.Link, error) {
 	}
 	outerSide, err := netlink.LinkByName(spec.OuterName)
 	if err != nil {
-		_ = netlink.LinkDel(innerSide)
 		return nil, fmt.Errorf("netns: lookup outer side %s: %w", spec.OuterName, err)
 	}
 
-	if err := netlink.LinkSetNsFd(innerSide, int(n.handle)); err != nil {
-		_ = netlink.LinkDel(outerSide)
+	if err = netlink.LinkSetNsFd(innerSide, int(n.handle)); err != nil {
 		return nil, fmt.Errorf("netns: move %s into ns: %w", spec.InnerName, err)
 	}
+	teardownNames = []string{spec.OuterName} // inner now lives in n, unreachable here
 
-	if err := n.Do(func() error {
+	if err = n.Do(func() error {
 		l, err := netlink.LinkByName(spec.InnerName)
 		if err != nil {
 			return fmt.Errorf("inner lookup: %w", err)
@@ -140,16 +161,13 @@ func (n *NS) AddVeth(spec VethSpec) (netlink.Link, error) {
 		}
 		return nil
 	}); err != nil {
-		_ = netlink.LinkDel(outerSide)
 		return nil, fmt.Errorf("netns: configure inner %s: %w", spec.InnerName, err)
 	}
 
-	if err := netlink.AddrAdd(outerSide, &netlink.Addr{IPNet: spec.OuterIP}); err != nil {
-		_ = netlink.LinkDel(outerSide)
+	if err = netlink.AddrAdd(outerSide, &netlink.Addr{IPNet: spec.OuterIP}); err != nil {
 		return nil, fmt.Errorf("netns: outer addr on %s: %w", spec.OuterName, err)
 	}
-	if err := netlink.LinkSetUp(outerSide); err != nil {
-		_ = netlink.LinkDel(outerSide)
+	if err = netlink.LinkSetUp(outerSide); err != nil {
 		return nil, fmt.Errorf("netns: outer up on %s: %w", spec.OuterName, err)
 	}
 	return outerSide, nil
