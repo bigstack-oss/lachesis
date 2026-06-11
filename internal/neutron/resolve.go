@@ -43,7 +43,7 @@ func newResolveIndex(snap Snapshot) *resolveIndex {
 		ri.routers[r.ID] = r
 	}
 	for _, p := range ports {
-		if p.DeviceOwner == deviceOwnerRouterInterface && p.DeviceID != "" {
+		if p.DeviceOwner == DeviceOwnerRouterInterface && p.DeviceID != "" {
 			for _, fip := range p.FixedIPs {
 				if fip.SubnetID == "" {
 					continue
@@ -108,7 +108,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 			return bpf.ZoneExternal, nil, nil
 		}
 		switch port.DeviceOwner {
-		case deviceOwnerRouterInterface:
+		case DeviceOwnerRouterInterface:
 			nextRouter, ok := ri.routers[port.DeviceID]
 			if !ok {
 				return bpf.ZoneExternal, nil, nil

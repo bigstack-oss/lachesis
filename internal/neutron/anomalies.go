@@ -177,7 +177,7 @@ func detectZeroTrieTenants(snap Snapshot, trie []TrieEntry) []ZeroTrieTenant {
 func detectDuplicateRouterMACs(snap Snapshot) []DuplicateRouterMAC {
 	groups := make(map[string][]Port)
 	for _, p := range snap.Ports {
-		if p.DeviceOwner != deviceOwnerRouterInterface || p.MACAddress == "" {
+		if p.DeviceOwner != DeviceOwnerRouterInterface || p.MACAddress == "" {
 			continue
 		}
 		groups[p.MACAddress] = append(groups[p.MACAddress], p)
