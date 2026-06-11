@@ -1318,34 +1318,56 @@ the design's existing fan-out (tenant, zone, direction). **Health metrics**
 
 | Metric | Type | Labels |
 |---|---|---|
-| `cubecos_tenant_bytes_total` | counter | `tenant_id, zone, direction` |
-| `cubecos_tenant_packets_total` | counter | `tenant_id, zone, direction` |
+| `cubecos_bytes_total` | counter | `tenant_id, zone, direction` |
+| `cubecos_packets_total` | counter | `tenant_id, zone, direction` |
 
-#### Health (per-subsystem; bounded cardinality)
+(Earlier drafts named these `cubecos_tenant_{bytes,packets}_total`; the
+implemented, test-pinned names above are canonical — the `tenant_id` label
+already carries the tenant dimension.)
+
+#### Health — implemented (per-subsystem; bounded cardinality)
 
 | Metric | Type | Labels | Source |
 |---|---|---|---|
-| `cubecos_bpf_map_fill_ratio` | gauge | `map="telemetry\|trie\|mac_tenant"` | sampled from BPF map info |
-| `cubecos_bpf_map_max_entries` | gauge | `map="telemetry\|trie\|mac_tenant"` | configured at startup; surfaces actual sizing per host (telemetry map scales by N_CPU per §11) |
-| `cubecos_gc_evictions_total` | counter | `reason="ttl\|pressure_relief"` | GC loop |
-| `cubecos_gc_pressure_relief_runs_total` | counter | — | pressure-relief trigger |
-| `cubecos_unresolved_buffer_depth` | gauge | — | UnresolvedBuffer |
-| `cubecos_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer |
-| `cubecos_unresolved_resolved_total` | counter | — | late-binding success path |
+| `cubecos_bpf_map_max_entries` | gauge | `map="telemetry_map\|subnet_zone_trie\|mac_tenant_map"` | seeded at startup from the compiled-in sizes; surfaces actual sizing per host (telemetry map scales by N_CPU per §11) |
+| `cubecos_bpf_map_current_entries` | gauge | same `map` label | userspace-tracked count: kernelwriter push for mac_tenant_map / subnet_zone_trie, scraper drain for telemetry_map. Fill ratio = `current / max` in PromQL (replaces the drafted `cubecos_bpf_map_fill_ratio`; exporting numerator and denominator keeps both visible) |
+| `cubecos_state_flows` | gauge | — | distinct flow keys in GlobalState (Collector) |
+| `cubecos_scraper_errors_total` | counter | — | failed BPF-map drain attempts (Collector, from scraper) |
+| `cubecos_scraper_last_success_unix_seconds` | gauge | — | most recent successful drain; 0 if never (Collector, from scraper) |
+| `cubecos_collect_duration_seconds` | histogram | — | one Collect pass: snapshot + aggregate + emit. Buckets 1ms..1s |
 | `cubecos_wal_snapshot_copy_seconds` | histogram | — | WAL writer, copy-under-lock phase (critical section) |
 | `cubecos_wal_marshal_seconds` | histogram | — | WAL writer, JSON marshal phase (no lock held) |
 | `cubecos_wal_flush_latency_seconds` | histogram | — | WAL writer, write+fsync+rename phase (no lock held). Buckets: 1ms..1s |
 | `cubecos_wal_flush_failures_total` | counter | `stage="write\|fsync\|rename_bak\|rename_current"` | WAL writer |
 | `cubecos_wal_load_fallback_total` | counter | `from="bak\|empty"` | boot loader |
-| `cubecos_neutron_sync_age_seconds` | gauge | — | last successful cold-start or full reconcile |
-| `cubecos_neutron_api_errors_total` | counter | `endpoint, code` (code is HTTP status class) | Neutron client |
-| `cubecos_kafka_lag_messages` | gauge | `topic` | Kafka consumer |
-| `cubecos_kafka_consume_errors_total` | counter | `topic` | Kafka consumer |
+| `cubecos_neutron_sync_age_seconds` | gauge | — | last successful cold-start or full reconcile; -1 = never synced |
+| `cubecos_neutron_api_errors_total` | counter | `endpoint, code` (HTTP status, or `network` for connection-level failures) | Neutron client |
+| `cubecos_neutron_unknown_device_owner_total` | counter | `owner` | port admissions outside the IsKnownVMOwner allowlist |
+| `cubecos_neutron_builder_step_duration_seconds` | histogram | `step` | BuildTrie per-step duration (§5.2 steps 1–5) |
 | `cubecos_zombie_filters_cleaned_total` | counter | — | startup Zombie Hunter |
 | `cubecos_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher |
-| `cubecos_lingering_ghosts_active` | gauge | — | metadata GC |
-| `cubecos_collect_duration_seconds` | histogram | — | Prometheus Collector |
-| `cubecos_internal_errors_total` | counter | `subsystem` | billing-path error sink (see §13.1) |
+| `cubecos_attached_interfaces` | gauge | — | current Interface Registry size |
+
+#### Health — planned (subsystem not yet built; add with the subsystem)
+
+| Metric | Type | Labels | Source |
+|---|---|---|---|
+| `cubecos_gc_evictions_total` | counter | `reason="ttl\|pressure_relief"` | GC loop |
+| `cubecos_gc_pressure_relief_runs_total` | counter | — | pressure-relief trigger |
+| `cubecos_unresolved_buffer_depth` | gauge | — | UnresolvedBuffer |
+| `cubecos_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer |
+| `cubecos_unresolved_resolved_total` | counter | — | late-binding success path |
+| `cubecos_kafka_lag_messages` | gauge | `topic` | Kafka consumer |
+| `cubecos_kafka_consume_errors_total` | counter | `topic` | Kafka consumer |
+| `cubecos_lingering_ghosts_active` | gauge | — | metadata GC (meaningful once Kafka-driven deletions exercise MarkDelete) |
+
+A drafted generic `cubecos_internal_errors_total{subsystem}` sink was
+dropped: every billing-path error site today lands in a dedicated counter
+(scraper errors, WAL flush-failure stages, WAL load fallback, Neutron API
+errors, TC attach failures), and kernelwriter failures are boot-fatal by
+contract (§9 — the next boot rebuilds the maps). Revisit if a runtime
+error path lands without a dedicated counter — the Kafka-driven
+incremental kernelwriter updates are the expected first case.
 
 Cardinality discipline: **never** label a health metric with `tenant_id`,
 `mac`, `flow_key`, or any per-flow identifier. Anything per-flow goes only
@@ -1356,7 +1378,7 @@ SLO targets (informational, refined post-MVP):
 - `cubecos_neutron_sync_age_seconds` < 120 (Kafka-driven freshness)
 - `cubecos_wal_flush_latency_seconds` p99 < 50 ms
 - `cubecos_unresolved_buffer_depth` < 1000 sustained (10k cap is a panic threshold)
-- `cubecos_bpf_map_fill_ratio{map="telemetry"}` < 0.8 (above triggers pressure-relief GC)
+- `cubecos_bpf_map_current_entries{map="telemetry_map"} / cubecos_bpf_map_max_entries{map="telemetry_map"}` < 0.8 (above triggers pressure-relief GC)
 
 ### Scalability ceiling
 
