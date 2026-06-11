@@ -20,6 +20,7 @@ type neutronStub struct {
 	subnetsJSON  string
 	portsJSON    string
 	routersJSON  string
+	projectsJSON string
 }
 
 func newNeutronStub(t *testing.T) *neutronStub {
@@ -47,6 +48,8 @@ func newNeutronStub(t *testing.T) *neutronStub {
 			ns.serveJSON(w, r, ns.portsJSON)
 		case "/v2.0/routers":
 			ns.serveJSON(w, r, ns.routersJSON)
+		case "/v3/projects":
+			ns.serveJSON(w, r, ns.projectsJSON)
 		default:
 			http.NotFound(w, r)
 		}
@@ -94,6 +97,13 @@ func (ns *neutronStub) serveKeystone(w http.ResponseWriter) {
 					"name": "neutron",
 					"endpoints": []any{
 						map[string]any{"interface": "internal", "region": "R1", "region_id": "R1", "url": ns.URL + "/"},
+					},
+				},
+				map[string]any{
+					"type": "identity",
+					"name": "keystone",
+					"endpoints": []any{
+						map[string]any{"interface": "internal", "region": "R1", "region_id": "R1", "url": ns.URL + "/v3"},
 					},
 				},
 			},
@@ -244,6 +254,7 @@ func TestListRouters(t *testing.T) {
 			{
 				"id":"r-A",
 				"project_id":"proj-1",
+				"name":"edge",
 				"external_gateway_info":{"network_id":"net-EXT"},
 				"routes":[
 					{"destination":"10.99.0.0/16","nexthop":"10.0.0.2"}
@@ -273,6 +284,9 @@ func TestListRouters(t *testing.T) {
 	if got[0].ExternalNetworkID != "net-EXT" {
 		t.Errorf("router[0] external = %q, want net-EXT", got[0].ExternalNetworkID)
 	}
+	if got[0].Name != "edge" {
+		t.Errorf("router[0] name = %q, want edge", got[0].Name)
+	}
 	if len(got[0].Routes) != 1 || got[0].Routes[0] != (Route{Destination: "10.99.0.0/16", Nexthop: "10.0.0.2"}) {
 		t.Errorf("router[0] routes = %+v", got[0].Routes)
 	}
@@ -284,6 +298,35 @@ func TestListRouters(t *testing.T) {
 	}
 	if got[2].ProjectID != "proj-3" {
 		t.Errorf("router[2] ProjectID = %q, want proj-3 (tenant_id fallback)", got[2].ProjectID)
+	}
+}
+
+func TestListProjects(t *testing.T) {
+	ns := newNeutronStub(t)
+	defer ns.Close()
+	ns.projectsJSON = `{
+		"projects": [
+			{"id":"proj-1","name":"alpha"},
+			{"id":"proj-2","name":"beta"}
+		]
+	}`
+	c := newListClient(t, ns)
+
+	got, err := c.ListProjects(context.Background())
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	want := []Project{
+		{ID: "proj-1", Name: "alpha"},
+		{ID: "proj-2", Name: "beta"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d projects, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("project[%d] = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 

@@ -54,6 +54,7 @@ cubecos_neutron_api_errors_total{code="503",endpoint="ports"} 2
 cubecos_neutron_api_errors_total{code="network",endpoint="keystone"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="ports"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="projects"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="routers"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
@@ -73,6 +74,7 @@ func TestMetrics_RecordAPIError_NetworkLevel(t *testing.T) {
 cubecos_neutron_api_errors_total{code="network",endpoint="keystone"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 1
 cubecos_neutron_api_errors_total{code="network",endpoint="ports"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="projects"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="routers"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
@@ -95,6 +97,7 @@ func TestMetrics_RecordAPIError_NilErrorIgnored(t *testing.T) {
 cubecos_neutron_api_errors_total{code="network",endpoint="keystone"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="ports"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="projects"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="routers"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `

@@ -8,12 +8,15 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack"
 )
 
-// Client is the agent's Neutron API handle. Internally it wraps a
-// [gophercloud.ServiceClient]; gophercloud owns Keystone v3
-// authentication, token caching, and reactive 401-driven reauth
-// (AllowReauth=true). Construct with [NewClient].
+// Client is the agent's Neutron API handle. Internally it wraps two
+// [gophercloud.ServiceClient]s — the Network v2 client for Neutron
+// calls and an Identity v3 client used to resolve project IDs to
+// names. gophercloud owns Keystone v3 authentication, token caching,
+// and reactive 401-driven reauth (AllowReauth=true). Construct with
+// [NewClient].
 type Client struct {
-	network *gophercloud.ServiceClient
+	network  *gophercloud.ServiceClient
+	identity *gophercloud.ServiceClient
 }
 
 // NewClient authenticates against Keystone with creds and returns a
@@ -63,7 +66,14 @@ func NewClient(ctx context.Context, creds Credentials) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("neutron: endpoint discovery: %w", err)
 	}
-	return &Client{network: net}, nil
+	id, err := openstack.NewIdentityV3(provider, gophercloud.EndpointOpts{
+		Region:       creds.Region,
+		Availability: gophercloud.Availability(iface),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("neutron: identity endpoint discovery: %w", err)
+	}
+	return &Client{network: net, identity: id}, nil
 }
 
 // EndpointURL returns the Neutron base URL gophercloud discovered

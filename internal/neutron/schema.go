@@ -10,8 +10,9 @@ import "net/netip"
 
 // Snapshot is the four Neutron resource lists the agent consumes
 // together at cold-start and at every full-resync triggered by the
-// Kafka updater. Bundled into one type so callers can pass it
-// around as a single value instead of four parallel slices.
+// Kafka updater, plus the Keystone project list. Bundled into one
+// type so callers can pass it around as a single value instead of
+// parallel slices.
 //
 // The fields are slices in API-iteration order — no sorting
 // guarantee. Downstream consumers that need stable ordering
@@ -21,6 +22,11 @@ type Snapshot struct {
 	Subnets  []Subnet
 	Ports    []Port
 	Routers  []Router
+	// Projects is the Keystone project list. Carried alongside the
+	// Neutron resources because Neutron returns project_id as a bare
+	// UUID; consumers that need a human-readable label (the /debug
+	// pages, log enrichment) resolve through this slice.
+	Projects []Project
 }
 
 // AmbiguityHit records a Step C ambiguity-after-scoping incident
@@ -53,6 +59,7 @@ const (
 	EndpointSubnets  = "subnets"
 	EndpointPorts    = "ports"
 	EndpointRouters  = "routers"
+	EndpointProjects = "projects"
 )
 
 // codeNetwork is the `code` label class for connection-level
