@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Topology — {{ if .TenantName }}{{ .TenantName }}{{ else }}{{ .TenantID }}{{ end }}</title>
+{{ template "style" }}
+</head>
+<body>
+<nav><a href="/debug">/debug</a><a href="/debug/topology">← directory</a><a href="/debug/zones">zones</a><a href="/debug/config">config</a></nav>
+<h1>
+  {{ if .TenantName }}{{ .TenantName }} <span class="uuid">{{ .TenantID }}</span>
+  {{ else }}<span class="uuid">{{ .TenantID }}</span>{{ end }}
+</h1>
+<div class="meta">
+  Last neutron sync:
+  {{- if not .Synced }} never
+  {{- else }} {{ .LastSync.UTC.Format "2006-01-02T15:04:05Z" }}
+  {{- end }}
+</div>
+
+{{ if .NotFound }}
+<p class="empty">No Neutron resources owned by this tenant, and no cross-tenant edges touching it. <a href="/debug/topology">← back to directory</a></p>
+{{ else }}
+
+<div class="summary">
+  <span class="badge">{{ .Summary.Networks }} network{{ if ne .Summary.Networks 1 }}s{{ end }}</span>
+  <span class="badge">{{ .Summary.Routers }} router{{ if ne .Summary.Routers 1 }}s{{ end }}</span>
+  <span class="badge">{{ .Summary.Attachments }} attachment{{ if ne .Summary.Attachments 1 }}s{{ end }}</span>
+  <span class="badge">{{ .Summary.Extraroutes }} extraroute{{ if ne .Summary.Extraroutes 1 }}s{{ end }}</span>
+  {{ if .Summary.CrossAttach }}<span class="badge cross">{{ .Summary.CrossAttach }} cross-tenant attach</span>{{ end }}
+  {{ if .Summary.CrossExtraroute }}<span class="badge cross">{{ .Summary.CrossExtraroute }} cross-tenant extraroute</span>{{ end }}
+</div>
+
+{{ if .Networks }}
+<h2>Networks ({{ len .Networks }})</h2>
+<table>
+<thead><tr><th>Name</th><th>CIDRs</th><th>Flags</th><th>ID</th></tr></thead>
+<tbody>
+{{- range .Networks }}
+<tr>
+  <td>{{ .Name }}</td>
+  <td>{{ range $i, $c := .CIDRs }}{{ if $i }}, {{ end }}{{ $c }}{{ end }}</td>
+  <td class="kind-{{ .Kind }}">{{ if .Kind }}{{ .Kind }}{{ end }}</td>
+  <td class="uuid">{{ .ID }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ end }}
+
+{{ if .Routers }}
+<h2>Routers ({{ len .Routers }})</h2>
+{{- range .Routers }}
+<div class="router-card">
+  <h3>{{ if .Name }}{{ .Name }} {{ end }}<span class="uuid">{{ .ID }}</span></h3>
+  {{ if .ExternalGatewayID }}
+  <div class="ext">external gateway → {{ if .ExternalGatewayName }}{{ .ExternalGatewayName }}{{ else }}{{ .ExternalGatewayID }}{{ end }} <span class="uuid">({{ .ExternalGatewayID }})</span></div>
+  {{ else }}
+  <div class="ext none">no external gateway</div>
+  {{ end }}
+
+  <div class="subhead">Attachments {{ if .Attachments }}({{ len .Attachments }}){{ end }}</div>
+  {{ if .Attachments }}
+  <table>
+  <thead><tr><th>Network</th><th>IP</th><th>Network ID</th></tr></thead>
+  <tbody>
+  {{- range .Attachments }}
+  <tr>
+    <td>{{ .NetworkName }}{{ if .CrossTenant }}<a class="cross-mark" href="/debug/topology/{{ .NetworkTenantID }}" title="cross-tenant: network owned by {{ .NetworkTenantName }}">→ [{{ .NetworkTenantName }}]</a>{{ end }}</td>
+    <td>{{ .IP }}</td>
+    <td class="uuid">{{ .NetworkID }}</td>
+  </tr>
+  {{- end }}
+  </tbody>
+  </table>
+  {{ else }}
+  <div class="empty">none</div>
+  {{ end }}
+
+  <div class="subhead">Extraroutes {{ if .Extraroutes }}({{ len .Extraroutes }}){{ end }}</div>
+  {{ if .Extraroutes }}
+  <table>
+  <thead><tr><th>Destination</th><th>Nexthop</th><th>Next router</th></tr></thead>
+  <tbody>
+  {{- range .Extraroutes }}
+  <tr>
+    <td>{{ .Destination }}</td>
+    <td>{{ .Nexthop }}</td>
+    <td>
+      {{ if .NextRouterID }}
+        <span class="uuid">{{ .NextRouterID }}</span>
+        {{ if .CrossTenant }}<a class="cross-mark" href="/debug/topology/{{ .NextRouterTenantID }}" title="cross-tenant: next router owned by {{ .NextRouterTenantName }}">→ [{{ .NextRouterTenantName }}]</a>{{ end }}
+      {{ else }}
+        <span class="muted">(unresolved — nexthop is not a known router_interface)</span>
+      {{ end }}
+    </td>
+  </tr>
+  {{- end }}
+  </tbody>
+  </table>
+  {{ else }}
+  <div class="empty">none</div>
+  {{ end }}
+</div>
+{{- end }}
+{{ end }}
+
+{{ if .Extraroutes }}
+<h2>Cross-tenant extraroutes ({{ len .Extraroutes }})</h2>
+<table>
+<thead><tr>
+  <th>Dir</th><th>Source router</th><th>Source tenant</th>
+  <th>Destination</th><th>via</th>
+  <th>Target router</th><th>Target tenant</th>
+</tr></thead>
+<tbody>
+{{- range .Extraroutes }}
+<tr>
+  <td>{{ .Direction }}</td>
+  <td class="uuid">{{ .SourceRouterID }}</td>
+  <td><a class="tenant" href="/debug/topology/{{ .SourceTenantID }}">{{ .SourceTenantName }}</a></td>
+  <td>{{ .Destination }}</td>
+  <td>{{ .Nexthop }}</td>
+  <td class="uuid">{{ .TargetRouterID }}</td>
+  <td><a class="tenant" href="/debug/topology/{{ .TargetTenantID }}">{{ .TargetTenantName }}</a></td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ end }}
+
+{{ end }}
+</body>
+</html>

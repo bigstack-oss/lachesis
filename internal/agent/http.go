@@ -12,13 +12,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/debug"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
 )
 
 // openHTTP wires the agent's HTTP surface: the Prometheus registry,
-// the runtime manager's /debug routes, and the server bound to the
-// configured listen address. Split from [New] so construction reads
-// as data plane → metrics → HTTP, with the HTTP details here.
+// the /debug pages, and the server bound to the configured listen
+// address. Split from [New] so construction reads as data plane →
+// metrics → HTTP, with the HTTP details here.
 func (a *Agent) openHTTP(opts Options) error {
 	reg, err := a.buildRegistry()
 	if err != nil {
@@ -26,7 +28,15 @@ func (a *Agent) openHTTP(opts Options) error {
 	}
 
 	mgr := runtime.New(opts.ConfigPath, opts.Config, opts.Log)
-	handler := buildHTTPHandler(reg, mgr)
+	dbg := debug.New(debug.Options{
+		Snapshot:  a.neutronSnapshot.Load,
+		Trie:      a.trieEntriesView,
+		Anomalies: a.anomalies.Load,
+		LastSync:  a.lastNeutronSyncTime,
+		MACLookup: a.meta.Lookup,
+		Fallback:  mgr.DebugHandler(),
+	})
+	handler := buildHTTPHandler(reg, dbg.Handler())
 
 	ln, err := net.Listen("tcp", opts.Config.HTTP.Listen)
 	if err != nil {
@@ -60,12 +70,16 @@ func (a *Agent) buildRegistry() (*prometheus.Registry, error) {
 
 // buildHTTPHandler returns the mux the HTTP server will serve.
 // Centralising the route table here is the seam future subsystems
-// (e.g. a /healthz, a /reload, a /pprof under debug) attach to —
-// rather than each one widening [New].
-func buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager) http.Handler {
+// (e.g. a /healthz, a /reload) attach to — rather than each one
+// widening [New]. The debug handler owns the whole /debug subtree
+// (pages, pprof, and the runtime manager's config/log-level routes
+// via its fallback), so it mounts both the exact "/debug" index
+// path and the "/debug/" subtree.
+func buildHTTPHandler(reg *prometheus.Registry, dbg http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	mux.Handle("/debug/", mgr.DebugHandler())
+	mux.Handle("/debug", dbg)
+	mux.Handle("/debug/", dbg)
 	return mux
 }
 
@@ -74,4 +88,14 @@ func buildHTTPHandler(reg *prometheus.Registry, mgr *runtime.Manager) http.Handl
 // returns.
 func (a *Agent) Addr() string {
 	return a.listener.Addr().String()
+}
+
+// trieEntriesView adapts the agent's atomic trie-entries pointer to
+// the value-slice accessor the debug server takes. nil before the
+// first successful Neutron sync.
+func (a *Agent) trieEntriesView() []neutron.TrieEntry {
+	if p := a.trieEntries.Load(); p != nil {
+		return *p
+	}
+	return nil
 }

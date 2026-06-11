@@ -165,6 +165,32 @@ func TestAgent_DebugConfigEndpoint(t *testing.T) {
 	t.Fatalf("/debug/config did not return 200 within 1s")
 }
 
+// TestAgent_DebugIndexEndpoint verifies the debug pages mount on the
+// agent's mux: /debug serves the index (never-synced state here —
+// no Neutron in unit tests) alongside the runtime fallback routes.
+func TestAgent_DebugIndexEndpoint(t *testing.T) {
+	reader := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{}}
+	ag, _ := newTestAgent(t, reader)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://" + ag.Addr() + "/debug")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if !strings.Contains(string(b), "never") {
+				t.Fatalf("/debug index missing never-synced badge:\n%s", string(b))
+			}
+			return
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("/debug did not return 200 within 1s")
+}
+
 func TestAgent_NilReaderRejected(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.HTTP.Listen = "127.0.0.1:0"

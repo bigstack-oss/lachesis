@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Topology — Telemetry Agent</title>
+{{ template "style" }}
+</head>
+<body>
+<nav><a href="/debug">/debug</a><a href="/debug/zones">zones</a><a href="/debug/anomalies">anomalies</a><a href="/debug/config">config</a></nav>
+<h1>Topology Directory</h1>
+<div class="meta">
+  Last neutron sync:
+  {{- if not .Synced }} never
+  {{- else }} {{ .LastSync.UTC.Format "2006-01-02T15:04:05Z" }} ({{ len .Rows }} tenants)
+  {{- end }}
+</div>
+
+{{ if not .Rows }}
+<p class="empty">No tenant data yet. Either Neutron is disabled, or cold-start has not completed. See <a href="/debug/config">/debug/config</a>.</p>
+{{ else }}
+<p class="help">
+  Counts below are this tenant's footprint plus its <em>cross-tenant</em> relationships.
+  <strong>Attach out</strong> = this tenant's <em>router</em> attaches to another tenant's <em>network</em>;
+  <strong>attach in</strong> = the reverse (another tenant's router attaches to one of this tenant's networks).
+  <strong>Extraroute out</strong> = this tenant's router has an extraroute whose resolved next-hop is another tenant's router;
+  <strong>extraroute in</strong> = the reverse.
+  Click a tenant name to open its focused view.
+</p>
+
+<table>
+<thead><tr>
+  <th>Tenant</th>
+  <th class="num" title="Networks owned by this tenant">Networks</th>
+  <th class="num" title="Routers owned by this tenant">Routers</th>
+  <th class="num" title="This tenant's routers attach to OTHER tenants' networks">Attach out</th>
+  <th class="num" title="OTHER tenants' routers attach to THIS tenant's networks">Attach in</th>
+  <th class="num" title="This tenant's routers extraroute via OTHER tenants' routers">Extraroute out</th>
+  <th class="num" title="OTHER tenants' routers extraroute via THIS tenant's routers">Extraroute in</th>
+  <th class="num">Cross total</th>
+</tr></thead>
+<tbody>
+{{- range .Rows }}
+<tr>
+  <td>
+    <a class="tenant" href="/debug/topology/{{ .TenantID }}">{{ .TenantName }}</a>
+    <span class="uuid">{{ .TenantID }}</span>
+  </td>
+  <td class="num {{ if eq .Networks 0 }}zero{{ end }}">{{ .Networks }}</td>
+  <td class="num {{ if eq .Routers 0 }}zero{{ end }}">{{ .Routers }}</td>
+  <td class="num {{ if eq .OutAttach 0 }}zero{{ end }}">{{ .OutAttach }}</td>
+  <td class="num {{ if eq .InAttach 0 }}zero{{ end }}">{{ .InAttach }}</td>
+  <td class="num {{ if eq .OutExtra 0 }}zero{{ end }}">{{ .OutExtra }}</td>
+  <td class="num {{ if eq .InExtra 0 }}zero{{ end }}">{{ .InExtra }}</td>
+  <td class="num {{ if eq .CrossTotal 0 }}zero{{ end }}"><strong>{{ .CrossTotal }}</strong></td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+
+<p class="help">
+  Sorted by descending cross-tenant edge count — hub tenants surface first.
+</p>
+{{ end }}
+</body>
+</html>

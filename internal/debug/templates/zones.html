@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Zone Map — Telemetry Agent</title>
+{{ template "style" }}
+</head>
+<body>
+<nav><a href="/debug">/debug</a><a href="/debug/topology">topology</a><a href="/debug/anomalies">anomalies</a><a href="/debug/config">config</a></nav>
+<h1>Zone Map</h1>
+<div class="meta">
+  Last neutron sync:
+  {{- if not .Synced }} never
+  {{- else }} {{ .LastSync.UTC.Format "2006-01-02T15:04:05Z" }} ({{ .Rows | len }} entries)
+  {{- end }}
+</div>
+
+{{ if not .Rows }}
+<p class="empty">No trie entries yet. Either Neutron is disabled, or cold-start has not completed. See <a href="/debug/config">/debug/config</a>.</p>
+{{ else }}
+<div class="controls">
+  <label for="tenant">Filter by tenant:</label>
+  <select id="tenant">
+    <option value="__all__">All tenants ({{ .Rows | len }} rows)</option>
+    {{ range .Tenants }}<option value="{{ .ID }}">{{ .Label }}</option>{{ end }}
+  </select>
+</div>
+
+<table>
+<thead><tr><th>Tenant</th><th>Prefix</th><th>Zone</th></tr></thead>
+<tbody>
+{{- range .Rows }}
+<tr data-tenant="{{ .Tenant }}">
+  <td class="{{ if eq .Tenant "" }}global{{ end }}">{{ .TenantName }}</td>
+  <td>{{ .Prefix }}</td>
+  <td class="zone-{{ .Zone }}">{{ .Zone }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  document.getElementById('tenant').addEventListener('change', function (e) {
+    var sel = e.target.value;
+    document.querySelectorAll('tbody tr').forEach(function (tr) {
+      tr.style.display = (sel === '__all__' || tr.dataset.tenant === sel) ? '' : 'none';
+    });
+  });
+});
+</script>
+{{ end }}
+</body>
+</html>
