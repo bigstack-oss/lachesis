@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
+
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/agent"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
@@ -170,6 +172,9 @@ func (b *blockingReader) BatchLookup(_ map[bpf.FlowKey]bpf.FlowMetrics) error {
 // BatchLookup). Without this guarantee, callers that close BPF
 // resources after Run returns can race the kernel-map read.
 func TestAgent_ShutdownWaitsForScraper(t *testing.T) {
+	// Any goroutine Run spawned must be gone once Run returns; a
+	// worker added outside Agent.workers() fails here, not in prod.
+	defer goleak.VerifyNone(t)
 	r := &blockingReader{
 		inflight: make(chan struct{}, 1),
 		release:  make(chan struct{}),
@@ -332,6 +337,7 @@ func TestAgent_WALMetricsAppearOnMetricsEndpoint(t *testing.T) {
 }
 
 func TestAgent_WALFinalFlushOnShutdown(t *testing.T) {
+	defer goleak.VerifyNone(t)
 	walPath := filepath.Join(t.TempDir(), "wal.json")
 
 	r := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{
@@ -399,6 +405,10 @@ func TestAgent_WALFinalFlushOnShutdown(t *testing.T) {
 // returning immediately and leaking goroutines. Without the drain on
 // the srvErr path, the seeded delta would never reach disk.
 func TestAgent_WALFinalFlushOnServerError(t *testing.T) {
+	// This path is where a ctx-bound (rather than runCtx-bound)
+	// goroutine would leak: the caller never cancels, so anything
+	// not tied to Run's own lifetime survives Run returning.
+	defer goleak.VerifyNone(t)
 	walPath := filepath.Join(t.TempDir(), "wal.json")
 
 	r := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{

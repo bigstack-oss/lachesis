@@ -25,5 +25,6 @@ require (
 require (
 	github.com/gophercloud/gophercloud/v2 v2.12.0
 	github.com/vishvananda/netns v0.0.5
+	go.uber.org/goleak v1.3.0
 	golang.org/x/sys v0.42.0
 )

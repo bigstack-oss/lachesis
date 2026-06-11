@@ -219,8 +219,13 @@ func (a *Agent) SeedState(records []state.Record) {
 	a.state.Restore(records)
 }
 
-// Run starts the scraper, WAL flush goroutine (when enabled), and
-// HTTP server. Blocks until ctx is cancelled or the server fails.
+// Run starts the worker goroutines listed in [Agent.workers] (netlink
+// subscriber, scraper, WAL flush — as enabled) and the HTTP server.
+// Blocks until ctx is cancelled or the server fails.
+//
+// The workers list is the single source of truth: Run spawns from it
+// and both shutdown paths drain exactly it. A new long-lived
+// goroutine means a new row there, nothing else.
 //
 // On graceful shutdown it stops accepting new HTTP requests, drains
 // in-flight scrapes, waits for the scraper goroutine to finish its
@@ -235,8 +240,6 @@ func (a *Agent) SeedState(records []state.Record) {
 // netlink's idempotent QdiscReplace / FilterReplace. A clean detach
 // + a recovery path for filters orphaned by crashes are planned.
 func (a *Agent) Run(ctx context.Context) error {
-	a.runtime.InstallSIGHUP(ctx)
-
 	// runCtx derives from the caller's ctx so that an HTTP server
 	// failure can tear down the scraper, WAL, and netlink goroutines
 	// the same way a caller cancellation does. Without it, the srvErr
@@ -245,30 +248,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	scraperDone := make(chan struct{})
-	go func() {
-		a.scraper.Run(runCtx)
-		close(scraperDone)
-	}()
+	// SIGHUP reload lives on runCtx, not ctx: on the server-error exit
+	// path the caller never cancels, and a ctx-bound reload goroutine
+	// would outlive Run forever (the package's goleak tests catch this).
+	a.runtime.InstallSIGHUP(runCtx)
 
-	walDone := make(chan struct{})
-	if a.cfg.WAL.Enabled {
-		go a.walFlushLoop(runCtx, walDone)
-	} else {
-		close(walDone)
-	}
-
-	netlinkDone := make(chan struct{})
-	if a.netlinkSubscriber != nil {
-		go func() {
-			defer close(netlinkDone)
-			if err := a.netlinkSubscriber.Run(runCtx); err != nil {
-				slog.Error("subscriber exited", "component", componentNetlink, "err", err)
-			}
-		}()
-	} else {
-		close(netlinkDone)
-	}
+	workers := a.workers()
+	done := startWorkers(runCtx, workers)
 
 	srvErr := make(chan error, 1)
 	go func() {
@@ -288,7 +274,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		return a.shutdown(srvErr, scraperDone, walDone, netlinkDone)
+		return a.shutdown(srvErr, workers, done)
 	case err := <-srvErr:
 		// The HTTP server failed on its own (the listener died, say).
 		// srvErr is already drained, so we can't route through the full
@@ -297,18 +283,17 @@ func (a *Agent) Run(ctx context.Context) error {
 		// doesn't leak goroutines or lose the last deltas.
 		slog.Info("shutdown initiated by server error", "component", componentAgent)
 		cancel()
-		a.drainWorkers(scraperDone, walDone, netlinkDone)
+		a.drainWorkers(workers, done)
 		return err
 	}
 }
 
 // walFlushLoop drains [state.GlobalState] to disk on the configured
 // cadence. On ctx cancellation it runs one final flush before
-// signalling done — that's how a clean shutdown captures the latest
+// returning — that's how a clean shutdown captures the latest
 // deltas the scraper applied between the last periodic flush and
 // the SIGINT/SIGTERM.
-func (a *Agent) walFlushLoop(ctx context.Context, done chan<- struct{}) {
-	defer close(done)
+func (a *Agent) walFlushLoop(ctx context.Context) {
 	t := time.NewTicker(a.cfg.WAL.FlushInterval)
 	defer t.Stop()
 	for {
@@ -348,13 +333,14 @@ func (a *Agent) flushWAL() error {
 // done.
 //
 // Drain order matters: scraper drains first so the latest deltas
-// land in state, then the WAL final flush captures them. Both
-// drains are deferred so they run even on an HTTP shutdown error
-// (otherwise the BPF-collection close in main could race the
-// kernel-map read, and the latest in-memory state could be lost).
-func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone, netlinkDone <-chan struct{}) error {
+// land in state, then the WAL final flush captures them — the order
+// is encoded once, in [Agent.workers]. The drain is deferred so it
+// runs even on an HTTP shutdown error (otherwise the BPF-collection
+// close in main could race the kernel-map read, and the latest
+// in-memory state could be lost).
+func (a *Agent) shutdown(srvErr <-chan error, ws []worker, done []chan struct{}) error {
 	slog.Info("shutdown initiated", "component", componentAgent)
-	defer a.drainWorkers(scraperDone, walDone, netlinkDone)
+	defer a.drainWorkers(ws, done)
 
 	httpCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -364,36 +350,4 @@ func (a *Agent) shutdown(srvErr <-chan error, scraperDone, walDone, netlinkDone 
 	<-srvErr
 	slog.Info("http server stopped", "component", componentAgent)
 	return nil
-}
-
-// drainWorkers waits for the netlink, scraper, and WAL goroutines to
-// exit, in that order. Scraper drains before WAL so the latest deltas
-// land in state before the WAL final flush captures them. Used by both
-// shutdown paths (caller-ctx cancel and HTTP server failure), so the
-// goroutine teardown and final flush are identical regardless of why
-// the agent is stopping. The caller must have cancelled the workers'
-// context first.
-func (a *Agent) drainWorkers(scraperDone, walDone, netlinkDone <-chan struct{}) {
-	a.await("netlink subscriber", netlinkDone)
-	a.await("scraper", scraperDone)
-	a.await("wal", walDone)
-	slog.Info("shutdown complete", "component", componentAgent)
-}
-
-// await blocks until done is closed or shutdownTimeout elapses,
-// logging which goroutine stopped or timed out. drainWorkers calls it
-// once per drained goroutine (netlink subscriber, scraper, WAL flush)
-// so a slow HTTP drain never leaves a goroutine holding a BPF map read
-// while the caller closes the collection. A WAL-flush timeout is the
-// design's stated worst case: the last ≤flush_interval of in-memory
-// deltas are lost.
-func (a *Agent) await(name string, done <-chan struct{}) {
-	select {
-	case <-done:
-		slog.Info(name+" stopped", "component", componentAgent)
-	case <-time.After(shutdownTimeout):
-		slog.Warn(name+" did not exit within shutdown budget",
-			"component", componentAgent,
-			"budget", shutdownTimeout)
-	}
 }
