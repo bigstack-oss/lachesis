@@ -100,8 +100,10 @@ type Agent struct {
 // resolved address.
 //
 // New reads top-to-bottom as the agent's composition order: validate
-// inputs, build the data plane (state + scraper + collector), wire the
-// Prometheus registry, mount the HTTP surface, open the listener.
+// inputs, wire the data plane (state + scraper + collector), bundle
+// the subsystem metrics, then mount the HTTP surface and open the
+// listener. The latter two live in [newSubsystemMetrics] and
+// [Agent.openHTTP]; New itself only composes.
 func New(opts Options) (*Agent, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
@@ -109,42 +111,32 @@ func New(opts Options) (*Agent, error) {
 
 	st := state.New()
 	meta := metadata.New()
-	interner := metadata.NewTenantInterner()
 	sc := scraper.New(opts.Reader, st, opts.Config.Scrape.Interval)
-	col := metrics.New(st, sc, opts.resolverOrDefault(meta))
-
-	walMx := wal.NewMetrics()
-	zombieMx := zombie.NewMetrics()
-	nlReg := cnetlink.NewRegistry()
-	nlMx := cnetlink.NewMetrics(nlReg.Len)
-	bpfMx := bpf.NewMetrics()
-	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
-	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
-	// Both current_entries seed at 0; cold-start will overwrite after
-	// the first successful kernel push.
-	bpfMx.SetCurrent(bpf.MapMacTenant, 0)
-	bpfMx.SetCurrent(bpf.MapSubnetZoneTrie, 0)
 
 	a := &Agent{
 		cfg:       opts.Config,
 		state:     st,
 		scraper:   sc,
-		collector: col,
-		mx: subsystemMetrics{
-			wal:      walMx,
-			bpf:      bpfMx,
-			zombie:   zombieMx,
-			netlink:  nlMx,
-			registry: nlReg,
-		},
-		meta:     meta,
-		interner: interner,
+		collector: metrics.New(st, sc, opts.resolverOrDefault(meta)),
+		meta:      meta,
+		interner:  metadata.NewTenantInterner(),
 	}
-	a.mx.neutron = neutron.NewMetrics(a.lastNeutronSyncTime)
+	a.mx = newSubsystemMetrics(a.lastNeutronSyncTime)
 
+	if err := a.openHTTP(opts); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// openHTTP wires the agent's HTTP surface: the Prometheus registry,
+// the runtime manager's /debug routes, and the server bound to the
+// configured listen address. Split from [New] so construction reads
+// as data plane → metrics → HTTP, with the HTTP details here.
+func (a *Agent) openHTTP(opts Options) error {
 	reg, err := a.buildRegistry()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	mgr := runtime.New(opts.ConfigPath, opts.Config, opts.Log)
@@ -152,13 +144,13 @@ func New(opts Options) (*Agent, error) {
 
 	ln, err := net.Listen("tcp", opts.Config.HTTP.Listen)
 	if err != nil {
-		return nil, fmt.Errorf("agent: listen %s: %w", opts.Config.HTTP.Listen, err)
+		return fmt.Errorf("agent: listen %s: %w", opts.Config.HTTP.Listen, err)
 	}
 
 	a.runtime = mgr
 	a.listener = ln
 	a.server = &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout}
-	return a, nil
+	return nil
 }
 
 // WALMetrics returns the WAL instrument bundle the agent registered
