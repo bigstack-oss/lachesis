@@ -12,10 +12,13 @@ package neutron
 // The list-call adapters in list.go prefer ProjectID and fall back
 // to TenantID when only the legacy field is populated.
 
-// Network is the trie-builder view of a Neutron network.
+// Network is the trie-builder view of a Neutron network. Name is
+// the operator-assigned label; unused by trie classification but
+// surfaced in /debug pages.
 type Network struct {
 	ID        string
 	ProjectID string
+	Name      string
 	// Shared indicates the network can be attached to by any
 	// project. Used by §5.2 Step 3 of the trie builder (shared
 	// networks contribute OTHER_TENANT entries rather than per-tenant

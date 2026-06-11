@@ -97,6 +97,15 @@ type DuplicateRouterMAC struct {
 	RouterIDs []string
 }
 
+// ResourceMatch is the result of looking up an IP or MAC against
+// the Neutron snapshot. Any field may be nil — see [LookupResource]
+// and [LookupPortByMAC] for which combinations are produced.
+type ResourceMatch struct {
+	Subnet  *Subnet
+	Network *Network
+	Port    *Port
+}
+
 // componentNeutron is the slog `component` attribute for all
 // Neutron-subsystem log calls. Matches the per-package convention
 // the rest of the codebase follows.
@@ -156,11 +165,13 @@ const maxStaticRouteHops = 16
 
 // Neutron device_owner vocabulary. deviceOwnerNetworkPrefix is the
 // reserved `network:` namespace that [IsInfraPort] / [IsVMPort] use to
-// partition infra ports from VM-like ports; deviceOwnerRouterInterface
-// is the specific owner the static-route resolver follows hop-to-hop.
+// partition infra ports from VM-like ports; DeviceOwnerRouterInterface
+// is the specific owner the static-route resolver follows hop-to-hop
+// (exported: the /debug topology builders classify attachments with
+// it too).
 const (
 	deviceOwnerNetworkPrefix   = "network:"
-	deviceOwnerRouterInterface = "network:router_interface"
+	DeviceOwnerRouterInterface = "network:router_interface"
 )
 
 // BuildTrie step labels for the

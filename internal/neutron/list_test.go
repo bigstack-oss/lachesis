@@ -137,9 +137,9 @@ func TestListNetworks(t *testing.T) {
 		t.Fatalf("ListNetworks: %v", err)
 	}
 	want := []Network{
-		{ID: "net-A", ProjectID: "proj-1", Shared: false, IsExternal: false},
-		{ID: "net-B", ProjectID: "proj-2", Shared: true, IsExternal: false}, // tenant_id → ProjectID fallback
-		{ID: "net-ext", ProjectID: "proj-admin", Shared: true, IsExternal: true},
+		{ID: "net-A", ProjectID: "proj-1", Name: "net-A", Shared: false, IsExternal: false},
+		{ID: "net-B", ProjectID: "proj-2", Name: "net-B", Shared: true, IsExternal: false}, // tenant_id → ProjectID fallback
+		{ID: "net-ext", ProjectID: "proj-admin", Name: "public", Shared: true, IsExternal: true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d networks, want %d", len(got), len(want))
