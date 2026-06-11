@@ -120,6 +120,31 @@ func TestAgent_ServesMetricsFromReader(t *testing.T) {
 	}
 }
 
+func TestAgent_TelemetryMapFillGauge(t *testing.T) {
+	reader := &staticReader{
+		entries: map[bpf.FlowKey]bpf.FlowMetrics{
+			{
+				SrcMac:    [6]uint8{0xaa, 0, 0, 0, 0, 1},
+				DstMac:    [6]uint8{0xaa, 0, 0, 0, 0, 2},
+				EthProto:  0x0800,
+				Direction: bpf.DirectionEgress,
+				DstZone:   bpf.ZoneExternal,
+			}: {Bytes: 1, Packets: 1, LastSeenNs: 1},
+		},
+	}
+	ag, _ := newTestAgent(t, reader)
+
+	// The current-entries gauge follows the first successful drain;
+	// poll until it reflects the reader's single entry.
+	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
+		return strings.Contains(s, `cubecos_bpf_map_current_entries{map="telemetry_map"} 1`)
+	})
+
+	if want := `cubecos_bpf_map_max_entries{map="telemetry_map"} 65536`; !strings.Contains(body, want) {
+		t.Errorf("body missing %q\n----\n%s", want, body)
+	}
+}
+
 func TestAgent_DebugConfigEndpoint(t *testing.T) {
 	reader := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{}}
 	ag, _ := newTestAgent(t, reader)

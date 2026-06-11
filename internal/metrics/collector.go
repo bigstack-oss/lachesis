@@ -34,6 +34,7 @@ package metrics
 import (
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
@@ -70,6 +71,15 @@ type Collector struct {
 	flowsDesc        *prometheus.Desc
 	scrapeErrorsDesc *prometheus.Desc
 	scrapeLastOKDesc *prometheus.Desc
+
+	// collectDuration times each Collect pass (snapshot + aggregate +
+	// emit). DESIGN §11 sizes the per-scrape cost by N_CPU and flow
+	// count (~5 ms at 32-core/10k flows up to 100+ ms at 128-core/50k);
+	// this histogram surfaces the actual cost per node so an
+	// outgrown scrape budget is visible before it stalls the
+	// exporter. Observed before its own emission, so the in-flight
+	// pass is included in the scrape that reports it.
+	collectDuration prometheus.Histogram
 
 	// collectMu serialises concurrent Collect callers. The default
 	// Prometheus registry is single-threaded but third-party
@@ -122,6 +132,11 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 			"Unix timestamp of the most recent successful BPF-map drain; 0 if never.",
 			nil, nil,
 		),
+		collectDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "cubecos_collect_duration_seconds",
+			Help:    "Duration of one Prometheus Collect pass over GlobalState (snapshot + aggregate + emit).",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 11), // 1ms..1.024s, same span as the WAL flush SLO buckets
+		}),
 	}
 }
 
@@ -132,6 +147,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.flowsDesc
 	ch <- c.scrapeErrorsDesc
 	ch <- c.scrapeLastOKDesc
+	c.collectDuration.Describe(ch)
 }
 
 // Collect implements [prometheus.Collector]. It copies GlobalState
@@ -143,6 +159,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectMu.Lock()
 	defer c.collectMu.Unlock()
+	start := time.Now()
 
 	c.emitBuf = c.state.Snapshot(c.emitBuf[:0])
 	clear(c.aggBuf)
@@ -180,6 +197,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(
 		c.scrapeLastOKDesc, prometheus.GaugeValue, float64(c.scraper.LastSuccessUnix()),
 	)
+
+	c.collectDuration.Observe(time.Since(start).Seconds())
+	c.collectDuration.Collect(ch)
 }
 
 // zoneLabel formats a [bpf.ZoneCode]. Unknown values fall back to the

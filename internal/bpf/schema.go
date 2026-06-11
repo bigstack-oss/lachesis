@@ -100,8 +100,9 @@ const (
 //  1. Load-time assertions can check the kernel spec matches what
 //     userspace expects, catching a stale `.o` build before the
 //     agent silently writes into an undersized map.
-//  2. Health metrics (cubecos_bpf_map_fill_ratio) need the
-//     denominator to compute "% of map occupied".
+//  2. The cubecos_bpf_map_max_entries gauge needs the denominator
+//     so dashboards can compute "% of map occupied" against
+//     cubecos_bpf_map_current_entries.
 //
 // Sizing rationale lives in bpf/telemetry.c above each map decl.
 //

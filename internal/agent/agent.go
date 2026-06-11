@@ -97,9 +97,11 @@ type Agent struct {
 // resolved address.
 //
 // New reads top-to-bottom as the agent's composition order: validate
-// inputs, wire the data plane (state + scraper + collector), bundle
-// the subsystem metrics, then mount the HTTP surface and open the
-// listener. The latter two live in [newSubsystemMetrics] and
+// inputs, bundle the subsystem metrics, wire the data plane (state +
+// scraper + collector — the scraper's reader is wrapped in
+// [telemetryFillReader], which feeds the bundle's telemetry_map fill
+// gauge), then mount the HTTP surface and open the listener. The
+// bundle and HTTP steps live in [newSubsystemMetrics] and
 // [Agent.openHTTP]; New itself only composes.
 func New(opts Options) (*Agent, error) {
 	if err := opts.validate(); err != nil {
@@ -108,17 +110,18 @@ func New(opts Options) (*Agent, error) {
 
 	st := state.New()
 	meta := metadata.New()
-	sc := scraper.New(opts.Reader, st, opts.Config.Scrape.Interval)
 
 	a := &Agent{
-		cfg:       opts.Config,
-		state:     st,
-		scraper:   sc,
-		collector: metrics.New(st, sc, opts.resolverOrDefault(meta)),
-		meta:      meta,
-		interner:  metadata.NewTenantInterner(),
+		cfg:      opts.Config,
+		state:    st,
+		meta:     meta,
+		interner: metadata.NewTenantInterner(),
 	}
 	a.mx = newSubsystemMetrics(a.lastNeutronSyncTime)
+	a.scraper = scraper.New(
+		telemetryFillReader{inner: opts.Reader, mx: a.mx.bpf},
+		st, opts.Config.Scrape.Interval)
+	a.collector = metrics.New(st, a.scraper, opts.resolverOrDefault(meta))
 
 	if err := a.openHTTP(opts); err != nil {
 		return nil, err
