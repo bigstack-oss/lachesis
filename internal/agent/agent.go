@@ -32,7 +32,6 @@ import (
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
@@ -43,50 +42,6 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
-
-// Options bundles the inputs to [New]. ConfigPath is the YAML file
-// the [runtime.Manager] will re-read on SIGHUP; empty disables
-// SIGHUP reload while keeping /debug functional.
-type Options struct {
-	Config     config.Config
-	ConfigPath string
-	Reader     scraper.MapReader
-	Log        *logging.Handle
-	// Resolver maps FlowKey → tenant_id label. nil means a
-	// [metadata.NewResolver] wrapping the Agent's own
-	// [metadata.ShardedMetadataMap], which starts empty and is
-	// populated by Bootstrap (Linux) from Neutron. Tests can
-	// inject a mock resolver to pin label outputs without
-	// pre-populating the metadata map.
-	Resolver metrics.TenantResolver
-}
-
-// validate rejects required fields that the caller forgot to fill.
-// Returned errors are intended for [New]; no validation is done on
-// optional fields here (defaults are applied elsewhere).
-func (o Options) validate() error {
-	if o.Reader == nil {
-		return errors.New("agent: Options.Reader is nil")
-	}
-	if o.Log == nil {
-		return errors.New("agent: Options.Log is nil")
-	}
-	return nil
-}
-
-// resolverOrDefault returns the caller's [TenantResolver] when set,
-// otherwise a [metadata.NewResolver] wrapping meta. Centralising
-// the default keeps [New] free of branches that aren't about
-// wiring. An empty meta yields the same "tenant_id=unknown" labels
-// the old [metrics.UnknownTenant] stub produced, so pre-Bootstrap
-// scrapes (and the no-Neutron loadtest harness) behave
-// indistinguishably from before this change.
-func (o Options) resolverOrDefault(meta *metadata.ShardedMetadataMap) metrics.TenantResolver {
-	if o.Resolver != nil {
-		return o.Resolver
-	}
-	return metadata.NewResolver(meta)
-}
 
 // Agent owns the in-process composition of the telemetry data plane:
 // [state.GlobalState], the [scraper.Scraper] goroutine, the metrics
@@ -137,6 +92,73 @@ type Agent struct {
 	// steady-state flush does not allocate a fresh records slice.
 	// Owned solely by the WAL flush goroutine; no lock needed.
 	walRecBuf []state.Record
+}
+
+// New constructs the agent. The HTTP listener is opened immediately so
+// callers can use [Agent.Addr] before [Agent.Run] starts serving — useful
+// for tests that request an ephemeral port (":0") and then need the
+// resolved address.
+//
+// New reads top-to-bottom as the agent's composition order: validate
+// inputs, build the data plane (state + scraper + collector), wire the
+// Prometheus registry, mount the HTTP surface, open the listener.
+func New(opts Options) (*Agent, error) {
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
+
+	st := state.New()
+	meta := metadata.New()
+	interner := metadata.NewTenantInterner()
+	sc := scraper.New(opts.Reader, st, opts.Config.Scrape.Interval)
+	col := metrics.New(st, sc, opts.resolverOrDefault(meta))
+
+	walMx := wal.NewMetrics()
+	zombieMx := zombie.NewMetrics()
+	nlReg := cnetlink.NewRegistry()
+	nlMx := cnetlink.NewMetrics(nlReg.Len)
+	bpfMx := bpf.NewMetrics()
+	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
+	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
+	// Both current_entries seed at 0; cold-start will overwrite after
+	// the first successful kernel push.
+	bpfMx.SetCurrent(bpf.MapMacTenant, 0)
+	bpfMx.SetCurrent(bpf.MapSubnetZoneTrie, 0)
+
+	a := &Agent{
+		cfg:       opts.Config,
+		state:     st,
+		scraper:   sc,
+		collector: col,
+		mx: subsystemMetrics{
+			wal:      walMx,
+			bpf:      bpfMx,
+			zombie:   zombieMx,
+			netlink:  nlMx,
+			registry: nlReg,
+		},
+		meta:     meta,
+		interner: interner,
+	}
+	a.mx.neutron = neutron.NewMetrics(a.lastNeutronSyncTime)
+
+	reg, err := a.buildRegistry()
+	if err != nil {
+		return nil, err
+	}
+
+	mgr := runtime.New(opts.ConfigPath, opts.Config, opts.Log)
+	handler := buildHTTPHandler(reg, mgr)
+
+	ln, err := net.Listen("tcp", opts.Config.HTTP.Listen)
+	if err != nil {
+		return nil, fmt.Errorf("agent: listen %s: %w", opts.Config.HTTP.Listen, err)
+	}
+
+	a.runtime = mgr
+	a.listener = ln
+	a.server = &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout}
+	return a, nil
 }
 
 // WALMetrics returns the WAL instrument bundle the agent registered
@@ -206,104 +228,6 @@ func (a *Agent) Metadata() *metadata.ShardedMetadataMap { return a.meta }
 // boot; see the doc on [metadata.TenantInterner] for why that is
 // correctness-safe.
 func (a *Agent) Interner() *metadata.TenantInterner { return a.interner }
-
-// New constructs the agent. The HTTP listener is opened immediately so
-// callers can use [Agent.Addr] before [Agent.Run] starts serving — useful
-// for tests that request an ephemeral port (":0") and then need the
-// resolved address.
-//
-// New reads top-to-bottom as the agent's composition order: validate
-// inputs, build the data plane (state + scraper + collector), wire the
-// Prometheus registry, mount the HTTP surface, open the listener.
-func New(opts Options) (*Agent, error) {
-	if err := opts.validate(); err != nil {
-		return nil, err
-	}
-
-	st := state.New()
-	meta := metadata.New()
-	interner := metadata.NewTenantInterner()
-	sc := scraper.New(opts.Reader, st, opts.Config.Scrape.Interval)
-	col := metrics.New(st, sc, opts.resolverOrDefault(meta))
-
-	walMx := wal.NewMetrics()
-	zombieMx := zombie.NewMetrics()
-	nlReg := cnetlink.NewRegistry()
-	nlMx := cnetlink.NewMetrics(nlReg.Len)
-	bpfMx := bpf.NewMetrics()
-	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
-	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
-	// Both current_entries seed at 0; cold-start will overwrite after
-	// the first successful kernel push.
-	bpfMx.SetCurrent(bpf.MapMacTenant, 0)
-	bpfMx.SetCurrent(bpf.MapSubnetZoneTrie, 0)
-
-	a := &Agent{
-		cfg:       opts.Config,
-		state:     st,
-		scraper:   sc,
-		collector: col,
-		mx: subsystemMetrics{
-			wal:      walMx,
-			bpf:      bpfMx,
-			zombie:   zombieMx,
-			netlink:  nlMx,
-			registry: nlReg,
-		},
-		meta:     meta,
-		interner: interner,
-	}
-	a.mx.neutron = neutron.NewMetrics(a.lastNeutronSyncTime)
-
-	reg, err := a.buildRegistry()
-	if err != nil {
-		return nil, err
-	}
-
-	mgr := runtime.New(opts.ConfigPath, opts.Config, opts.Log)
-	handler := buildHTTPHandler(reg, mgr)
-
-	ln, err := net.Listen("tcp", opts.Config.HTTP.Listen)
-	if err != nil {
-		return nil, fmt.Errorf("agent: listen %s: %w", opts.Config.HTTP.Listen, err)
-	}
-
-	a.runtime = mgr
-	a.listener = ln
-	a.server = &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout}
-	return a, nil
-}
-
-// subsystemMetrics bundles the per-subsystem Prometheus instrument
-// sets the agent registers alongside its custom Collector, plus the
-// netlink Interface Registry shared with the
-// cubecos_attached_interfaces gauge. The registry is owned by the
-// netlink subscriber (when non-nil) but also read by the netlink
-// metrics for its current-size gauge.
-type subsystemMetrics struct {
-	wal      *wal.Metrics
-	neutron  *neutron.Metrics
-	bpf      *bpf.Metrics
-	zombie   *zombie.Metrics
-	netlink  *cnetlink.Metrics
-	registry *cnetlink.Registry
-}
-
-// registrations returns every subsystem's instruments in a stable
-// order. The fixed order keeps a duplicate-registration error naming
-// the same subsystem on every run, and makes adding a subsystem a
-// one-line change here. Labels reuse the component* vocabulary
-// (schema.go) so a registration error and the subsystem's log lines
-// name it identically.
-func (m subsystemMetrics) registrations() []labelledCollectors {
-	return []labelledCollectors{
-		{componentWAL, m.wal.Collectors()},
-		{componentNeutron, m.neutron.Collectors()},
-		{componentBPF, m.bpf.Collectors()},
-		{componentZombie, m.zombie.Collectors()},
-		{componentNetlink, m.netlink.Collectors()},
-	}
-}
 
 // buildRegistry creates a fresh Prometheus registry and binds the
 // agent's custom Collector plus every subsystem instrument bundle to
