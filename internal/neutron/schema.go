@@ -36,11 +36,65 @@ type Snapshot struct {
 // resolver returns ZoneExternal and surfaces this struct to its
 // caller; BuildTrie collects every hit across all routes so the
 // boot path can refuse to start under strict-mode policy.
+//
+// CycleHit is the sibling type for "trace revisited a router on
+// the path"; both are aggregated into [Anomalies] by
+// [DetectAnomalies].
 type AmbiguityHit struct {
 	SourceTenant string
 	RouterID     string
 	Destination  netip.Prefix
 	Owners       []string
+}
+
+// CycleHit records a static-route cycle the resolver encountered
+// while tracing one (router, destination) pair. The destination is
+// reachable only via a router-interface chain that revisits an
+// already-seen router; the resolver fell back to EXTERNAL.
+//
+// SourceRouter is the router whose Routes entry triggered the
+// trace; LoopRouter is the router we attempted to revisit (the
+// already-seen one). On a two-router A↔B cycle both fields name A
+// or B depending on which router's extraroute initiated the trace.
+type CycleHit struct {
+	SourceTenant string
+	SourceRouter string
+	Destination  netip.Prefix
+	LoopRouter   string
+}
+
+// DanglingRoute records an extraroute whose immediate nexthop does
+// not match any port in the snapshot. Detected as a post-pass over
+// the routes — the resolver itself silently returns EXTERNAL for
+// this case, so without the explicit check the misconfig is
+// invisible.
+type DanglingRoute struct {
+	SourceTenant string
+	SourceRouter string
+	Destination  string
+	Nexthop      string
+}
+
+// ZeroTrieTenant flags a tenant that owns at least one network,
+// router, or VM-like port but has zero rows in the trie. The
+// likely causes are a cold-start ordering gap (trie built before
+// the tenant's subnets were visible) or a builder bug that filtered
+// the tenant out.
+type ZeroTrieTenant struct {
+	TenantID string
+	Networks int // count of owned networks
+	Routers  int // count of owned routers
+	Ports    int // count of VM-like ports (IsVMPort)
+}
+
+// DuplicateRouterMAC flags router_interface ports sharing a MAC.
+// PortIDs are sorted ascending so successive Detect calls produce
+// identical output on identical input; RouterIDs is the deduped
+// set of routers those ports belong to.
+type DuplicateRouterMAC struct {
+	MAC       string
+	PortIDs   []string
+	RouterIDs []string
 }
 
 // componentNeutron is the slog `component` attribute for all
@@ -60,6 +114,19 @@ const (
 	EndpointPorts    = "ports"
 	EndpointRouters  = "routers"
 	EndpointProjects = "projects"
+)
+
+// anomalyClass* are the `class` label values for the
+// cubecos_neutron_anomalies gauge — one per [Anomalies] field.
+// [NewMetrics] seeds each at zero so a healthy agent reads 0
+// instead of "No data"; [Metrics.SetAnomalies] replaces all five
+// on every detection pass.
+const (
+	anomalyClassCycle              = "cycle"
+	anomalyClassAmbiguity          = "ambiguity"
+	anomalyClassDanglingRoute      = "dangling_route"
+	anomalyClassZeroTrieTenant     = "zero_trie_tenant"
+	anomalyClassDuplicateRouterMAC = "duplicate_router_mac"
 )
 
 // codeNetwork is the `code` label class for connection-level

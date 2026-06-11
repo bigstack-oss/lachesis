@@ -68,12 +68,20 @@ func newResolveIndex(snap Snapshot) *resolveIndex {
 
 // resolveStaticRouteZone implements the multi-hop trace of
 // docs/DESIGN.md §5.3 for one (destination, nexthop) pair on
-// router r. Returns the zone code to record in the trie, plus a
-// non-nil [*AmbiguityHit] when the trace bottomed out on a Step C
-// ambiguity (multiple candidate networks with distinct owners
-// covering the destination CIDR). For every other unresolvable
-// case (misconfig, cycle, MAX_HOPS exceeded, unknown peer device
-// type) the second return is nil and the zone is ZoneExternal.
+// router r. Returns the zone code to record in the trie, plus
+// up to two structured incident reports:
+//
+//   - *AmbiguityHit is non-nil when the trace bottomed out on a
+//     Step C ambiguity (multiple candidate networks with distinct
+//     owners covering the destination CIDR).
+//   - *CycleHit is non-nil when the trace attempted to revisit a
+//     router already on the path — the source router's chain forms
+//     a loop and cannot reach a directly-attached subnet.
+//
+// At most one of the two is non-nil for a given call (the resolver
+// returns at the first hit). For every other unresolvable case
+// (misconfig, MAX_HOPS exceeded, unknown peer device type) both
+// returns are nil and the zone is ZoneExternal.
 //
 // Strict-mode policy (refuse to start vs continue with EXTERNAL)
 // lives in BuildTrie's caller, not here.
@@ -81,7 +89,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 	r Router,
 	destination netip.Prefix,
 	initialNexthop netip.Addr,
-) (bpf.ZoneCode, *AmbiguityHit) {
+) (bpf.ZoneCode, *AmbiguityHit, *CycleHit) {
 	sourceTenant := r.ProjectID
 	currentRouter := r
 	currentNexthop := initialNexthop
@@ -91,19 +99,19 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 		// Step A — anchor on the iface subnet whose CIDR contains currentNexthop.
 		ifaceSubnet, ok := ri.anchorSubnet(currentRouter.ID, currentNexthop)
 		if !ok {
-			return bpf.ZoneExternal, nil
+			return bpf.ZoneExternal, nil, nil
 		}
 
 		// Step B — identify the peer device at currentNexthop within the iface subnet.
 		port, ok := ri.portAt(ifaceSubnet.ID, currentNexthop.String())
 		if !ok {
-			return bpf.ZoneExternal, nil
+			return bpf.ZoneExternal, nil, nil
 		}
 		switch port.DeviceOwner {
 		case deviceOwnerRouterInterface:
 			nextRouter, ok := ri.routers[port.DeviceID]
 			if !ok {
-				return bpf.ZoneExternal, nil
+				return bpf.ZoneExternal, nil, nil
 			}
 			if _, seen := visited[nextRouter.ID]; seen {
 				slog.Warn("static-route cycle detected; falling back to EXTERNAL",
@@ -111,21 +119,26 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 					"source_tenant", sourceTenant,
 					"destination", destination.String(),
 					"router", nextRouter.ID)
-				return bpf.ZoneExternal, nil
+				return bpf.ZoneExternal, nil, &CycleHit{
+					SourceTenant: sourceTenant,
+					SourceRouter: r.ID,
+					Destination:  destination,
+					LoopRouter:   nextRouter.ID,
+				}
 			}
 			visited[nextRouter.ID] = struct{}{}
 
 			// Step C — is destination directly attached on nextRouter?
 			if zone, resolved, hit := ri.resolveAtNextRouter(
 				nextRouter, ifaceSubnet, destination, sourceTenant); resolved {
-				return zone, hit
+				return zone, hit, nil
 			}
 
 			// Step D — follow nextRouter's own extraroutes (LPM among matches).
 			if nextRoute, ok := lpmMatchRoute(nextRouter.Routes, destination); ok {
 				nh, err := netip.ParseAddr(nextRoute.Nexthop)
 				if err != nil || !nh.Is4() {
-					return bpf.ZoneExternal, nil
+					return bpf.ZoneExternal, nil, nil
 				}
 				currentRouter = nextRouter
 				currentNexthop = nh
@@ -135,7 +148,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 			// Step E — default-route fallback. EXTERNAL whether or not nextRouter
 			// has external_gateway_info; the destination is unreachable per
 			// Neutron's topology view either way.
-			return bpf.ZoneExternal, nil
+			return bpf.ZoneExternal, nil, nil
 
 		case "compute:nova":
 			// VM-appliance nexthop: classify by the appliance's tenant
@@ -145,12 +158,12 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 			// tap is documented in DESIGN.md §8 Tier 4 and Scenario L.
 			ifaceNetwork, ok := ri.networks[ifaceSubnet.NetworkID]
 			if !ok {
-				return bpf.ZoneExternal, nil
+				return bpf.ZoneExternal, nil, nil
 			}
-			return zoneFor(port.ProjectID, sourceTenant, ifaceNetwork), nil
+			return zoneFor(port.ProjectID, sourceTenant, ifaceNetwork), nil, nil
 
 		default:
-			return bpf.ZoneExternal, nil
+			return bpf.ZoneExternal, nil, nil
 		}
 	}
 
@@ -159,7 +172,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 		"source_tenant", sourceTenant,
 		"destination", destination.String(),
 		"max_hops", maxStaticRouteHops)
-	return bpf.ZoneExternal, nil
+	return bpf.ZoneExternal, nil, nil
 }
 
 // anchorSubnet picks the router's interface subnet whose CIDR

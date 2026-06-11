@@ -125,6 +125,35 @@ cubecos_neutron_unknown_device_owner_total{owner="vendor:foo"} 2
 	}
 }
 
+// TestMetrics_SetAnomalies pins the seed (all five classes at zero)
+// and gauge semantics: a second SetAnomalies call replaces the
+// previous counts rather than accumulating.
+func TestMetrics_SetAnomalies(t *testing.T) {
+	m := NewMetrics(func() time.Time { return time.Time{} })
+	m.SetAnomalies(Anomalies{
+		Cycles:          []CycleHit{{}, {}},
+		DanglingRoutes:  []DanglingRoute{{}},
+		ZeroTrieTenants: []ZeroTrieTenant{{}, {}, {}},
+	})
+	m.SetAnomalies(Anomalies{
+		Cycles: []CycleHit{{}},
+	})
+
+	const want = `
+# HELP cubecos_neutron_anomalies Count of topology anomalies by class detected at the last Neutron cold-start or resync.
+# TYPE cubecos_neutron_anomalies gauge
+cubecos_neutron_anomalies{class="ambiguity"} 0
+cubecos_neutron_anomalies{class="cycle"} 1
+cubecos_neutron_anomalies{class="dangling_route"} 0
+cubecos_neutron_anomalies{class="duplicate_router_mac"} 0
+cubecos_neutron_anomalies{class="zero_trie_tenant"} 0
+`
+	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
+		"cubecos_neutron_anomalies"); err != nil {
+		t.Fatalf("metric mismatch:\n%v", err)
+	}
+}
+
 func TestMetrics_NilReceiverSafe(t *testing.T) {
 	var m *Metrics
 	// Nil receivers must not panic — defensive against forgotten
@@ -132,6 +161,7 @@ func TestMetrics_NilReceiverSafe(t *testing.T) {
 	m.RecordAPIError("ports", errors.New("x"))
 	m.RecordUnknownOwner("vendor:y")
 	m.ObserveBuilderStep("1_catchall", 0)
+	m.SetAnomalies(Anomalies{})
 }
 
 func TestMetrics_ObserveBuilderStepEmitsHistogram(t *testing.T) {

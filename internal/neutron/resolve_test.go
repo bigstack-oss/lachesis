@@ -66,7 +66,7 @@ func TestResolveStaticRoute_SingleHopDirectAttach_OtherTenant(t *testing.T) {
 	f.addPort("p-R2-T2", "net-T2", "T2", "network:router_interface", "R2", fip("sub-T2", "10.50.0.1"))
 	f.addPort("p-R2-tr", "transit", "T2", "network:router_interface", "R2", fip("sub-tr", "192.168.100.20"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.50.0.0/16"),
 		netip.MustParseAddr("192.168.100.20"))
 	if got != bpf.ZoneOtherTenant {
@@ -85,7 +85,7 @@ func TestResolveStaticRoute_VMApplianceNexthop_SameTenant(t *testing.T) {
 	f.addPort("p-R1-T1", "net-T1", "T1", "network:router_interface", "R1", fip("sub-T1", "10.0.1.1"))
 	f.addPort("p-vm", "net-T1", "T1", "compute:nova", "instance-uuid", fip("sub-T1", "10.0.1.50"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("172.16.99.0/24"),
 		netip.MustParseAddr("10.0.1.50"))
 	if got != bpf.ZoneSameTenant {
@@ -116,7 +116,7 @@ func TestResolveStaticRoute_MultiHopChain_OtherTenant(t *testing.T) {
 	f.addPort("p-R3-B", "transit-B", "T3", "network:router_interface", "R3", fip("sub-B", "10.10.2.3"))
 	f.addPort("p-R3-T3", "net-T3", "T3", "network:router_interface", "R3", fip("sub-T3", "10.99.0.1"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/16"),
 		netip.MustParseAddr("10.10.1.2"))
 	if got != bpf.ZoneOtherTenant {
@@ -129,7 +129,8 @@ func TestResolveStaticRoute_Cycle_FallsBackExternal(t *testing.T) {
 	// R1.extraroute: 10.99.0.0/16 via R2_in_A.
 	// R2.extraroute: 10.99.0.0/16 via R1_in_B.
 	// Trace: hop 0 → R2; hop 1 → R1 (cycle, already visited).
-	// Expected: EXTERNAL (cycle warn logged).
+	// Expected: EXTERNAL with a non-nil *CycleHit naming R1 as the
+	// loop router (the visited router we tried to revisit).
 	var f fixture
 	f.addNetwork("transit-A", "admin", true, false)
 	f.addNetwork("transit-B", "admin", true, false)
@@ -142,11 +143,22 @@ func TestResolveStaticRoute_Cycle_FallsBackExternal(t *testing.T) {
 	f.addPort("p-R2-A", "transit-A", "admin", "network:router_interface", "R2", fip("sub-A", "10.10.1.2"))
 	f.addPort("p-R2-B", "transit-B", "admin", "network:router_interface", "R2", fip("sub-B", "10.10.2.2"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, ambig, cyc := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/16"),
 		netip.MustParseAddr("10.10.1.2"))
 	if got != bpf.ZoneExternal {
 		t.Fatalf("zone = %v, want EXTERNAL (cycle)", got)
+	}
+	if ambig != nil {
+		t.Errorf("ambiguity = %+v, want nil (cycle, not ambiguity)", ambig)
+	}
+	if cyc == nil {
+		t.Fatalf("cycle hit = nil, want non-nil")
+	}
+	if cyc.SourceRouter != "R1" || cyc.LoopRouter != "R1" ||
+		cyc.SourceTenant != "admin" ||
+		cyc.Destination != netip.MustParsePrefix("10.99.0.0/16") {
+		t.Errorf("cycle hit shape = %+v, want SourceRouter=R1 LoopRouter=R1 SourceTenant=admin Destination=10.99.0.0/16", *cyc)
 	}
 }
 
@@ -195,7 +207,7 @@ func TestResolveStaticRoute_MaxHopsExceeded_FallsBackExternal(t *testing.T) {
 			fip(subID, fmt.Sprintf("10.10.%d.1", i+1)))
 	}
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/16"),
 		netip.MustParseAddr("10.10.1.2"))
 	if got != bpf.ZoneExternal {
@@ -221,7 +233,7 @@ func TestResolveStaticRoute_AmbiguousOwners_FallsBackExternal(t *testing.T) {
 	f.addPort("p-R2-T2", "net-T2", "T2", "network:router_interface", "R2", fip("sub-T2", "10.99.0.1"))
 	f.addPort("p-R2-T3", "net-T3", "T3", "network:router_interface", "R2", fip("sub-T3", "10.99.0.1"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.50.0/24"),
 		netip.MustParseAddr("192.168.100.20"))
 	if got != bpf.ZoneExternal {
@@ -238,7 +250,7 @@ func TestResolveStaticRoute_NexthopOffNet_FallsBackExternal(t *testing.T) {
 	f.addRouter("R1", "T1", rte("10.99.0.0/16", "192.168.99.99"))
 	f.addPort("p-R1-T1", "net-T1", "T1", "network:router_interface", "R1", fip("sub-T1", "10.0.0.1"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/16"),
 		netip.MustParseAddr("192.168.99.99"))
 	if got != bpf.ZoneExternal {
@@ -257,7 +269,7 @@ func TestResolveStaticRoute_PeerUnknownDeviceOwner_FallsBackExternal(t *testing.
 	f.addPort("p-R1-tr", "transit", "T1", "network:router_interface", "R1", fip("sub-tr", "10.10.1.1"))
 	f.addPort("p-fip", "transit", "T1", "network:floatingip", "", fip("sub-tr", "10.10.1.50"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/16"),
 		netip.MustParseAddr("10.10.1.50"))
 	if got != bpf.ZoneExternal {
@@ -279,7 +291,7 @@ func TestResolveStaticRoute_VMApplianceOnSharedNetwork_Shared(t *testing.T) {
 	f.addPort("p-R1-sh", "shared-net", "T1", "network:router_interface", "R1", fip("sub-sh", "10.5.0.1"))
 	f.addPort("p-vm", "shared-net", "T1", "compute:nova", "instance-uuid", fip("sub-sh", "10.5.0.50"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("172.16.99.0/24"),
 		netip.MustParseAddr("10.5.0.50"))
 	if got != bpf.ZoneShared {
@@ -314,7 +326,7 @@ func TestResolveStaticRoute_StepD_LPMPicksLongestPrefix(t *testing.T) {
 	f.addPort("p-R3-B", "transit-B", "T3", "network:router_interface", "R3", fip("sub-B", "10.10.2.3"))
 	f.addPort("p-R3-T3", "net-T3", "T3", "network:router_interface", "R3", fip("sub-T3", "10.99.0.1"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/24"),
 		netip.MustParseAddr("10.10.1.2"))
 	if got != bpf.ZoneOtherTenant {
@@ -333,7 +345,7 @@ func TestResolveStaticRoute_VMApplianceCrossTenant_Other(t *testing.T) {
 	f.addPort("p-R1-svc", "net-svc", "T1", "network:router_interface", "R1", fip("sub-svc", "10.20.0.1"))
 	f.addPort("p-vm-T2", "net-svc", "T2", "compute:nova", "instance-uuid", fip("sub-svc", "10.20.0.50"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/16"),
 		netip.MustParseAddr("10.20.0.50"))
 	if got != bpf.ZoneOtherTenant {
@@ -359,7 +371,7 @@ func TestResolveStaticRoute_StepC_SameOwnerAcrossMatches_NoAmbiguity(t *testing.
 	f.addPort("p-R2-a", "net-T2-a", "T2", "network:router_interface", "R2", fip("sub-T2-a", "10.99.0.1"))
 	f.addPort("p-R2-b", "net-T2-b", "T2", "network:router_interface", "R2", fip("sub-T2-b", "10.99.0.1"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.50.0/24"),
 		netip.MustParseAddr("192.168.100.20"))
 	if got != bpf.ZoneOtherTenant {
@@ -380,7 +392,7 @@ func TestResolveStaticRoute_RouterInterfacePeerWithStaleDeviceID_FallsBackExtern
 	// Ghost peer: device_owner says router_interface, DeviceID names a router that doesn't exist.
 	f.addPort("p-ghost", "transit", "T1", "network:router_interface", "ghost-router", fip("sub-tr", "10.10.1.50"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/16"),
 		netip.MustParseAddr("10.10.1.50"))
 	if got != bpf.ZoneExternal {
@@ -402,7 +414,7 @@ func TestResolveStaticRoute_NoDirectNoExtraroute_FallsBackExternal(t *testing.T)
 	f.addPort("p-R2-tr", "transit", "T2", "network:router_interface", "R2", fip("sub-tr", "192.168.100.20"))
 	f.addPort("p-R2-T2", "net-T2", "T2", "network:router_interface", "R2", fip("sub-T2", "10.50.0.1"))
 
-	got, _ := f.index().resolveStaticRouteZone(f.routers[0],
+	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/16"),
 		netip.MustParseAddr("192.168.100.20"))
 	if got != bpf.ZoneExternal {
