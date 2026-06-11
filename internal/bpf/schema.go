@@ -8,6 +8,8 @@
 
 package bpf
 
+import "strconv"
+
 // FlowKey is the Go-side mirror of the BPF flow_key map key. It is
 // the 16-byte composite key written by the classifier into
 // telemetry_map.
@@ -64,12 +66,52 @@ const (
 	ZoneShared      = telemetryZoneCodeZONE_SHARED
 )
 
+// String returns the canonical name of the zone code — "external",
+// "same_tenant", etc. This is the single vocabulary for every
+// rendering of the enum: the `zone` label on cubecos_bytes_total /
+// cubecos_packets_total (pinned by dashboards), /debug pages, and
+// log enrichment. Unknown codes fall back to the numeric encoding
+// so a future kernel-side addition is still visible rather than
+// silently misclassified. Returns constant strings for all known
+// codes — safe inside the zero-allocation Collect() hot path.
+func (z ZoneCode) String() string {
+	switch z {
+	case ZoneExternal:
+		return "external"
+	case ZoneSameTenant:
+		return "same_tenant"
+	case ZoneOtherTenant:
+		return "other_tenant"
+	case ZoneInfra:
+		return "infra"
+	case ZoneMiss:
+		return "miss"
+	case ZoneShared:
+		return "shared"
+	}
+	return strconv.FormatUint(uint64(z), 10)
+}
+
 // DirectionIngress and DirectionEgress are the TC hook direction values
 // stored in [FlowKey.Direction].
 const (
 	DirectionIngress = telemetryTcDirectionTC_DIR_INGRESS
 	DirectionEgress  = telemetryTcDirectionTC_DIR_EGRESS
 )
+
+// String returns the canonical name of the direction — "ingress" or
+// "egress". Same single-vocabulary contract as [ZoneCode.String]:
+// metric labels, /debug pages, and logs all render through here.
+// Unknown values fall back to the numeric encoding.
+func (d Direction) String() string {
+	switch d {
+	case DirectionIngress:
+		return "ingress"
+	case DirectionEgress:
+		return "egress"
+	}
+	return strconv.FormatUint(uint64(d), 10)
+}
 
 // ProgramIngress and ProgramEgress are the SEC("tc") function names
 // of the ingress and egress telemetry programs in bpf/telemetry.c.

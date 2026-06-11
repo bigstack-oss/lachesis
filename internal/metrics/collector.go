@@ -32,7 +32,6 @@
 package metrics
 
 import (
-	"strconv"
 	"sync"
 	"time"
 
@@ -176,8 +175,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		c.aggBuf[k] = v
 	}
 	for k, v := range c.aggBuf {
-		zone := zoneLabel(k.zone)
-		dir := directionLabel(k.dir)
+		// ZoneCode.String / Direction.String return constant strings
+		// for all known codes — no allocation in this loop.
+		zone := k.zone.String()
+		dir := k.dir.String()
 		ch <- prometheus.MustNewConstMetric(
 			c.bytesDesc, prometheus.CounterValue, float64(v.bytes),
 			k.tenant, zone, dir,
@@ -200,37 +201,6 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 	c.collectDuration.Observe(time.Since(start).Seconds())
 	c.collectDuration.Collect(ch)
-}
-
-// zoneLabel formats a [bpf.ZoneCode]. Unknown values fall back to the
-// numeric encoding so a future zone-code addition that pre-dates this
-// map is still visible in `/metrics`.
-func zoneLabel(z bpf.ZoneCode) string {
-	switch z {
-	case bpf.ZoneExternal:
-		return "external"
-	case bpf.ZoneSameTenant:
-		return "same_tenant"
-	case bpf.ZoneOtherTenant:
-		return "other_tenant"
-	case bpf.ZoneInfra:
-		return "infra"
-	case bpf.ZoneMiss:
-		return "miss"
-	case bpf.ZoneShared:
-		return "shared"
-	}
-	return strconv.FormatUint(uint64(z), 10)
-}
-
-func directionLabel(d bpf.Direction) string {
-	switch d {
-	case bpf.DirectionIngress:
-		return "ingress"
-	case bpf.DirectionEgress:
-		return "egress"
-	}
-	return strconv.FormatUint(uint64(d), 10)
 }
 
 // UnknownTenant is the stub TenantResolver wired before the
