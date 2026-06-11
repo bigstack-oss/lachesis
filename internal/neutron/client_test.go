@@ -61,6 +61,18 @@ func newKeystoneStub(t *testing.T) *keystoneStub {
 							map[string]any{"interface": "admin", "region": "R1", "region_id": "R1", "url": ks.neutronURLA},
 						},
 					},
+					map[string]any{
+						"type": "identity",
+						"name": "keystone",
+						"endpoints": []any{
+							// All three interfaces point back at the stub itself —
+							// these tests only exercise the catalog wiring, not
+							// real identity calls.
+							map[string]any{"interface": "internal", "region": "R1", "region_id": "R1", "url": ks.URL + "/v3"},
+							map[string]any{"interface": "public", "region": "R1", "region_id": "R1", "url": ks.URL + "/v3"},
+							map[string]any{"interface": "admin", "region": "R1", "region_id": "R1", "url": ks.URL + "/v3"},
+						},
+					},
 				},
 			},
 		})

@@ -69,7 +69,7 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 		}
 		return time.Since(t).Seconds()
 	})
-	for _, ep := range []string{EndpointKeystone, EndpointNetworks, EndpointSubnets, EndpointPorts, EndpointRouters} {
+	for _, ep := range []string{EndpointKeystone, EndpointNetworks, EndpointSubnets, EndpointPorts, EndpointRouters, EndpointProjects} {
 		m.apiErrors.WithLabelValues(ep, codeNetwork).Add(0)
 	}
 	return m

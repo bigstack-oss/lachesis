@@ -124,10 +124,12 @@ func fetchNeutronSnapshot(ctx context.Context, creds neutron.Credentials, mx *ne
 	return client, snap, err
 }
 
-// fetchAllWithMetrics issues the four list calls in sequence and
-// records per-endpoint API errors via mx. The endpoint label is
-// the resource name; on the kernel side this corresponds 1:1 to
-// the Neutron URL path.
+// fetchAllWithMetrics issues the list calls in sequence and records
+// per-endpoint API errors via mx. The endpoint label is the resource
+// name; on the kernel side this corresponds 1:1 to the Neutron URL
+// path. The Keystone project list rides along so downstream
+// consumers (/debug pages, log enrichment) can resolve project IDs
+// to names.
 func fetchAllWithMetrics(ctx context.Context, client *neutron.Client, mx *neutron.Metrics) (neutron.Snapshot, error) {
 	var s neutron.Snapshot
 	var err error
@@ -146,6 +148,10 @@ func fetchAllWithMetrics(ctx context.Context, client *neutron.Client, mx *neutro
 	if s.Routers, err = client.ListRouters(ctx); err != nil {
 		mx.RecordAPIError(neutron.EndpointRouters, err)
 		return s, fmt.Errorf("list routers: %w", err)
+	}
+	if s.Projects, err = client.ListProjects(ctx); err != nil {
+		mx.RecordAPIError(neutron.EndpointProjects, err)
+		return s, fmt.Errorf("list projects: %w", err)
 	}
 	return s, nil
 }
