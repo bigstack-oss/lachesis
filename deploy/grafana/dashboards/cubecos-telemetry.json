@@ -1,5 +1,7 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": []
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -12,179 +14,383 @@
       "title": "Overview",
       "type": "row",
       "collapsed": false,
-      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
       "panels": []
     },
     {
       "id": 1,
       "title": "Agent Up",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
       "targets": [
-        { "refId": "A", "expr": "up{job=\"cubecos-agent\"}", "instant": true, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+        {
+          "refId": "A",
+          "expr": "up{job=\"cubecos-agent\"}",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
       ],
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
       "fieldConfig": {
         "defaults": {
           "mappings": [
-            { "type": "value", "options": { "0": { "text": "DOWN", "index": 0 }, "1": { "text": "UP", "index": 1 } } }
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "index": 0
+                },
+                "1": {
+                  "text": "UP",
+                  "index": 1
+                }
+              }
+            }
           ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 1 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
             ]
           }
         },
         "overrides": []
-      }
+      },
+      "description": "Prometheus scrape health of the agent's /metrics endpoint."
     },
     {
       "id": 2,
       "title": "Tracked Flows",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
       "targets": [
-        { "refId": "A", "expr": "cubecos_state_flows", "instant": true, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+        {
+          "refId": "A",
+          "expr": "cubecos_state_flows",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
       ],
       "options": {
         "colorMode": "value",
         "graphMode": "area",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 50000 },
-              { "color": "red", "value": 65000 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 50000
+              },
+              {
+                "color": "red",
+                "value": 65000
+              }
             ]
           },
           "unit": "short"
         }
-      }
+      },
+      "description": "Distinct flow keys tracked in GlobalState. Thresholds mark the telemetry_map sizing budget (yellow 50k, red 65k)."
     },
     {
       "id": 3,
       "title": "Attached Interfaces",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
       "targets": [
-        { "refId": "A", "expr": "cubecos_attached_interfaces", "instant": true, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+        {
+          "refId": "A",
+          "expr": "cubecos_attached_interfaces",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
       ],
       "options": {
         "colorMode": "value",
         "graphMode": "area",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
-            "steps": [{ "color": "green", "value": null }]
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
           },
           "unit": "short"
         }
-      }
+      },
+      "description": "Interfaces currently carrying the TC telemetry programs (netlink Interface Registry size)."
     },
     {
       "id": 4,
       "title": "Neutron Sync Age",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
       "targets": [
-        { "refId": "A", "expr": "cubecos_neutron_sync_age_seconds", "instant": true, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+        {
+          "refId": "A",
+          "expr": "cubecos_neutron_sync_age_seconds",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
       ],
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "value"
       },
       "fieldConfig": {
         "defaults": {
           "unit": "s",
           "mappings": [
-            { "type": "value", "options": { "-1": { "text": "never synced", "index": 0 } } }
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "text": "never synced",
+                  "index": 0
+                }
+              }
+            }
           ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 0 },
-              { "color": "yellow", "value": 60 },
-              { "color": "red", "value": 300 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
             ]
           }
         },
         "overrides": []
-      }
+      },
+      "description": "Seconds since the last successful Neutron cold-start or reconcile. \"never synced\" means the agent is running without tenant metadata."
     },
     {
       "id": 5,
       "title": "Last Scrape Age",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
       "targets": [
-        { "refId": "A", "expr": "time() - cubecos_scraper_last_success_unix_seconds", "instant": true, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+        {
+          "refId": "A",
+          "expr": "time() - cubecos_scraper_last_success_unix_seconds",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
       ],
       "options": {
         "colorMode": "background",
         "graphMode": "none",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 30 },
-              { "color": "red", "value": 120 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 120
+              }
             ]
           },
           "unit": "s"
         }
-      }
+      },
+      "description": "Seconds since the scraper last drained the kernel BPF map successfully. Should hover near the 10s scrape interval."
     },
     {
       "id": 6,
       "title": "telemetry_map fill",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "cubecos_bpf_map_current_entries{map=\"telemetry_map\"} / cubecos_bpf_map_max_entries{map=\"telemetry_map\"}",
           "instant": true,
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "options": {
         "colorMode": "background",
         "graphMode": "none",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "value"
       },
       "fieldConfig": {
@@ -194,190 +400,403 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.7 },
-              { "color": "red", "value": 0.8 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.7
+              },
+              {
+                "color": "red",
+                "value": 0.8
+              }
             ]
           }
         }
-      }
+      },
+      "description": "Kernel flow-map occupancy (current/max entries). Pressure-relief GC triggers at 80%."
     },
     {
       "id": 101,
       "title": "Throughput (billing)",
       "type": "row",
       "collapsed": false,
-      "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      },
       "panels": []
     },
     {
       "id": 10,
       "title": "Bytes/sec by direction",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "sum by (direction) (rate(cubecos_bytes_total[1m]))",
           "legendFormat": "{{direction}}",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "spanNulls": true },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": true
+          },
           "unit": "binBps"
         }
       },
-      "options": { "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull", "max"] } }
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Billed byte rate split by ingress/egress, summed over all tenants and zones."
     },
     {
       "id": 11,
       "title": "Packets/sec by direction",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "sum by (direction) (rate(cubecos_packets_total[1m]))",
           "legendFormat": "{{direction}}",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "spanNulls": true },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": true
+          },
           "unit": "pps"
         }
       },
-      "options": { "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull", "max"] } }
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Billed packet rate split by ingress/egress, summed over all tenants and zones."
     },
     {
       "id": 12,
       "title": "Bytes/sec by zone",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 0, "y": 14, "w": 8, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "sum by (zone) (rate(cubecos_bytes_total[1m]))",
           "legendFormat": "{{zone}}",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "stacking": { "mode": "normal" }, "spanNulls": true },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "stacking": {
+              "mode": "normal"
+            },
+            "spanNulls": true
+          },
           "unit": "binBps"
         }
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull"] } }
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "description": "Byte rate by destination zone (external / same_tenant / other_tenant / infra / shared / miss), stacked."
     },
     {
       "id": 13,
       "title": "Top tenants by bytes (1m rate)",
       "type": "bargauge",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 8, "y": 14, "w": 8, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 14,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "topk(10, sum by (tenant_id) (rate(cubecos_bytes_total[1m])))",
           "legendFormat": "{{tenant_id}}",
           "instant": true,
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "options": {
         "displayMode": "gradient",
         "orientation": "horizontal",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "showUnfilled": true
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "unit": "binBps"
         }
-      }
+      },
+      "description": "Ten highest-throughput tenant IDs over the last minute."
     },
     {
       "id": 14,
       "title": "Cumulative bytes by (zone, direction)",
       "type": "table",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 16, "y": 14, "w": 8, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 14,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "sum by (zone, direction) (cubecos_bytes_total)",
           "format": "table",
           "instant": true,
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "transformations": [
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true },
-            "renameByName": { "Value": "bytes" }
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true
+            },
+            "renameByName": {
+              "Value": "bytes"
+            }
           }
         },
         {
           "id": "sortBy",
-          "options": { "fields": {}, "sort": [{ "field": "bytes", "desc": true }] }
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "bytes",
+                "desc": true
+              }
+            ]
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": { "align": "left", "displayMode": "auto" },
+          "custom": {
+            "align": "left",
+            "displayMode": "auto"
+          },
           "unit": "bytes"
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "bytes" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } }] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "bytes"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": { "showHeader": true, "footer": { "show": false } }
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "description": "Lifetime billed bytes per (zone, direction). Cumulative across agent restarts — the WAL preserves continuity."
     },
     {
       "id": 102,
       "title": "BPF Maps",
       "type": "row",
       "collapsed": false,
-      "gridPos": { "x": 0, "y": 22, "w": 24, "h": 1 },
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 1
+      },
       "panels": []
     },
     {
       "id": 20,
       "title": "Map fill ratio",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 0, "y": 23, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "cubecos_bpf_map_current_entries / cubecos_bpf_map_max_entries",
           "legendFormat": "{{map}}",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": true, "thresholdsStyle": { "mode": "line" } },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.8 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.8
+              }
             ]
           },
           "unit": "percentunit",
@@ -385,366 +804,759 @@
           "min": 0
         }
       },
-      "options": { "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["lastNotNull"] } }
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "description": "Occupancy per kernel map (current/max entries). telemetry_map crossing the 0.8 red line triggers pressure-relief GC."
     },
     {
       "id": 21,
       "title": "Map entries (current vs max)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 12, "y": 23, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 23,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "cubecos_bpf_map_current_entries",
           "legendFormat": "{{map}} current",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         },
         {
           "refId": "B",
           "expr": "cubecos_bpf_map_max_entries",
           "legendFormat": "{{map}} max",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": true },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
           "unit": "short"
         }
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "description": "Absolute entry counts vs compiled-in capacity for each kernel BPF map."
     },
     {
       "id": 103,
       "title": "Scraper & Collector",
       "type": "row",
       "collapsed": false,
-      "gridPos": { "x": 0, "y": 31, "w": 24, "h": 1 },
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 1
+      },
       "panels": []
     },
     {
       "id": 30,
       "title": "Scrape errors",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 0, "y": 32, "w": 8, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
-        { "refId": "A", "expr": "rate(cubecos_scraper_errors_total[5m])", "legendFormat": "errors/s", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+        {
+          "refId": "A",
+          "expr": "rate(cubecos_scraper_errors_total[5m])",
+          "legendFormat": "errors/s",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": true },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
           "unit": "ops"
         }
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "description": "Failed BPF-map drain attempts. Any sustained nonzero rate puts billing data at risk."
     },
     {
       "id": 31,
       "title": "Time since last successful scrape",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 8, "y": 32, "w": 8, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 32,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "time() - cubecos_scraper_last_success_unix_seconds",
           "legendFormat": "lag",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "thresholdsStyle": { "mode": "area" } },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "thresholdsStyle": {
+              "mode": "area"
+            }
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 30 },
-              { "color": "red", "value": 120 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 120
+              }
             ]
           },
           "unit": "s"
         }
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        }
+      },
+      "description": "Scrape lag. Sustained growth means the drain loop is stuck or erroring."
     },
     {
       "id": 32,
       "title": "Collect pass duration (p50 / p99)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 16, "y": 32, "w": 8, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 32,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "histogram_quantile(0.50, rate(cubecos_collect_duration_seconds_bucket[5m]))",
           "legendFormat": "p50",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         },
         {
           "refId": "B",
           "expr": "histogram_quantile(0.99, rate(cubecos_collect_duration_seconds_bucket[5m]))",
           "legendFormat": "p99",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": true },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
           "unit": "s"
         }
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "description": "Time to serve one Prometheus collection: GlobalState snapshot + per-tenant aggregation + emission. Scales with flows x CPUs; must stay well under the scrape interval."
     },
     {
       "id": 104,
       "title": "Neutron",
       "type": "row",
       "collapsed": false,
-      "gridPos": { "x": 0, "y": 40, "w": 24, "h": 1 },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 24,
+        "h": 1
+      },
       "panels": []
     },
     {
       "id": 40,
       "title": "Neutron API errors (rate over 5m)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 0, "y": 41, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 41,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "sum by (endpoint, code) (rate(cubecos_neutron_api_errors_total[5m]))",
           "legendFormat": "{{endpoint}} {{code}}",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": true },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
           "unit": "ops"
         }
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true } }
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "description": "Failed Neutron API calls by endpoint and code. Flat zero lines are healthy: each endpoint is seeded at 0 under the \"network\" code class; HTTP status codes appear on first occurrence."
     },
     {
       "id": 41,
       "title": "BuildTrie avg step duration",
       "type": "bargauge",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 12, "y": 41, "w": 6, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 41,
+        "w": 6,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "cubecos_neutron_builder_step_duration_seconds_sum / cubecos_neutron_builder_step_duration_seconds_count",
           "legendFormat": "{{step}}",
           "instant": true,
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "options": {
         "displayMode": "gradient",
         "orientation": "horizontal",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "showUnfilled": true
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "unit": "s"
         }
-      }
+      },
+      "description": "Average duration of each cold-start trie-build step (catchall, owned, shared, infra, extra-routes). Recorded once per cold-start/reconcile."
     },
     {
       "id": 42,
       "title": "Unknown device_owner admissions",
       "type": "table",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 18, "y": 41, "w": 6, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 41,
+        "w": 6,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_neutron_unknown_device_owner_total",
+          "expr": "cubecos_neutron_unknown_device_owner_total or label_replace(0 * absent(cubecos_neutron_unknown_device_owner_total), \"owner\", \"none\", \"\", \"\")",
           "instant": true,
           "format": "table",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "transformations": [
-        { "id": "organize", "options": { "excludeByName": { "Time": true, "job": true, "instance": true, "__name__": true } } }
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "job": true,
+              "instance": true,
+              "__name__": true
+            }
+          }
+        }
       ],
       "fieldConfig": {
-        "defaults": { "custom": { "align": "left" } }
+        "defaults": {
+          "custom": {
+            "align": "left"
+          }
+        }
       },
-      "options": { "showHeader": true }
+      "options": {
+        "showHeader": true
+      },
+      "description": "Port admissions whose device_owner is outside the IsKnownVMOwner allowlist. The owner label space is open-ended, so a synthetic \"none | 0\" row stands in until a real admission occurs."
     },
     {
       "id": 105,
       "title": "WAL",
       "type": "row",
       "collapsed": false,
-      "gridPos": { "x": 0, "y": 49, "w": 24, "h": 1 },
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 24,
+        "h": 1
+      },
       "panels": []
     },
     {
       "id": 50,
       "title": "WAL phase latency (p99 over 5m)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 0, "y": 50, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 50,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "histogram_quantile(0.99, rate(cubecos_wal_snapshot_copy_seconds_bucket[5m]))",
           "legendFormat": "copy (lock held)",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         },
         {
           "refId": "B",
           "expr": "histogram_quantile(0.99, rate(cubecos_wal_marshal_seconds_bucket[5m]))",
           "legendFormat": "marshal",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         },
         {
           "refId": "C",
           "expr": "histogram_quantile(0.99, rate(cubecos_wal_flush_latency_seconds_bucket[5m]))",
           "legendFormat": "write+fsync+rename",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": true, "thresholdsStyle": { "mode": "line" } },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.05 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
             ]
           },
           "unit": "s"
         }
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] } }
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "p99 latency per WAL flush phase. Only the copy phase holds the GlobalState lock; SLO is write+fsync+rename p99 < 50ms (red line)."
     },
     {
       "id": 51,
       "title": "WAL flush failures / load fallbacks",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 12, "y": 50, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 50,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "sum by (stage) (increase(cubecos_wal_flush_failures_total[5m]))",
           "legendFormat": "flush fail: {{stage}}",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         },
         {
           "refId": "B",
           "expr": "sum by (from) (increase(cubecos_wal_load_fallback_total[5m]))",
           "legendFormat": "load fallback: {{from}}",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "spanNulls": false },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
           "unit": "short"
         }
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true } }
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "description": "WAL flush failures by sub-stage and boot-load fallbacks, as 5m increments. Flat zero is healthy: all stage and fallback label values are seeded at 0."
     },
     {
       "id": 106,
       "title": "Netlink / TC",
       "type": "row",
       "collapsed": false,
-      "gridPos": { "x": 0, "y": 58, "w": 24, "h": 1 },
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 24,
+        "h": 1
+      },
       "panels": []
     },
     {
       "id": 60,
       "title": "Attached interfaces",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 0, "y": 59, "w": 8, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 59,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
-        { "refId": "A", "expr": "cubecos_attached_interfaces", "legendFormat": "attached", "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+        {
+          "refId": "A",
+          "expr": "cubecos_attached_interfaces",
+          "legendFormat": "attached",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "spanNulls": true },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
           "unit": "short"
         }
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        }
+      },
+      "description": "Interface Registry size over time; steps follow VM create/delete on this host."
     },
     {
       "id": 61,
       "title": "TC attach failures (rate over 5m)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 8, "y": 59, "w": 8, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 59,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "sum by (iface_kind) (rate(cubecos_tc_attach_failures_total[5m]))",
           "legendFormat": "{{iface_kind}}",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" }
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "spanNulls": true },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
           "unit": "ops"
         }
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "description": "TC clsact attach failures from the netlink subscriber. Flat zero lines are healthy: both iface_kind values (tap, other) are seeded at 0."
     },
     {
       "id": 62,
       "title": "Zombie filters cleaned at boot",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "x": 16, "y": 59, "w": 8, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 59,
+        "w": 8,
+        "h": 8
+      },
       "targets": [
-        { "refId": "A", "expr": "cubecos_zombie_filters_cleaned_total", "instant": true, "datasource": { "type": "prometheus", "uid": "${datasource}" } }
+        {
+          "refId": "A",
+          "expr": "cubecos_zombie_filters_cleaned_total",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
       ],
       "options": {
         "colorMode": "value",
         "graphMode": "none",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
             ]
           },
           "unit": "short"
         }
-      }
+      },
+      "description": "Orphaned TC filters removed at boot, left over from a previous crashed run. Nonzero after a clean restart deserves a look."
     }
   ],
   "refresh": "10s",
   "schemaVersion": 39,
-  "tags": ["cubecos"],
+  "tags": [
+    "cubecos"
+  ],
   "templating": {
     "list": [
       {
@@ -759,7 +1571,10 @@
       }
     ]
   },
-  "time": { "from": "now-30m", "to": "now" },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
   "timepicker": {},
   "title": "CubeCOS · Network Telemetry",
   "uid": "cubecos-telemetry",
