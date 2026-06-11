@@ -1,12 +1,9 @@
 //go:build linux
 
 // schema_linux.go gathers package netlink's Linux-only package-level
-// constants: the slog component label, the event-channel depth, and the
-// iface_kind metric label values. Every netlink source that declares
-// constants is //go:build linux (subscriber_linux.go), so these live in a
-// linux-tagged file rather than an untagged schema.go. The cross-platform
-// Subscriber / Attacher seams (subscriber.go) and the Registry
-// (registry.go) carry no package-level constants.
+// constants: the slog component label and the event-channel depth.
+// Cross-platform constants (the iface_kind metric label values, which
+// [NewMetrics] seeds on every platform) live in schema.go.
 
 package netlink
 
@@ -26,12 +23,3 @@ const component = "netlink"
 // overflows, the library reports a fatal Receive error (ENOBUFS), which
 // surfaces as a logged subscriber exit — never a silent miss.
 const eventChanDepth = 512
-
-// iface_kind label values for cubecos_tc_attach_failures_total: "tap"
-// for prefix-matched links, "other" for explicit-allowlist entries.
-// [linuxSubscriber.kindFor] produces these; the Help string in
-// metrics.go documents the same pair.
-const (
-	ifaceKindTap   = "tap"
-	ifaceKindOther = "other"
-)

@@ -109,7 +109,7 @@ func fetchNeutronSnapshot(ctx context.Context, creds neutron.Credentials, mx *ne
 			if client == nil {
 				c, err := neutron.NewClient(ctx, creds)
 				if err != nil {
-					mx.RecordAPIError("keystone", err)
+					mx.RecordAPIError(neutron.EndpointKeystone, err)
 					return fmt.Errorf("keystone auth: %w", err)
 				}
 				client = c
@@ -132,19 +132,19 @@ func fetchAllWithMetrics(ctx context.Context, client *neutron.Client, mx *neutro
 	var s neutron.Snapshot
 	var err error
 	if s.Networks, err = client.ListNetworks(ctx); err != nil {
-		mx.RecordAPIError("networks", err)
+		mx.RecordAPIError(neutron.EndpointNetworks, err)
 		return s, fmt.Errorf("list networks: %w", err)
 	}
 	if s.Subnets, err = client.ListSubnets(ctx); err != nil {
-		mx.RecordAPIError("subnets", err)
+		mx.RecordAPIError(neutron.EndpointSubnets, err)
 		return s, fmt.Errorf("list subnets: %w", err)
 	}
 	if s.Ports, err = client.ListPorts(ctx); err != nil {
-		mx.RecordAPIError("ports", err)
+		mx.RecordAPIError(neutron.EndpointPorts, err)
 		return s, fmt.Errorf("list ports: %w", err)
 	}
 	if s.Routers, err = client.ListRouters(ctx); err != nil {
-		mx.RecordAPIError("routers", err)
+		mx.RecordAPIError(neutron.EndpointRouters, err)
 		return s, fmt.Errorf("list routers: %w", err)
 	}
 	return s, nil

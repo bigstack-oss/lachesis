@@ -29,9 +29,13 @@ type Metrics struct {
 
 // NewMetrics constructs the WAL instrument bundle. Buckets follow
 // the design SLOs: 1 ms..1 s for the flush phase (where the p99
-// target is < 50 ms), Prometheus defaults for the other two.
+// target is < 50 ms), Prometheus defaults for the other two. Every
+// known label child of the two counters is seeded at zero — a
+// labelled counter emits no series until its first increment, so
+// without the seed a healthy agent shows "No data" instead of 0 on
+// the dashboard.
 func NewMetrics() *Metrics {
-	return &Metrics{
+	m := &Metrics{
 		snapshotCopySeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "cubecos_wal_snapshot_copy_seconds",
 			Help:    "WAL writer, copy-under-lock phase (critical section).",
@@ -56,6 +60,13 @@ func NewMetrics() *Metrics {
 			Help: "WAL boot loader fallbacks — bak when primary was unusable, empty on first boot or when both files were unreadable.",
 		}, []string{"from"}),
 	}
+	for _, stage := range []string{StageWrite, StageFsync, StageRenameBak, StageRenameCurrent} {
+		m.flushFailures.WithLabelValues(stage).Add(0)
+	}
+	for _, from := range []string{LoadFallbackBak, LoadFallbackEmpty} {
+		m.loadFallback.WithLabelValues(from).Add(0)
+	}
+	return m
 }
 
 // Collectors returns every instrument in the bundle, suitable for
