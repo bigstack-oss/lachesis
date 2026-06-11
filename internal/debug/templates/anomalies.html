@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>/debug/anomalies — Telemetry Agent</title>
+{{ template "style" }}
+</head>
+<body>
+<nav>
+  <a href="/debug">index</a>
+  <a href="/debug/config">config</a>
+  <a href="/metrics">metrics</a>
+</nav>
+<h1>Anomalies <span class="badge {{ if gt .Total 0 }}warn{{ else }}ok{{ end }}">{{ .Total }}</span></h1>
+<p class="help">
+  Topology health issues from the last Neutron sync. The
+  <code>cubecos_neutron_anomalies</code> gauge carries the same counts
+  per class; this page names the routers and tenants behind them.
+</p>
+
+<h3>Static-route cycles ({{ len .Cycles }})</h3>
+{{ if .Cycles }}
+<table>
+<thead><tr><th>Source tenant</th><th>Source router</th><th>Destination</th><th>Loop router</th></tr></thead>
+<tbody>
+{{- range .Cycles }}
+<tr>
+  <td>{{ if .SourceTenantName }}{{ .SourceTenantName }}{{ else }}<span class="uuid">{{ .SourceTenant }}</span>{{ end }}</td>
+  <td class="uuid">{{ .SourceRouter }}</td>
+  <td>{{ .Destination }}</td>
+  <td class="uuid">{{ .LoopRouter }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+<h3>Static-route ambiguities ({{ len .Ambiguities }})</h3>
+{{ if .Ambiguities }}
+<table>
+<thead><tr><th>Source tenant</th><th>Router</th><th>Destination</th><th>Candidate owners</th></tr></thead>
+<tbody>
+{{- range .Ambiguities }}
+<tr>
+  <td>{{ if .SourceTenantName }}{{ .SourceTenantName }}{{ else }}<span class="uuid">{{ .SourceTenant }}</span>{{ end }}</td>
+  <td class="uuid">{{ .RouterID }}</td>
+  <td>{{ .Destination }}</td>
+  <td>{{ .OwnersDisplay }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+<h3>Dangling extraroutes ({{ len .DanglingRoutes }})</h3>
+{{ if .DanglingRoutes }}
+<table>
+<thead><tr><th>Source tenant</th><th>Router</th><th>Destination</th><th>Nexthop (unresolved)</th></tr></thead>
+<tbody>
+{{- range .DanglingRoutes }}
+<tr>
+  <td>{{ if .SourceTenantName }}{{ .SourceTenantName }}{{ else }}<span class="uuid">{{ .SourceTenant }}</span>{{ end }}</td>
+  <td class="uuid">{{ .SourceRouter }}</td>
+  <td>{{ .Destination }}</td>
+  <td>{{ .Nexthop }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+<h3>Zero-trie tenants ({{ len .ZeroTrieTenants }})</h3>
+{{ if .ZeroTrieTenants }}
+<p class="help">
+  These tenants own Neutron resources but have no trie rows. Their L3-routed
+  intra-cluster traffic will fall through to the catchall and classify as
+  external until cold-start sees their subnets.
+</p>
+<table>
+<thead><tr><th>Tenant</th><th class="num">Networks</th><th class="num">Routers</th><th class="num">VM ports</th></tr></thead>
+<tbody>
+{{- range .ZeroTrieTenants }}
+<tr>
+  <td>{{ if .TenantName }}{{ .TenantName }}{{ else }}<span class="uuid">{{ .TenantID }}</span>{{ end }}</td>
+  <td class="num">{{ .Networks }}</td>
+  <td class="num">{{ .Routers }}</td>
+  <td class="num">{{ .Ports }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+<h3>Duplicate router MACs ({{ len .DuplicateRouterMACs }})</h3>
+{{ if .DuplicateRouterMACs }}
+<p class="help">
+  On pure-OVN deployments every logical router interface has a unique MAC.
+  Duplicates indicate DVR (not supported), a snapshot defect, or schema drift.
+</p>
+<table>
+<thead><tr><th>MAC</th><th>Ports</th><th>Routers</th></tr></thead>
+<tbody>
+{{- range .DuplicateRouterMACs }}
+<tr>
+  <td>{{ .MAC }}</td>
+  <td class="uuid">{{ .PortsDisplay }}</td>
+  <td class="uuid">{{ .RoutersDisplay }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
+</body>
+</html>

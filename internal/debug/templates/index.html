@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>/debug — Telemetry Agent</title>
+{{ template "style" }}
+</head>
+<body>
+<nav>
+  <a href="/debug/anomalies">anomalies</a>
+  <a href="/debug/zones">zones</a>
+  <a href="/debug/topology">topology</a>
+  <a href="/debug/config">config</a>
+  <a href="/metrics">metrics</a>
+  <a href="/debug/pprof/">pprof</a>
+</nav>
+<h1>Telemetry Agent — /debug</h1>
+<div class="meta">
+  Last neutron sync:
+  {{- if not .Synced }} <span class="badge warn">never</span> &nbsp; cold-start has not completed
+  {{- else }} {{ .LastSync.UTC.Format "2006-01-02T15:04:05Z" }} <span class="badge {{ if .SyncStale }}warn{{ else }}ok{{ end }}">{{ .SyncAgeText }}</span>
+  {{- end }}
+</div>
+
+<h2>Health</h2>
+<table>
+<tr><th>Tenants</th><td class="num">{{ .Counts.Tenants }}</td></tr>
+<tr><th>Networks</th><td class="num">{{ .Counts.Networks }}</td></tr>
+<tr><th>Subnets</th><td class="num">{{ .Counts.Subnets }}</td></tr>
+<tr><th>Ports</th><td class="num">{{ .Counts.Ports }}</td></tr>
+<tr><th>Routers</th><td class="num">{{ .Counts.Routers }}</td></tr>
+<tr><th>Trie rows</th><td class="num">{{ .Counts.TrieRows }}</td></tr>
+</table>
+
+<h2>Anomalies <span class="badge {{ if gt .Anomalies.Total 0 }}warn{{ else }}ok{{ end }}">{{ .Anomalies.Total }}</span></h2>
+<table>
+<tr><th>Static-route cycles</th><td class="num">{{ .Anomalies.Cycles }}</td></tr>
+<tr><th>Static-route ambiguities</th><td class="num">{{ .Anomalies.Ambiguities }}</td></tr>
+<tr><th>Dangling extraroutes</th><td class="num">{{ .Anomalies.DanglingRoutes }}</td></tr>
+<tr><th>Zero-trie tenants</th><td class="num">{{ .Anomalies.ZeroTrieTenants }}</td></tr>
+<tr><th>Duplicate router MACs</th><td class="num">{{ .Anomalies.DuplicateRouterMACs }}</td></tr>
+</table>
+<p class="help">Detail rows: <a href="/debug/anomalies">/debug/anomalies</a>.
+Machine-readable: append <code>?format=json</code> to any page.</p>
+
+<h2>Lookup</h2>
+<p class="help">
+  Resolve an IP against the per-tenant trie + Neutron snapshot, or a MAC
+  against the userspace <code>mac_tenant_map</code>. Same backend as
+  <code>/debug/lookup</code> (JSON).
+</p>
+<form class="lookup" method="get" action="/debug">
+  <label>IP <input name="ip" value="{{ .LookupQuery.IP }}" placeholder="10.0.0.5"></label>
+  <label>Tenant <input name="tenant" value="{{ .LookupQuery.Tenant }}" placeholder="optional project UUID"></label>
+  <label>or MAC <input name="mac" value="{{ .LookupQuery.MAC }}" placeholder="fa:16:3e:00:00:01"></label>
+  <button type="submit">Look up</button>
+</form>
+
+{{ if .LookupError }}
+<div class="lookup-err">{{ .LookupError }}</div>
+{{ end }}
+
+{{ if .LookupResult }}
+<div class="lookup-result">
+  <h3>Result</h3>
+
+  {{ if .LookupResult.Zone }}
+  <div class="row"><span class="label">Zone</span>
+    <span class="zone-{{ .LookupResult.Zone.Code }}"><strong>{{ .LookupResult.Zone.Code }}</strong></span>
+    via {{ .LookupResult.Zone.Via }}
+  </div>
+  <div class="row"><span class="label">Matched</span>
+    {{ .LookupResult.Zone.Match.Prefix }} →
+    <span class="zone-{{ .LookupResult.Zone.Match.Zone }}">{{ .LookupResult.Zone.Match.Zone }}</span>
+    {{ if .LookupResult.Zone.Match.TenantID }}
+      (tenant {{ if .LookupResult.Zone.Match.TenantName }}{{ .LookupResult.Zone.Match.TenantName }} {{ end }}<span class="uuid">{{ .LookupResult.Zone.Match.TenantID }}</span>)
+    {{ else }}
+      (global)
+    {{ end }}
+  </div>
+  {{ end }}
+
+  {{ with .LookupResult.Neutron }}
+    {{ if .Subnet }}
+    <div class="row"><span class="label">Subnet</span>
+      {{ .Subnet.CIDR }}{{ if .Subnet.GatewayIP }} (gw {{ .Subnet.GatewayIP }}){{ end }}
+      <span class="uuid">{{ .Subnet.ID }}</span>
+    </div>
+    {{ end }}
+    {{ if .Network }}
+    <div class="row"><span class="label">Network</span>
+      {{ if .Network.Name }}{{ .Network.Name }}{{ end }}
+      {{ if .Network.Shared }}<span class="badge">shared</span>{{ end }}
+      {{ if .Network.IsExternal }}<span class="badge warn">external</span>{{ end }}
+      <span class="uuid">{{ .Network.ID }}</span>
+    </div>
+    {{ end }}
+    {{ if .Port }}
+    <div class="row"><span class="label">Port</span>
+      {{ if .Port.DeviceOwner }}{{ .Port.DeviceOwner }}{{ end }}
+      {{ if .Port.MAC }}@ {{ .Port.MAC }}{{ end }}
+      <span class="uuid">{{ .Port.ID }}</span>
+    </div>
+    {{ end }}
+    {{ if .Owner }}
+    <div class="row"><span class="label">Owner</span>
+      {{ if .Owner.Name }}{{ .Owner.Name }} {{ end }}<span class="uuid">{{ .Owner.ID }}</span>
+    </div>
+    {{ end }}
+  {{ end }}
+
+  {{ with .LookupResult.MAC }}
+    <div class="row"><span class="label">MAC map</span>
+      {{ if .Found }}
+        tenant {{ if .TenantName }}{{ .TenantName }} {{ end }}<span class="uuid">{{ .TenantID }}</span>
+        {{ if .IsAmphora }}<span class="badge">amphora</span>{{ end }}
+      {{ else }}
+        <span class="empty">not in mac_tenant_map</span>
+      {{ end }}
+    </div>
+  {{ end }}
+</div>
+{{ end }}
+
+</body>
+</html>
