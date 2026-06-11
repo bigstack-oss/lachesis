@@ -7,6 +7,8 @@
 package agent
 
 import (
+	"time"
+
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
@@ -27,6 +29,31 @@ type subsystemMetrics struct {
 	zombie   *zombie.Metrics
 	netlink  *cnetlink.Metrics
 	registry *cnetlink.Registry
+}
+
+// newSubsystemMetrics constructs every subsystem's instrument bundle.
+// syncTime feeds the neutron sync-age gauge; [New] passes the agent's
+// lastNeutronSyncTime so the gauge reads the live timestamp at scrape
+// time. The BPF map gauges are seeded here: max from the Go-side
+// MaxEntries constants, current at 0 until the first cold-start push
+// overwrites it.
+func newSubsystemMetrics(syncTime func() time.Time) subsystemMetrics {
+	nlReg := cnetlink.NewRegistry()
+
+	bpfMx := bpf.NewMetrics()
+	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
+	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
+	bpfMx.SetCurrent(bpf.MapMacTenant, 0)
+	bpfMx.SetCurrent(bpf.MapSubnetZoneTrie, 0)
+
+	return subsystemMetrics{
+		wal:      wal.NewMetrics(),
+		neutron:  neutron.NewMetrics(syncTime),
+		bpf:      bpfMx,
+		zombie:   zombie.NewMetrics(),
+		netlink:  cnetlink.NewMetrics(nlReg.Len),
+		registry: nlReg,
+	}
 }
 
 // registrations returns every subsystem's instruments in a stable
