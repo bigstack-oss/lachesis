@@ -80,6 +80,12 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	ag.mx.bpf.SetCurrent(bpf.MapSubnetZoneTrie, float64(nTrie))
 	anomalies := neutron.DetectAnomalies(snap, entries, cycles, ambiguities)
 	ag.mx.neutron.SetAnomalies(anomalies)
+	// Retain the sync outputs for the /debug pages before marking
+	// the sync time, so a fresh timestamp never points at stale (or
+	// nil) debug state.
+	ag.neutronSnapshot.Store(&snap)
+	ag.trieEntries.Store(&entries)
+	ag.anomalies.Store(&anomalies)
 	ag.markNeutronSync(time.Now())
 	slog.Info("neutron cold-start complete",
 		"component", componentNeutron,

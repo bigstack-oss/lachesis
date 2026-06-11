@@ -35,6 +35,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
@@ -74,6 +75,17 @@ type Agent struct {
 	// reports -1 in that case so dashboards can spot the condition
 	// with `< 0`.
 	lastNeutronSync atomic.Int64
+
+	// neutronSnapshot, trieEntries, and anomalies retain the most
+	// recent cold-start / full-resync outputs for the /debug pages.
+	// Written by `coldStartNeutron` (and the future Kafka updater)
+	// via atomic pointer swap — whole-value replace, never in-place
+	// mutation — so the debug handlers read lock-free while a resync
+	// runs. nil until the first successful sync (Neutron disabled or
+	// not yet synced); the handlers render the empty state.
+	neutronSnapshot atomic.Pointer[neutron.Snapshot]
+	trieEntries     atomic.Pointer[[]neutron.TrieEntry]
+	anomalies       atomic.Pointer[neutron.Anomalies]
 
 	// meta is the userspace MAC → TenantMeta store. Constructed
 	// empty in [New]; populated by Bootstrap from Neutron and, in
