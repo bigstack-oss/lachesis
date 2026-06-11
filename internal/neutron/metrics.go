@@ -35,6 +35,14 @@ type Metrics struct {
 // (never synced) is reported as `-1` — operators filter
 // `cubecos_neutron_sync_age_seconds < 0` to surface
 // never-yet-synced agents.
+//
+// Each Endpoint* child of the api_errors counter is seeded at zero
+// under the codeNetwork class — a labelled counter emits no series
+// until its first increment, so without the seed a healthy agent
+// shows "No data" instead of 0 on the dashboard. HTTP status codes
+// are not enumerable in advance and appear on first occurrence. The
+// unknown-owner counter stays unseeded for the same reason: its
+// owner label space is open-ended.
 func NewMetrics(lastSync func() time.Time) *Metrics {
 	m := &Metrics{
 		apiErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -61,6 +69,9 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 		}
 		return time.Since(t).Seconds()
 	})
+	for _, ep := range []string{EndpointKeystone, EndpointNetworks, EndpointSubnets, EndpointPorts, EndpointRouters} {
+		m.apiErrors.WithLabelValues(ep, codeNetwork).Add(0)
+	}
 	return m
 }
 
@@ -82,8 +93,8 @@ func (m *Metrics) ObserveBuilderStep(step string, d time.Duration) {
 }
 
 // RecordAPIError increments the api_errors counter for endpoint with
-// a status code label derived from err. Endpoint label is one of
-// "keystone", "networks", "subnets", "ports", "routers".
+// a status code label derived from err. Endpoint label is one of the
+// Endpoint* consts in schema.go.
 func (m *Metrics) RecordAPIError(endpoint string, err error) {
 	if m == nil || err == nil {
 		return

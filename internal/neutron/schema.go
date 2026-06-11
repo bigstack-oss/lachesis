@@ -42,6 +42,26 @@ type AmbiguityHit struct {
 // the rest of the codebase follows.
 const componentNeutron = "neutron"
 
+// Endpoint* are the `endpoint` label values for
+// cubecos_neutron_api_errors_total. Callers of
+// [Metrics.RecordAPIError] pass these; [NewMetrics] seeds each at
+// zero (with the codeNetwork code class) so the counter is visible
+// before any error occurs.
+const (
+	EndpointKeystone = "keystone"
+	EndpointNetworks = "networks"
+	EndpointSubnets  = "subnets"
+	EndpointPorts    = "ports"
+	EndpointRouters  = "routers"
+)
+
+// codeNetwork is the `code` label class for connection-level
+// failures (refused, DNS, TLS, parse) — everything that never got an
+// HTTP status. errCodeLabel maps such errors here; NewMetrics uses
+// it as the seed code because it is the one class every endpoint can
+// hit regardless of server behaviour.
+const codeNetwork = "network"
+
 // defaultInterface is the Keystone endpoint-catalog interface the
 // agent picks when the operator does not override it. Compute-node
 // agents talk to OpenStack over the internal interface; public is

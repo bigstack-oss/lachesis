@@ -22,9 +22,12 @@ type Metrics struct {
 
 // NewMetrics constructs the bundle. The current-size gauge is
 // backed by registrySize so it reflects live state on every scrape
-// without the subscriber having to push updates.
+// without the subscriber having to push updates. Both iface_kind
+// children of the failure counter are seeded at zero — a labelled
+// counter emits no series until its first increment, so without the
+// seed a healthy agent shows "No data" instead of 0 on the dashboard.
 func NewMetrics(registrySize func() int) *Metrics {
-	return &Metrics{
+	m := &Metrics{
 		attachFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "cubecos_tc_attach_failures_total",
 			Help: "TC clsact attach failures from the netlink subscriber, labelled by iface_kind (\"tap\" for prefix-matched, \"other\" for explicit-list entries).",
@@ -34,6 +37,10 @@ func NewMetrics(registrySize func() int) *Metrics {
 			Help: "Number of interfaces currently carrying telemetry TC programs.",
 		}, func() float64 { return float64(registrySize()) }),
 	}
+	for _, kind := range []string{ifaceKindTap, ifaceKindOther} {
+		m.attachFailures.WithLabelValues(kind).Add(0)
+	}
+	return m
 }
 
 // Collectors returns every instrument in the bundle.

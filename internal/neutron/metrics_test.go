@@ -2,7 +2,6 @@ package neutron
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,29 +10,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
-
-// scrape registers the metrics in a fresh registry, gathers the
-// exposition, and returns it as a string. Used by the nil-error
-// absence check, which asserts a metric family does NOT carry
-// counter entries — robust regardless of proto-text spacing.
-func scrape(t *testing.T, m *Metrics) string {
-	t.Helper()
-	reg := prometheus.NewRegistry()
-	for _, c := range m.Collectors() {
-		if err := reg.Register(c); err != nil {
-			t.Fatalf("register: %v", err)
-		}
-	}
-	mfs, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("gather: %v", err)
-	}
-	var sb strings.Builder
-	for _, mf := range mfs {
-		fmt.Fprintln(&sb, mf.String())
-	}
-	return sb.String()
-}
 
 // newRegistry registers every Collector on m into a fresh
 // prometheus.Registry, suitable for testutil.GatherAndCompare.
@@ -75,6 +51,11 @@ func TestMetrics_RecordAPIError_HTTPCode(t *testing.T) {
 # TYPE cubecos_neutron_api_errors_total counter
 cubecos_neutron_api_errors_total{code="401",endpoint="keystone"} 1
 cubecos_neutron_api_errors_total{code="503",endpoint="ports"} 2
+cubecos_neutron_api_errors_total{code="network",endpoint="keystone"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="ports"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="routers"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
 		"cubecos_neutron_api_errors_total"); err != nil {
@@ -89,7 +70,11 @@ func TestMetrics_RecordAPIError_NetworkLevel(t *testing.T) {
 	const want = `
 # HELP cubecos_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
 # TYPE cubecos_neutron_api_errors_total counter
+cubecos_neutron_api_errors_total{code="network",endpoint="keystone"} 0
 cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 1
+cubecos_neutron_api_errors_total{code="network",endpoint="ports"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="routers"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
 		"cubecos_neutron_api_errors_total"); err != nil {
@@ -97,15 +82,25 @@ cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 1
 	}
 }
 
+// TestMetrics_RecordAPIError_NilErrorIgnored pins that a nil error
+// neither panics nor increments: the exposition stays exactly the
+// NewMetrics seed (every endpoint at zero under the "network" class).
 func TestMetrics_RecordAPIError_NilErrorIgnored(t *testing.T) {
 	m := NewMetrics(func() time.Time { return time.Time{} })
 	m.RecordAPIError("ports", nil) // should not panic, should not record
-	dump := scrape(t, m)
-	if strings.Contains(dump, "cubecos_neutron_api_errors_total") &&
-		strings.Contains(dump, "counter:") {
-		// CounterVec emits nothing until first Inc; if it appears,
-		// the recorder added a series for nil.
-		t.Errorf("nil error should not record a metric:\n%s", dump)
+
+	const want = `
+# HELP cubecos_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
+# TYPE cubecos_neutron_api_errors_total counter
+cubecos_neutron_api_errors_total{code="network",endpoint="keystone"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="ports"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="routers"} 0
+cubecos_neutron_api_errors_total{code="network",endpoint="subnets"} 0
+`
+	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
+		"cubecos_neutron_api_errors_total"); err != nil {
+		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
 
