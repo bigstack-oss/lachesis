@@ -50,7 +50,7 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 		return err
 	}
 	stats := populateMetadataFromPorts(ag.meta, snap.Ports, ag.mx.neutron)
-	nMac, nTrie, ambiguities, err := pushSnapshotToKernel(ag, coll, snap)
+	nMac, nTrie, entries, ambiguities, cycles, err := pushSnapshotToKernel(ag, coll, snap)
 	if err != nil {
 		return err
 	}
@@ -78,6 +78,8 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	}
 	ag.mx.bpf.SetCurrent(bpf.MapMacTenant, float64(nMac))
 	ag.mx.bpf.SetCurrent(bpf.MapSubnetZoneTrie, float64(nTrie))
+	anomalies := neutron.DetectAnomalies(snap, entries, cycles, ambiguities)
+	ag.mx.neutron.SetAnomalies(anomalies)
 	ag.markNeutronSync(time.Now())
 	slog.Info("neutron cold-start complete",
 		"component", componentNeutron,
@@ -198,23 +200,27 @@ func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, ports []neutro
 // updates can fail with EINVAL (bad key) or ENOSPC (map full); both
 // indicate a real bug or a sizing regression and retrying would
 // just paper over the cause.
-func pushSnapshotToKernel(ag *Agent, coll *ebpf.Collection, snap neutron.Snapshot) (nMac, nTrie int, ambiguities []neutron.AmbiguityHit, err error) {
+//
+// The built entries plus the resolver's ambiguity/cycle hits are
+// returned alongside the write counts so the caller can run
+// [neutron.DetectAnomalies] over exactly what the kernel received.
+func pushSnapshotToKernel(ag *Agent, coll *ebpf.Collection, snap neutron.Snapshot) (nMac, nTrie int, entries []neutron.TrieEntry, ambiguities []neutron.AmbiguityHit, cycles []neutron.CycleHit, err error) {
 	macMap := coll.Maps[bpf.MapMacTenant]
 	if macMap == nil {
-		return 0, 0, nil, fmt.Errorf("%s map missing from collection", bpf.MapMacTenant)
+		return 0, 0, nil, nil, nil, fmt.Errorf("%s map missing from collection", bpf.MapMacTenant)
 	}
 	trieMap := coll.Maps[bpf.MapSubnetZoneTrie]
 	if trieMap == nil {
-		return 0, 0, nil, fmt.Errorf("%s map missing from collection", bpf.MapSubnetZoneTrie)
+		return 0, 0, nil, nil, nil, fmt.Errorf("%s map missing from collection", bpf.MapSubnetZoneTrie)
 	}
-	entries, ambiguities := neutron.BuildTrie(snap, neutron.WithMetrics(ag.mx.neutron))
+	entries, ambiguities, cycles = neutron.BuildTrie(snap, neutron.WithMetrics(ag.mx.neutron))
 	nMac, err = kernelwriter.WriteMacTenantMap(macMap, ag.meta, ag.interner)
 	if err != nil {
-		return nMac, 0, ambiguities, fmt.Errorf("write mac_tenant_map (wrote %d): %w", nMac, err)
+		return nMac, 0, entries, ambiguities, cycles, fmt.Errorf("write mac_tenant_map (wrote %d): %w", nMac, err)
 	}
 	nTrie, err = kernelwriter.WriteSubnetZoneTrie(trieMap, entries, ag.interner)
 	if err != nil {
-		return nMac, nTrie, ambiguities, fmt.Errorf("write subnet_zone_trie (wrote %d): %w", nTrie, err)
+		return nMac, nTrie, entries, ambiguities, cycles, fmt.Errorf("write subnet_zone_trie (wrote %d): %w", nTrie, err)
 	}
-	return nMac, nTrie, ambiguities, nil
+	return nMac, nTrie, entries, ambiguities, cycles, nil
 }

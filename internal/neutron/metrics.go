@@ -23,11 +23,13 @@ import (
 //   - cubecos_neutron_api_errors_total{endpoint, code}          counter
 //   - cubecos_neutron_unknown_device_owner_total{owner}         counter
 //   - cubecos_neutron_builder_step_duration_seconds{step}       histogram
+//   - cubecos_neutron_anomalies{class}                          gauge (topology health)
 type Metrics struct {
 	syncAge       prometheus.GaugeFunc
 	apiErrors     *prometheus.CounterVec
 	unknownOwners *prometheus.CounterVec
 	builderStep   *prometheus.HistogramVec
+	anomalies     *prometheus.GaugeVec
 }
 
 // NewMetrics constructs the bundle. `lastSync` returns the most
@@ -58,6 +60,10 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 			Help:    "BuildTrie per-step duration (DESIGN §5.2 steps 1-5), in seconds.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"step"}),
+		anomalies: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "cubecos_neutron_anomalies",
+			Help: "Count of topology anomalies by class detected at the last Neutron cold-start or resync.",
+		}, []string{"class"}),
 	}
 	m.syncAge = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "cubecos_neutron_sync_age_seconds",
@@ -72,13 +78,17 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 	for _, ep := range []string{EndpointKeystone, EndpointNetworks, EndpointSubnets, EndpointPorts, EndpointRouters, EndpointProjects} {
 		m.apiErrors.WithLabelValues(ep, codeNetwork).Add(0)
 	}
+	for _, c := range []string{anomalyClassCycle, anomalyClassAmbiguity, anomalyClassDanglingRoute,
+		anomalyClassZeroTrieTenant, anomalyClassDuplicateRouterMAC} {
+		m.anomalies.WithLabelValues(c).Set(0)
+	}
 	return m
 }
 
 // Collectors returns the underlying prometheus.Collector values for
 // the agent's registry to register.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.syncAge, m.apiErrors, m.unknownOwners, m.builderStep}
+	return []prometheus.Collector{m.syncAge, m.apiErrors, m.unknownOwners, m.builderStep, m.anomalies}
 }
 
 // ObserveBuilderStep records the duration of one BuildTrie step. The
@@ -112,6 +122,21 @@ func (m *Metrics) RecordUnknownOwner(deviceOwner string) {
 		return
 	}
 	m.unknownOwners.WithLabelValues(deviceOwner).Inc()
+}
+
+// SetAnomalies publishes the per-class counts from the latest
+// [DetectAnomalies] pass. Gauge semantics — every sync replaces the
+// previous counts, so a fixed misconfiguration drops the class back
+// to 0 on the next pass. nil receivers no-op.
+func (m *Metrics) SetAnomalies(a Anomalies) {
+	if m == nil {
+		return
+	}
+	m.anomalies.WithLabelValues(anomalyClassCycle).Set(float64(len(a.Cycles)))
+	m.anomalies.WithLabelValues(anomalyClassAmbiguity).Set(float64(len(a.Ambiguities)))
+	m.anomalies.WithLabelValues(anomalyClassDanglingRoute).Set(float64(len(a.DanglingRoutes)))
+	m.anomalies.WithLabelValues(anomalyClassZeroTrieTenant).Set(float64(len(a.ZeroTrieTenants)))
+	m.anomalies.WithLabelValues(anomalyClassDuplicateRouterMAC).Set(float64(len(a.DuplicateRouterMACs)))
 }
 
 // errCodeLabel maps an error to a stable label value. gophercloud's
