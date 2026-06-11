@@ -58,6 +58,37 @@ cubecos_packets_total{direction="egress",tenant_id="unknown",zone="external"} 10
 	}
 }
 
+// TestCollect_DurationHistogramObservesEachPass pins the
+// cubecos_collect_duration_seconds exposure. The histogram's sum is
+// wall-clock so GatherAndCompare can't pin exact values; sample
+// count per Gather is deterministic (one observation per Collect
+// pass, emitted within the same pass).
+func TestCollect_DurationHistogramObservesEachPass(t *testing.T) {
+	c := metrics.New(state.New(), stubScraper{}, metrics.UnknownTenant{})
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	for gathers := uint64(1); gathers <= 2; gathers++ {
+		mf, err := reg.Gather()
+		if err != nil {
+			t.Fatalf("Gather %d: %v", gathers, err)
+		}
+		found := false
+		for _, fam := range mf {
+			if fam.GetName() != "cubecos_collect_duration_seconds" {
+				continue
+			}
+			found = true
+			if got := fam.GetMetric()[0].GetHistogram().GetSampleCount(); got != gathers {
+				t.Errorf("gather %d: sample count = %d, want %d", gathers, got, gathers)
+			}
+		}
+		if !found {
+			t.Fatalf("gather %d: cubecos_collect_duration_seconds not exposed", gathers)
+		}
+	}
+}
+
 func TestCollect_TenantResolverApplied(t *testing.T) {
 	st := state.New()
 	st.ApplyDelta(keyWith(bpf.DirectionIngress, bpf.ZoneSameTenant),

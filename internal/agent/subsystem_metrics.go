@@ -12,6 +12,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
@@ -36,15 +37,18 @@ type subsystemMetrics struct {
 // lastNeutronSyncTime so the gauge reads the live timestamp at scrape
 // time. The BPF map gauges are seeded here: max from the Go-side
 // MaxEntries constants, current at 0 until the first cold-start push
-// overwrites it.
+// (mac_tenant_map, subnet_zone_trie) or the first scrape drain
+// (telemetry_map, via [telemetryFillReader]) overwrites it.
 func newSubsystemMetrics(syncTime func() time.Time) subsystemMetrics {
 	nlReg := cnetlink.NewRegistry()
 
 	bpfMx := bpf.NewMetrics()
 	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
 	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
+	bpfMx.SetMax(bpf.MapTelemetry, float64(bpf.MapTelemetryMaxEntries))
 	bpfMx.SetCurrent(bpf.MapMacTenant, 0)
 	bpfMx.SetCurrent(bpf.MapSubnetZoneTrie, 0)
+	bpfMx.SetCurrent(bpf.MapTelemetry, 0)
 
 	return subsystemMetrics{
 		wal:      wal.NewMetrics(),
@@ -54,6 +58,28 @@ func newSubsystemMetrics(syncTime func() time.Time) subsystemMetrics {
 		netlink:  cnetlink.NewMetrics(nlReg.Len),
 		registry: nlReg,
 	}
+}
+
+// telemetryFillReader decorates the scraper's [scraper.MapReader] so
+// every successful drain records the kernel telemetry_map entry count
+// into the cubecos_bpf_map_current_entries{map="telemetry_map"} gauge.
+// The drained key set IS the kernel map's current population
+// (read-don't-clear; only GC evicts), so len(dst) after a full
+// BatchLookup is the fill numerator the pressure-relief threshold
+// (docs/DESIGN.md §3.1, >80%) is defined against. Errors skip the
+// gauge update — a partial drain would understate fill.
+type telemetryFillReader struct {
+	inner scraper.MapReader
+	mx    *bpf.Metrics
+}
+
+// BatchLookup implements [scraper.MapReader].
+func (r telemetryFillReader) BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) error {
+	if err := r.inner.BatchLookup(dst); err != nil {
+		return err
+	}
+	r.mx.SetCurrent(bpf.MapTelemetry, float64(len(dst)))
+	return nil
 }
 
 // registrations returns every subsystem's instruments in a stable

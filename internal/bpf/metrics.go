@@ -4,10 +4,12 @@ import "github.com/prometheus/client_golang/prometheus"
 
 // Metrics holds Prometheus instruments for the kernel BPF maps
 // the agent populates. The `current_entries` value is updated by the
-// userspace writer (kernelwriter) after each successful map push;
-// it's a userspace-tracked count, not a kernel-side ground truth,
-// so a sudden drift would suggest a writer bug rather than kernel
-// state. `max_entries` is static — set once at boot from the
+// userspace writer (kernelwriter) after each successful map push —
+// or, for telemetry_map, by the scraper drain, which counts the keys
+// each BatchLookup returns; it's a userspace-tracked count, not a
+// kernel-side ground truth, so a sudden drift would suggest a writer
+// bug rather than kernel state. `max_entries` is static — set once
+// at boot from the
 // `MapXxxMaxEntries` constants — and serves as the denominator the
 // Grafana fill-ratio panel divides into.
 //
