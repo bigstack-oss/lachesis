@@ -3,7 +3,7 @@
 // shutdown time budgets, the Neutron cold-start backoff bounds, and the
 // labelledCollectors holder. Behavioural types (Agent, subsystemMetrics,
 // Options) and the functions that consume these values live alongside
-// their logic in agent.go / retry.go.
+// their logic in agent.go / options.go / subsystem_metrics.go / retry.go.
 
 package agent
 

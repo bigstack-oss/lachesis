@@ -174,7 +174,7 @@ func (b *bootstrapper) buildAgent() error {
 	if err != nil {
 		return err
 	}
-	ag.ZombieMetrics().RecordCleaned(b.zombiesCleaned)
+	ag.mx.zombie.RecordCleaned(b.zombiesCleaned)
 	b.ag = ag
 	return nil
 }
@@ -199,7 +199,7 @@ func (b *bootstrapper) subscribeNetlink() error {
 		return err
 	}
 	if sub != nil {
-		b.ag.SetNetlinkSubscriber(sub)
+		b.ag.netlinkSubscriber = sub
 	}
 	return b.seq.Advance(boot.PhaseAttached)
 }
@@ -250,12 +250,12 @@ func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 		slog.Warn("primary unusable; restored from backup",
 			"component", componentWAL,
 			"path", cfg.Path+wal.BackupSuffix, "records", len(res.Records))
-		ag.WALMetrics().RecordLoadFallback(wal.LoadFallbackBak)
+		ag.mx.wal.RecordLoadFallback(wal.LoadFallbackBak)
 	case wal.LoadEmpty:
 		slog.Info("no prior snapshot; starting empty",
 			"component", componentWAL,
 			"path", cfg.Path)
-		ag.WALMetrics().RecordLoadFallback(wal.LoadFallbackEmpty)
+		ag.mx.wal.RecordLoadFallback(wal.LoadFallbackEmpty)
 	}
 	if len(res.Records) > 0 {
 		ag.SeedState(res.Records)
@@ -318,8 +318,8 @@ func buildNetlinkSubscriber(ag *Agent, bpfCfg config.BPFConfig, coll *ebpf.Colle
 		Attacher: tcattach.NewLinkAttacher(ingress, egress),
 		Prefixes: bpfCfg.AttachPrefixes,
 		Explicit: bpfCfg.AttachInterfaces,
-		Registry: ag.NetlinkRegistry(),
-		Metrics:  ag.NetlinkMetrics(),
+		Registry: ag.mx.registry,
+		Metrics:  ag.mx.netlink,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("netlink subscriber: %w", err)

@@ -45,11 +45,11 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	if err != nil {
 		return fmt.Errorf("credentials: %w", err)
 	}
-	client, snap, err := fetchNeutronSnapshot(ctx, creds, ag.NeutronMetrics())
+	client, snap, err := fetchNeutronSnapshot(ctx, creds, ag.mx.neutron)
 	if err != nil {
 		return err
 	}
-	stats := populateMetadataFromPorts(ag.Metadata(), snap.Ports, ag.NeutronMetrics())
+	stats := populateMetadataFromPorts(ag.meta, snap.Ports, ag.mx.neutron)
 	nMac, nTrie, ambiguities, err := pushSnapshotToKernel(ag, coll, snap)
 	if err != nil {
 		return err
@@ -76,16 +76,16 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 				"owners", hit.Owners)
 		}
 	}
-	ag.BPFMapMetrics().SetCurrent(bpf.MapMacTenant, float64(nMac))
-	ag.BPFMapMetrics().SetCurrent(bpf.MapSubnetZoneTrie, float64(nTrie))
-	ag.MarkNeutronSync(time.Now())
+	ag.mx.bpf.SetCurrent(bpf.MapMacTenant, float64(nMac))
+	ag.mx.bpf.SetCurrent(bpf.MapSubnetZoneTrie, float64(nTrie))
+	ag.markNeutronSync(time.Now())
 	slog.Info("neutron cold-start complete",
 		"component", componentNeutron,
 		"endpoint", client.EndpointURL(),
 		"ports_admitted", stats.inserted,
 		"macs_written", nMac,
 		"trie_entries_written", nTrie,
-		"tenants_interned", ag.Interner().Len(),
+		"tenants_interned", ag.interner.Len(),
 		"ports_skipped", stats.skipped,
 		"unknown_owners_admitted", stats.unknownOwners,
 	)
@@ -201,12 +201,12 @@ func pushSnapshotToKernel(ag *Agent, coll *ebpf.Collection, snap neutron.Snapsho
 	if trieMap == nil {
 		return 0, 0, nil, fmt.Errorf("%s map missing from collection", bpf.MapSubnetZoneTrie)
 	}
-	entries, ambiguities := neutron.BuildTrie(snap, neutron.WithMetrics(ag.NeutronMetrics()))
-	nMac, err = kernelwriter.WriteMacTenantMap(macMap, ag.Metadata(), ag.Interner())
+	entries, ambiguities := neutron.BuildTrie(snap, neutron.WithMetrics(ag.mx.neutron))
+	nMac, err = kernelwriter.WriteMacTenantMap(macMap, ag.meta, ag.interner)
 	if err != nil {
 		return nMac, 0, ambiguities, fmt.Errorf("write mac_tenant_map (wrote %d): %w", nMac, err)
 	}
-	nTrie, err = kernelwriter.WriteSubnetZoneTrie(trieMap, entries, ag.Interner())
+	nTrie, err = kernelwriter.WriteSubnetZoneTrie(trieMap, entries, ag.interner)
 	if err != nil {
 		return nMac, nTrie, ambiguities, fmt.Errorf("write subnet_zone_trie (wrote %d): %w", nTrie, err)
 	}

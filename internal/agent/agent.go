@@ -13,8 +13,8 @@
 //
 // This file is cross-platform: it depends only on the scraper.MapReader
 // interface, so unit tests can run on macOS with a synthetic reader.
-// The production BPF reader and the TC clsact attach helper live in
-// `reader_linux.go` and `attach_linux.go` respectively.
+// The production BPF reader and the boot sequence live in
+// `reader_linux.go` and `bootstrap_linux.go` respectively.
 package agent
 
 import (
@@ -30,17 +30,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
 
 // Agent owns the in-process composition of the telemetry data plane:
@@ -154,51 +151,21 @@ func (a *Agent) openHTTP(opts Options) error {
 }
 
 // WALMetrics returns the WAL instrument bundle the agent registered
-// with its prometheus.Registry. Exposed so the boot path can record
-// load-fallback observations on the same Metrics that the periodic
-// flush will later contribute timings to.
+// with its prometheus.Registry. The boot path reads a.mx.wal
+// directly; this accessor exists for the package's external tests,
+// which record load-fallback observations on the same Metrics that
+// the periodic flush contributes timings to.
 func (a *Agent) WALMetrics() *wal.Metrics { return a.mx.wal }
 
-// NeutronMetrics returns the Neutron-subsystem instrument bundle.
-// The cold-start path uses it to record API errors and
-// unknown-owner admissions; sync_age reads the agent's
-// [Agent.lastNeutronSync] timestamp at scrape time.
-func (a *Agent) NeutronMetrics() *neutron.Metrics { return a.mx.neutron }
-
-// BPFMapMetrics returns the BPF-map instrument bundle. Cold-start
-// and any subsequent incremental update set the current-entries
-// gauge after each successful kernel push.
-func (a *Agent) BPFMapMetrics() *bpf.Metrics { return a.mx.bpf }
-
-// ZombieMetrics returns the zombie-hunter instrument bundle. The
-// boot path records the orphan-cleanup count once, after [Hunt]
-// runs and the agent has been constructed.
-func (a *Agent) ZombieMetrics() *zombie.Metrics { return a.mx.zombie }
-
-// NetlinkRegistry returns the Interface Registry shared between the
-// netlink subscriber and the cubecos_attached_interfaces gauge.
-// Never nil.
-func (a *Agent) NetlinkRegistry() *cnetlink.Registry { return a.mx.registry }
-
-// NetlinkMetrics returns the netlink-subscriber instrument bundle.
-// Never nil.
-func (a *Agent) NetlinkMetrics() *cnetlink.Metrics { return a.mx.netlink }
-
-// SetNetlinkSubscriber wires a subscriber that [Agent.Run] will
-// start after WAL restore. Intended for Linux Bootstrap; cross-
-// platform New leaves the field nil. Idempotent; calling twice
-// replaces the previous value (useful in tests).
-func (a *Agent) SetNetlinkSubscriber(s cnetlink.Subscriber) { a.netlinkSubscriber = s }
-
-// MarkNeutronSync records `t` as the most recent successful Neutron
+// markNeutronSync records `t` as the most recent successful Neutron
 // sync. Read by the `cubecos_neutron_sync_age_seconds` gauge.
-func (a *Agent) MarkNeutronSync(t time.Time) {
+func (a *Agent) markNeutronSync(t time.Time) {
 	a.lastNeutronSync.Store(t.UnixNano())
 }
 
 // lastNeutronSyncTime returns the timestamp marked by the most
-// recent [MarkNeutronSync] call, or the zero time.Time if none.
-// Used by the neutron metrics' sync_age gauge provider.
+// recent [Agent.markNeutronSync] call, or the zero time.Time if
+// none. Used by the neutron metrics' sync_age gauge provider.
 func (a *Agent) lastNeutronSyncTime() time.Time {
 	ns := a.lastNeutronSync.Load()
 	if ns == 0 {
@@ -206,20 +173,6 @@ func (a *Agent) lastNeutronSyncTime() time.Time {
 	}
 	return time.Unix(0, ns)
 }
-
-// Metadata returns the userspace MAC → TenantMeta store. Bootstrap
-// populates it after Neutron cold-start; Kafka events update it
-// incrementally. The metrics Collector reads it through the
-// wired-in [metadata.Resolver].
-func (a *Agent) Metadata() *metadata.ShardedMetadataMap { return a.meta }
-
-// Interner returns the ProjectID → u32 mapping the kernel maps key
-// on. Shared between cold-start map writes and any future
-// incremental writes so the kernel sees a stable assignment within
-// one agent lifetime. The mapping is rebuilt fresh on every agent
-// boot; see the doc on [metadata.TenantInterner] for why that is
-// correctness-safe.
-func (a *Agent) Interner() *metadata.TenantInterner { return a.interner }
 
 // buildRegistry creates a fresh Prometheus registry and binds the
 // agent's custom Collector plus every subsystem instrument bundle to
