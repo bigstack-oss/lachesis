@@ -1,13 +1,23 @@
 # Grafana stack for the CubeCOS network-telemetry agent
 
 A local Prometheus + Grafana stack that visualises the agent's
-`/metrics` endpoint. Three dashboards land in this Sprint:
+`/metrics` endpoint. One all-in-one dashboard
+(`dashboards/cubecos-telemetry.json`, uid `cubecos-telemetry`)
+replaces the earlier per-topic set; its rows:
 
-| File | Title | Focus |
-| --- | --- | --- |
-| `dashboards/00-health.json`     | Agent Health        | up / scrape errors / flow count / scrape age |
-| `dashboards/10-throughput.json` | Throughput          | bytes & packets/sec by direction, zone, tenant |
-| `dashboards/20-state.json`      | GlobalState         | tracked-flow trend, cumulative bytes by (zone, direction) |
+| Row | Focus |
+| --- | --- |
+| Overview            | up / flows / attached ifaces / sync age / scrape age / telemetry_map fill |
+| Throughput (billing) | bytes & packets/sec by direction, zone, tenant; cumulative table |
+| BPF Maps            | fill ratio + current-vs-max entries for all three kernel maps |
+| Scraper & Collector | scrape errors, scrape lag, Collect pass duration p50/p99 |
+| Neutron             | API error rate, BuildTrie step durations, unknown device_owner |
+| WAL                 | per-phase p99 latency, flush failures, load fallbacks |
+| Netlink / TC        | attached-interface trend, attach failures, zombie cleanups |
+
+The dashboard selects its Prometheus through a `datasource` template
+variable, so the same JSON imports cleanly into any Grafana that has
+a Prometheus datasource (e.g. a staging host's own Grafana).
 
 ## Default profile — visualisation only
 
