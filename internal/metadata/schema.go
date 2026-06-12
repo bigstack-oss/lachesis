@@ -36,7 +36,7 @@ type TenantMeta struct {
 // `mac & (numShards-1)` index is a single AND.
 const numShards = 64
 
-// TenantIDUnset and unknownTenantID are the two "no tenant" sentinels
+// TenantIDUnset and UnknownTenantID are the two "no tenant" sentinels
 // of this package, kept together because they describe the same
 // absence on two sides:
 //
@@ -44,12 +44,15 @@ const numShards = 64
 //     [TenantInterner] result for an empty ProjectID. Real interned
 //     IDs start at 1 so the zero value of a `uint32` field never
 //     collides with a valid tenant.
-//   - unknownTenantID is the userspace-facing `tenant_id` Prometheus
-//     label emitted when a VM MAC is not in the map. It mirrors
-//     `metrics.UnknownTenant{}` — both producers must emit the same
-//     string, because Prometheus `rate()` queries during cold-start
-//     span the transition from "unknown" to resolved project UUIDs.
+//   - UnknownTenantID is the userspace-facing `tenant_id` Prometheus
+//     label emitted when a VM MAC is not in the map. It is the single
+//     source of truth for the label: `metrics.UnknownTenant{}` returns
+//     it too, because Prometheus `rate()` queries during cold-start
+//     span the transition from "unknown" to resolved project UUIDs,
+//     so every producer must emit the same string. It is exported
+//     from this package (not metrics) because metadata must not
+//     import metrics (L2 → L4).
 const (
 	TenantIDUnset   uint32 = 0
-	unknownTenantID        = "unknown"
+	UnknownTenantID        = "unknown"
 )

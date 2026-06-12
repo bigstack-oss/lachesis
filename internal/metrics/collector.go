@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -205,8 +206,11 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 // UnknownTenant is the stub TenantResolver wired before the
 // Neutron-backed `mac_tenant_map` reader is available. It returns
-// "unknown" for every key.
+// [metadata.UnknownTenantID] for every key — the same label a
+// [metadata.Resolver] emits on a lookup miss, so Prometheus `rate()`
+// queries spanning the cold-start transition see one continuous
+// series.
 type UnknownTenant struct{}
 
 // ResolveTenant implements [TenantResolver].
-func (UnknownTenant) ResolveTenant(bpf.FlowKey) string { return "unknown" }
+func (UnknownTenant) ResolveTenant(bpf.FlowKey) string { return metadata.UnknownTenantID }
