@@ -10,7 +10,7 @@ import "github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 //   - INGRESS (VM sending):  vm_mac = key.SrcMac
 //   - EGRESS  (VM receiving): vm_mac = key.DstMac
 //
-// On lookup miss it returns [unknownTenantID]; on hit, the entry's
+// On lookup miss it returns [UnknownTenantID]; on hit, the entry's
 // `ProjectID`. Safe for concurrent use (read-only).
 type Resolver struct {
 	m *ShardedMetadataMap
@@ -31,7 +31,7 @@ func (r *Resolver) ResolveTenant(key bpf.FlowKey) string {
 	}
 	meta, ok := r.m.Lookup(bpf.MACKey(vmMAC))
 	if !ok {
-		return unknownTenantID
+		return UnknownTenantID
 	}
 	return meta.ProjectID
 }

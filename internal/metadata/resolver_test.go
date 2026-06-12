@@ -4,15 +4,7 @@ import (
 	"testing"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 )
-
-// Compile-time check: Resolver must satisfy metrics.TenantResolver,
-// the interface the Collector calls per Snapshot entry. Asserting
-// the seam here means a future rename / signature change fails the
-// test build of *this* package, not silently at a different wiring
-// point.
-var _ metrics.TenantResolver = (*Resolver)(nil)
 
 // macA / macB are locally-administered MACs (low bit of the first
 // byte clear). Bit patterns mirror internal/testenv/classifier so

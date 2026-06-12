@@ -5,11 +5,20 @@ import (
 	"testing"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+// Compile-time check: metadata.Resolver must satisfy
+// TenantResolver, the interface the Collector calls per Snapshot
+// entry. The assertion lives on the consumer side of the seam —
+// it cannot live in package metadata's tests anymore, because
+// metrics imports metadata (for [metadata.UnknownTenantID]) and
+// the reverse test import would cycle.
+var _ metrics.TenantResolver = (*metadata.Resolver)(nil)
 
 // stubScraper is a fixed-value [metrics.ScraperStats] for tests.
 type stubScraper struct {
