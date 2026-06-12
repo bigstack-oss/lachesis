@@ -62,6 +62,13 @@ func New(reader MapReader, st *state.GlobalState, interval time.Duration) *Scrap
 // Run drives the scrape loop until ctx is cancelled. The first tick
 // fires immediately so /metrics has data within one interval of
 // startup; subsequent ticks fire on the configured cadence.
+//
+// On cancellation Run performs one final Tick before returning, so
+// deltas the kernel accumulated since the last periodic tick are
+// drained into state. Without it a graceful shutdown loses up to one
+// scrape interval of billing data — the maps die with the TC filters
+// on the next boot. Callers must keep the BPF collection open until
+// Run returns.
 func (s *Scraper) Run(ctx context.Context) {
 	if err := s.Tick(); err != nil {
 		slog.Warn("initial tick failed", "component", componentScraper, "err", err)
@@ -71,6 +78,9 @@ func (s *Scraper) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			if err := s.Tick(); err != nil {
+				slog.Warn("final tick failed", "component", componentScraper, "err", err)
+			}
 			return
 		case <-t.C:
 			if err := s.Tick(); err != nil {

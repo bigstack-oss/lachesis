@@ -188,6 +188,57 @@ func TestRun_RespectsContextCancel(t *testing.T) {
 	}
 }
 
+// TestRun_FinalTickOnCancel proves the shutdown drain: after ctx is
+// cancelled, Run performs one final Tick before returning, so deltas
+// applied to the kernel map since the last periodic tick still reach
+// GlobalState. Without it, a graceful shutdown loses up to one scrape
+// interval of billing data.
+func TestRun_FinalTickOnCancel(t *testing.T) {
+	r := &fakeReader{
+		returns: []map[bpf.FlowKey]bpf.FlowMetrics{
+			{key(1, 2): {Bytes: 100, Packets: 1, LastSeenNs: 5}},
+			{key(1, 2): {Bytes: 250, Packets: 4, LastSeenNs: 9}}, // only the final tick can see this
+		},
+	}
+	st := state.New()
+	s := scraper.New(r, st, time.Hour) // ticker never fires; initial + final ticks only
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for the initial tick to start (and, with it in flight or
+	// done, cancel — Run must still run exactly one more tick).
+	deadline := time.Now().Add(time.Second)
+	for r.calls.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("initial tick did not fire within 1s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return within 1s of cancel")
+	}
+
+	if got := r.calls.Load(); got != 2 {
+		t.Errorf("reader.calls = %d, want 2 (initial + final)", got)
+	}
+	got := map[bpf.FlowKey]bpf.FlowMetrics{}
+	for _, e := range st.Snapshot(nil) {
+		got[e.Key] = e.Total
+	}
+	if want := (bpf.FlowMetrics{Bytes: 250, Packets: 4, LastSeenNs: 9}); got[key(1, 2)] != want {
+		t.Errorf("Total[key(1,2)] = %+v, want %+v (final tick not integrated)", got[key(1, 2)], want)
+	}
+}
+
 func TestRun_SurvivesReaderErrors(t *testing.T) {
 	r := &fakeReader{
 		returns: []map[bpf.FlowKey]bpf.FlowMetrics{

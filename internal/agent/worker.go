@@ -23,8 +23,12 @@ type worker struct {
 
 // workers returns the agent's long-lived goroutines in DRAIN order:
 // netlink first (stop attaching while tearing down), then scraper
-// before wal so the final deltas land in GlobalState before the WAL
-// final flush captures them.
+// before wal so the scraper's final tick lands its deltas in
+// GlobalState before the WAL final flush snapshots them. The order is
+// enforced structurally: [Agent.drainWorkers] cancels each row's own
+// context and awaits its exit before moving to the next row, so the
+// WAL flusher's final flush cannot start until the scraper has
+// returned.
 //
 // This list is the single source of truth for Run's goroutines:
 // [startWorkers] spawns every enabled row and both shutdown paths
@@ -49,35 +53,47 @@ func (a *Agent) runNetlink(ctx context.Context) {
 	}
 }
 
-// startWorkers spawns every enabled worker and returns one done
-// channel per row, index-aligned with ws. Disabled rows get an
-// already-closed channel so [Agent.drainWorkers] can range the same
+// startWorkers spawns every enabled worker on its own context and
+// returns one cancel func and one done channel per row, index-aligned
+// with ws. The contexts deliberately do not derive from the caller's:
+// a worker stops only when [Agent.drainWorkers] cancels its row, so
+// the list's drain order is also the cancellation order — that is
+// what guarantees the scraper's final tick completes before the WAL
+// flusher sees its own cancellation. Disabled rows get a no-op cancel
+// and an already-closed channel so drainWorkers can range the same
 // list without special cases.
-func startWorkers(ctx context.Context, ws []worker) []chan struct{} {
+func startWorkers(ws []worker) ([]context.CancelFunc, []chan struct{}) {
+	cancels := make([]context.CancelFunc, len(ws))
 	done := make([]chan struct{}, len(ws))
 	for i, w := range ws {
 		ch := make(chan struct{})
 		done[i] = ch
 		if !w.enabled {
+			cancels[i] = func() {}
 			close(ch)
 			continue
 		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels[i] = cancel
 		go func() {
 			defer close(ch)
 			w.run(ctx)
 		}()
 	}
-	return done
+	return cancels, done
 }
 
-// drainWorkers waits for every [Agent.workers] goroutine to exit, in
-// the list's order — the drain ordering lives on the list, not here.
-// Used by both shutdown paths (caller-ctx cancel and HTTP server
-// failure), so the goroutine teardown and final flush are identical
-// regardless of why the agent is stopping. The caller must have
-// cancelled the workers' context first.
-func (a *Agent) drainWorkers(ws []worker, done []chan struct{}) {
+// drainWorkers stops every [Agent.workers] goroutine in the list's
+// order — the drain ordering lives on the list, not here. Each row is
+// cancelled and then awaited before the next row is cancelled, so a
+// later worker's shutdown work (the WAL final flush, say) cannot
+// start until every earlier worker (the scraper's final tick) has
+// exited. Used by both shutdown paths (caller-ctx cancel and HTTP
+// server failure), so the goroutine teardown and final flush are
+// identical regardless of why the agent is stopping.
+func (a *Agent) drainWorkers(ws []worker, cancels []context.CancelFunc, done []chan struct{}) {
 	for i, w := range ws {
+		cancels[i]()
 		a.await(w.name, done[i])
 	}
 	slog.Info("shutdown complete", "component", componentAgent)
@@ -87,8 +103,11 @@ func (a *Agent) drainWorkers(ws []worker, done []chan struct{}) {
 // logging which goroutine stopped or timed out. drainWorkers calls it
 // once per workers() row so a slow HTTP drain never leaves a goroutine
 // holding a BPF map read while the caller closes the collection. A
-// WAL-flush timeout is the design's stated worst case: the last
-// ≤flush_interval of in-memory deltas are lost.
+// timeout also forfeits the drain ordering for the rows after the
+// stuck one — a scraper stuck past the budget means the WAL final
+// flush runs without the final tick's deltas. A WAL-flush timeout is
+// the design's stated worst case: the last ≤flush_interval of
+// in-memory deltas are lost.
 func (a *Agent) await(name string, done <-chan struct{}) {
 	select {
 	case <-done:
