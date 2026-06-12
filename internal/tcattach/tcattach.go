@@ -12,6 +12,7 @@ package tcattach
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink"
@@ -40,14 +41,19 @@ func Replace(link netlink.Link, prog *ebpf.Program, dir Direction, name string) 
 // before returning, so a partial attach never leaves the link
 // carrying one telemetry filter while callers (e.g. the netlink
 // subscriber's Registry) record it as unattached. The rollback is
-// best-effort; if it too fails, the zombie hunter reaps the stray
-// filter on the next agent start.
+// best-effort: a rollback failure is logged at warn, and the zombie
+// hunter reaps the stray filter on the next agent start.
 func AttachTelemetry(link netlink.Link, ingress, egress *ebpf.Program) error {
 	if err := Replace(link, ingress, Ingress, FilterIngressName); err != nil {
 		return err
 	}
 	if err := Replace(link, egress, Egress, FilterEgressName); err != nil {
-		_ = removeFilter(link, Ingress)
+		if rerr := removeFilter(link, Ingress); rerr != nil {
+			slog.Warn("ingress rollback failed after egress attach error",
+				"component", component,
+				"iface", link.Attrs().Name,
+				"err", rerr)
+		}
 		return err
 	}
 	return nil
@@ -146,6 +152,7 @@ func replaceFilter(link netlink.Link, prog *ebpf.Program, dir Direction, name st
 			LinkIndex: link.Attrs().Index,
 			Parent:    parent,
 			Handle:    FilterHandle,
+			Priority:  FilterPriority,
 			Protocol:  unix.ETH_P_ALL,
 		},
 		Fd:           prog.FD(),
@@ -160,8 +167,8 @@ func replaceFilter(link netlink.Link, prog *ebpf.Program, dir Direction, name st
 
 // removeFilter deletes the telemetry filter at the given hook on link,
 // used to roll back a partial [AttachTelemetry]. It identifies the
-// filter by the fixed [FilterHandle] and hook parent, matching what
-// replaceFilter installed.
+// filter by the fixed [FilterHandle], [FilterPriority] and hook
+// parent, matching what replaceFilter installed.
 func removeFilter(link netlink.Link, dir Direction) error {
 	parent, err := parentTCHandle(dir)
 	if err != nil {
@@ -172,6 +179,7 @@ func removeFilter(link netlink.Link, dir Direction) error {
 			LinkIndex: link.Attrs().Index,
 			Parent:    parent,
 			Handle:    FilterHandle,
+			Priority:  FilterPriority,
 			Protocol:  unix.ETH_P_ALL,
 		},
 	}
