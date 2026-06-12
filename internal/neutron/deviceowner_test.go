@@ -30,6 +30,28 @@ func TestIsVMPort(t *testing.T) {
 	}
 }
 
+func TestIsComputePort(t *testing.T) {
+	tests := []struct {
+		deviceOwner string
+		want        bool
+	}{
+		{"compute:nova", true},    // default AZ
+		{"compute:az-east", true}, // named AZ
+		{"compute:Octavia", true}, // older Octavia
+		// Non-compute namespaces, even VM-like ones.
+		{"baremetal:nova", false},
+		{"Octavia", false},
+		{"manila:share", false},
+		{"network:router_interface", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := IsComputePort(tc.deviceOwner); got != tc.want {
+			t.Errorf("IsComputePort(%q) = %v, want %v", tc.deviceOwner, got, tc.want)
+		}
+	}
+}
+
 func TestIsKnownVMOwner(t *testing.T) {
 	tests := []struct {
 		deviceOwner string

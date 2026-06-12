@@ -1,9 +1,11 @@
 // deviceowner.go classifies Neutron ports by their `device_owner`
 // string. [IsInfraPort] and [IsVMPort] partition the owner space —
 // infra ports contribute /32 INFRA trie rows, VM-like ports admit
-// their MAC into the kernel mac_tenant_map — and [IsKnownVMOwner] is
-// the stricter empirical allowlist used to warn-log drift. The trie
-// builder that consumes the partition lives in trie.go.
+// their MAC into the kernel mac_tenant_map — [IsComputePort] matches
+// Nova's `compute:<az>` namespace for the static-route resolver's
+// VM-appliance branch, and [IsKnownVMOwner] is the stricter
+// empirical allowlist used to warn-log drift. The trie builder that
+// consumes the partition lives in trie.go.
 
 package neutron
 
@@ -91,6 +93,16 @@ func IsVMPort(deviceOwner string) bool {
 	return true
 }
 
+// IsComputePort classifies a Neutron port as a Nova VM port. Nova
+// writes `compute:<az-name>` as the device_owner — `compute:nova` is
+// just the default availability-zone name — so the match is on the
+// `compute:` prefix, never the literal. The static-route resolver's
+// Step B VM-appliance branch dispatches on this predicate, and
+// [IsKnownVMOwner] reuses it for its compute case.
+func IsComputePort(deviceOwner string) bool {
+	return strings.HasPrefix(deviceOwner, deviceOwnerComputePrefix)
+}
+
 // IsKnownVMOwner returns true for `device_owner` values empirically
 // confirmed VM-like in OpenStack OVN-Yoga (the deployment target).
 // Stricter than [IsVMPort]: an unknown vendor / third-party plugin
@@ -114,7 +126,7 @@ func IsVMPort(deviceOwner string) bool {
 // admits via [IsVMPort] but lights up a warn-log here.
 func IsKnownVMOwner(deviceOwner string) bool {
 	switch {
-	case strings.HasPrefix(deviceOwner, "compute:"):
+	case IsComputePort(deviceOwner):
 		return true
 	case deviceOwner == "Octavia" || strings.HasPrefix(deviceOwner, "Octavia:"):
 		return true

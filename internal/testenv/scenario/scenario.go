@@ -108,6 +108,13 @@ func (n *NetRef) VM(id, project, ip string) *NetRef {
 	return n.attachPort(id, project, "compute:nova", id+"-instance", ip)
 }
 
+// VMInAZ is [NetRef.VM] for a named availability zone: Nova writes
+// compute:<az-name> as the device_owner, "nova" being only the
+// default AZ's name.
+func (n *NetRef) VMInAZ(id, project, az, ip string) *NetRef {
+	return n.attachPort(id, project, "compute:"+az, id+"-instance", ip)
+}
+
 // Octavia adds an Octavia management port (device_owner="Octavia").
 func (n *NetRef) Octavia(id, project, ip string) *NetRef {
 	return n.attachPort(id, project, "Octavia", id, ip)

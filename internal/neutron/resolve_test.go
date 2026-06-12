@@ -78,18 +78,33 @@ func TestResolveStaticRoute_VMApplianceNexthop_SameTenant(t *testing.T) {
 	// R1 (T1) routes 172.16.99.0/24 via a VM appliance at 10.0.1.50 on net-T1.
 	// Appliance VM is owned by T1, on T1's non-shared internal net.
 	// Expected: SAME_TENANT (appliance owner T1 == source T1, on net-T1).
-	var f fixture
-	f.addNetwork("net-T1", "T1", false, false)
-	f.addSubnet("sub-T1", "net-T1", "T1", "10.0.1.0/24")
-	f.addRouter("R1", "T1", rte("172.16.99.0/24", "10.0.1.50"))
-	f.addPort("p-R1-T1", "net-T1", "T1", "network:router_interface", "R1", fip("sub-T1", "10.0.1.1"))
-	f.addPort("p-vm", "net-T1", "T1", "compute:nova", "instance-uuid", fip("sub-T1", "10.0.1.50"))
+	//
+	// Nova writes compute:<az-name> as the device_owner — "nova" is
+	// only the default AZ's name — so an appliance in a named AZ must
+	// resolve identically, not fall through to EXTERNAL.
+	tests := []struct {
+		name        string
+		deviceOwner string
+	}{
+		{"default AZ", "compute:nova"},
+		{"named AZ", "compute:az-east"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var f fixture
+			f.addNetwork("net-T1", "T1", false, false)
+			f.addSubnet("sub-T1", "net-T1", "T1", "10.0.1.0/24")
+			f.addRouter("R1", "T1", rte("172.16.99.0/24", "10.0.1.50"))
+			f.addPort("p-R1-T1", "net-T1", "T1", "network:router_interface", "R1", fip("sub-T1", "10.0.1.1"))
+			f.addPort("p-vm", "net-T1", "T1", tc.deviceOwner, "instance-uuid", fip("sub-T1", "10.0.1.50"))
 
-	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
-		netip.MustParsePrefix("172.16.99.0/24"),
-		netip.MustParseAddr("10.0.1.50"))
-	if got != bpf.ZoneSameTenant {
-		t.Fatalf("zone = %v, want SAME_TENANT", got)
+			got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
+				netip.MustParsePrefix("172.16.99.0/24"),
+				netip.MustParseAddr("10.0.1.50"))
+			if got != bpf.ZoneSameTenant {
+				t.Fatalf("zone = %v, want SAME_TENANT", got)
+			}
+		})
 	}
 }
 
