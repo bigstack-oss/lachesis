@@ -310,10 +310,10 @@ WAL                                 /var/lib/cubecos/network_agent_state.json (+
 
   Snapshot envelope:
     {
-      "schema_version": 1,             // bump on any GlobalState shape change
-      "agent_build":    "v0.3.0+abc",  // for ops correlation; informational
-      "written_at_ns":  "1746...",     // u64-as-string (see below)
-      "global_state":   { ... }        // the actual payload
+      "schema_version": 1,               // bump on any GlobalState shape change
+      "agent_build":    "8c2f4d1a9b3e",  // short VCS revision; ops correlation
+      "written_at_ns":  "1746...",       // u64-as-string (see below)
+      "global_state":   { ... }          // the actual payload
     }
 
   u64 fields (byte counters, last_seen_ns, written_at_ns) are encoded as
@@ -330,13 +330,25 @@ WAL                                 /var/lib/cubecos/network_agent_state.json (+
        flush could roll back to the previous snapshot.
 
   Boot procedure:
-    1. Try wal.json. On missing / parse-fail / schema-version-mismatch,
-       fall back to wal.json.bak with a loud warning and an internal-error
-       counter increment.
-    2. If both fail, start empty and log the loss.
+    1. Try wal.json. On missing / parse-fail, fall back to wal.json.bak
+       with a loud warning and an internal-error counter increment. A
+       schema_version newer than this build never falls back — boot
+       refuses to start (migration policy below) and leaves both files
+       untouched.
+    2. If both files are missing, start empty (first boot). If both are
+       unreadable, quarantine the primary — rename wal.json →
+       wal.json.quarantine (one slot; a later quarantine overwrites it,
+       bounding disk use across crash loops) so the flush rotation can't
+       destroy the evidence — then start empty and log the loss. A
+       corrupt primary that lost to a readable .bak is quarantined the
+       same way; an unreadable .bak is not (it is an older generation
+       superseded by whatever the primary held).
 
   Migration policy:
     - schema_version unknown (newer than this build): refuse to start.
+      Starting empty instead would let the flush rotation destroy the
+      forward snapshot within two flushes — the rollback-after-upgrade
+      scenario where fatal beats silent loss.
     - schema_version older: run explicit migration function (one per step).
     - Never silently skip unknown fields; never auto-coerce types.
 
