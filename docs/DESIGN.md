@@ -622,10 +622,12 @@ function resolve_static_route_zone(R, destination_cidr, initial_nexthop):
       nexthop_port = port in iface_subnet with fixed_ip == current_nexthop
       switch nexthop_port.device_owner:
         "network:router_interface" → next_router = router with id == device_id; proceed
-        "compute:nova"             →
+        starts with "compute:"     →
           vm_owner = nexthop_port.tenant_id
           return zone_for(vm_owner, source_tenant, iface_subnet.network)
           ← VM appliance: classify by the appliance's Neutron-visible tenant.
+          ← Nova writes compute:<az-name> — "nova" is only the default AZ —
+            so the match is on the prefix, never the literal.
           ← The destination beyond the appliance is opaque; we stop tracing here.
         anything else              → return EXTERNAL    ← unknown device type
 
@@ -685,7 +687,7 @@ label for the L3-routed-fallback case only.
 
 **Performance.** Each iteration is O(1) hashmap lookups against the cached Neutron snapshot. A typical resolution completes in microseconds. Cold-start runtime is dominated by API fetch latency, not the trace.
 
-**VM-appliance nexthop.** When a nexthop resolves to a `compute:nova` port (a VM acting as a software router, NAT box, or VPN gateway), the trace stops there — Neutron has no visibility into what the appliance does with the traffic. The zone for the destination CIDR is determined by the appliance's own Neutron tenant using `zone_for`, giving correct attribution for the immediate hop. However, when the appliance forwards traffic onward, that egress is independently counted at the appliance's own tap — the same bytes appear in billing twice, once at the originating VM's tap and once at the appliance's tap. See §8 Tier 4 and Scenario L.
+**VM-appliance nexthop.** When a nexthop resolves to a `compute:<az>` port (a VM acting as a software router, NAT box, or VPN gateway — Nova writes `compute:<az-name>` as the device_owner, `compute:nova` being just the default availability zone), the trace stops there — Neutron has no visibility into what the appliance does with the traffic. The zone for the destination CIDR is determined by the appliance's own Neutron tenant using `zone_for`, giving correct attribution for the immediate hop. However, when the appliance forwards traffic onward, that egress is independently counted at the appliance's own tap — the same bytes appear in billing twice, once at the originating VM's tap and once at the appliance's tap. See §8 Tier 4 and Scenario L.
 
 Why CIDR alone is insufficient — and why we considered and rejected the simpler approach — is detailed in [C.9](#c9-direct-cidr-lookup-without-nexthop-trace).
 

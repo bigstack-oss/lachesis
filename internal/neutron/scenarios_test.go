@@ -375,6 +375,28 @@ func scenarioL() neutron.Snapshot {
 	return b.Build()
 }
 
+// Named-AZ variant of Scenario L: Nova writes compute:<az-name> as
+// the device_owner — "nova" is only the default AZ's name — so an
+// appliance in a named AZ must resolve through the same Step B
+// branch, not fall through to EXTERNAL.
+func TestScenario_L_VMApplianceNexthopNamedAZ(t *testing.T) {
+	got := runScenario(scenarioLNamedAZ())
+	expects(t, got, []neutron.TrieEntry{
+		{TenantID: "T1", Prefix: cidr("172.16.99.0/24"), Zone: bpf.ZoneSameTenant},
+	})
+}
+
+func scenarioLNamedAZ() neutron.Snapshot {
+	b := scenario.New()
+	b.Network("net-T1", "T1").
+		Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
+		VMInAZ("vm-appliance", "T1", "az-east", "10.0.1.50")
+	b.Router("R1", "T1").
+		Attach("sub-T1", "10.0.1.1").
+		ExtraRoute("172.16.99.0/24", "10.0.1.50")
+	return b.Build()
+}
+
 // ----- Slice-5 boundary: ambiguity surfacing -----
 
 // TestBuildTrie_SurfacesAmbiguityHit asserts BuildTrie's second

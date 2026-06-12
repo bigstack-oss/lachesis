@@ -107,8 +107,8 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 		if !ok {
 			return bpf.ZoneExternal, nil, nil
 		}
-		switch port.DeviceOwner {
-		case DeviceOwnerRouterInterface:
+		switch {
+		case port.DeviceOwner == DeviceOwnerRouterInterface:
 			nextRouter, ok := ri.routers[port.DeviceID]
 			if !ok {
 				return bpf.ZoneExternal, nil, nil
@@ -150,8 +150,10 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 			// Neutron's topology view either way.
 			return bpf.ZoneExternal, nil, nil
 
-		case "compute:nova":
-			// VM-appliance nexthop: classify by the appliance's tenant
+		case IsComputePort(port.DeviceOwner):
+			// VM-appliance nexthop — Nova writes compute:<az-name>, so
+			// the dispatch is on the prefix, not the default-AZ literal
+			// "compute:nova". Classify by the appliance's tenant
 			// relative to the source tenant on the iface network. The
 			// destination beyond the appliance is opaque to Neutron, so
 			// the trace stops here. Double-billing at the appliance's own
