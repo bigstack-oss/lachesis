@@ -147,16 +147,18 @@ Detailed reasoning in [C.2 Sampling at OVS / VXLAN envelope extraction](#c2-samp
 ```
 Type:        BPF_MAP_TYPE_PERCPU_HASH    ← see B.4
 Max entries: 65,536
-Pinning:     /sys/fs/bpf/telemetry  (production; demo skips pinning)
+Pinning:     none yet — map lifetime is tied to the loaded collection
+             and the attached TC filters; pinning under bpf.pin_path
+             for zero-loss agent-crash recovery is deferred (§10, §13.2 #7)
 
 KEY:   struct flow_key  (16 bytes, packed)
-   ┌──────────────────────────────────────────────────────────┐
-   │ src_mac    [6]u8                                         │
-   │ dst_mac    [6]u8                                         │
-   │ eth_proto  u16   (0x0800 IPv4 / 0x86DD IPv6)             │
-   │ direction  u8    (0=VM sending, 1=VM receiving)          │
-   │ dst_zone   u8    (0=ext 1=same 2=other 3=infra 4=miss)   │
-   └──────────────────────────────────────────────────────────┘
+   ┌──────────────────────────────────────────────────────────────────┐
+   │ src_mac    [6]u8                                                 │
+   │ dst_mac    [6]u8                                                 │
+   │ eth_proto  u16   (0x0800 IPv4 / 0x86DD IPv6)                     │
+   │ direction  u8    (0=VM sending, 1=VM receiving)                  │
+   │ dst_zone   u8    (0=ext 1=same 2=other 3=infra 4=miss 5=shared)  │
+   └──────────────────────────────────────────────────────────────────┘
 
 VALUE: struct flow_metrics  (24 bytes, one slot per CPU)
    ┌──────────────────────────────────────────────────────────┐
@@ -240,7 +242,7 @@ Insertion examples:
 
 Empirically on a 27-tenant single-host OVN deployment: 9270 total entries, of which ~340 per tenant are global (catchall + metadata + shared + infra). That is `27 × 340 + 90 ≈ 9270` — i.e. **~96% of trie occupancy is per-tenant replication of identical global rows.** Adding compute hosts does not multiply this (every node loads the same cluster-wide Neutron snapshot), but adding tenants does. At realistic production tenant counts (≥200) the model overflows the 16384 trie cap and hard-fails at boot via `bpf.ValidateMapSizes`.
 
-**Dedup is the focus of Sprint 4c**, *not* a deferred item: see `docs/sprint-plan.md` §4c. The chosen shape is **sentinel `tenant_id=0` rows in this same trie** for catchall / INFRA / SHARED, read with a fallback `bpf_map_lookup_elem` on first-lookup miss. Picked over a split-map alternative (`tenant_subnet_trie` + `global_zone_trie`) because pin-path / `ValidateMapSizes` / `LpmKey` surface area stays single-map, and `tenant_id=0` is already reserved by `metadata.TenantIDUnset` — the interner starts at `nextID=1`, so 0 is a natural "applies to all tenants" sentinel rather than a magic value. Cardinality reshapes from `O(T × G + Σ O_t)` to `O(G + Σ O_t)`. The hot-path cost is one extra BPF map lookup on the routed-fallback path; the MAC-first hot path is unchanged. Sprint 4c is also a hard dependency of Sprint 7 — incremental Kafka diffs are cheaper to write against the deduplicated shape than to migrate later.
+**Dedup landed in Sprint 4c** (see `docs/sprint-plan.md` §4c). The implemented shape is **sentinel `tenant_id=0` rows in this same trie** for catchall / INFRA / SHARED, read with a fallback `bpf_map_lookup_elem` on first-lookup miss. Picked over a split-map alternative (`tenant_subnet_trie` + `global_zone_trie`) because pin-path / `ValidateMapSizes` / `LpmKey` surface area stays single-map, and `tenant_id=0` is already reserved by `metadata.TenantIDUnset` — the interner starts at `nextID=1`, so 0 is a natural "applies to all tenants" sentinel rather than a magic value. Cardinality reshapes from `O(T × G + Σ O_t)` to `O(G + Σ O_t)`. The hot-path cost is one extra BPF map lookup on the routed-fallback path; the MAC-first hot path is unchanged. Sprint 4c is also a hard dependency of Sprint 7 — incremental Kafka diffs are cheaper to write against the deduplicated shape than to migrate later.
 
 `max_entries` stays at **16,384** even after dedup. Headroom is cheap on an LPM_TRIE with `BPF_F_NO_PREALLOC` (entries are allocated on demand, not pre-reserved) and absorbs future per-tenant SAME_TENANT growth without another `task generate` cycle.
 
@@ -275,7 +277,9 @@ NOT populated:
 ShardedMetadataMap                  64 shards × sync.RWMutex
   shard_idx = mac_uint64 & 63
   Key:   MAC as uint64
-  Value: *TenantMeta { ProjectID, VMName, IsAmphora, DeleteAt }
+  Value: *TenantMeta { ProjectID, IsAmphora, DeleteAt }
+         (a VMName log/dashboard enrichment field is deferred until
+          a consumer arrives; see internal/metadata schema.go)
 
   INVARIANT 1: TenantMeta is immutable.
              Multiple MACs may share the same pointer.
@@ -292,6 +296,7 @@ GlobalState                         keyed by tenant flow ID
   Write-locked during Scraper merge.
 
 UnresolvedBuffer                    late-binding for unknown MACs
+                                    (NOT YET BUILT — sprint 6; §11.4 planned)
   Key: MAC uint64
   Value: { Bytes, CurrentEbpfValueAtCapture, FirstSeen }
   Capped at ~10,000 entries with LRU eviction.
@@ -342,7 +347,7 @@ WAL                                 /var/lib/cubecos/network_agent_state.json (+
 
 ### 3.3 Lingering Ghost (60s TTL on metadata deletion)
 
-When Neutron emits `port.deleted` or `subnet.deleted`, the metadata entry is **NOT** removed immediately. Instead `DeleteAt = now + 60s`. A GC sweeps every 60s and drops expired entries. Reason: dying TCP FIN/RST packets can arrive after the VM is gone — without the lingering ghost they would mis-attribute to `unknown`.
+When Neutron emits `port.deleted` or `subnet.deleted`, the metadata entry is **NOT** removed immediately. Instead `DeleteAt = now + 60s`. A GC sweeps every 60s and drops expired entries. Reason: dying TCP FIN/RST packets can arrive after the VM is gone — without the lingering ghost they would mis-attribute to `unknown`. (Implementation status: the `MarkDelete` hook and `DeleteAt` field exist today; the 60s sweep goroutine lands with the GC subsystem, sprint 6.)
 
 The grace period must be enforced on the **kernel `mac_tenant_map`**, not just the userspace `ShardedMetadataMap`. The per-packet hot path looks up `mac_tenant_map[peer_mac]` and falls through to `ZONE_MISS` if the entry is missing there — regardless of what userspace thinks. See §3.4 for the exact insert/delete ordering rules across both maps.
 
@@ -350,7 +355,7 @@ The grace period must be enforced on the **kernel `mac_tenant_map`**, not just t
 
 ### 3.4 Map lifecycle invariants
 
-The kernel `mac_tenant_map` is the load-bearing copy for billing — every packet's classification depends on it. The userspace `ShardedMetadataMap` carries richer metadata (project_id UUID, VM name, IsAmphora flag, DeleteAt) but the kernel only reads its own map. Keeping the two consistent requires strict ordering on every operation.
+The kernel `mac_tenant_map` is the load-bearing copy for billing — every packet's classification depends on it. The userspace `ShardedMetadataMap` carries richer metadata (project_id UUID, IsAmphora flag, DeleteAt) but the kernel only reads its own map. Keeping the two consistent requires strict ordering on every operation.
 
 **Invariant.** `mac_tenant_map` (kernel) is a strict subset of `ShardedMetadataMap` (userspace): every kernel entry has a userspace entry.
 
@@ -1159,22 +1164,33 @@ eBPF gives exact counting on every packet it sees. It cannot count packets it do
    → populate mac_tenant_map (full device_owner filter set per §3.1: compute:nova, network:router_interface, network:router_gateway, network:distributed)
    → populate subnet_zone_trie (5-step algorithm, §5)
 
-4. Attach TC clsact to existing taps
-   → populate Interface Registry
+4. Wire the Netlink subscriber (attach allowlist → TC programs)
+   → TC attach is netlink-driven: when Run starts the subscriber it
+     subscribes FIRST, then sweeps existing taps — attaching TC
+     clsact and filling the Interface Registry; later RTM_NEWLINK
+     events attach new taps dynamically. FilterReplace is idempotent,
+     so subscribe-then-sweep cannot double-attach.
 
 5. Read WAL → restore GlobalState
 
-6. BatchLookup kernel map → merge deltas into GlobalState
-   → handles agent-crash recovery (kernel map persists)
+6. Start the Run workers (drain-ordered): netlink subscriber
+   (performs step 4's attach sweep), scraper, WAL flusher,
+   /metrics + /debug HTTP server
+   → the scraper's first BatchLookup merges kernel deltas into
+     GlobalState against the WAL-restored LastEbpfRaw values
 
 7. Start GC goroutine (lingering ghost + map pressure relief)
+   [NOT YET BUILT — sprint 6]
 
-8. Expose /metrics HTTP endpoint
-
-9. Start Kafka consumer (live metadata updates)
-
-10. Start Netlink Watcher (dynamic tap lifecycle)
+8. Start Kafka consumer (live metadata updates)
+   [NOT YET BUILT — sprint 7]
 ```
+
+Implementation mapping (`internal/agent/bootstrap_linux.go`): steps 1–5
+run straight-line inside `Bootstrap` — `boot.Sequencer` phases
+`BPFLoaded → MetadataReady → Attached → StateRestored` — and step 6's
+workers start in `Agent.Run` via the drain-ordered `workers()` table.
+Steps 7–8 arrive with their subsystems.
 
 ### Failure modes if order is violated
 
@@ -1182,14 +1198,14 @@ eBPF gives exact counting on every packet it sees. It cannot count packets it do
 |---|---|
 | TC attach before trie populated | First flows permanently keyed `dst_zone=MISS`; never reclassify |
 | GC before WAL merge | Active flows evicted before `LastEbpfRaw` set → counter spike on next scrape |
-| Netlink Watcher before TC attach | `RTM_NEWLINK` for an existing iface races the initial loop → double-attach |
+| Initial attach sweep before netlink subscribe | A tap created in the gap is never attached → silent undercount. Subscribe-first closes the gap; idempotent `FilterReplace` makes the sweep/event overlap harmless |
 | Skip Zombie Hunter | Restart stacks duplicate filters → every packet counted twice |
 
 ### Failure policy — Neutron API and Kafka outages
 
 **Neutron API unreachable at cold-start** (step 3 cannot complete):
 - Block with exponential backoff (start 1s, cap at 30s, indefinite retries).
-- State surfaced via `cubecos_neutron_sync_age_seconds=∞` and `cubecos_internal_errors_total{subsystem="neutron"}`.
+- State surfaced via `cubecos_neutron_sync_age_seconds=-1` (never synced) and `cubecos_neutron_api_errors_total{endpoint, code}`.
 - **Do NOT proceed to step 4 (TC attach).** Without metadata, every packet classifies as `ZONE_MISS`, and once that miss is written into the kernel `flow_key` it is permanent (zone is in the key — see §3.1). Blocking at boot is the only correctness-safe policy.
 - An explicit `--unsafe-allow-degraded-boot` flag may be added later for operators who want fail-open behavior during planned Neutron upgrades; default is fail-closed.
 
@@ -1213,11 +1229,13 @@ eBPF gives exact counting on every packet it sees. It cannot count packets it do
 
 ### Agent crash (process killed, kernel intact)
 
-- Kernel map is pinned at `/sys/fs/bpf/telemetry` → survives.
-- TC filters reference the program; program reference is held by the filter → survives.
+**Designed (requires map pinning — deferred, §13.2 #7):**
+- Kernel map pinned under `bpf.pin_path` → survives the process.
 - New agent reads [WAL](#b11-write-ahead-log-wal) → restores GlobalState (cumulative counters).
-- BatchLookup reads kernel map → merges since last WAL checkpoint.
+- BatchLookup reads the surviving kernel map → merges since last WAL checkpoint.
 - **Net data loss: 0.**
+
+**Implemented today (no pinning):** the orphaned TC filters do keep the old program + maps alive across the crash, but a restarted agent cannot reach an unpinned map — and the boot-time Zombie Hunter (§9 step 1) deletes those filters, dropping the last references. The old counters are gone; the agent loads a fresh collection and recovers from the WAL exactly like the hard-reboot path below (the `current < lastRaw` delta guard absorbs the empty map). **Net data loss today: ≤60s (the WAL flush window).** Pinning upgrades this to zero; until it lands, agent crash and hard reboot share one recovery path.
 
 ### Hard reboot (kernel destroyed)
 
@@ -1344,6 +1362,7 @@ already carries the tenant dimension.)
 | `cubecos_neutron_api_errors_total` | counter | `endpoint, code` (HTTP status, or `network` for connection-level failures) | Neutron client |
 | `cubecos_neutron_unknown_device_owner_total` | counter | `owner` | port admissions outside the IsKnownVMOwner allowlist |
 | `cubecos_neutron_builder_step_duration_seconds` | histogram | `step` | BuildTrie per-step duration (§5.2 steps 1–5) |
+| `cubecos_neutron_anomalies` | gauge | `class="cycle\|ambiguity\|dangling_route\|zero_trie_tenant\|duplicate_router_mac"` | topology anomalies detected at the last cold-start or resync (`DetectAnomalies`; drives `/debug/anomalies`) |
 | `cubecos_zombie_filters_cleaned_total` | counter | — | startup Zombie Hunter |
 | `cubecos_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher |
 | `cubecos_attached_interfaces` | gauge | — | current Interface Registry size |
@@ -1450,6 +1469,7 @@ Explicitly out of MVP scope. Documented so future contributors know it's open by
 | 4 | Static-route EXTERNAL-fallback counter (`cubecos_neutron_static_route_fallback_total{reason}`) | `resolveStaticRouteZone` (resolve.go) has six EXTERNAL fallback exits; three warn-log (cycle, MAX_HOPS, ambiguity), the others (anchor-subnet miss, port-at miss, unknown next-router device, unknown device-owner) return EXTERNAL silently. A per-`reason` counter would make the fallback rate visible on `/metrics`. Deferred until it can be validated against a real cluster's `/metrics` deltas — it touches billing-relevant route classification, so per the project's validate-before-billing-changes rule it should not ship on theory. Observability-only (counts existing EXTERNAL returns; changes no classification). Estimated <1 sprint, low risk |
 | 5 | Netlink attach-presence reconciler (level-triggered periodic resync) | A periodic sweep that lists interfaces matching the attach allowlist and re-attaches our TC filters where missing — the informer "periodic resync catches missed events" pattern. Safe by construction: `FilterReplace` is idempotent, so the worst a bug does is re-attach something already attached. Covers NEWLINK events missed around the subscribe window (the netlink integration tests note this race). Evidence-gated: build only if staging shows missed-event gaps during the netlink dynamic-attach work. Explicitly **not** a runtime zombie hunter — zombie *deletion* stays boot-only by design, because its safety depends on running before any attach (at that point every matching filter is an orphan by definition); a runtime deleter must distinguish live filters from orphans, and a bug there silently deletes live filters → billing undercount. The risk asymmetry rules it out. Estimated <1 sprint, low risk |
 | 6 | Workqueue-backed event handling for the netlink subscriber and Kafka updater | Reference: `k8s.io/client-go/util/workqueue` (dedup/coalescing + rate-limited retry with exponential backoff) — the standard informer → workqueue → reconciler triple. Earmarked for: (a) the netlink subscriber, if flapping interfaces produce event storms or transient attach failures need retry-with-backoff instead of a log line; (b) the Kafka metadata updater, to coalesce rapid per-port update bursts and retry failed kernel-map writes. Not applicable to boot — the boot sequence stays straight-line code plus ordering barriers (`boot.Sequencer`), matching how Kubernetes boots components (`WaitForCacheSync`, post-start hooks), with queues reserved for steady-state events. Adopt when those requirements materialize, not before |
+| 7 | Map pinning for zero-loss agent-crash recovery | §10's agent-crash path currently equals the hard-reboot path: nothing pins the maps (`config.BPFConfig.PinPath` exists but no caller pins), a restarted agent cannot reach the old unpinned maps, and the boot-time Zombie Hunter drops the orphan TC filters that were keeping them alive — so recovery is WAL-bounded at ≤60s. Pinning under `bpf.pin_path` and reusing the pinned maps on boot restores the designed zero-loss path. Touches boot ordering (zombie hunt vs. pinned-map reuse) and `ValidateMapSizes` against a pinned spec. Estimated <1 sprint, medium care: a stale pinned map with wrong sizing must refuse-to-reuse, not silently adopt |
 
 ### 13.3 Construction Conventions
 
@@ -1517,7 +1537,7 @@ Two sanctioned one-offs (not archetypes — don't replicate): the composition ro
 | eBPF hook | TC clsact (ingress + egress) | XDP | XDP is ingress-only on tap; no `bpf_skb_ct_lookup` for Octavia. [C.1](#c1-xdp-hook-instead-of-tc) |
 | Octavia LB attribution (LB-owner) | Amphora MAC flag in `mac_tenant_map` | Conntrack tuple recovery as the primary mechanism | HAProxy creates two distinct TCP connections (verified empirically); client_ip isn't recoverable at the backend's tap. MAC-flag attribution works at every tap and matches AWS/GCP segment-by-segment billing |
 | Segment 1 zone (LB) | Optional `bpf_skb_ct_lookup` at Amphora's tap | Always EXTERNAL for LB Segment 1 traffic | Conntrack recovery refines the zone to OTHER/SAME when the client is internal; EXTERNAL is the safe-billing fallback on miss |
-| Crash resilience | Read, don't clear (pinned map persists) | Clear after each scrape | Zero data loss on agent restart |
+| Crash resilience | Read, don't clear + WAL (map pinning deferred — §13.2 #7) | Clear after each scrape | ≤60s loss on restart today; zero once pinning lands. See §10 |
 | Concurrency | PERCPU_HASH | Global hash + atomics | Atomic contention at 10 Gbps × 32 cores becomes the bottleneck. [B.4](#b4-percpu_hash) |
 | Prometheus storage | Custom collector + WAL | `CounterVec` | `CounterVec` resets on crash → negative `rate()` → billing breaks. [C.7](#c7-prometheus-countervec) |
 | MAC→tenant map | 64-shard RWMutex | `sync.Map` | sync.Map is read-optimized; we write every 10s from Kafka. [C.6](#c6-syncmap-for-metadata-cache) |
