@@ -1,15 +1,18 @@
-// walflush.go owns the agent's WAL-flush slice: the periodic flush
-// goroutine (a worker.go row), the snapshot writer, and the
-// WALMetrics accessor. The Agent type and its construction live in
-// agent.go.
+// walflush.go owns the agent's WAL slice: the boot-time restore, the
+// periodic flush goroutine (a worker.go row), the snapshot writer,
+// the build identity stamped into each snapshot, and the WALMetrics
+// accessor. The Agent type and its construction live in agent.go.
 
 package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 )
 
@@ -56,5 +59,110 @@ func (a *Agent) flushWAL() error {
 	copyStart := time.Now()
 	a.walRecBuf = a.state.SnapshotForWAL(a.walRecBuf[:0])
 	a.mx.wal.ObserveCopy(time.Since(copyStart))
-	return wal.Save(a.cfg.WAL.Path, "", a.walRecBuf, a.mx.wal)
+	return wal.Save(a.cfg.WAL.Path, a.buildID, a.walRecBuf, a.mx.wal)
+}
+
+// restoreFromWAL reads the on-disk snapshot (if enabled) and seeds
+// the agent's GlobalState. Runs BEFORE the scraper goroutine starts,
+// so the first ApplyDelta computes deltas against restored
+// LastEbpfRaw values rather than re-baselining.
+//
+// Load failures split into two classes (docs/DESIGN.md §3.2):
+//
+//   - A snapshot from a newer build ([wal.ErrSchemaNewer]) is
+//     returned so boot refuses to start. Starting anyway would let
+//     the flush rotation destroy the only forward snapshot within
+//     two flushes.
+//   - Anything else means both files are unreadable: the agent
+//     starts empty, but the primary is quarantined first so the
+//     flush rotation cannot destroy the evidence.
+//
+// Load fallbacks (bak or empty) are recorded on the agent's WAL
+// metrics so an operator can grep cubecos_wal_load_fallback_total
+// to spot a corrupt primary or a first-boot.
+func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
+	if !cfg.Enabled {
+		slog.Info("disabled; starting with empty state", "component", componentWAL)
+		return nil
+	}
+	res, err := wal.Load(cfg.Path)
+	switch {
+	case errors.Is(err, wal.ErrSchemaNewer):
+		return err
+	case err != nil:
+		slog.Warn("restore failed; agent will start with empty state",
+			"component", componentWAL, "err", err)
+		quarantineWAL(cfg.Path)
+		return nil
+	}
+	switch res.Source {
+	case wal.LoadFromPrimary:
+		slog.Info("restored from primary",
+			"component", componentWAL,
+			"path", cfg.Path, "records", len(res.Records))
+	case wal.LoadFromBackup:
+		slog.Warn("primary unusable; restored from backup",
+			"component", componentWAL,
+			"path", cfg.Path+wal.BackupSuffix, "records", len(res.Records))
+		ag.mx.wal.RecordLoadFallback(wal.LoadFallbackBak)
+		quarantineWAL(cfg.Path)
+	case wal.LoadEmpty:
+		slog.Info("no prior snapshot; starting empty",
+			"component", componentWAL,
+			"path", cfg.Path)
+		ag.mx.wal.RecordLoadFallback(wal.LoadFallbackEmpty)
+	}
+	if len(res.Records) > 0 {
+		ag.SeedState(res.Records)
+	}
+	return nil
+}
+
+// quarantineWAL moves the unreadable primary snapshot out of the
+// flush rotation's reach via [wal.Quarantine]. Only the primary is
+// quarantined: when the .bak is the unreadable file, it is an older
+// generation of the same data superseded by whatever the primary
+// held, so a second quarantine slot would add bookkeeping without
+// preserving anything new. Failures are logged, not returned — the
+// agent can still start empty; only the forensic copy is at risk.
+func quarantineWAL(path string) {
+	moved, err := wal.Quarantine(path)
+	switch {
+	case err != nil:
+		slog.Warn("quarantine failed; the next flush may destroy the unreadable snapshot",
+			"component", componentWAL, "path", path, "err", err)
+	case moved:
+		slog.Warn("unreadable snapshot quarantined",
+			"component", componentWAL, "path", path+wal.QuarantineSuffix)
+	}
+}
+
+// agentBuildID identifies the running build for the WAL envelope's
+// agent_build field (informational; correlates a snapshot with build
+// logs during incident forensics). The build embeds no ldflags
+// version variable, so the VCS revision recorded by the Go toolchain
+// is the identity. Binaries built without VCS stamping — including
+// test binaries — yield "".
+func agentBuildID() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	return buildIDFrom(bi)
+}
+
+// buildIDFrom extracts the short (12-character, matching git's
+// abbreviated object names) vcs.revision from bi. Split from
+// agentBuildID so the extraction is testable against a synthetic
+// [debug.BuildInfo].
+func buildIDFrom(bi *debug.BuildInfo) string {
+	for _, s := range bi.Settings {
+		if s.Key == "vcs.revision" {
+			if len(s.Value) > 12 {
+				return s.Value[:12]
+			}
+			return s.Value
+		}
+	}
+	return ""
 }

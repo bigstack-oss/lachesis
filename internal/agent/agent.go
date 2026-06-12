@@ -88,6 +88,11 @@ type Agent struct {
 	// steady-state flush does not allocate a fresh records slice.
 	// Owned solely by the WAL flush goroutine; no lock needed.
 	walRecBuf []state.Record
+
+	// buildID stamps the WAL envelope's agent_build field. Resolved
+	// once at construction from the binary's embedded VCS revision;
+	// see agentBuildID in walflush.go.
+	buildID string
 }
 
 // New constructs the agent. The HTTP listener is opened immediately so
@@ -122,6 +127,7 @@ func New(opts Options) (*Agent, error) {
 		meta:     meta,
 		neutron:  n,
 		interner: metadata.NewTenantInterner(),
+		buildID:  agentBuildID(),
 	}
 	a.mx = newSubsystemMetrics(n.Metrics())
 	a.scraper = scraper.New(

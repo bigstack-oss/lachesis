@@ -199,16 +199,26 @@ func TestLoad_BothMissingReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestLoad_RefusesNewerSchemaVersion(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "wal.json")
-	// Hand-craft an envelope with a future schema_version.
+// futureSnapshot returns a hand-crafted envelope with a
+// schema_version one above what this build understands.
+func futureSnapshot(t *testing.T) []byte {
+	t.Helper()
 	body := map[string]any{
 		"schema_version": wal.SchemaVersion + 1,
 		"agent_build":    "from-the-future",
 		"written_at_ns":  "1700000000000000000",
 		"global_state":   []any{},
 	}
-	data, _ := json.Marshal(body)
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal future snapshot: %v", err)
+	}
+	return data
+}
+
+func TestLoad_RefusesNewerSchemaVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	data := futureSnapshot(t)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -217,8 +227,104 @@ func TestLoad_RefusesNewerSchemaVersion(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load: expected error for newer schema_version, got nil")
 	}
+	if !errors.Is(err, wal.ErrSchemaNewer) {
+		t.Errorf("errors.Is(err, ErrSchemaNewer) = false, got: %v", err)
+	}
 	if !strings.Contains(err.Error(), "schema_version") {
 		t.Errorf("error should mention schema_version, got: %v", err)
+	}
+
+	// The refusal must leave the forward snapshot untouched.
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile after Load: %v", readErr)
+	}
+	if string(after) != string(data) {
+		t.Error("Load modified the newer-schema snapshot")
+	}
+}
+
+func TestLoad_NewerSchemaDoesNotFallBackToBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wal.json")
+
+	// Land a perfectly good v1 snapshot on .bak ...
+	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
+		t.Fatalf("seed save 1: %v", err)
+	}
+	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
+		t.Fatalf("seed save 2: %v", err)
+	}
+	// ... then overwrite the primary with a future-schema snapshot,
+	// as a rollback-after-upgrade leaves it.
+	if err := os.WriteFile(path, futureSnapshot(t), 0o600); err != nil {
+		t.Fatalf("write future primary: %v", err)
+	}
+
+	_, err := wal.Load(path)
+	if !errors.Is(err, wal.ErrSchemaNewer) {
+		t.Fatalf("Load = %v, want ErrSchemaNewer despite a readable .bak", err)
+	}
+}
+
+func TestLoad_NewerSchemaOnBackupSurfacesBehindCorruptPrimary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wal.json")
+
+	if err := os.WriteFile(path, []byte("{bad"), 0o600); err != nil {
+		t.Fatalf("seed primary: %v", err)
+	}
+	if err := os.WriteFile(path+wal.BackupSuffix, futureSnapshot(t), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+
+	_, err := wal.Load(path)
+	if !errors.Is(err, wal.ErrSchemaNewer) {
+		t.Fatalf("Load = %v, want error wrapping ErrSchemaNewer for the newer .bak", err)
+	}
+}
+
+func TestQuarantine_MovesFileIntoSingleSlot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wal.json")
+	qpath := path + wal.QuarantineSuffix
+
+	if err := os.WriteFile(path, []byte("first"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	moved, err := wal.Quarantine(path)
+	if err != nil || !moved {
+		t.Fatalf("Quarantine = (%v, %v), want (true, nil)", moved, err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("primary still present after quarantine: %v", err)
+	}
+	got, err := os.ReadFile(qpath)
+	if err != nil || string(got) != "first" {
+		t.Fatalf("quarantine slot = (%q, %v), want (\"first\", nil)", got, err)
+	}
+
+	// One slot: a later quarantine overwrites the earlier one.
+	if err := os.WriteFile(path, []byte("second"), 0o600); err != nil {
+		t.Fatalf("seed again: %v", err)
+	}
+	if moved, err := wal.Quarantine(path); err != nil || !moved {
+		t.Fatalf("second Quarantine = (%v, %v), want (true, nil)", moved, err)
+	}
+	got, err = os.ReadFile(qpath)
+	if err != nil || string(got) != "second" {
+		t.Fatalf("quarantine slot after overwrite = (%q, %v), want (\"second\", nil)", got, err)
+	}
+}
+
+func TestQuarantine_MissingFileIsNoOp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	moved, err := wal.Quarantine(path)
+	if err != nil {
+		t.Fatalf("Quarantine: %v", err)
+	}
+	if moved {
+		t.Error("Quarantine reported moved=true for a missing file")
 	}
 }
 

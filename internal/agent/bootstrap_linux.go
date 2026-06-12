@@ -18,7 +18,6 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
 
@@ -219,13 +218,14 @@ func (b *bootstrapper) prepareWALDir() error {
 }
 
 // restoreWAL seeds GlobalState from the on-disk snapshot and advances
-// to [boot.PhaseStateRestored]. A restore failure is non-fatal — the
-// design says start empty and log the loss (§3.2) — so it is logged
-// rather than returned, and the phase still advances.
+// to [boot.PhaseStateRestored]. Most restore failures are handled
+// inside restoreFromWAL (warn, quarantine the unreadable primary,
+// start empty); the one fatal class — a snapshot written by a newer
+// build — propagates here and aborts the boot (docs/DESIGN.md §3.2
+// migration policy).
 func (b *bootstrapper) restoreWAL() error {
 	if err := restoreFromWAL(b.ag, b.cfg.WAL); err != nil {
-		slog.Warn("restore failed; agent will start with empty state",
-			"component", componentWAL, "err", err)
+		return err
 	}
 	return b.seq.Advance(boot.PhaseStateRestored)
 }
@@ -236,45 +236,6 @@ func (b *bootstrapper) closeCollection() {
 	if b.coll != nil {
 		b.coll.Close()
 	}
-}
-
-// restoreFromWAL reads the on-disk snapshot (if enabled) and seeds
-// the agent's GlobalState. Runs BEFORE the scraper goroutine starts,
-// so the first ApplyDelta computes deltas against restored
-// LastEbpfRaw values rather than re-baselining.
-//
-// Load fallbacks (bak or empty) are recorded on the agent's WAL
-// metrics so an operator can grep cubecos_wal_load_fallback_total
-// to spot a corrupt primary or a first-boot.
-func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
-	if !cfg.Enabled {
-		slog.Info("disabled; starting with empty state", "component", componentWAL)
-		return nil
-	}
-	res, err := wal.Load(cfg.Path)
-	if err != nil {
-		return err
-	}
-	switch res.Source {
-	case wal.LoadFromPrimary:
-		slog.Info("restored from primary",
-			"component", componentWAL,
-			"path", cfg.Path, "records", len(res.Records))
-	case wal.LoadFromBackup:
-		slog.Warn("primary unusable; restored from backup",
-			"component", componentWAL,
-			"path", cfg.Path+wal.BackupSuffix, "records", len(res.Records))
-		ag.mx.wal.RecordLoadFallback(wal.LoadFallbackBak)
-	case wal.LoadEmpty:
-		slog.Info("no prior snapshot; starting empty",
-			"component", componentWAL,
-			"path", cfg.Path)
-		ag.mx.wal.RecordLoadFallback(wal.LoadFallbackEmpty)
-	}
-	if len(res.Records) > 0 {
-		ag.SeedState(res.Records)
-	}
-	return nil
 }
 
 // loadCollection compiles the embedded BPF spec into a kernel-loaded
