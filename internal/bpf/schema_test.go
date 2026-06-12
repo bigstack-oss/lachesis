@@ -28,6 +28,44 @@ func TestZoneCode_String(t *testing.T) {
 	}
 }
 
+// TestZoneCode_WireValuesPinned pins the numeric zone encoding. The
+// values are persisted: every WAL snapshot stores [FlowKey.DstZone]
+// as a number and reads it back on restore, so renumbering the C
+// enum silently reclassifies every restored flow. This test makes
+// that break mechanical instead.
+func TestZoneCode_WireValuesPinned(t *testing.T) {
+	cases := []struct {
+		code ZoneCode
+		want uint8
+	}{
+		{ZoneExternal, 0},
+		{ZoneSameTenant, 1},
+		{ZoneOtherTenant, 2},
+		{ZoneInfra, 3},
+		{ZoneMiss, 4},
+		{ZoneShared, 5},
+	}
+	for _, tc := range cases {
+		if uint8(tc.code) != tc.want {
+			t.Errorf("%s = %d, want %d (persisted in WAL snapshots — do not renumber)",
+				tc.code, uint8(tc.code), tc.want)
+		}
+	}
+}
+
+// TestDirection_WireValuesPinned pins the direction encoding for the
+// same WAL-persistence reason as [TestZoneCode_WireValuesPinned].
+func TestDirection_WireValuesPinned(t *testing.T) {
+	if uint8(DirectionIngress) != 0 {
+		t.Errorf("DirectionIngress = %d, want 0 (persisted in WAL snapshots — do not renumber)",
+			uint8(DirectionIngress))
+	}
+	if uint8(DirectionEgress) != 1 {
+		t.Errorf("DirectionEgress = %d, want 1 (persisted in WAL snapshots — do not renumber)",
+			uint8(DirectionEgress))
+	}
+}
+
 // TestDirection_String pins the canonical direction vocabulary —
 // the `direction` label values. Same contract weight as
 // [TestZoneCode_String].
