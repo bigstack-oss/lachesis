@@ -1,12 +1,17 @@
 // schema.go gathers package neutron's package-level constants, well-known
-// prefixes, and the pure-data Snapshot / SyncResult / AmbiguityHit holders.
-// The Neutron resource record types live in types.go; the resolver, trie
-// builder, API client, and sync pass that consume this vocabulary live in
-// resolve.go / trie.go / client.go / sync.go.
+// prefixes, and the pure-data holders (Snapshot, TrieEntry, SyncResult,
+// the anomaly hit records). The Neutron resource record types live in
+// types.go; the resolver, trie builder, API client, and sync pass that
+// consume this vocabulary live in resolve.go / trie.go / client.go /
+// sync.go.
 
 package neutron
 
-import "net/netip"
+import (
+	"net/netip"
+
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+)
 
 // Snapshot is the four Neutron resource lists the agent consumes
 // together at cold-start and at every full-resync triggered by the
@@ -27,6 +32,17 @@ type Snapshot struct {
 	// UUID; consumers that need a human-readable label (the /debug
 	// pages, log enrichment) resolve through this slice.
 	Projects []Project
+}
+
+// TrieEntry is one row destined for the kernel `subnet_zone_trie`:
+// the tenant whose perspective the entry applies to, the IPv4
+// prefix to match, and the resolved zone code. TenantID is the
+// Keystone project UUID; the u32 mapping the kernel actually keys
+// on is handled by a separate interner closer to the map writer.
+type TrieEntry struct {
+	TenantID string
+	Prefix   netip.Prefix
+	Zone     bpf.ZoneCode
 }
 
 // SyncResult is everything one [Neutron.Sync] pass produces: the
@@ -188,10 +204,10 @@ const (
 	DeviceOwnerRouterInterface = "network:router_interface"
 )
 
-// BuildTrie step labels for the
+// Trie-builder step labels for the
 // cubecos_neutron_builder_step_duration_seconds{step=...} histogram.
 // The label-value set is the metric's contract with dashboards, so the
-// call sites in BuildTrie and the catalogue in metrics.go reference
+// step calls in [buildTrie] and the catalogue in metrics.go reference
 // these consts rather than re-typing the strings.
 const (
 	stepCatchall    = "1_catchall"

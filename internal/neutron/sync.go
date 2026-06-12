@@ -40,7 +40,7 @@ func (n *Neutron) Sync(ctx context.Context) (SyncResult, error) {
 	if err != nil {
 		return SyncResult{}, err
 	}
-	entries, ambiguities, cycles := BuildTrie(snap, WithMetrics(n.metrics))
+	entries, ambiguities, cycles := buildTrie(snap, n.metrics)
 	return SyncResult{
 		Snapshot:    snap,
 		Entries:     entries,
