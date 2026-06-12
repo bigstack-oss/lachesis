@@ -13,7 +13,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/debug"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
 )
 
@@ -29,10 +28,10 @@ func (a *Agent) openHTTP(opts Options) error {
 
 	mgr := runtime.New(opts.ConfigPath, opts.Config, opts.Log)
 	dbg := debug.New(debug.Options{
-		Snapshot:  a.neutronSnapshot.Load,
-		Trie:      a.trieEntriesView,
-		Anomalies: a.anomalies.Load,
-		LastSync:  a.lastNeutronSyncTime,
+		Snapshot:  a.neutron.Snapshot,
+		Trie:      a.neutron.Trie,
+		Anomalies: a.neutron.Anomalies,
+		LastSync:  a.neutron.LastSyncTime,
 		MACLookup: a.meta.Lookup,
 		Fallback:  mgr.DebugHandler(),
 	})
@@ -88,14 +87,4 @@ func buildHTTPHandler(reg *prometheus.Registry, dbg http.Handler) http.Handler {
 // returns.
 func (a *Agent) Addr() string {
 	return a.listener.Addr().String()
-}
-
-// trieEntriesView adapts the agent's atomic trie-entries pointer to
-// the value-slice accessor the debug server takes. nil before the
-// first successful Neutron sync.
-func (a *Agent) trieEntriesView() []neutron.TrieEntry {
-	if p := a.trieEntries.Load(); p != nil {
-		return *p
-	}
-	return nil
 }

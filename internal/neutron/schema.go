@@ -1,8 +1,8 @@
 // schema.go gathers package neutron's package-level constants, well-known
-// prefixes, and the pure-data Snapshot / AmbiguityHit holders. The Neutron
-// resource record types live in types.go; the resolver, trie builder, and
-// API client that consume this vocabulary live in resolve.go / trie.go /
-// client.go.
+// prefixes, and the pure-data Snapshot / SyncResult / AmbiguityHit holders.
+// The Neutron resource record types live in types.go; the resolver, trie
+// builder, API client, and sync pass that consume this vocabulary live in
+// resolve.go / trie.go / client.go / sync.go.
 
 package neutron
 
@@ -27,6 +27,20 @@ type Snapshot struct {
 	// UUID; consumers that need a human-readable label (the /debug
 	// pages, log enrichment) resolve through this slice.
 	Projects []Project
+}
+
+// SyncResult is everything one [Neutron.Sync] pass produces: the
+// raw resource snapshot, the trie rows built from it, the resolver's
+// ambiguity and cycle hits, and the anomaly aggregate over all of
+// them. Pure data — nothing is retained until the caller hands the
+// value to [Neutron.Commit], after the kernel maps have acknowledged
+// the new state.
+type SyncResult struct {
+	Snapshot    Snapshot
+	Entries     []TrieEntry
+	Ambiguities []AmbiguityHit
+	Cycles      []CycleHit
+	Anomalies   Anomalies
 }
 
 // AmbiguityHit records a Step C ambiguity-after-scoping incident
@@ -111,18 +125,18 @@ type ResourceMatch struct {
 // the rest of the codebase follows.
 const componentNeutron = "neutron"
 
-// Endpoint* are the `endpoint` label values for
-// cubecos_neutron_api_errors_total. Callers of
-// [Metrics.RecordAPIError] pass these; [NewMetrics] seeds each at
-// zero (with the codeNetwork code class) so the counter is visible
-// before any error occurs.
+// endpoint* are the `endpoint` label values for
+// cubecos_neutron_api_errors_total. The [Neutron.Sync] auth and
+// fetch paths pass these to [Metrics.RecordAPIError]; [NewMetrics]
+// seeds each at zero (with the codeNetwork code class) so the
+// counter is visible before any error occurs.
 const (
-	EndpointKeystone = "keystone"
-	EndpointNetworks = "networks"
-	EndpointSubnets  = "subnets"
-	EndpointPorts    = "ports"
-	EndpointRouters  = "routers"
-	EndpointProjects = "projects"
+	endpointKeystone = "keystone"
+	endpointNetworks = "networks"
+	endpointSubnets  = "subnets"
+	endpointPorts    = "ports"
+	endpointRouters  = "routers"
+	endpointProjects = "projects"
 )
 
 // anomalyClass* are the `class` label values for the

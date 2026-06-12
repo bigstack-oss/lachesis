@@ -9,13 +9,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Metrics holds the Neutron-subsystem Prometheus instruments.
-// Construct with [NewMetrics], register the slice from
-// [Metrics.Collectors] with the agent's `prometheus.Registry`, then
-// thread the *Metrics through to cold-start and any future
-// incremental updater. nil is a valid receiver on every observation
-// helper, so code paths that elide metrics for tests can pass nil
-// safely.
+// Metrics holds the Neutron-subsystem Prometheus instruments. Owned
+// by the [Neutron] struct ([New] constructs the bundle and threads
+// it through Sync/Commit); the agent registers the slice from
+// [Metrics.Collectors] with its `prometheus.Registry`. nil is a
+// valid receiver on every observation helper, so code paths that
+// elide metrics for tests can pass nil safely.
 //
 // The instruments:
 //
@@ -75,7 +74,7 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 		}
 		return time.Since(t).Seconds()
 	})
-	for _, ep := range []string{EndpointKeystone, EndpointNetworks, EndpointSubnets, EndpointPorts, EndpointRouters, EndpointProjects} {
+	for _, ep := range []string{endpointKeystone, endpointNetworks, endpointSubnets, endpointPorts, endpointRouters, endpointProjects} {
 		m.apiErrors.WithLabelValues(ep, codeNetwork).Add(0)
 	}
 	for _, c := range []string{anomalyClassCycle, anomalyClassAmbiguity, anomalyClassDanglingRoute,
@@ -104,7 +103,7 @@ func (m *Metrics) ObserveBuilderStep(step string, d time.Duration) {
 
 // RecordAPIError increments the api_errors counter for endpoint with
 // a status code label derived from err. Endpoint label is one of the
-// Endpoint* consts in schema.go.
+// endpoint* consts in schema.go.
 func (m *Metrics) RecordAPIError(endpoint string, err error) {
 	if m == nil || err == nil {
 		return
