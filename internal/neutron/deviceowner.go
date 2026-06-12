@@ -3,9 +3,11 @@
 // infra ports contribute /32 INFRA trie rows, VM-like ports admit
 // their MAC into the kernel mac_tenant_map — [IsComputePort] matches
 // Nova's `compute:<az>` namespace for the static-route resolver's
-// VM-appliance branch, and [IsKnownVMOwner] is the stricter
-// empirical allowlist used to warn-log drift. The trie builder that
-// consumes the partition lives in trie.go.
+// VM-appliance branch, [IsTrunkSubport] matches the trunk-extension
+// subport namespace for the cold-start trunk warning, and
+// [IsKnownVMOwner] is the stricter empirical allowlist used to
+// warn-log drift. The trie builder that consumes the partition lives
+// in trie.go.
 
 package neutron
 
@@ -103,6 +105,18 @@ func IsComputePort(deviceOwner string) bool {
 	return strings.HasPrefix(deviceOwner, deviceOwnerComputePrefix)
 }
 
+// IsTrunkSubport classifies a Neutron port as a trunk subport — the
+// `trunk:` namespace Neutron's trunk extension writes on subports of
+// a VLAN-aware VM. Subports admit as VM-like ([IsVMPort] and
+// [IsKnownVMOwner] both accept them), but the data plane cannot count
+// their traffic: 802.1Q-tagged frames on the trunk parent fail the
+// ethertype gate and pass uncounted (docs/DESIGN.md §8 Tier 1). The
+// cold-start path uses this predicate to warn when a snapshot
+// contains trunk subports.
+func IsTrunkSubport(deviceOwner string) bool {
+	return strings.HasPrefix(deviceOwner, deviceOwnerTrunkPrefix)
+}
+
 // IsKnownVMOwner returns true for `device_owner` values empirically
 // confirmed VM-like in OpenStack OVN-Yoga (the deployment target).
 // Stricter than [IsVMPort]: an unknown vendor / third-party plugin
@@ -134,7 +148,7 @@ func IsKnownVMOwner(deviceOwner string) bool {
 		return true
 	case strings.HasPrefix(deviceOwner, "baremetal:"):
 		return true
-	case strings.HasPrefix(deviceOwner, "trunk:"):
+	case IsTrunkSubport(deviceOwner):
 		return true
 	case deviceOwner == "cube:mgr":
 		return true

@@ -154,6 +154,26 @@ cubecos_neutron_anomalies{class="zero_trie_tenant"} 0
 	}
 }
 
+// TestMetrics_SetTrunkSubports pins the seed (a plain gauge reads 0
+// before the first sync) and gauge semantics: a second
+// SetTrunkSubports call replaces the previous count rather than
+// accumulating.
+func TestMetrics_SetTrunkSubports(t *testing.T) {
+	m := NewMetrics(func() time.Time { return time.Time{} })
+	m.SetTrunkSubports(3)
+	m.SetTrunkSubports(2)
+
+	const want = `
+# HELP cubecos_neutron_trunk_subports Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).
+# TYPE cubecos_neutron_trunk_subports gauge
+cubecos_neutron_trunk_subports 2
+`
+	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
+		"cubecos_neutron_trunk_subports"); err != nil {
+		t.Fatalf("metric mismatch:\n%v", err)
+	}
+}
+
 func TestMetrics_NilReceiverSafe(t *testing.T) {
 	var m *Metrics
 	// Nil receivers must not panic — defensive against forgotten
@@ -162,6 +182,7 @@ func TestMetrics_NilReceiverSafe(t *testing.T) {
 	m.RecordUnknownOwner("vendor:y")
 	m.ObserveBuilderStep("1_catchall", 0)
 	m.SetAnomalies(Anomalies{})
+	m.SetTrunkSubports(1)
 }
 
 func TestMetrics_ObserveBuilderStepEmitsHistogram(t *testing.T) {

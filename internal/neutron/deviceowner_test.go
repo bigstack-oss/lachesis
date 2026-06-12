@@ -52,6 +52,29 @@ func TestIsComputePort(t *testing.T) {
 	}
 }
 
+func TestIsTrunkSubport(t *testing.T) {
+	tests := []struct {
+		deviceOwner string
+		want        bool
+	}{
+		{"trunk:subport", true},
+		// Other VM-like namespaces are not trunk subports.
+		{"compute:nova", false},
+		{"Octavia", false},
+		{"manila:share", false},
+		{"baremetal:nova", false},
+		{"cube:mgr", false},
+		// Infra and unbound.
+		{"network:router_interface", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := IsTrunkSubport(tc.deviceOwner); got != tc.want {
+			t.Errorf("IsTrunkSubport(%q) = %v, want %v", tc.deviceOwner, got, tc.want)
+		}
+	}
+}
+
 func TestIsKnownVMOwner(t *testing.T) {
 	tests := []struct {
 		deviceOwner string
