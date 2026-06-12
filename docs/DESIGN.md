@@ -1460,8 +1460,53 @@ Several constructor idioms coexist *by design*. New code matches the closest exi
 | Options struct | `agent.New(Options)`, `netlink.New(Options)`, `config.Load(Options, …)` | More than ~2 inputs, or any optional / defaulted field. The reference pattern — reach for it first |
 | Positional params | `scraper.New(reader, st, interval)`, `metadata.NewResolver(m)` | ≤2 unambiguous required args, no options |
 | Bare `New()` | `state.New`, `boot.New`, `metadata.New`, `netlink.NewRegistry`, every per-package `NewMetrics` | Zero-config value types. Metric bundles are uniformly `type Metrics` + `NewMetrics()` |
-| Functional options | `neutron.BuildTrie(…, WithMetrics(m))` | Reserved for `BuildTrie` alone — keeps its many test call-sites argument-free; not spread to other constructors |
+| Functional options | *(none — retired)* | `BuildTrie`'s `WithMetrics` (the sole user) was retired when its only metrics-passing caller moved in-package (`Neutron.Sync` → unexported `buildTrie(snap, m)`); the external call-sites stay argument-free via `BuildTrie(snap)`. Don't reintroduce without a cross-package optional-dependency need |
 | `Run(Config)` | `perfbench.Run`, `loadtest.Run` | Single-shot CLI harnesses, not long-lived services |
+
+### 13.4 Package Anatomy
+
+Every `internal/` package is one of four shapes. A new package starts by picking the archetype that matches its job — don't invent a fifth shape, and don't mix surfaces from two archetypes into one package. Uniformity holds *within* an archetype, never across archetypes (the Kubernetes analog: `component-base` daemons share an options-plus-`Run(ctx)` shape while client-go stores/listers stay plain structs). A one-size-fits-all package surface and producer-side interface-per-package were both considered and rejected — the repo already rejected a `Runnable` interface once in favour of the concrete `workers()` table.
+
+**Decision rule:** does it own a loop? → Service. Is it shared mutable state? → Store. Does one owner call verbs on it while others only read? → Driven subsystem. None of the above → Library.
+
+| Archetype | Surface | Examples |
+|---|---|---|
+| **Service** — owns a long-running loop | Constructor per §13.3 → struct; a blocking `Run(ctx) error` (or equivalent step methods the agent's worker table wraps); cheap health accessors for observability. Services never spawn their own goroutines: long-lived goroutines start in exactly one place, the agent's `workers()` table (drain-ordered, goleak-enforced) | `scraper.Scraper` (`Run`/`Tick`/`ErrorCount`/`LastSuccessUnix`), `netlink.Subscriber` |
+| **Store** — passive shared state | Bare `New()`; concrete methods; explicit lock discipline (`RWMutex` or sharding, acquire-late/release-early, never hold a lock across IO). No `ctx`, no goroutines, no IO | `state.GlobalState`, `metadata.ShardedMetadataMap`, `metadata.TenantInterner`, `netlink.Registry` |
+| **Driven subsystem** — a caller sequences its verbs | Constructor per §13.3; imperative verb methods the owner calls in a documented order; lock-free read accessors for everyone else (atomic pointer-swap retention, whole-value replace). Single-writer discipline documented on the type | `neutron.Neutron` (`Sync` → kernel push → `Commit`; accessors feed /debug), `runtime.Manager` (`Reload`/`Current`/`DebugHandler`), `boot.Sequencer` (`Advance`), `metrics.Collector` (Prometheus drives `Collect`), `debug.Server` (HTTP mux drives handlers) |
+| **Library** — stateless functions | No main type, no constructor, no lifecycle; pure functions with explicit dependencies as arguments | `kernelwriter`, `wal` (`Save`/`Load`), `zombie.Hunt`, `config.Load`, `logging.Init`, `tcattach` |
+
+Two sanctioned one-offs (not archetypes — don't replicate): the composition root (`agent`: one struct, method files by functionality, the `workers()` table, the `subsystemMetrics` registration list) and the CLI harness shape (`perfbench.Run(Config)` / `loadtest.Run(Config)`, already in §13.3).
+
+**Cross-cutting rules (all archetypes):**
+
+- `schema.go` holds the package's consts and pure-data types; behavioural types stay in their method files.
+- Observability: `type Metrics` + `NewMetrics()` + `Collectors()` + nil-safe observation helpers; registered centrally via the agent's `subsystemMetrics.registrations()`. Uninstrumented subsystems are undebuggable in production (§11).
+- Logging: per-package `component*` const, one vocabulary with the metric registration labels.
+- Interfaces are **consumer-defined only**: the consuming package declares the minimal method set it calls, and only when a second implementation exists today (a test seam counts). Never producer-side, never speculative. Current census (all six conform): `scraper.MapReader`, `metrics.TenantResolver`, `metrics.ScraperStats`, `netlink.Subscriber`, `netlink.Attacher`, `kernelwriter.MapUpdater`.
+
+**Package census:**
+
+| Package | Archetype | Notes |
+|---|---|---|
+| `agent` | composition root | one-off; owns all goroutines via `workers()` |
+| `boot` | Driven | `Sequencer.Advance` |
+| `bpf` | Library | consts/keys/`ValidateMapSizes` + generated bindings + Metrics |
+| `config` | Library | `Load` + `Validate` |
+| `debug` | Driven | `New(Options)` + `Handler()`; HTTP mux drives it |
+| `kernelwriter` | Library | + consumer interface `MapUpdater` |
+| `logging` | Library | `Init` → `Handle` |
+| `metadata` | Store | two stores + `NewResolver` adapter |
+| `metrics` | Driven | custom `prometheus.Collector` (billing path, §13.1 #2) |
+| `netlink` | Service + Store | `Subscriber` + `Registry` + Metrics |
+| `neutron` | Driven | + Library surface (`BuildTrie`, `DetectAnomalies`, lookups are pure funcs) |
+| `runtime` | Driven | `Manager` |
+| `scraper` | Service | reference Service example |
+| `state` | Store | reference Store example |
+| `tcattach` | Library | `NewLinkAttacher` returns the `Attacher` impl |
+| `testenv` | exempt | test-only builders/fixtures |
+| `wal`, `zombie` | Library | + Metrics bundles |
+| `perfbench`, `loadtest` | CLI harness | `Run(Config)` |
 
 ---
 
