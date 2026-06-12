@@ -7,6 +7,8 @@
 package agent
 
 import (
+	"log/slog"
+
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
@@ -67,8 +69,16 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics) subsystemMetrics {
 // BatchLookup is the fill numerator the pressure-relief threshold
 // (docs/DESIGN.md §3.1, >80%) is defined against. Errors skip the
 // gauge update — a partial drain would understate fill.
+//
+// The same successful drain also reads the kernel telemetry_stats
+// counters (when stats is wired) into
+// cubecos_bpf_update_failures_total{reason}, keeping the loss counters
+// on the same cadence as the fill gauge they explain.
 type telemetryFillReader struct {
 	inner scraper.MapReader
+	// stats is nil when the telemetry_stats map isn't wired (darwin,
+	// unit tests); see [Options.Stats].
+	stats *bpf.StatsReader
 	mx    *bpf.Metrics
 }
 
@@ -78,6 +88,18 @@ func (r telemetryFillReader) BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) er
 		return err
 	}
 	r.mx.SetCurrent(bpf.MapTelemetry, float64(len(dst)))
+	if r.stats != nil {
+		counts, err := r.stats.Read()
+		if err != nil {
+			// Never fail the tick — the billing drain above already
+			// succeeded. Logged (not silent) and retried next tick;
+			// the exported counters just stay one interval stale.
+			slog.Warn("telemetry_stats drain failed; cubecos_bpf_update_failures_total is stale",
+				"component", componentBPF, "err", err)
+			return nil
+		}
+		r.mx.SetUpdateFailures(counts)
+	}
 	return nil
 }
 

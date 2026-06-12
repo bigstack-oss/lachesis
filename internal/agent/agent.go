@@ -131,7 +131,7 @@ func New(opts Options) (*Agent, error) {
 	}
 	a.mx = newSubsystemMetrics(n.Metrics())
 	a.scraper = scraper.New(
-		telemetryFillReader{inner: opts.Reader, mx: a.mx.bpf},
+		telemetryFillReader{inner: opts.Reader, stats: opts.Stats, mx: a.mx.bpf},
 		st, opts.Config.Scrape.Interval)
 	a.collector = metrics.New(st, a.scraper, opts.resolverOrDefault(meta))
 

@@ -66,6 +66,21 @@ func TestDirection_WireValuesPinned(t *testing.T) {
 	}
 }
 
+// TestStatReason_String pins the canonical stat-reason vocabulary —
+// the `reason` label values on cubecos_bpf_update_failures_total.
+// Same contract weight as [TestZoneCode_String].
+func TestStatReason_String(t *testing.T) {
+	if got := StatUpdateFailure.String(); got != "update_failure" {
+		t.Errorf("StatUpdateFailure.String() = %q, want update_failure", got)
+	}
+	if got := StatSkippedEthertype.String(); got != "skipped_ethertype" {
+		t.Errorf("StatSkippedEthertype.String() = %q, want skipped_ethertype", got)
+	}
+	if got := StatReason(9).String(); got != "9" {
+		t.Errorf("unknown reason: got %q, want \"9\"", got)
+	}
+}
+
 // TestDirection_String pins the canonical direction vocabulary —
 // the `direction` label values. Same contract weight as
 // [TestZoneCode_String]. The values are VM-frame ("tx" = VM sending),

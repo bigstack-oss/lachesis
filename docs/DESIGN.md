@@ -1121,7 +1121,7 @@ At packet time (VM-A → 172.16.99.x):
 
 | # | Edge case | Failure | Fix |
 |---|---|---|---|
-| 4 | Map full (>65k flows) | `bpf_map_update_elem` returns `-E2BIG`; bytes lost | Pressure-relief GC at >80% fill; evict oldest by `last_seen_ns`, **flush to GlobalState first** |
+| 4 | Map full (>65k flows) | `bpf_map_update_elem` returns `-E2BIG`; bytes lost | Pressure-relief GC at >80% fill; evict oldest by `last_seen_ns`, **flush to GlobalState first**. The loss is observable: the kernel counts every rejected insert into `cubecos_bpf_update_failures_total{reason="update_failure"}` (§11.4) |
 | 5 | PERCPU first-packet TOCTOU | Two CPUs race on creation; one's BPF_ANY overwrites the other | At most 1 packet lost per new flow per race. Documented & accepted |
 | 6 | GSO/TSO offload | `skb->len` is aggregate (correct bytes); packets undercounted | Bill on bytes, not packets |
 | 7 | Boot ordering: TC attached before trie populated | First flows permanently keyed `dst_zone=MISS` | Enforce sequence with sync gates ([§9](#9-boot-sequence-order-matters)) |
@@ -1394,6 +1394,7 @@ reintroduce hook-frame strings into the metric labels.
 |---|---|---|---|
 | `cubecos_bpf_map_max_entries` | gauge | `map="telemetry_map\|subnet_zone_trie\|mac_tenant_map"` | seeded at startup from the compiled-in sizes; surfaces actual sizing per host (telemetry map scales by N_CPU per §11) |
 | `cubecos_bpf_map_current_entries` | gauge | same `map` label | userspace-tracked count: kernelwriter push for mac_tenant_map / subnet_zone_trie, scraper drain for telemetry_map. Fill ratio = `current / max` in PromQL (replaces the drafted `cubecos_bpf_map_fill_ratio`; exporting numerator and denominator keeps both visible) |
+| `cubecos_bpf_update_failures_total` | counter | `reason="update_failure\|skipped_ethertype"` | kernel `telemetry_stats` PERCPU_ARRAY, CPU-summed and drained by the scraper each tick; both reason series are zero-seeded at startup. `update_failure` = telemetry_map inserts the kernel rejected (map full — those flows' bytes are lost until GC frees space), `skipped_ethertype` = non-IP frames passed through uncounted (ARP/LLDP noise normally; a sustained rise flags a trunk/VLAN blind spot) |
 | `cubecos_state_flows` | gauge | — | distinct flow keys in GlobalState (Collector) |
 | `cubecos_scraper_errors_total` | counter | — | failed BPF-map drain attempts (Collector, from scraper) |
 | `cubecos_scraper_last_success_unix_seconds` | gauge | — | most recent successful drain; 0 if never (Collector, from scraper) |
@@ -1444,6 +1445,7 @@ SLO targets (informational, refined post-MVP):
 - `cubecos_wal_flush_latency_seconds` p99 < 50 ms
 - `cubecos_unresolved_buffer_depth` < 1000 sustained (10k cap is a panic threshold)
 - `cubecos_bpf_map_current_entries{map="telemetry_map"} / cubecos_bpf_map_max_entries{map="telemetry_map"}` < 0.8 (above triggers pressure-relief GC)
+- `cubecos_bpf_update_failures_total{reason="update_failure"}` == 0 (any increase is billed bytes lost in the kernel; alert on `> 0` — a page once pressure-relief GC exists, since then it should never fire)
 
 ### Scalability ceiling
 

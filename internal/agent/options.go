@@ -8,6 +8,7 @@ package agent
 import (
 	"errors"
 
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
@@ -30,6 +31,12 @@ type Options struct {
 	// inject a mock resolver to pin label outputs without
 	// pre-populating the metadata map.
 	Resolver metrics.TenantResolver
+	// Stats reads the kernel telemetry_stats counters once per
+	// scrape drain (see [telemetryFillReader]). nil disables the
+	// drain — the cubecos_bpf_update_failures_total series stay
+	// zero-seeded — which is the case on darwin and in unit tests;
+	// the Linux Bootstrap always wires it.
+	Stats *bpf.StatsReader
 }
 
 // validate rejects required fields that the caller forgot to fill.

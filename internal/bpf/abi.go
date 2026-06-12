@@ -89,15 +89,18 @@ func LoadTelemetry() (*ebpf.CollectionSpec, error) {
 }
 
 // ValidateMapSizes ensures the compiled BPF spec's `max_entries`
-// values for `telemetry_map`, `mac_tenant_map`, and `subnet_zone_trie`
-// match the Go-side intent in [MapTelemetryMaxEntries],
-// [MapMacTenantMaxEntries], and [MapSubnetZoneTrieMaxEntries].
+// values for `telemetry_map`, `mac_tenant_map`, `subnet_zone_trie`,
+// and `telemetry_stats` match the Go-side intent in
+// [MapTelemetryMaxEntries], [MapMacTenantMaxEntries],
+// [MapSubnetZoneTrieMaxEntries], and [MapTelemetryStatsMaxEntries].
 //
 // Mismatch indicates a stale BPF object — typically a developer
 // who bumped the size in bpf/telemetry.c without re-running
 // `task generate`, or the reverse. Either direction is a
 // drift symptom and the agent refuses to start; the operator
-// regenerates and retries.
+// regenerates and retries. For telemetry_stats the size is the
+// stat-reason count, so this check also pins the C enum and its
+// Go mirror to each other.
 //
 // Returns nil when sizes agree, or a multi-line error naming every
 // map whose size differs and the expected value.
@@ -114,6 +117,7 @@ func ValidateMapSizes(spec *ebpf.CollectionSpec) error {
 		{MapTelemetry, MapTelemetryMaxEntries},
 		{MapMacTenant, MapMacTenantMaxEntries},
 		{MapSubnetZoneTrie, MapSubnetZoneTrieMaxEntries},
+		{MapTelemetryStats, MapTelemetryStatsMaxEntries},
 	} {
 		m, ok := spec.Maps[c.name]
 		if !ok {
