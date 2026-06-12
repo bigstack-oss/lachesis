@@ -66,7 +66,7 @@ CubeCOS is a multi-tenant OpenStack platform. Existing tools fail for billing-gr
 | 2 | Re-attribute Octavia LB traffic to the real end-user tenant |
 | 3 | Run entirely in the kernel via [eBPF TC](#b1-ebpf-in-60-seconds) at line-rate (10 Gbps+) with near-zero CPU overhead |
 | 4 | Maintain real-time OpenStack metadata via Neutron API cold-start + Kafka events |
-| 5 | Expose Prometheus cumulative counters at `/metrics` |
+| 5 | Expose Prometheus cumulative counters at `/metrics` — billing semantics defined in [§11.5 Billing model & consumption contract](#billing-model--consumption-contract) |
 | 6 | Survive Go agent crashes (zero data loss) and hard reboots (≤60s data loss) |
 
 ### Target environment
@@ -134,7 +134,7 @@ CubeCOS is a multi-tenant OpenStack platform. Existing tools fail for billing-gr
 
 Detailed reasoning in [C.2 Sampling at OVS / VXLAN envelope extraction](#c2-sampling-at-ovs--vxlan-envelope-extraction).
 
-> **Implementers:** §13.1 lists six contracts the build must guarantee for correctness. Read those first — they cover invariants that are easy to miss (RLock around `Collect()`, kernel/userspace lifecycle ordering, `*TenantMeta` pointer-replace semantics, boot-order sync points, u64 wraparound, UnresolvedBuffer cap). Violating any of them produces silent billing errors that don't crash the agent.
+> **Implementers:** §13.1 lists seven contracts the build must guarantee for correctness. Read those first — they cover invariants that are easy to miss (RLock around `Collect()`, kernel/userspace lifecycle ordering, `*TenantMeta` pointer-replace semantics, boot-order sync points, u64 wraparound, UnresolvedBuffer cap, monotone cumulative counters). Violating any of them produces silent billing errors that don't crash the agent.
 
 ---
 
@@ -861,7 +861,7 @@ An [Octavia](#b9-octavia-and-amphora-vms) load balancer is implemented by an **A
 
 HAProxy is an application-layer terminator. From the kernel's perspective these are two completely separate TCP sessions joined only by HAProxy's userspace logic. Conntrack physically cannot bridge them — there is no "single record" with both `client_ip` and `backend_vm_ip`.
 
-This is the same model AWS (ELB) and GCP (Cloud Load Balancing) use: each segment is independently captured at its interface (ENI/VNIC/tap) and independently billed. The billing pipeline sums and dedupes downstream.
+This is the same model AWS (ELB) and GCP (Cloud Load Balancing) use: each segment is independently captured at its interface (ENI/VNIC/tap) and independently billed. The billing pipeline sums and dedupes downstream — charging postures and consumption rules in [§11.5 Billing model & consumption contract](#billing-model--consumption-contract).
 
 ### Billing model — both segments attribute to the LB owner
 
@@ -872,7 +872,7 @@ Naïvely, traffic at the backend's tap appears to come from the Amphora's MAC an
 | 1: client ↔ Amphora | Amphora's tap | depends on client location (EXTERNAL / OTHER / SAME) | LB owner |
 | 2: Amphora ↔ backend | Amphora's tap **and** backend's tap | INFRA (LB internal plumbing) | LB owner |
 
-Total LB-mediated billing = Segment 1 + Segment 2 bytes. Segment 2 appears at two taps; billing-pipeline dedup follows the same pattern as the both-side counting note in §8 Tier 4 #15.
+Total LB-mediated billing = Segment 1 + Segment 2 bytes. Segment 2 appears at two taps as the standard one-`tx`-plus-one-`rx` emission pair (§8 Tier 4 #15); under §11.5's per-side charging postures no dedup is needed — and Segment 2 is `infra`, $0 today.
 
 ### Mechanism — Amphora MAC flag, not conntrack
 
@@ -1021,7 +1021,7 @@ Two distinct TCP connections per LB request (§6). We capture each at its tap an
 
 **Critical:** the conntrack lookup is **optional and Amphora-tap-only** — at the backend's tap, the conntrack entry is Segment 2's (`Amphora_ip ↔ backend_ip`) and contains no client_ip. See §6 for full rationale; verified empirically.
 
-Total bytes billed to T1 = Segment 1 + Segment 2. Segment 2 is also visible at the Amphora's tap (other direction); the billing pipeline dedupes — same pattern as §8 Tier 4 #15.
+Total bytes billed to T1 = Segment 1 + Segment 2. Segment 2 is also visible at the Amphora's tap (other direction) — the standard both-sides emission of §8 Tier 4 #15, harmless under §11.5's charging postures (`infra` bills $0 today).
 
 ### Scenario G — Static route, Neutron-managed
 
@@ -1051,7 +1051,7 @@ OVS forwards packet within br-int, no VXLAN. Each tap sees the packet.
 | VM-A tap, ingress | counted | SAME ✓ |
 | VM-B tap, egress | counted | SAME ✓ |
 
-Both-sides counting is intentional. Aggregation logic must pick one side per direction to avoid double-counting at the tenant level.
+Both-sides counting is intentional: the transfer emits exactly one `tx` series (VM-A's tap) and one `rx` series (VM-B's tap). The per-side charging postures (§11.5) make the pair safe by construction — `same_tenant` bills $0, so nothing is double-charged.
 
 ### Scenario J — Cross-host, same-tenant (VXLAN tunneled)
 
@@ -1143,8 +1143,8 @@ At packet time (VM-A → 172.16.99.x):
 
 | # | Edge case | Risk | Fix |
 |---|---|---|---|
-| 15 | Both-side counting (sender tap + receiver tap) | Naive sum doubles the total | Aggregation picks one side per direction; metric labels include host_id |
-| 16 | VM live migration | Brief tap flap | Lingering ghost (60s) prevents misattribution; few-packet loss bounded |
+| 15 | Both-side counting (sender tap + receiver tap) | Naive cross-tap sum doubles the total | Deliberate, not a bug: each transfer emits exactly one `tx` series (sender's tap) and one `rx` series (receiver's tap). No host label exists on the metric — host identity is the Prometheus `instance` scrape label, so the pair lands on different `instance` series; billing consumes per-instance series and sums downstream. The per-side charging postures (§11.5) make the pair harmless: each side pays its own direction (`same_tenant` bills $0), never summed as one flow |
+| 16 | VM live migration | Tap vanishes on the source host, appears on the destination host | Handled by the Netlink Watcher: DELLINK detaches on the source, NEWLINK attaches on the destination (the Neutron port is *not* deleted, so the Lingering Ghost path plays no role). Each host's agent emits its own cumulative series under its own `instance` label — one VM accrues up to N instances' series over its lifetime; the billing pipeline sums them (§11.5). Few-packet loss during the cutover is bounded |
 | 17 | Conntrack miss on Segment 1 zone classification | The optional `bpf_skb_ct_lookup` at the Amphora's tap may miss (first SYN, TTL expiry, UDP >30s idle, lookup at the wrong tap). Segment 1 zone falls back to EXTERNAL | Attribution to LB owner is unaffected — it comes from the Amphora MAC flag, not conntrack. See §6 |
 | 18 | u64 wraparound | At 10 Gbps continuous, ~467 years to overflow (2⁶⁴ / 1.25 GB/s ≈ 1.5×10¹⁰ seconds). The guard is one comparison, so add it anyway | — |
 | 19 | Crashed agent leaves orphan TC filters | Stale filters double-count if agent restarts | Either zombie hunter at startup, or accept until reboot |
@@ -1446,6 +1446,62 @@ SLO targets (informational, refined post-MVP):
 - `cubecos_unresolved_buffer_depth` < 1000 sustained (10k cap is a panic threshold)
 - `cubecos_bpf_map_current_entries{map="telemetry_map"} / cubecos_bpf_map_max_entries{map="telemetry_map"}` < 0.8 (above triggers pressure-relief GC)
 - `cubecos_bpf_update_failures_total{reason="update_failure"}` == 0 (any increase is billed bytes lost in the kernel; alert on `> 0` — a page once pressure-relief GC exists, since then it should never fire)
+- `cubecos:unbilled_bytes:ratio_rate5m` < 0.001 — the revenue-leak SLO; recording rule and structural contributors defined in §11.5 below
+
+### Billing model & consumption contract
+
+The measurement layers (§2–§6) produce billing-grade counters; this section defines the product semantics on top of them — which series a billing engine reads, what each zone should cost, and how to consume the counters without corruption. A billing implementer should be able to work from this section alone.
+
+#### The emission invariant
+
+Every byte transfer the data plane can see appears in **exactly one `tx` series and one `rx` series**: counted once at the sender's tap as `direction="tx"` and once at the receiver's tap as `direction="rx"`, each keyed by `(tenant_id, zone, direction)` on `cubecos_bytes_total` / `cubecos_packets_total` (§11.4). The agent **never deduplicates** — both-sides emission is the contract, not an artifact (Scenario I; §8 Tier 4 #15). When only one endpoint sits behind a monitored tap (internet peers, DPDK/SR-IOV VMs), only that side's series exists.
+
+Byte basis: aggregated-skb L2 bytes. Per-segment headers are counted once per GSO/GRO superpacket, so bulk TCP measures ≈4–5% under wire-equivalent (verified empirically; ~0 on small-packet traffic — §8 Tier 2 #6), and `cubecos_packets_total` counts superpackets, not wire segments. Bill on bytes, never on packets.
+
+#### Per-zone charging postures
+
+The zone vocabulary is the §11.4 label table. The guiding principle: **each side pays for its own direction** — under these postures, no cross-tap dedup is ever needed.
+
+| `zone` | Posture | Rationale |
+|---|---|---|
+| `same_tenant` | **$0** (recommended) | Makes the both-sides emission harmless by construction: an intra-tenant transfer produces one `tx` and one `rx` series for the same tenant, and 2 × $0 = $0 |
+| `other_tenant` | **Per-side at the internal rate** — sender pays its `tx`, receiver pays its `rx` | The AWS cross-AZ model: each party is billed for its own direction of a cross-tenant transfer. The two series belong to different tenants, so no dedup question arises |
+| `external` | **Per-direction rates** — `tx` at the egress rate (data leaving toward the internet), `rx` at the ingress rate | The universal cloud convention of asymmetric internet pricing |
+| `infra` | **$0 today** | Covers DHCP/metadata chatter and Octavia Segment 2 plumbing (§6) alike. Future fork: if LB-processed-byte billing is ever wanted, either split the zone (the kernel's Amphora branch already distinguishes Segment 2, so an `infra_lb` zone is cheap) or source LB usage from the Octavia API. Until that product decision, `infra` stays uniformly free |
+| `shared` | **Own line item at an intermediate internal rate** | Owner-vs-other inside a shared CIDR is intentionally indistinguishable on the L3 path — §5.2 Step 3 explains why guessing either mis-bills. Price between `same_tenant` and `other_tenant` instead of guessing |
+| `miss` — and any `tenant_id="unknown"` | **Never billed; alert-only** | Unattributable bytes must not become invoices. Tracked by the revenue-leak SLO below |
+
+**FIP hairpin is EXTERNAL on both sides — deliberately.** When a VM reaches a same-tenant peer via the peer's floating IP, both taps classify EXTERNAL: the client's tap sees the remote FIP, and OVN hairpin-SNATs the source to the client's *own* FIP, so the server's tap also sees an external-net address (verified empirically — same tenant, same subnet, same hypervisor). The traffic never leaves the host, yet bills at external rates in both directions. This matches public-cloud norms (AWS bills public-IP hairpins as public traffic); tenants avoid the charge by addressing fixed IPs.
+
+#### The consumption contract
+
+- **Counters are lifetime-cumulative and never decrease.** GlobalState has no eviction path, and WAL restore (§10) carries the running totals across agent restarts and reboots — series never reset to zero. (A crash can drop up to the ≤60s WAL window of tail bytes — provider-unfavorable, §10.) §13.1 #7 pins this as an implementation contract.
+- **Consume by endpoint-sample subtraction, not `increase()`.** For a billing period `[T₀, T₁]`, charge `value(T₁) − value(T₀)` per series. `increase()` extrapolates to compensate for counter resets and scrape-boundary gaps; these counters never reset, so the extrapolation only adds error. Plain subtraction is exact — the no-eviction property is precisely what makes it safe.
+- **Prometheus durability, retention, and HA are the platform's responsibility** (stated non-goal). The agent's promise ends at `/metrics`: cumulative, monotone, restart-surviving series. Whatever scrapes them must retain the two endpoint samples per billing period (or remote-write to something that does).
+- **Host identity is the Prometheus `instance` scrape label** — there is no host label on the metric itself. A live-migrated VM accrues series under several `instance` values over its lifetime; sum them (§8 Tier 4 #16).
+
+#### Revenue-leak SLO
+
+The unbilled fraction — bytes in `zone="miss"` or `tenant_id="unknown"` — is the runtime verification of §8's static accuracy-ceiling claim (~99.9%):
+
+```yaml
+- record: cubecos:unbilled_bytes:ratio_rate5m
+  expr: |
+    sum(
+        rate(cubecos_bytes_total{zone="miss"}[5m])
+      or rate(cubecos_bytes_total{tenant_id="unknown"}[5m])
+    )
+    /
+    sum(rate(cubecos_bytes_total[5m]))
+```
+
+The `or` deduplicates series that are both `zone="miss"` and `tenant_id="unknown"`: both operands draw from the same series set, so label sets match exactly and each leaking series counts once.
+
+**Target: < 0.001 (0.1%)**; alert above it. Structural contributors to expect:
+
+- **IPv6** — all of it classifies `zone="miss"` until §13.2 #1 lands; deployments with real v6 traffic will sit above the target until then.
+- **Allowed-address-pairs / VRRP virtual MACs** — a vMAC sourced by a keepalived pair is not a Neutron port MAC, misses `mac_tenant_map`, and emits `tenant_id="unknown"`.
+- **Transient cold-start / late-Kafka windows** (§8 Tier 3 #14) — self-healing via the UnresolvedBuffer; visible as short spikes, not steady-state leak.
 
 ### Scalability ceiling
 
@@ -1504,6 +1560,7 @@ These must be present in any implementation for correctness. They are not deferr
 | 4 | Boot sequence (§9) ordering enforced — currently by straight-line single-goroutine `Bootstrap`: every phase advances inline and `Bootstrap` returns before `Run` spawns the scraper/WAL/netlink goroutines, so no consumer can observe an out-of-order phase | High | Out-of-order startup silently produces permanently-misclassified flows. `boot.Sequencer` validates the step-by-one order and logs each transition; promoting it to a cross-goroutine `Await`/`Fail` barrier is deferred until concurrent phase-advancers exist (§13.2 #3) |
 | 5 | u64 wraparound guard in delta math | Low | At 10 Gbps continuous, ~467 years to overflow — but the guard is one comparison, so add it |
 | 6 | Lingering Ghost lifecycle ordering between kernel `mac_tenant_map` and userspace `ShardedMetadataMap` | High | Insertions go userspace→kernel; deletions are delayed 60s then go kernel→userspace (§3.4). Skipping the kernel-side delay silently breaks the ghost's purpose — dying FIN/RST packets mis-attribute to `unknown` |
+| 7 | `GlobalState` is append-only for the life of the process; exposed series never reset and are restored cumulatively across restarts (WAL, §10) | High | Billing consumers bill by endpoint-sample subtraction (§11.5) and depend on monotone cumulative counters. Any future eviction/retention feature must version the consumption contract first |
 
 ### 13.2 Deferred Work
 
