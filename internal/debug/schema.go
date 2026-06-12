@@ -29,6 +29,16 @@ const (
 // periods, but a broken updater surfaces within a couple of minutes.
 const syncStaleThreshold = 5 * time.Minute
 
+// extrarouteOut / extrarouteIn are the [extrarouteRow] Direction
+// vocabulary: whether the extraroute sits on the focused tenant's own
+// router ("out") or points at it from another tenant's ("in"). Route
+// relationship, not packet direction — deliberately distinct from
+// [bpf.Direction]'s "ingress"/"egress".
+const (
+	extrarouteOut = "out"
+	extrarouteIn  = "in"
+)
+
 // indexModel is the /debug index view: sync recency, resource
 // counts, per-class anomaly counts with links into the detail
 // pages, and the inline lookup form state.
@@ -341,7 +351,7 @@ type routerExtrarouteRow struct {
 // page bottom — each cross-tenant extraroute (outgoing or incoming)
 // gets one row regardless of which router it belongs to.
 type extrarouteRow struct {
-	Direction        string `json:"direction"` // "out" (my router) or "in" (other tenant's router)
+	Direction        string `json:"direction"` // extrarouteOut (my router) or extrarouteIn (other tenant's router)
 	SourceRouterID   string `json:"source_router_id"`
 	SourceTenantID   string `json:"source_tenant_id"`
 	SourceTenantName string `json:"source_tenant_name,omitempty"`
