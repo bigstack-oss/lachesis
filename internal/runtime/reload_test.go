@@ -128,6 +128,41 @@ func TestDebugHandler_GetConfig(t *testing.T) {
 	}
 }
 
+func TestDebugHandler_GetConfig_RedactsPassword(t *testing.T) {
+	const secret = "hunter2-keystone-admin"
+	initial := config.Defaults()
+	initial.Neutron.Enabled = true
+	initial.Neutron.AuthURL = "http://keystone.example:5000/v3"
+	initial.Neutron.Username = "admin_cli"
+	initial.Neutron.Password = secret
+	initial.Neutron.ProjectName = "admin"
+	logHandle, _ := logging.Init(initial.Logging, &bytes.Buffer{})
+	mgr := runtime.New("", initial, logHandle)
+
+	req := httptest.NewRequest(http.MethodGet, "/debug/config", nil)
+	rec := httptest.NewRecorder()
+	mgr.DebugHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, secret) {
+		t.Errorf("/debug/config leaked the Neutron password:\n%s", body)
+	}
+	var got config.Config
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body is not JSON: %v\n%s", err, body)
+	}
+	if got.Neutron.Password != "***" {
+		t.Errorf("Neutron.Password = %q, want \"***\"", got.Neutron.Password)
+	}
+	// Non-secret fields still come through.
+	if got.Neutron.Username != "admin_cli" {
+		t.Errorf("Neutron.Username = %q, want admin_cli", got.Neutron.Username)
+	}
+}
+
 func TestDebugHandler_PutLogLevel(t *testing.T) {
 	var buf bytes.Buffer
 	path, initial := setup(t, "info")
@@ -161,6 +196,25 @@ func TestDebugHandler_PutLogLevel_BadBody(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestDebugHandler_PutLogLevel_OversizedBody(t *testing.T) {
+	logHandle, _ := logging.Init(config.Defaults().Logging, &bytes.Buffer{})
+	mgr := runtime.New("", config.Defaults(), logHandle)
+
+	// Valid JSON padded past the 1 KiB cap; size alone must reject it.
+	huge := `{"level":"debug","pad":"` + strings.Repeat("x", 4096) + `"}`
+	req := httptest.NewRequest(http.MethodPut, "/debug/log-level",
+		strings.NewReader(huge))
+	rec := httptest.NewRecorder()
+	mgr.DebugHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", rec.Code)
+	}
+	if got := logHandle.CurrentLevel(); got != "info" {
+		t.Errorf("CurrentLevel = %q, want info (unchanged)", got)
 	}
 }
 

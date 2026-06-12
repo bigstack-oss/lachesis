@@ -1,9 +1,12 @@
 package config_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 )
@@ -103,6 +106,52 @@ func TestNeutronValidate(t *testing.T) {
 				t.Fatalf("error should mention %q, got: %v", tc.errSubstr, err)
 			}
 		})
+	}
+}
+
+func TestNeutronMarshalJSON_RedactsPassword(t *testing.T) {
+	const secret = "hunter2-keystone-admin"
+	c := config.NeutronConfig{Username: "admin_cli", Password: secret}
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(b), secret) {
+		t.Errorf("JSON leaked the password: %s", b)
+	}
+	if !strings.Contains(string(b), `"Password":"***"`) {
+		t.Errorf("JSON should redact Password as ***, got: %s", b)
+	}
+
+	// An empty password stays empty — operators can tell "not set"
+	// from "set but redacted".
+	b, err = json.Marshal(config.NeutronConfig{})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"Password":""`) {
+		t.Errorf("empty Password should stay empty in JSON, got: %s", b)
+	}
+}
+
+func TestNeutronYAMLRoundTrip_PasswordIntact(t *testing.T) {
+	const secret = "hunter2-keystone-admin"
+	c := config.NeutronConfig{Username: "admin_cli", Password: secret}
+
+	b, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), secret) {
+		t.Errorf("YAML (the on-disk system of record) must keep the real password, got:\n%s", b)
+	}
+	var got config.NeutronConfig
+	if err := yaml.Unmarshal(b, &got); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+	if got.Password != secret {
+		t.Errorf("YAML round-trip Password = %q, want %q", got.Password, secret)
 	}
 }
 

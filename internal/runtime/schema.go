@@ -10,3 +10,9 @@ const (
 	componentReload = "reload"
 	componentDebug  = "debug"
 )
+
+// logLevelMaxBodyBytes caps the PUT /debug/log-level request body via
+// http.MaxBytesReader. The legitimate body is a one-field JSON object
+// (~20 bytes); 1 KiB leaves generous slack while keeping the
+// unauthenticated endpoint from buffering an attacker-sized body.
+const logLevelMaxBodyBytes = 1 << 10

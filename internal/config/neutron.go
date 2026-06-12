@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -93,6 +94,21 @@ func neutronDefaults() NeutronConfig {
 		RequestTimeout: 30 * time.Second,
 		RefreshLead:    5 * time.Minute,
 	}
+}
+
+// MarshalJSON renders the config with Password replaced by the
+// redactedSecret placeholder when set. JSON is the wire format of the
+// unauthenticated GET /debug/config endpoint, so the secret must never
+// reach it; the YAML encoding (the on-disk system of record) is
+// unaffected. An empty Password stays empty so operators can tell
+// "no inline password configured" from "configured but redacted".
+func (c NeutronConfig) MarshalJSON() ([]byte, error) {
+	type plain NeutronConfig // local alias drops the method, avoiding recursion
+	v := plain(c)
+	if v.Password != "" {
+		v.Password = redactedSecret
+	}
+	return json.Marshal(v)
 }
 
 // Validate enforces the two-credential-modes contract and the

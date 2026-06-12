@@ -1,6 +1,7 @@
 // schema.go gathers package config's package-level constants: the schema
-// version, the default environment-variable prefix, and the env-var name
-// suffixes shared between applyEnv and applyFlags (load.go). The section
+// version, the default environment-variable prefix, the JSON secret
+// placeholder, and the env-var name suffixes shared between applyEnv and
+// applyFlags (load.go). The section
 // types keep the documented one-file-per-section layout (http.go, bpf.go,
 // scrape.go, logging.go, wal.go, neutron.go), each owning its own defaults
 // helper and Validate method.
@@ -13,6 +14,11 @@ const Version = "1"
 
 // DefaultEnvPrefix is used when [Options.EnvPrefix] is empty.
 const DefaultEnvPrefix = "CUBECOS"
+
+// redactedSecret is what secret fields serialize as in JSON
+// ([NeutronConfig.MarshalJSON]), keeping credentials off the
+// unauthenticated /debug/config wire.
+const redactedSecret = "***"
 
 // Environment-variable name suffixes. applyEnv reads <prefix>_<suffix>
 // and applyFlags' envHint advertises the same <prefix>_<suffix> in

@@ -44,7 +44,13 @@ func (a *Agent) openHTTP(opts Options) error {
 
 	a.runtime = mgr
 	a.listener = ln
-	a.server = &http.Server{Handler: handler, ReadHeaderTimeout: httpReadHeaderTimeout}
+	a.server = &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
 	return nil
 }
 

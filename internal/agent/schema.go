@@ -40,6 +40,30 @@ const (
 // Prometheus scrape's typical RTT but well below operator patience.
 const httpReadHeaderTimeout = 5 * time.Second
 
+// Whole-connection timeouts so a trickling client cannot hold a
+// handler (and its goroutine) open indefinitely on the
+// unauthenticated listener.
+//
+//   - httpReadTimeout covers the entire request read, body included.
+//     Every request body the server accepts is tiny (PUT
+//     /debug/log-level is capped at 1 KiB), so 30s is already
+//     generous.
+//   - httpWriteTimeout covers writing the response. It must
+//     comfortably fit the largest responses — the full /metrics
+//     exposition at production scale and the /debug HTML pages — and
+//     the /debug/pprof/profile handler, which blocks for the profile
+//     duration (default 30s) before writing a byte. 60s clears the
+//     default profile with margin; longer captures need an explicit
+//     ?seconds= under ~55s.
+//   - httpIdleTimeout reaps idle keep-alive connections. Prometheus
+//     reuses its connection between 15s-interval scrapes, so 120s
+//     keeps that reuse intact.
+const (
+	httpReadTimeout  = 30 * time.Second
+	httpWriteTimeout = 60 * time.Second
+	httpIdleTimeout  = 120 * time.Second
+)
+
 // shutdownTimeout caps the time spent gracefully draining the HTTP
 // server and the scraper goroutine on shutdown. The HTTP server uses
 // the full budget; the scraper gets a fresh budget after the server
