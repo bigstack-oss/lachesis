@@ -26,7 +26,9 @@ A Grafana dashboard set lives at `deploy/grafana/` as committed JSON, versioned 
 | 8 | Octavia | per-LB bytes, per-backend-VM breakdown, Segment 1 / Segment 2 split |
 | 9 | performance | ns/packet, scrape duration, internal-error rate |
 
-Dashboard JSON is syntax-validated in CI (`promtool query` on every panel). Metric names form an API contract — renames go through a deliberate PR with matching dashboard updates.
+Metric names form an API contract — renames go through a deliberate PR with matching dashboard updates. (An earlier line here claimed dashboard JSON is promtool-validated in CI; that was never built — CI runs unit, integration, and bench-gate jobs only.)
+
+**Status update (2026-06-11, PR #26):** the per-topic dashboard files were consolidated into one all-in-one dashboard, `deploy/grafana/dashboards/cubecos-telemetry.json` (~32 panels: overview, throughput, BPF maps, scraper/collector, Neutron incl. anomalies, WAL, netlink/TC). The table above remains the panel roadmap; new panels land in that single file.
 
 ---
 
@@ -82,7 +84,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 1 — Hybrid zone lookup in kernel
+## Sprint 1 — Hybrid zone lookup in kernel [DONE 2026-05-14, PR #2]
 
 **Goal.** Implement §4.3 MAC-first / LPM-fallback in the kernel.
 
@@ -98,7 +100,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 2 — GlobalState + delta math + custom Prometheus Collector
+## Sprint 2 — GlobalState + delta math + custom Prometheus Collector [DONE 2026-05-15, PR #8]
 
 **Goal.** The L3↔L4 spine. Also lands the agent's first real binary and the load-test infrastructure that pairs with it.
 
@@ -117,7 +119,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 3 — WAL persistence
+## Sprint 3 — WAL persistence [DONE 2026-05-15, PR #10]
 
 **Goal.** Survive agent crash with zero loss; hard reboot ≤60s loss.
 
@@ -134,7 +136,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 4a — Neutron cold-start, foundations [planned split, part 1 of 2]
+## Sprint 4a — Neutron cold-start, foundations [DONE 2026-05-19, PR #13]
 
 **Goal.** Stand up the Neutron data path end-to-end for everything except static routes. After this sprint the agent emits real `tenant_id` labels.
 
@@ -164,7 +166,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 4b — Static-route resolver + scenario harness [planned split, part 2 of 2]
+## Sprint 4b — Static-route resolver + scenario harness [DONE 2026-05-19, PR #14]
 
 **Goal.** Close the cold-start algorithm — multi-hop static routes resolve correctly. After this sprint, scenarios A–L are all green.
 
@@ -188,7 +190,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 4c — Trie dedup for global zone entries
+## Sprint 4c — Trie dedup for global zone entries [DONE 2026-05-20, PR #15]
 
 **Goal.** Decouple `subnet_zone_trie` cardinality from tenant count. Today every tenant gets its own copy of every catchall / INFRA / SHARED row; only the SAME_TENANT rows are genuinely per-tenant. Verified empirically (27-tenant test deployment): 9270 of 9270 entries observed, of which ≈340 per tenant are global — i.e. ~96% replication. At realistic production tenant counts (≥200) the current model overflows the 16384 trie cap and hard-fails at boot via `bpf.ValidateMapSizes`. After this sprint, trie size is O(G + Σ O_t) instead of O(T × (G + O_t)), where G = global prefixes and O_t = the per-tenant SAME_TENANT prefixes.
 
@@ -221,7 +223,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 5 — Boot sync machinery + Zombie Hunter + Netlink Watcher
+## Sprint 5 — Boot sync machinery + Zombie Hunter + Netlink Watcher [DONE 2026-05-27→29, PRs #18/#19/#20]
 
 **Goal.** Promote the boot-order ordering 4a wired into `Bootstrap` into an inspectable, explicit-sync-point machine; replace the single static `BPFConfig.AttachInterface` with netlink-driven dynamic attach.
 
@@ -239,7 +241,9 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 6 — Lingering Ghost + UnresolvedBuffer + Pressure-Relief GC
+## Sprint 6 — Lingering Ghost + UnresolvedBuffer + Pressure-Relief GC [NEXT UP]
+
+> Groundwork already landed with 4a/refactors: `ShardedMetadataMap.MarkDelete` + `DeleteAt` + the userspace-first/kernel-first ordering invariants exist (internal/metadata). Still to build: the 60s ghost-sweep goroutine, UnresolvedBuffer, pressure-relief GC, and all six metrics below.
 
 **Goal.** Eviction with no byte loss, capped buffers.
 
@@ -298,7 +302,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 **Goal.** Production-readiness sweep. Verify all five §13.1 contracts are held by tests, close the zero-allocation gate on the remaining hot paths, and ship the ops doc.
 
 **Scope.**
-- **Verification, not initial wiring.** Contracts #2 (RLock around `Collect()`) and #5 (u64 wraparound in delta math) are already in `internal/state/state.go` (landed Sprint 2 — see `Snapshot` at state.go:113 and `addDelta` at state.go:97). Contract #1 lands in Sprint 6, #3 in Sprints 4a + 7, #4 in Sprints 4a + 5, #6 in Sprint 6. This sprint's job is to confirm each contract has a test that **fails** when the contract is broken (negative tests), not to write the contracts themselves.
+- **Verification, not initial wiring.** Contracts #2 (RLock around `Collect()`) and #5 (u64 wraparound in delta math) are already in `internal/state/state.go` (landed Sprint 2 — see `Snapshot` and `addDelta`). Contract #1 lands in Sprint 6, #3 in Sprints 4a + 7, #4 in Sprints 4a + 5, #6 in Sprint 6. This sprint's job is to confirm each contract has a test that **fails** when the contract is broken (negative tests), not to write the contracts themselves.
 - **Close the bench-gate gap.** `BenchmarkHotpath_ApplyDelta` and `BenchmarkHotpath_Snapshot` exist (`internal/state/bench_test.go`) and run under `task bench-gate` today. Add `BenchmarkHotpath_Collect` (in `internal/metrics/`) and `BenchmarkHotpath_BatchLookupAndProcess` (in `internal/scraper/` against a synthetic `MapReader`) — these were promised by Sprint 2's done-when but never written.
 - **Error-counter coverage lint.** Each subsystem (4a Neutron, 5 TC attach, 6 GC, 7 Kafka) wires its own dedicated error counter (per-subsystem counters replaced the drafted generic `cubecos_internal_errors_total` sink — see §11.4). This sprint adds a `go vet`-style lint (or AST walker) that fails the PR if a `slog.Error` in a billing-path package isn't accompanied by a counter increment. Lives at `scripts/lint-error-sink.sh` and runs in CI.
 - **Ops README**: deployment, troubleshooting, dashboards, alert rules. Moved here from Sprint 10 — by the time IPv6 lands in 10 the system is already in production, so an ops README written then is overdue. Lives at `docs/ops.md`.
@@ -324,6 +328,22 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 **LOC.** ~350 (originally ~400; -50 with ops README out of scope).
 
 ---
+
+## Between-sprint work (unplanned, landed)
+
+Work that landed outside the sprint scopes above, kept here so the plan stays an honest record:
+
+| Date | PR | What |
+|---|---|---|
+| 2026-05-14 | #5 | "Sprint 1.9" foundations: nested YAML config (`internal/config`), slog logging (`internal/logging`), SIGHUP hot reload (`internal/runtime`) |
+| 2026-05-20 | #16 | Test-helper dedup across bpfunit, classifier, kernelwriter, neutron |
+| 2026-05-30 | #21–#23 | Hardening pass (locking, resilience, correctness); `BuildTrie` Snapshot param; layering cleanup |
+| 2026-06-01 | #24 | `schema.go` convention + SSOT cleanups across packages |
+| 2026-06-11 | #25 | Agent readability: step-list boot, method files by functionality, drain-ordered `workers()` table |
+| 2026-06-11 | #26 | Metrics gap-fill (telemetry_map fill gauges, `cubecos_collect_duration_seconds`, DESIGN §11.4 realign) + all-in-one Grafana dashboard |
+| 2026-06-11 | #27 | `/debug` operator surface (`internal/debug`): index, anomalies, lookup, zones, topology pages + pprof; `cubecos_neutron_anomalies{class}` gauge |
+| 2026-06-12 | #28–#29 | Cold-start ambiguity-policy extraction; neutron informer-style struct owning sync state + metrics |
+| 2026-06-12 | #30–#31 | Package-anatomy archetypes in DESIGN §13.4; `UnknownTenantID` label SSOT |
 
 ## Cadence
 
@@ -355,4 +375,6 @@ Sprints 1, 2, 3 can technically interleave; the linear ordering above gives a wo
 
 ---
 
-*Last updated: 2026-05-19 (Sprint 4c slice 1: locked sentinel `tenant_id=0` shape; dropped the pin-path-migration slice — pre-release product, agent doesn't pin maps today, so no v1 pin to refuse-reuse against; `MapSubnetZoneTrieMaxEntries` stays at 16384 for headroom; LOC re-estimated 400 → 250).*
+*Last updated: 2026-06-12 (status audit against the codebase: Sprints 1–5 marked DONE with PR numbers; Sprint 6 marked NEXT UP with its already-landed groundwork noted; dropped the false promtool-in-CI claim; recorded the dashboard consolidation into `cubecos-telemetry.json`; added the between-sprint work ledger).*
+
+*Previous update: 2026-05-19 (Sprint 4c slice 1: locked sentinel `tenant_id=0` shape; dropped the pin-path-migration slice — pre-release product, agent doesn't pin maps today, so no v1 pin to refuse-reuse against; `MapSubnetZoneTrieMaxEntries` stays at 16384 for headroom; LOC re-estimated 400 → 250).*
