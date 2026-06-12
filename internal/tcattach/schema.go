@@ -1,11 +1,12 @@
 //go:build linux
 
-// schema.go gathers package tcattach's exported vocabulary: the clsact
-// hook Direction enum, the fixed filter handle, the telemetry filter
-// names, and the Hooks table that single-sources the (name, parent) pairs
-// the agent attaches. The whole package is //go:build linux, so this file
-// carries the tag too. The attach logic (Replace, AttachTelemetry,
-// LinkAttacher, IsTelemetryFilterName) lives in tcattach.go.
+// schema.go gathers package tcattach's constants: the clsact hook
+// Direction enum, the fixed filter handle and priority, the telemetry
+// filter names, the Hooks table that single-sources the (name, parent)
+// pairs the agent attaches, and the slog component label. The whole
+// package is //go:build linux, so this file carries the tag too. The
+// attach logic (Replace, AttachTelemetry, LinkAttacher,
+// IsTelemetryFilterName) lives in tcattach.go.
 
 package tcattach
 
@@ -26,6 +27,20 @@ const (
 // (FilterReplace) always lands on the same slot rather than piling
 // up parallel filters.
 const FilterHandle = 1
+
+// FilterPriority is the TC filter priority (preference) the agent's
+// filters install at. It must be a fixed non-zero value: at priority
+// 0 the kernel auto-allocates a fresh priority on every call, so a
+// FilterReplace never matches the previous filter — each re-attach
+// stacks another copy and every packet is counted once per copy.
+// Pinning the full (parent, priority, handle) triple makes
+// FilterReplace genuinely idempotent and lets FilterDel address the
+// exact filter the agent installed.
+const FilterPriority = 1
+
+// component is the slog attribute identifying this package's log
+// records, one vocabulary with the agent's metric registration labels.
+const component = "tcattach"
 
 // FilterIngressName and FilterEgressName are the labels the agent
 // installs on its clsact ingress and egress filters. Constants are
