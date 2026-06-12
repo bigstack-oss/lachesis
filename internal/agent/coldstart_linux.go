@@ -54,27 +54,8 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	if err != nil {
 		return err
 	}
-	if len(ambiguities) > 0 {
-		if !cfg.UnsafeAllowAmbiguousRoutes {
-			return fmt.Errorf("static-route ambiguity in strict mode (%d hits, first=%+v); "+
-				"set neutron.unsafe_allow_ambiguous_routes=true to accept EXTERNAL fallback and continue",
-				len(ambiguities), ambiguities[0])
-		}
-		slog.Warn("static-route ambiguities accepted under unsafe mode",
-			"component", componentNeutron,
-			"count", len(ambiguities))
-		// One detail entry per hit so operators don't have to grep for
-		// individual routers / destinations — `grep -c "ambiguity hit"`
-		// is the count, and each line carries the (source_tenant,
-		// router, destination, owners) tuple needed to investigate.
-		for _, hit := range ambiguities {
-			slog.Warn("static-route ambiguity hit",
-				"component", componentNeutron,
-				"source_tenant", hit.SourceTenant,
-				"router", hit.RouterID,
-				"destination", hit.Destination.String(),
-				"owners", hit.Owners)
-		}
+	if err := enforceAmbiguityPolicy(cfg, ambiguities); err != nil {
+		return err
 	}
 	ag.mx.bpf.SetCurrent(bpf.MapMacTenant, float64(nMac))
 	ag.mx.bpf.SetCurrent(bpf.MapSubnetZoneTrie, float64(nTrie))
@@ -229,4 +210,35 @@ func pushSnapshotToKernel(ag *Agent, coll *ebpf.Collection, snap neutron.Snapsho
 		return nMac, nTrie, entries, ambiguities, cycles, fmt.Errorf("write subnet_zone_trie (wrote %d): %w", nTrie, err)
 	}
 	return nMac, nTrie, entries, ambiguities, cycles, nil
+}
+
+// enforceAmbiguityPolicy applies the static-route ambiguity policy to
+// the resolver's hits: in strict mode (the default) any ambiguity
+// aborts the cold start; under `neutron.unsafe_allow_ambiguous_routes`
+// the hits are accepted with EXTERNAL fallback and logged instead.
+func enforceAmbiguityPolicy(cfg config.NeutronConfig, ambiguities []neutron.AmbiguityHit) error {
+	if len(ambiguities) == 0 {
+		return nil
+	}
+	if !cfg.UnsafeAllowAmbiguousRoutes {
+		return fmt.Errorf("static-route ambiguity in strict mode (%d hits, first=%+v); "+
+			"set neutron.unsafe_allow_ambiguous_routes=true to accept EXTERNAL fallback and continue",
+			len(ambiguities), ambiguities[0])
+	}
+	slog.Warn("static-route ambiguities accepted under unsafe mode",
+		"component", componentNeutron,
+		"count", len(ambiguities))
+	// One detail entry per hit so operators don't have to grep for
+	// individual routers / destinations — `grep -c "ambiguity hit"`
+	// is the count, and each line carries the (source_tenant,
+	// router, destination, owners) tuple needed to investigate.
+	for _, hit := range ambiguities {
+		slog.Warn("static-route ambiguity hit",
+			"component", componentNeutron,
+			"source_tenant", hit.SourceTenant,
+			"router", hit.RouterID,
+			"destination", hit.Destination.String(),
+			"owners", hit.Owners)
+	}
+	return nil
 }

@@ -174,9 +174,9 @@ func buildTopologyTenantModel(snap *neutron.Snapshot, tenant string, lastSync ti
 					TargetTenantName: snap.ProjectName(nextRouter.ProjectID),
 				}
 				if r.ProjectID == tenant {
-					row.Direction = "out"
+					row.Direction = extrarouteOut
 				} else {
-					row.Direction = "in"
+					row.Direction = extrarouteIn
 				}
 				model.Extraroutes = append(model.Extraroutes, row)
 			}
@@ -186,7 +186,7 @@ func buildTopologyTenantModel(snap *neutron.Snapshot, tenant string, lastSync ti
 	// Sort: outgoing first, then by source router id for stability.
 	sort.Slice(model.Extraroutes, func(i, j int) bool {
 		if model.Extraroutes[i].Direction != model.Extraroutes[j].Direction {
-			return model.Extraroutes[i].Direction == "out"
+			return model.Extraroutes[i].Direction == extrarouteOut
 		}
 		return model.Extraroutes[i].SourceRouterID < model.Extraroutes[j].SourceRouterID
 	})
