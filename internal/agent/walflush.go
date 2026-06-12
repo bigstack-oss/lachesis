@@ -22,9 +22,10 @@ func (a *Agent) WALMetrics() *wal.Metrics { return a.mx.wal }
 
 // walFlushLoop drains [state.GlobalState] to disk on the configured
 // cadence. On ctx cancellation it runs one final flush before
-// returning — that's how a clean shutdown captures the latest
-// deltas the scraper applied between the last periodic flush and
-// the SIGINT/SIGTERM.
+// returning. Its context is cancelled by [Agent.drainWorkers] only
+// after the scraper has exited — its final tick already applied —
+// so the final flush snapshots every delta the scraper drained
+// before the SIGINT/SIGTERM. That makes a clean shutdown lossless.
 func (a *Agent) walFlushLoop(ctx context.Context) {
 	t := time.NewTicker(a.cfg.WAL.FlushInterval)
 	defer t.Stop()

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -447,6 +448,116 @@ func TestAgent_WALFinalFlushOnShutdown(t *testing.T) {
 	if res.Records[0].Counter.Total.Bytes != 9999 {
 		t.Errorf("final flush Total.Bytes = %d, want 9999",
 			res.Records[0].Counter.Total.Bytes)
+	}
+}
+
+// mutableReader returns whatever its current entries hold, and the
+// entries can be swapped mid-test to model the kernel map advancing
+// between ticks. Each BatchLookup sleeps briefly so a WAL final flush
+// that does NOT wait for the scraper to exit would snapshot
+// GlobalState before the final tick lands — making the
+// flush-after-scrape ordering observable, not just the final tick.
+type mutableReader struct {
+	mu      sync.Mutex
+	entries map[bpf.FlowKey]bpf.FlowMetrics
+	calls   atomic.Uint64
+}
+
+func (m *mutableReader) BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) error {
+	time.Sleep(50 * time.Millisecond)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, v := range m.entries {
+		dst[k] = v
+	}
+	m.calls.Add(1)
+	return nil
+}
+
+func (m *mutableReader) set(entries map[bpf.FlowKey]bpf.FlowMetrics) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.entries = entries
+}
+
+// TestAgent_ShutdownFinalTickReachesFinalWAL proves graceful shutdown
+// is lossless: deltas that appear in the kernel map after the last
+// periodic tick are drained by the scraper's shutdown final tick AND
+// captured by the WAL final flush, which structurally runs only after
+// the scraper has exited. Scrape and flush intervals are set far
+// beyond the test's lifetime so only the initial tick, the final
+// tick, and the final flush ever run.
+func TestAgent_ShutdownFinalTickReachesFinalWAL(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	walPath := filepath.Join(t.TempDir(), "wal.json")
+
+	k := bpf.FlowKey{
+		SrcMac:    [6]uint8{0xaa, 0, 0, 0, 0, 1},
+		DstMac:    [6]uint8{0xaa, 0, 0, 0, 0, 2},
+		EthProto:  0x0800,
+		Direction: bpf.DirectionEgress,
+		DstZone:   bpf.ZoneExternal,
+	}
+	r := &mutableReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{
+		k: {Bytes: 1000, Packets: 3, LastSeenNs: 1},
+	}}
+
+	cfg := config.Defaults()
+	cfg.HTTP.Listen = "127.0.0.1:0"
+	cfg.Scrape.Interval = 30 * time.Second // no periodic tick after the initial one
+	cfg.WAL.Path = walPath
+	cfg.WAL.FlushInterval = 30 * time.Second // only the final flush writes
+	cfg.WAL.Enabled = true
+
+	log, err := logging.Init(cfg.Logging, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	ag, err := agent.New(agent.Options{Config: cfg, Reader: r, Log: log})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = ag.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for the initial tick, then advance the "kernel" counters.
+	// With a 30s scrape interval, only the shutdown final tick can
+	// drain this delta into GlobalState.
+	deadline := time.Now().Add(2 * time.Second)
+	for r.calls.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("initial tick did not complete within 2s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	r.set(map[bpf.FlowKey]bpf.FlowMetrics{
+		k: {Bytes: 5000, Packets: 9, LastSeenNs: 2},
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent did not exit within 2s of cancel")
+	}
+
+	res, err := wal.Load(walPath)
+	if err != nil {
+		t.Fatalf("wal.Load: %v", err)
+	}
+	if res.Source != wal.LoadFromPrimary || len(res.Records) == 0 {
+		t.Fatalf("final flush did not produce a usable WAL: source=%v records=%d",
+			res.Source, len(res.Records))
+	}
+	got := res.Records[0].Counter.Total
+	if got.Bytes != 5000 || got.Packets != 9 {
+		t.Errorf("final WAL Total = {Bytes:%d Packets:%d}, want {Bytes:5000 Packets:9} (pre-shutdown deltas lost)",
+			got.Bytes, got.Packets)
 	}
 }
 
