@@ -62,7 +62,7 @@ CubeCOS is a multi-tenant OpenStack platform. Existing tools fail for billing-gr
 
 | # | Requirement |
 |---|---|
-| 1 | Classify all traffic into four categories: **Egress** (N-S out), **Ingress** (N-S in), **Intra-Tenant E-W**, **Inter-Tenant E-W** |
+| 1 | Classify all traffic into four categories: **N-S out** (VM → internet), **N-S in** (internet → VM), **Intra-Tenant E-W**, **Inter-Tenant E-W** |
 | 2 | Re-attribute Octavia LB traffic to the real end-user tenant |
 | 3 | Run entirely in the kernel via [eBPF TC](#b1-ebpf-in-60-seconds) at line-rate (10 Gbps+) with near-zero CPU overhead |
 | 4 | Maintain real-time OpenStack metadata via Neutron API cold-start + Kafka events |
@@ -1363,6 +1363,29 @@ the design's existing fan-out (tenant, zone, direction). **Health metrics**
 (Earlier drafts named these `cubecos_tenant_{bytes,packets}_total`; the
 implemented, test-pinned names above are canonical — the `tenant_id` label
 already carries the tenant dimension.)
+
+**Billing label vocabulary.** These value sets are an API contract —
+dashboards and billing pipelines pin them, so changing any value is a
+breaking change once consumers exist.
+
+| Label | Value set | Meaning |
+|---|---|---|
+| `tenant_id` | Neutron project UUID, or `unknown` | The tenant the flow's VM belongs to (resolved via `mac_tenant_map`); `unknown` when the VM MAC is not (yet) in the metadata map |
+| `zone` | `external`, `same_tenant`, `other_tenant`, `infra`, `miss`, `shared` | The remote endpoint's zone relative to the VM's tenant (§4); the canonical strings from `bpf.ZoneCode.String()` |
+| `direction` | `tx`, `rx` | `tx` = the VM is sending; `rx` = the VM is receiving |
+
+**Why `tx`/`rx`, not the TC hook names.** The TC hooks attach to the
+**tap interface (host side)** of each vNIC, so the raw hook names are
+inverted relative to the VM: a VM *upload* fires the tap's TC **ingress**
+hook (`TC_DIR_INGRESS = 0`, "VM is sending") and a VM *download* fires the
+**egress** hook (`TC_DIR_EGRESS = 1`, "VM is receiving"). Exporting the
+hook-frame words as label values would make `direction="egress"` mean
+*download* — the opposite of the cloud-billing convention where egress is
+data leaving the VM. The label vocabulary is therefore frame-free and
+NIC-conventional: `tx` (VM transmits — hook ingress) / `rx` (VM receives —
+hook egress), rendered by `bpf.Direction.String()`. The kernel enum keeps
+its hook-frame names — the §4.2 directional swap depends on them. Do not
+reintroduce hook-frame strings into the metric labels.
 
 #### Health — implemented (per-subsystem; bounded cardinality)
 

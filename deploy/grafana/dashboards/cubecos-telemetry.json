@@ -448,8 +448,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (direction) (rate(cubecos_bytes_total[1m]))",
-          "legendFormat": "{{direction}}",
+          "expr": "sum(rate(cubecos_bytes_total{direction=\"tx\"}[1m]))",
+          "legendFormat": "sent",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(cubecos_bytes_total{direction=\"rx\"}[1m]))",
+          "legendFormat": "received",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
@@ -481,7 +490,7 @@
           ]
         }
       },
-      "description": "Billed byte rate split by ingress/egress, summed over all tenants and zones."
+      "description": "Billed byte rate split by direction (tx = sent by the VM, rx = received by the VM), summed over all tenants and zones."
     },
     {
       "id": 11,
@@ -500,8 +509,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (direction) (rate(cubecos_packets_total[1m]))",
-          "legendFormat": "{{direction}}",
+          "expr": "sum(rate(cubecos_packets_total{direction=\"tx\"}[1m]))",
+          "legendFormat": "sent",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(cubecos_packets_total{direction=\"rx\"}[1m]))",
+          "legendFormat": "received",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
@@ -533,7 +551,7 @@
           ]
         }
       },
-      "description": "Billed packet rate split by ingress/egress, summed over all tenants and zones."
+      "description": "Billed packet rate split by direction (tx = sent by the VM, rx = received by the VM), summed over all tenants and zones."
     },
     {
       "id": 12,

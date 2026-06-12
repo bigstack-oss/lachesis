@@ -33,7 +33,7 @@ const syncStaleThreshold = 5 * time.Minute
 // vocabulary: whether the extraroute sits on the focused tenant's own
 // router ("out") or points at it from another tenant's ("in"). Route
 // relationship, not packet direction — deliberately distinct from
-// [bpf.Direction]'s "ingress"/"egress".
+// [bpf.Direction]'s "tx"/"rx".
 const (
 	extrarouteOut = "out"
 	extrarouteIn  = "in"

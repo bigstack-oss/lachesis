@@ -68,13 +68,14 @@ func TestDirection_WireValuesPinned(t *testing.T) {
 
 // TestDirection_String pins the canonical direction vocabulary —
 // the `direction` label values. Same contract weight as
-// [TestZoneCode_String].
+// [TestZoneCode_String]. The values are VM-frame ("tx" = VM sending),
+// not the hook-frame enum names — see [Direction.String].
 func TestDirection_String(t *testing.T) {
-	if got := DirectionIngress.String(); got != "ingress" {
-		t.Errorf("DirectionIngress.String() = %q, want ingress", got)
+	if got := DirectionIngress.String(); got != "tx" {
+		t.Errorf("DirectionIngress.String() = %q, want tx", got)
 	}
-	if got := DirectionEgress.String(); got != "egress" {
-		t.Errorf("DirectionEgress.String() = %q, want egress", got)
+	if got := DirectionEgress.String(); got != "rx" {
+		t.Errorf("DirectionEgress.String() = %q, want rx", got)
 	}
 	if got := Direction(7).String(); got != "7" {
 		t.Errorf("unknown direction: got %q, want \"7\"", got)

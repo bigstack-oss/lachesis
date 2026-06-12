@@ -107,12 +107,12 @@ func TestAgent_ServesMetricsFromReader(t *testing.T) {
 
 	// Poll up to 1s for the first scrape to complete and surface in /metrics.
 	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
-		return strings.Contains(s, `cubecos_bytes_total{direction="egress",tenant_id="unknown",zone="external"} 4242`)
+		return strings.Contains(s, `cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 4242`)
 	})
 
 	for _, want := range []string{
-		`cubecos_bytes_total{direction="egress",tenant_id="unknown",zone="external"} 4242`,
-		`cubecos_packets_total{direction="egress",tenant_id="unknown",zone="external"} 7`,
+		`cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 4242`,
+		`cubecos_packets_total{direction="rx",tenant_id="unknown",zone="external"} 7`,
 		`cubecos_state_flows 1`,
 	} {
 		if !strings.Contains(body, want) {
@@ -299,9 +299,9 @@ func TestAgent_SeedStateAppearsOnMetrics(t *testing.T) {
 	ag.SeedState(seeded)
 
 	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
-		return strings.Contains(s, `cubecos_bytes_total{direction="egress",tenant_id="unknown",zone="external"} 7777`)
+		return strings.Contains(s, `cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 7777`)
 	})
-	if !strings.Contains(body, `cubecos_packets_total{direction="egress",tenant_id="unknown",zone="external"} 13`) {
+	if !strings.Contains(body, `cubecos_packets_total{direction="rx",tenant_id="unknown",zone="external"} 13`) {
 		t.Errorf("packets total missing or wrong; body:\n%s", body)
 	}
 }

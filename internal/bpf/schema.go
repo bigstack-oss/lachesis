@@ -93,22 +93,34 @@ func (z ZoneCode) String() string {
 }
 
 // DirectionIngress and DirectionEgress are the TC hook direction values
-// stored in [FlowKey.Direction].
+// stored in [FlowKey.Direction]. The names are hook-frame: the TC hooks
+// sit on the tap interface (host side), so the tap's ingress hook sees
+// frames the VM transmits — DirectionIngress means the VM is sending,
+// DirectionEgress means the VM is receiving.
 const (
 	DirectionIngress = telemetryTcDirectionTC_DIR_INGRESS
 	DirectionEgress  = telemetryTcDirectionTC_DIR_EGRESS
 )
 
-// String returns the canonical name of the direction — "ingress" or
-// "egress". Same single-vocabulary contract as [ZoneCode.String]:
-// metric labels, /debug pages, and logs all render through here.
-// Unknown values fall back to the numeric encoding.
+// String returns the canonical name of the direction — "tx" for
+// [DirectionIngress] (VM sending) and "rx" for [DirectionEgress]
+// (VM receiving). These strings are the metric-label contract: the
+// `direction` label on cubecos_bytes_total / cubecos_packets_total
+// (pinned by dashboards), /debug pages, and log enrichment all render
+// through here — the same single-vocabulary contract as
+// [ZoneCode.String]. The vocabulary is deliberately VM-frame and
+// NIC-conventional, not the raw hook names: the tap hooks are
+// host-side, so exporting "ingress"/"egress" would invert the
+// cloud-billing convention where egress means data leaving the VM
+// (see docs/DESIGN.md §11.4). Unknown values fall back to the numeric
+// encoding. Returns constant strings for all known values — safe
+// inside the zero-allocation Collect() hot path.
 func (d Direction) String() string {
 	switch d {
 	case DirectionIngress:
-		return "ingress"
+		return "tx"
 	case DirectionEgress:
-		return "egress"
+		return "rx"
 	}
 	return strconv.FormatUint(uint64(d), 10)
 }
