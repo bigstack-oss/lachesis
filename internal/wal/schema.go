@@ -33,6 +33,7 @@ const (
 	StageFsync         = "fsync"
 	StageRenameBak     = "rename_bak"
 	StageRenameCurrent = "rename_current"
+	StageDirSync       = "dir_sync"
 )
 
 // Fallback labels for cubecos_wal_load_fallback_total{from=...}.

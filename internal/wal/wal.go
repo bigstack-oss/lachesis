@@ -15,6 +15,9 @@
 //  1. Write payload to path+".tmp"; fsync the file.
 //  2. Rename path → path+".bak" (best-effort; ENOENT on first run is fine).
 //  3. Rename path+".tmp" → path.
+//  4. Open the parent directory; fsync; close. Without this the
+//     renames are not journaled — a power loss after Save returns
+//     could roll the directory back to the previous snapshot.
 //
 // Readers therefore see either the previous snapshot (if a crash
 // happens between steps 2 and 3) or the new one (after step 3) —
@@ -36,6 +39,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
@@ -100,6 +104,51 @@ func Save(path, agentBuild string, records []state.Record, m *Metrics) error {
 	if err := os.Rename(tmp, path); err != nil {
 		m.observeFailure(StageRenameCurrent)
 		return &stageErr{Stage: StageRenameCurrent, Err: err}
+	}
+
+	// Fsync the parent directory so the renames survive power loss
+	// (the classic ext4/XFS gap: a renamed entry is durable only
+	// once the directory itself is journaled).
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		m.observeFailure(StageDirSync)
+		return &stageErr{Stage: StageDirSync, Err: err}
+	}
+	return nil
+}
+
+// syncDir opens dir, fsyncs it, and closes — making previously
+// renamed entries inside it durable.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open dir: %w", err)
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return fmt.Errorf("fsync dir: %w", err)
+	}
+	return d.Close()
+}
+
+// EnsureDir creates path's parent directory if missing and verifies
+// it is writable with a probe file (created then removed). Intended
+// for boot: a missing or read-only WAL directory otherwise surfaces
+// only as flush-failure counters after Load mistook ENOENT for a
+// first boot — the agent would run with zero crash durability while
+// looking healthy.
+func EnsureDir(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("wal: create dir %s: %w", dir, err)
+	}
+	probe, err := os.CreateTemp(dir, ".wal-probe-*")
+	if err != nil {
+		return fmt.Errorf("wal: dir %s not writable: %w", dir, err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("wal: remove probe %s: %w", name, err)
 	}
 	return nil
 }

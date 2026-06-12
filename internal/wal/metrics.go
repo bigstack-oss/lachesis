@@ -60,7 +60,7 @@ func NewMetrics() *Metrics {
 			Help: "WAL boot loader fallbacks — bak when primary was unusable, empty on first boot or when both files were unreadable.",
 		}, []string{"from"}),
 	}
-	for _, stage := range []string{StageWrite, StageFsync, StageRenameBak, StageRenameCurrent} {
+	for _, stage := range []string{StageWrite, StageFsync, StageRenameBak, StageRenameCurrent, StageDirSync} {
 		m.flushFailures.WithLabelValues(stage).Add(0)
 	}
 	for _, from := range []string{LoadFallbackBak, LoadFallbackEmpty} {

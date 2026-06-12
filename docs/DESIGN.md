@@ -325,6 +325,9 @@ WAL                                 /var/lib/cubecos/network_agent_state.json (+
     1. Write payload to wal.json.tmp; fsync.
     2. Rename wal.json → wal.json.bak (best-effort; ignore ENOENT).
     3. Rename wal.json.tmp → wal.json.
+    4. Open the parent directory; fsync; close. Without it the renames
+       are not journaled (ext4/XFS) — power loss after a successful
+       flush could roll back to the previous snapshot.
 
   Boot procedure:
     1. Try wal.json. On missing / parse-fail / schema-version-mismatch,
@@ -1360,7 +1363,7 @@ already carries the tenant dimension.)
 | `cubecos_wal_snapshot_copy_seconds` | histogram | — | WAL writer, copy-under-lock phase (critical section) |
 | `cubecos_wal_marshal_seconds` | histogram | — | WAL writer, JSON marshal phase (no lock held) |
 | `cubecos_wal_flush_latency_seconds` | histogram | — | WAL writer, write+fsync+rename phase (no lock held). Buckets: 1ms..1s |
-| `cubecos_wal_flush_failures_total` | counter | `stage="write\|fsync\|rename_bak\|rename_current"` | WAL writer |
+| `cubecos_wal_flush_failures_total` | counter | `stage="write\|fsync\|rename_bak\|rename_current\|dir_sync"` | WAL writer |
 | `cubecos_wal_load_fallback_total` | counter | `from="bak\|empty"` | boot loader |
 | `cubecos_neutron_sync_age_seconds` | gauge | — | last successful cold-start or full reconcile; -1 = never synced |
 | `cubecos_neutron_api_errors_total` | counter | `endpoint, code` (HTTP status, or `network` for connection-level failures) | Neutron client |
@@ -1756,7 +1759,7 @@ A WAL is a durable record of state-changing operations, written before the opera
 
 Our WAL is a **single JSON snapshot** of `GlobalState` at a point in time — not an append-only log of operations. The trade-off: simpler implementation, but up to 60 seconds of state can be lost if we crash between flushes.
 
-**Atomic write pattern**: write to `path.tmp`, fsync, then `os.Rename` to `path`. The rename is atomic on POSIX filesystems, so readers either see the old file or the new file — never a partial write.
+**Atomic write pattern**: write to `path.tmp`, fsync, `os.Rename` to `path`, then fsync the parent directory. The rename is atomic on POSIX filesystems, so readers either see the old file or the new file — never a partial write. The directory fsync makes the rename itself durable: on ext4/XFS a rename lives in the directory's metadata, and without journaling it a power loss can resurrect the pre-rename view even after the flush reported success.
 
 For a billing system, "≤60s data loss on hard reboot" is acceptable. For tighter guarantees we'd need an append-only log with shorter checkpoints, at higher I/O cost. The simpler scheme also makes the file human-readable for debugging.
 
