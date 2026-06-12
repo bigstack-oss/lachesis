@@ -18,9 +18,12 @@ const SchemaVersion uint = 1
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
 // previous snapshot. TempSuffix is the in-progress write target.
+// QuarantineSuffix is where [Quarantine] preserves an unreadable
+// snapshot out of the Save rotation's reach.
 const (
-	BackupSuffix = ".bak"
-	TempSuffix   = ".tmp"
+	BackupSuffix     = ".bak"
+	TempSuffix       = ".tmp"
+	QuarantineSuffix = ".quarantine"
 )
 
 // Stage labels for cubecos_wal_flush_failures_total{stage=...}. The

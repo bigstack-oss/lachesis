@@ -25,8 +25,11 @@
 //
 // # Boot read protocol
 //
-//  1. Try path. On parse / schema-version mismatch, fall back to
-//     path+".bak" and increment LoadResult.Source = LoadFromBackup.
+//  1. Try path. On parse failure, fall back to path+".bak" and
+//     return LoadResult.Source = LoadFromBackup. A schema version
+//     newer than this build never falls back: Load returns
+//     [ErrSchemaNewer] immediately so boot can refuse to start
+//     before the flush rotation destroys the forward snapshot.
 //  2. If both fail with ENOENT, return LoadResult with Source =
 //     LoadEmpty and no records — first boot.
 //  3. Otherwise return the underlying error wrapped with both
@@ -45,6 +48,14 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 )
+
+// ErrSchemaNewer reports a snapshot whose schema_version this build
+// does not understand — typically a downgrade after a crash
+// mid-upgrade. [Load] wraps it with the file and version details.
+// Callers must treat it as fatal rather than starting empty: each
+// flush overwrites one rotation generation, so a started agent
+// destroys the only forward snapshot within two flushes.
+var ErrSchemaNewer = errors.New("wal: snapshot schema newer than this build")
 
 // stageErr attributes a Save failure to one of the labelled stages
 // in cubecos_wal_flush_failures_total — see the Stage* consts above.
@@ -175,13 +186,22 @@ func writeAndFsync(path string, data []byte) error {
 	return nil
 }
 
-// Load reads path, falling back to path+".bak" on parse failure or
-// schema mismatch. Both files missing returns a LoadResult with
-// Source=LoadEmpty (no error — first boot is normal).
+// Load reads path, falling back to path+".bak" on parse failure.
+// Both files missing returns a LoadResult with Source=LoadEmpty (no
+// error — first boot is normal). A snapshot from a newer build is
+// never a fallback case: Load returns an error wrapping
+// [ErrSchemaNewer] without consulting the other file.
 func Load(path string) (LoadResult, error) {
 	primary, primaryErr := readAndParse(path)
 	if primaryErr == nil {
 		return LoadResult{Records: fromSnapshot(primary), Source: LoadFromPrimary}, nil
+	}
+
+	// The .bak behind a newer-schema primary may well parse — it can
+	// predate the upgrade — but restoring from it and flushing would
+	// rotate the newer snapshot away. Surface the refusal instead.
+	if errors.Is(primaryErr, ErrSchemaNewer) {
+		return LoadResult{}, primaryErr
 	}
 
 	bakPath := path + BackupSuffix
@@ -195,15 +215,37 @@ func Load(path string) (LoadResult, error) {
 		return LoadResult{Records: nil, Source: LoadEmpty}, nil
 	}
 
+	// Both attempts wrap with %w so errors.Is can spot a newer-schema
+	// .bak hiding behind a corrupt primary.
 	return LoadResult{}, fmt.Errorf(
-		"wal: primary load %s failed: %w; backup load %s failed: %v",
+		"wal: primary load %s failed: %w; backup load %s failed: %w",
 		path, primaryErr, bakPath, backupErr,
 	)
 }
 
+// Quarantine moves an unreadable snapshot at path aside to
+// path+QuarantineSuffix, out of the Save rotation's reach — without
+// the rename, the next flush rotates the unreadable file to .bak and
+// the one after deletes it, destroying the forensic evidence. There
+// is a single quarantine slot: a later quarantine overwrites the
+// earlier one, which keeps disk usage bounded across crash loops
+// while always preserving the most recent failure. Returns
+// moved=false with no error when path does not exist (nothing to
+// preserve).
+func Quarantine(path string) (moved bool, err error) {
+	if err := os.Rename(path, path+QuarantineSuffix); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("wal: quarantine %s: %w", path, err)
+	}
+	return true, nil
+}
+
 // readAndParse opens path, decodes the envelope, and validates the
 // schema version. ENOENT and JSON / schema errors are returned
-// verbatim so the caller can distinguish them.
+// verbatim so the caller can distinguish them; a schema version this
+// build does not understand wraps [ErrSchemaNewer].
 func readAndParse(path string) (snapshotWire, error) {
 	var snap snapshotWire
 	data, err := os.ReadFile(path)
@@ -214,8 +256,8 @@ func readAndParse(path string) (snapshotWire, error) {
 		return snap, fmt.Errorf("wal: parse %s: %w", path, err)
 	}
 	if snap.SchemaVersion > SchemaVersion {
-		return snap, fmt.Errorf("wal: %s schema_version=%d, this build understands up to %d",
-			path, snap.SchemaVersion, SchemaVersion)
+		return snap, fmt.Errorf("%w: %s schema_version=%d, this build understands up to %d",
+			ErrSchemaNewer, path, snap.SchemaVersion, SchemaVersion)
 	}
 	// SchemaVersion < ours would normally trigger a migration step,
 	// one per version. v1 is the first version; no migrations exist
