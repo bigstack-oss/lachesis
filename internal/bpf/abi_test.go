@@ -92,16 +92,18 @@ func TestLpmKeyForPrefix_IPv6Panics(t *testing.T) {
 }
 
 // makeSpec returns a minimal CollectionSpec with telemetry_map,
-// mac_tenant_map, and subnet_zone_trie. mac_tenant_map and
-// subnet_zone_trie are sized as supplied; telemetry_map is always at
-// its expected size so the existing mac/trie drift tests stay focused
-// on the map they name. Used by ValidateMapSizes tests.
+// mac_tenant_map, subnet_zone_trie, and telemetry_stats. mac_tenant_map
+// and subnet_zone_trie are sized as supplied; telemetry_map and
+// telemetry_stats are always at their expected sizes so the existing
+// mac/trie drift tests stay focused on the map they name. Used by
+// ValidateMapSizes tests.
 func makeSpec(macMax, trieMax uint32) *ebpf.CollectionSpec {
 	return &ebpf.CollectionSpec{
 		Maps: map[string]*ebpf.MapSpec{
 			MapTelemetry:      {MaxEntries: MapTelemetryMaxEntries},
 			MapMacTenant:      {MaxEntries: macMax},
 			MapSubnetZoneTrie: {MaxEntries: trieMax},
+			MapTelemetryStats: {MaxEntries: MapTelemetryStatsMaxEntries},
 		},
 	}
 }
@@ -144,6 +146,21 @@ func TestValidateMapSizes_TrieOversize(t *testing.T) {
 	spec := makeSpec(MapMacTenantMaxEntries, MapSubnetZoneTrieMaxEntries*2)
 	if err := ValidateMapSizes(spec); err == nil {
 		t.Fatal("oversized subnet_zone_trie should error (drift)")
+	}
+}
+
+func TestValidateMapSizes_StatsDrift(t *testing.T) {
+	// Simulates a stat_reason added in bpf/telemetry.c (STAT_REASON_MAX
+	// grows the map) without updating the Go-side mirror — the enum
+	// lockstep guard, not just a sizing check.
+	spec := makeSpec(MapMacTenantMaxEntries, MapSubnetZoneTrieMaxEntries)
+	spec.Maps[MapTelemetryStats].MaxEntries = MapTelemetryStatsMaxEntries + 1
+	err := ValidateMapSizes(spec)
+	if err == nil {
+		t.Fatal("drifted telemetry_stats should error")
+	}
+	if !strings.Contains(err.Error(), MapTelemetryStats) {
+		t.Errorf("error should name the offending map: %v", err)
 	}
 }
 

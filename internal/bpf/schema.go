@@ -1,10 +1,12 @@
 // schema.go gathers package bpf's package-level constants and exported
 // type vocabulary in one place: the Go mirrors of the kernel types, the
-// zone and direction enums, the program and map name strings, the
-// compiled-in map sizes — all of which mirror bpf/telemetry.c and must
-// stay in lockstep with it — plus the Prometheus map-label key. The
-// helpers and loader that consume this vocabulary (MACKey, LpmKeyForPrefix,
-// LoadTelemetry, ValidateMapSizes) and the package overview live in abi.go.
+// zone, direction, and stat-reason enums, the program and map name
+// strings, the compiled-in map sizes — all of which mirror
+// bpf/telemetry.c and must stay in lockstep with it — plus the
+// Prometheus label keys. The helpers and loader that consume this
+// vocabulary (MACKey, LpmKeyForPrefix, LoadTelemetry, ValidateMapSizes)
+// and the package overview live in abi.go; the telemetry_stats reader
+// lives in stats.go.
 
 package bpf
 
@@ -125,6 +127,46 @@ func (d Direction) String() string {
 	return strconv.FormatUint(uint64(d), 10)
 }
 
+// StatReason indexes a slot in the kernel `telemetry_stats`
+// PERCPU_ARRAY. See [StatUpdateFailure] and [StatSkippedEthertype]
+// for the set of valid values.
+type StatReason uint32
+
+// StatUpdateFailure and StatSkippedEthertype are the telemetry_stats
+// slot indices. Values mirror `enum stat_reason` in bpf/telemetry.c
+// and must stay in lockstep with it — the kernel increments by these
+// indices and userspace reads by them.
+const (
+	StatUpdateFailure    StatReason = 0
+	StatSkippedEthertype StatReason = 1
+)
+
+// statReasonCount mirrors STAT_REASON_MAX in bpf/telemetry.c. It sizes
+// [StatCounts] and, via [MapTelemetryStatsMaxEntries], the map itself —
+// so a C-side reason added without updating the Go mirror fails
+// [ValidateMapSizes] at boot instead of silently skewing slots.
+const statReasonCount = 2
+
+// String returns the canonical name of the stat reason —
+// "update_failure" or "skipped_ethertype". Same single-vocabulary
+// contract as [ZoneCode.String]: these are the `reason` label values
+// on cubecos_bpf_update_failures_total, pinned by dashboards and
+// alert rules. Unknown values fall back to the numeric encoding.
+func (r StatReason) String() string {
+	switch r {
+	case StatUpdateFailure:
+		return "update_failure"
+	case StatSkippedEthertype:
+		return "skipped_ethertype"
+	}
+	return strconv.FormatUint(uint64(r), 10)
+}
+
+// StatCounts holds one CPU-summed cumulative counter per [StatReason],
+// indexed by it: counts[StatUpdateFailure]. Produced by
+// [StatsReader.Read]; consumed by [Metrics.SetUpdateFailures].
+type StatCounts [statReasonCount]uint64
+
 // ProgramIngress and ProgramEgress are the SEC("tc") function names
 // of the ingress and egress telemetry programs in bpf/telemetry.c.
 // Loaders use these names to look up [*ebpf.Program] handles from a
@@ -135,16 +177,16 @@ const (
 	ProgramEgress  = "tc_telemetry_out"
 )
 
-// MapTelemetry, MapSubnetZoneTrie, and MapMacTenant are the
-// SEC(".maps") names of the three load-bearing maps in
-// bpf/telemetry.c. Same C↔Go contract as the program names above:
-// loaders look up [*ebpf.Map] handles by these strings on a loaded
-// [*ebpf.Collection], and a typo on either side becomes a missing-
-// map panic at boot.
+// MapTelemetry, MapSubnetZoneTrie, MapMacTenant, and MapTelemetryStats
+// are the SEC(".maps") names of the maps in bpf/telemetry.c. Same C↔Go
+// contract as the program names above: loaders look up [*ebpf.Map]
+// handles by these strings on a loaded [*ebpf.Collection], and a typo
+// on either side becomes a missing-map panic at boot.
 const (
 	MapTelemetry      = "telemetry_map"
 	MapSubnetZoneTrie = "subnet_zone_trie"
 	MapMacTenant      = "mac_tenant_map"
+	MapTelemetryStats = "telemetry_stats"
 )
 
 // MapSubnetZoneTrieMaxEntries and MapMacTenantMaxEntries mirror the
@@ -164,10 +206,16 @@ const (
 // the denominator for the pressure-relief GC fill-ratio (docs/DESIGN.md
 // §3.1), so a stale `.o` that changed it would skew the >80% eviction
 // trigger — hence it is drift-checked alongside the other two.
+//
+// MapTelemetryStatsMaxEntries mirrors STAT_REASON_MAX: one slot per
+// [StatReason], fixed regardless of deployment scale. Drift-checking
+// it makes [ValidateMapSizes] double as the stat-reason enum lockstep
+// guard (see [statReasonCount]).
 const (
 	MapTelemetryMaxEntries      = 65536
 	MapSubnetZoneTrieMaxEntries = 16384
 	MapMacTenantMaxEntries      = 8192
+	MapTelemetryStatsMaxEntries = statReasonCount
 )
 
 // LpmKeyTenantBits is the constant Prefixlen contribution from the
@@ -180,3 +228,8 @@ const LpmKeyTenantBits uint32 = 32
 // cubecos_bpf_map_max_entries / cubecos_bpf_map_current_entries gauges
 // (see metrics.go).
 const labelMap = "map"
+
+// labelReason is the Prometheus label key naming the kernel-side
+// failure/skip reason on cubecos_bpf_update_failures_total (see
+// metrics.go); values come from [StatReason.String].
+const labelReason = "reason"

@@ -137,6 +137,50 @@ struct {
 } mac_tenant_map SEC(".maps");
 
 /*
+ * Slot indices for telemetry_stats. Mirror the Stat* constants in
+ * internal/bpf/schema.go. STAT_REASON_MAX doubles as the map's
+ * max_entries, so adding a reason here without updating the Go-side
+ * mirror fails bpf.ValidateMapSizes at boot instead of skewing slots.
+ */
+enum stat_reason {
+	STAT_UPDATE_FAILURE    = 0,	/* telemetry_map insert rejected (map full); the flow's bytes are lost */
+	STAT_SKIPPED_ETHERTYPE = 1,	/* non-IP frame passed through uncounted */
+	STAT_REASON_MAX,
+};
+
+/*
+ * telemetry_stats: cumulative counters for the failure/skip paths above,
+ * drained into cubecos_bpf_update_failures_total by the userspace
+ * scraper. PERCPU_ARRAY so an increment is a plain per-CPU store — no
+ * atomics — and only the failure/skip paths touch it; the happy path
+ * stays unchanged (Cilium pkg/maps metricsmap pattern).
+ *
+ * Sizing: exactly one slot per enum stat_reason value; capacity does
+ * not scale with deployment size.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, STAT_REASON_MAX);
+	__type(key, __u32);
+	__type(value, __u64);
+} telemetry_stats SEC(".maps");
+
+/*
+ * stat_inc - bump one telemetry_stats slot.
+ *
+ * The lookup cannot miss — reason is always a valid enum value and
+ * ARRAY slots always exist — so the NULL check only satisfies the
+ * verifier.
+ */
+static __always_inline void stat_inc(enum stat_reason reason)
+{
+	__u32 slot = reason;
+	__u64 *count = bpf_map_lookup_elem(&telemetry_stats, &slot);
+	if (count)
+		*count += 1;	/* PERCPU slot: this CPU is the sole writer */
+}
+
+/*
  * mac_to_u64 - pack a 6-byte MAC into the low 48 bits of a u64 (big-endian).
  *
  * Open-coded as six shifts rather than a loop; matches the Go-side encoding
@@ -231,9 +275,12 @@ static __always_inline int handle_packet(struct __sk_buff *skb,
 		return TC_ACT_OK;
 
 	__u16 proto = bpf_ntohs(eth->h_proto);
-	/* ARP / LLDP / non-IP: pass through uncounted. */
-	if (proto != ETH_P_IP && proto != ETH_P_IPV6)
+	/* ARP / LLDP / non-IP: pass through uncounted, but keep the skip
+	 * observable — a sustained rise flags a trunk/VLAN blind spot. */
+	if (proto != ETH_P_IP && proto != ETH_P_IPV6) {
+		stat_inc(STAT_SKIPPED_ETHERTYPE);
 		return TC_ACT_OK;
+	}
 
 	struct flow_key key = {};
 	__builtin_memcpy(key.src_mac, eth->h_source, 6);
@@ -287,8 +334,14 @@ static __always_inline int handle_packet(struct __sk_buff *skb,
 		 * initial count overwrites the other's. Acceptable: at most
 		 * one packet lost per new flow. PERCPU eliminates contention
 		 * on all subsequent packets, which is what matters at line rate.
+		 *
+		 * A nonzero return means the map is full (-E2BIG) and this
+		 * flow's bytes are lost until space frees up. Count the loss
+		 * — billing-path errors are never silent (docs/DESIGN.md §8
+		 * Tier 2 #4).
 		 */
-		bpf_map_update_elem(&telemetry_map, &key, &init, BPF_ANY);
+		if (bpf_map_update_elem(&telemetry_map, &key, &init, BPF_ANY) != 0)
+			stat_inc(STAT_UPDATE_FAILURE);
 	}
 
 	return TC_ACT_OK;

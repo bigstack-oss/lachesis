@@ -158,11 +158,16 @@ func (b *bootstrapper) loadBPF() error {
 	return b.seq.Advance(boot.PhaseBPFLoaded)
 }
 
-// buildAgent wires the map reader over the loaded collection and
-// constructs the [Agent], then records the orphan-filter count
-// [huntZombies] found on the agent's zombie metrics.
+// buildAgent wires the map and stats readers over the loaded
+// collection and constructs the [Agent], then records the
+// orphan-filter count [huntZombies] found on the agent's zombie
+// metrics.
 func (b *bootstrapper) buildAgent() error {
 	reader, err := readerFromCollection(b.coll)
+	if err != nil {
+		return err
+	}
+	stats, err := statsFromCollection(b.coll)
 	if err != nil {
 		return err
 	}
@@ -171,6 +176,7 @@ func (b *bootstrapper) buildAgent() error {
 		ConfigPath: config.FindConfigPath(config.Options{}, b.args),
 		Reader:     reader,
 		Log:        b.log,
+		Stats:      stats,
 	})
 	if err != nil {
 		return err
@@ -271,6 +277,17 @@ func readerFromCollection(coll *ebpf.Collection) (*BPFMapReader, error) {
 		return nil, fmt.Errorf("%s not present in BPF collection", bpf.MapTelemetry)
 	}
 	return NewBPFMapReader(m)
+}
+
+// statsFromCollection wires a [bpf.StatsReader] over
+// [bpf.MapTelemetryStats] inside coll. Returns an error if the map is
+// missing — that is always a build-time problem, never a runtime one.
+func statsFromCollection(coll *ebpf.Collection) (*bpf.StatsReader, error) {
+	m := coll.Maps[bpf.MapTelemetryStats]
+	if m == nil {
+		return nil, fmt.Errorf("%s not present in BPF collection", bpf.MapTelemetryStats)
+	}
+	return bpf.NewStatsReader(m)
 }
 
 // buildNetlinkSubscriber constructs the RTM_NEWLINK/DELLINK
