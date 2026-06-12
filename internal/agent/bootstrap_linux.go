@@ -64,6 +64,7 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		{"build agent", b.buildAgent},
 		{"cold-start Neutron", b.coldStart},
 		{"subscribe netlink", b.subscribeNetlink},
+		{"prepare WAL directory", b.prepareWALDir},
 		{"restore WAL", b.restoreWAL},
 	})
 }
@@ -202,6 +203,19 @@ func (b *bootstrapper) subscribeNetlink() error {
 		b.ag.netlinkSubscriber = sub
 	}
 	return b.seq.Advance(boot.PhaseAttached)
+}
+
+// prepareWALDir creates the WAL directory if missing and probes it
+// for writability via [wal.EnsureDir]. Boot-fatal — unlike a restore
+// failure, an unusable directory means every future flush would fail
+// and the agent would run with zero crash durability while looking
+// healthy. Runs before [bootstrapper.restoreWAL] so Load never
+// mistakes a missing directory for a first boot.
+func (b *bootstrapper) prepareWALDir() error {
+	if !b.cfg.WAL.Enabled {
+		return nil
+	}
+	return wal.EnsureDir(b.cfg.WAL.Path)
 }
 
 // restoreWAL seeds GlobalState from the on-disk snapshot and advances

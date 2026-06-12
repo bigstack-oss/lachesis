@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
@@ -134,6 +135,23 @@ func TestSave_RotatesPriorToBackup(t *testing.T) {
 	}
 	if _, err := os.Stat(path + wal.BackupSuffix); err != nil {
 		t.Errorf(".bak missing after second save: %v", err)
+	}
+
+	// Both files must be consistent snapshots: the primary carries
+	// the second save, the .bak the first.
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load primary: %v", err)
+	}
+	if res.Source != wal.LoadFromPrimary || len(res.Records) != 2 {
+		t.Errorf("primary: Source=%v Records=%d, want LoadFromPrimary with 2", res.Source, len(res.Records))
+	}
+	bakRes, err := wal.Load(path + wal.BackupSuffix)
+	if err != nil {
+		t.Fatalf("Load backup: %v", err)
+	}
+	if len(bakRes.Records) != 1 {
+		t.Errorf(".bak Records=%d, want 1 (the first save)", len(bakRes.Records))
 	}
 }
 
@@ -296,6 +314,68 @@ func TestSave_RecordsFailureStageOnBadDir(t *testing.T) {
 	}
 	if stageSeen != wal.StageWrite {
 		t.Errorf("expected stage=%s failure, got %q", wal.StageWrite, stageSeen)
+	}
+}
+
+func TestNewMetrics_SeedsFlushFailureStages(t *testing.T) {
+	m := wal.NewMetrics()
+	reg := prometheus.NewRegistry()
+	for _, c := range m.Collectors() {
+		reg.MustRegister(c)
+	}
+
+	expected := `
+# HELP cubecos_wal_flush_failures_total Failed WAL flush attempts, labelled by which sub-stage tripped.
+# TYPE cubecos_wal_flush_failures_total counter
+cubecos_wal_flush_failures_total{stage="dir_sync"} 0
+cubecos_wal_flush_failures_total{stage="fsync"} 0
+cubecos_wal_flush_failures_total{stage="rename_bak"} 0
+cubecos_wal_flush_failures_total{stage="rename_current"} 0
+cubecos_wal_flush_failures_total{stage="write"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"cubecos_wal_flush_failures_total"); err != nil {
+		t.Errorf("GatherAndCompare: %v", err)
+	}
+}
+
+// TestEnsureDir_CreatesMissingDir pins the boot policy for a missing
+// WAL directory: EnsureDir creates it (rather than erroring), and a
+// subsequent Save round-trips.
+func TestEnsureDir_CreatesMissingDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "lib", "wal.json")
+
+	if err := wal.EnsureDir(path); err != nil {
+		t.Fatalf("EnsureDir: %v", err)
+	}
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil || !info.IsDir() {
+		t.Fatalf("Stat dir after EnsureDir: info=%v err=%v", info, err)
+	}
+
+	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
+		t.Fatalf("Save after EnsureDir: %v", err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if res.Source != wal.LoadFromPrimary {
+		t.Errorf("Source = %v, want LoadFromPrimary", res.Source)
+	}
+}
+
+func TestEnsureDir_ErrorsWhenParentIsFile(t *testing.T) {
+	// A regular file where a directory component should be makes
+	// MkdirAll fail with ENOTDIR — for root and non-root alike
+	// (permission-bit tests are useless under root).
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	if err := wal.EnsureDir(filepath.Join(blocker, "sub", "wal.json")); err == nil {
+		t.Fatal("EnsureDir: expected error when a path component is a file, got nil")
 	}
 }
 
