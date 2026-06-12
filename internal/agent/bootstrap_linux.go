@@ -18,6 +18,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
 
