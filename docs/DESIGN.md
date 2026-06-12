@@ -1166,10 +1166,12 @@ eBPF gives exact counting on every packet it sees. It cannot count packets it do
 
 4. Wire the Netlink subscriber (attach allowlist → TC programs)
    → TC attach is netlink-driven: when Run starts the subscriber it
-     subscribes FIRST, then sweeps existing taps — attaching TC
-     clsact and filling the Interface Registry; later RTM_NEWLINK
-     events attach new taps dynamically. FilterReplace is idempotent,
-     so subscribe-then-sweep cannot double-attach.
+     subscribes with kernel replay of existing links (ListExisting),
+     attaching TC clsact and filling the Interface Registry; later
+     RTM_NEWLINK events attach new taps dynamically. The Registry
+     deduplicates attach attempts; genuine FilterReplace idempotence
+     additionally requires an explicit filter priority (issue #36 —
+     at priority 0 the kernel allocates a new chain per call).
 
 5. Read WAL → restore GlobalState
 
@@ -1198,7 +1200,7 @@ Steps 7–8 arrive with their subsystems.
 |---|---|
 | TC attach before trie populated | First flows permanently keyed `dst_zone=MISS`; never reclassify |
 | GC before WAL merge | Active flows evicted before `LastEbpfRaw` set → counter spike on next scrape |
-| Initial attach sweep before netlink subscribe | A tap created in the gap is never attached → silent undercount. Subscribe-first closes the gap; idempotent `FilterReplace` makes the sweep/event overlap harmless |
+| Initial attach sweep before netlink subscribe | A tap created in the gap is never attached → silent undercount. Subscribe-with-replay closes the gap; the Interface Registry makes the replay/event overlap harmless (see issue #36 for the FilterReplace-priority precondition) |
 | Skip Zombie Hunter | Restart stacks duplicate filters → every packet counted twice |
 
 ### Failure policy — Neutron API and Kafka outages
