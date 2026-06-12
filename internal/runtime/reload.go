@@ -135,12 +135,17 @@ func (m *Manager) InstallSIGHUP(ctx context.Context) {
 
 // DebugHandler returns the http.Handler exposing the /debug endpoints:
 //
-//	GET  /debug/config     returns the active Config as JSON
+//	GET  /debug/config     returns the active Config as JSON (secrets redacted)
 //	PUT  /debug/log-level  body: {"level":"debug|info|warn|error"} — change level at runtime
 //
-// Mount it on the agent's HTTP server alongside /metrics. The endpoints
-// are intentionally not authenticated; bind the HTTP server to localhost
-// or behind a reverse proxy if the host is untrusted.
+// Mount it on the agent's HTTP server alongside /metrics.
+//
+// Security posture: the endpoints are intentionally unauthenticated,
+// and the server's default listen address is all-interfaces so
+// Prometheus can scrape /metrics. Secrets never appear in responses
+// ([config.NeutronConfig.MarshalJSON] redacts them), but on untrusted
+// networks operators must still bind http.listen to localhost or
+// firewall the port — /debug also exposes pprof and runtime tuning.
 func (m *Manager) DebugHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /debug/config", m.handleGetConfig)
@@ -160,7 +165,13 @@ func (m *Manager) handlePutLogLevel(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Level string `json:"level"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, logLevelMaxBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid json body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

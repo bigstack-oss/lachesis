@@ -11,6 +11,12 @@ import (
 // endpoints.
 type HTTPConfig struct {
 	// Listen is the address to bind, in net.Listen syntax (host:port).
+	//
+	// The default ":9090" binds all interfaces so Prometheus can scrape
+	// /metrics, and the server is unauthenticated — including the
+	// /debug endpoints (pprof, runtime tuning; secrets are redacted
+	// from /debug/config). On untrusted networks, bind to localhost
+	// (e.g. "127.0.0.1:9090") or firewall the port.
 	Listen string `yaml:"listen"`
 }
 
