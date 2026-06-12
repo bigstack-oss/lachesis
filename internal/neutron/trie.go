@@ -1,3 +1,11 @@
+// trie.go owns the trie builder: the 5-step algorithm of
+// docs/DESIGN.md §5.2 that turns a [Snapshot] into the [TrieEntry]
+// rows destined for the kernel `subnet_zone_trie`. Each step is one
+// emit* method on [trieBuilder], executed in documented order by
+// [buildTrie]. The multi-hop static-route resolver Step 5 delegates
+// to lives in resolve.go; the port-classification predicates Step 4
+// relies on live in deviceowner.go.
+
 package neutron
 
 import (
@@ -8,35 +16,6 @@ import (
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 )
-
-// BuildOpt configures optional behaviour of [BuildTrie] without
-// changing its required arguments. The variadic form keeps tests
-// (which don't observe metrics) free of extra parameters while
-// letting production callers opt into instrumentation.
-type BuildOpt func(*buildOpts)
-
-type buildOpts struct {
-	metrics *Metrics
-}
-
-// WithMetrics attaches a [*Metrics] sink that BuildTrie will use
-// to observe per-step durations via the
-// `cubecos_neutron_builder_step_duration_seconds` histogram.
-// Pass the *Metrics owned by the Agent; nil receivers no-op.
-func WithMetrics(m *Metrics) BuildOpt {
-	return func(o *buildOpts) { o.metrics = m }
-}
-
-// TrieEntry is one row destined for the kernel `subnet_zone_trie`:
-// the tenant whose perspective the entry applies to, the IPv4
-// prefix to match, and the resolved zone code. TenantID is the
-// Keystone project UUID; the u32 mapping the kernel actually keys
-// on is handled by a separate interner closer to the map writer.
-type TrieEntry struct {
-	TenantID string
-	Prefix   netip.Prefix
-	Zone     bpf.ZoneCode
-}
 
 // BuildTrie runs the cold-start 5-step algorithm of
 // docs/DESIGN.md §5.2 (Step 5 delegates to the multi-hop static-
@@ -117,85 +96,155 @@ type TrieEntry struct {
 // produce identical output, simplifying the change-detection logic
 // the kernel map writer will use. Global rows (TenantID="") sort
 // first; per-tenant runs follow in tenant-ID order.
-func BuildTrie(snap Snapshot, opts ...BuildOpt) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
-	var bo buildOpts
-	for _, o := range opts {
-		o(&bo)
+//
+// BuildTrie does not observe metrics; [Neutron.Sync] runs the
+// internal metrics-observing variant.
+func BuildTrie(snap Snapshot) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
+	return buildTrie(snap, nil)
+}
+
+// buildTrie is the implementation behind [BuildTrie], with the
+// per-step durations observed on m's
+// `cubecos_neutron_builder_step_duration_seconds` histogram (m may
+// be nil — every [Metrics] helper no-ops on nil receivers). The body
+// is a literal transcription of the §5.2 step order; each step's
+// logic lives on its [trieBuilder] emit* method.
+func buildTrie(snap Snapshot, m *Metrics) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
+	b := newTrieBuilder(snap, m)
+	b.step(stepCatchall, b.emitCatchall)
+	b.step(stepOwned, b.emitOwnedSubnets)
+	b.step(stepShared, b.emitSharedSubnets)
+	b.step(stepInfra, b.emitInfraPrefixes)
+	b.step(stepExtraRoutes, b.emitExtraRoutes)
+	sortEntries(b.entries)
+	return b.entries, b.ambiguities, b.cycles
+}
+
+// trieBuilder carries one buildTrie pass: the indexed snapshot views
+// every step reads, the metrics sink, and the accumulating outputs.
+// Single-use and single-goroutine; constructed by [newTrieBuilder],
+// driven step-by-step by [buildTrie].
+type trieBuilder struct {
+	networks []Network
+	routers  []Router
+
+	subnetsByNetwork map[string][]Subnet
+	tenants          []string
+	sharedPrefixes   []netip.Prefix
+	infraPrefixes    []netip.Prefix
+	ri               *resolveIndex
+
+	metrics *Metrics
+
+	entries     []TrieEntry
+	ambiguities []AmbiguityHit
+	cycles      []CycleHit
+}
+
+// newTrieBuilder precomputes the lookup views shared across steps.
+func newTrieBuilder(snap Snapshot, m *Metrics) *trieBuilder {
+	subnetsByNetwork := groupSubnetsByNetwork(snap.Subnets)
+	sharedPrefixes := buildSharedPrefixes(snap.Networks, subnetsByNetwork)
+	infraPrefixes := buildInfraPrefixes(snap.Subnets, snap.Ports)
+	return &trieBuilder{
+		networks:         snap.Networks,
+		routers:          snap.Routers,
+		subnetsByNetwork: subnetsByNetwork,
+		tenants:          collectTenants(snap.Networks, snap.Ports, snap.Routers),
+		sharedPrefixes:   sharedPrefixes,
+		infraPrefixes:    infraPrefixes,
+		ri:               newResolveIndex(snap),
+		metrics:          m,
+		// Capacity hint: globals + an over-approximation of per-tenant
+		// rows (every IPv4 subnet may emit one SAME_TENANT row). Extra-
+		// routes are typically few; append will grow if not enough.
+		entries: make([]TrieEntry, 0,
+			2+len(sharedPrefixes)+len(infraPrefixes)+len(snap.Subnets)),
 	}
-	networks, subnets, ports, routers := snap.Networks, snap.Subnets, snap.Ports, snap.Routers
+}
 
-	subnetsByNetwork := groupSubnetsByNetwork(subnets)
-	tenants := collectTenants(networks, ports, routers)
-	sharedPrefixes := buildSharedPrefixes(networks, subnetsByNetwork)
-	infraPrefixes := buildInfraPrefixes(subnets, ports)
-	ri := newResolveIndex(snap)
+// step runs one emit method and observes its duration under label on
+// the builder-step histogram. Every step is observed on every build
+// — a skipped step records ~0s rather than no sample, so the
+// histogram's sample count stays a steady 5 per build.
+func (b *trieBuilder) step(label string, fn func()) {
+	t0 := time.Now()
+	fn()
+	b.metrics.ObserveBuilderStep(label, time.Since(t0))
+}
 
-	// Capacity hint: globals + an over-approximation of per-tenant
-	// rows (every IPv4 subnet may emit one SAME_TENANT row). Extra-
-	// routes are typically few; append will grow if not enough.
-	entries := make([]TrieEntry, 0,
-		2+len(sharedPrefixes)+len(infraPrefixes)+len(subnets))
-	var ambiguities []AmbiguityHit
-	var cycles []CycleHit
-	// Per-step durations. Steps 1/3/4 are emitted once (single
-	// observation each); Steps 2/5 are summed across tenants.
-	var d1, d2, d3, d4, d5 time.Duration
+// hasTenants reports whether any tenant owns a resource in the
+// snapshot. The global rows (Steps 1/3/4) are skipped when none do:
+// the kernel `mac_tenant_map` would be empty, so `lookup_zone`
+// returns ZONE_MISS at the MAC-first probe before the trie is ever
+// consulted.
+func (b *trieBuilder) hasTenants() bool { return len(b.tenants) > 0 }
 
-	// Steps 1, 3, 4 — global rows emitted once with TenantID="".
-	// Skipped when no tenants exist: the kernel `mac_tenant_map`
-	// would be empty, so `lookup_zone` returns ZONE_MISS at the
-	// MAC-first probe before the trie is ever consulted.
-	if len(tenants) > 0 {
-		t0 := time.Now()
-		entries = append(entries, TrieEntry{"", catchall, bpf.ZoneExternal})
-		d1 = time.Since(t0)
-
-		// Step 3: shared subnets → SHARED, single row each. The
-		// trie cannot resolve per-VM ownership inside the shared
-		// CIDR; the billing engine treats SHARED as its own
-		// category.
-		t0 = time.Now()
-		for _, p := range sharedPrefixes {
-			entries = append(entries, TrieEntry{"", p, bpf.ZoneShared})
-		}
-		d3 = time.Since(t0)
-
-		// Step 4: infra /32s, single row each.
-		t0 = time.Now()
-		for _, p := range infraPrefixes {
-			entries = append(entries, TrieEntry{"", p, bpf.ZoneInfra})
-		}
-		entries = append(entries, TrieEntry{"", metadataPrefix, bpf.ZoneInfra})
-		d4 = time.Since(t0)
+// emitCatchall is Step 1: the global `0.0.0.0/0 → EXTERNAL` row,
+// emitted once with TenantID="".
+func (b *trieBuilder) emitCatchall() {
+	if !b.hasTenants() {
+		return
 	}
+	b.entries = append(b.entries, TrieEntry{"", catchall, bpf.ZoneExternal})
+}
 
-	// Steps 2, 5 — per-tenant rows.
-	for _, tenant := range tenants {
-		// Step 2: owned, non-shared, non-external subnets. External
-		// networks (router:external=true) fall through to the
-		// Step-1 catchall — they classify as EXTERNAL even when an
-		// operator has marked them owned by some admin project.
-		t0 := time.Now()
-		for _, n := range networks {
+// emitOwnedSubnets is Step 2: each tenant's owned, non-shared,
+// non-external subnets → SAME_TENANT, one row per (tenant, prefix).
+// External networks (router:external=true) fall through to the
+// Step-1 catchall — they classify as EXTERNAL even when an operator
+// has marked them owned by some admin project.
+func (b *trieBuilder) emitOwnedSubnets() {
+	for _, tenant := range b.tenants {
+		for _, n := range b.networks {
 			if n.ProjectID != tenant || n.Shared || n.IsExternal {
 				continue
 			}
-			for _, s := range subnetsByNetwork[n.ID] {
+			for _, s := range b.subnetsByNetwork[n.ID] {
 				p, ok := parsePrefixV4(s.CIDR)
 				if !ok {
 					continue
 				}
-				entries = append(entries, TrieEntry{tenant, p, bpf.ZoneSameTenant})
+				b.entries = append(b.entries, TrieEntry{tenant, p, bpf.ZoneSameTenant})
 			}
 		}
-		d2 += time.Since(t0)
+	}
+}
 
-		// Step 5: extraroutes on this tenant's routers. The resolver
-		// returns a zone for each (destination, nexthop) by tracing
-		// router-interface peers until it lands on a directly-attached
-		// subnet or a compute:nova appliance (docs/DESIGN.md §5.3).
-		t0 = time.Now()
-		for _, r := range routers {
+// emitSharedSubnets is Step 3: every non-external shared subnet →
+// SHARED, single global row each. The trie cannot resolve per-VM
+// ownership inside the shared CIDR; the billing engine treats SHARED
+// as its own category.
+func (b *trieBuilder) emitSharedSubnets() {
+	if !b.hasTenants() {
+		return
+	}
+	for _, p := range b.sharedPrefixes {
+		b.entries = append(b.entries, TrieEntry{"", p, bpf.ZoneShared})
+	}
+}
+
+// emitInfraPrefixes is Step 4: the deduped infra /32s plus the Nova
+// metadata /32, single global row each.
+func (b *trieBuilder) emitInfraPrefixes() {
+	if !b.hasTenants() {
+		return
+	}
+	for _, p := range b.infraPrefixes {
+		b.entries = append(b.entries, TrieEntry{"", p, bpf.ZoneInfra})
+	}
+	b.entries = append(b.entries, TrieEntry{"", metadataPrefix, bpf.ZoneInfra})
+}
+
+// emitExtraRoutes is Step 5: walk every (destination, nexthop) entry
+// on each tenant's routers through [resolveStaticRouteZone]
+// (docs/DESIGN.md §5.3) and emit one per-tenant row per route. The
+// resolver traces router-interface peers until it lands on a
+// directly-attached subnet or a compute:nova appliance; its
+// ambiguity / cycle hits accumulate on the builder for the caller.
+func (b *trieBuilder) emitExtraRoutes() {
+	for _, tenant := range b.tenants {
+		for _, r := range b.routers {
 			if r.ProjectID != tenant {
 				continue
 			}
@@ -217,27 +266,17 @@ func BuildTrie(snap Snapshot, opts ...BuildOpt) ([]TrieEntry, []AmbiguityHit, []
 				if !nh.Is4() {
 					continue // IPv6 nexthops deferred (DESIGN §13.2).
 				}
-				zone, ambHit, cycHit := ri.resolveStaticRouteZone(r, destination, nh)
-				entries = append(entries, TrieEntry{tenant, destination, zone})
+				zone, ambHit, cycHit := b.ri.resolveStaticRouteZone(r, destination, nh)
+				b.entries = append(b.entries, TrieEntry{tenant, destination, zone})
 				if ambHit != nil {
-					ambiguities = append(ambiguities, *ambHit)
+					b.ambiguities = append(b.ambiguities, *ambHit)
 				}
 				if cycHit != nil {
-					cycles = append(cycles, *cycHit)
+					b.cycles = append(b.cycles, *cycHit)
 				}
 			}
 		}
-		d5 += time.Since(t0)
 	}
-
-	bo.metrics.ObserveBuilderStep(stepCatchall, d1)
-	bo.metrics.ObserveBuilderStep(stepOwned, d2)
-	bo.metrics.ObserveBuilderStep(stepShared, d3)
-	bo.metrics.ObserveBuilderStep(stepInfra, d4)
-	bo.metrics.ObserveBuilderStep(stepExtraRoutes, d5)
-
-	sortEntries(entries)
-	return entries, ambiguities, cycles
 }
 
 // groupSubnetsByNetwork indexes IPv4 subnets by their parent network
