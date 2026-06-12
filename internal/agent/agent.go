@@ -26,10 +26,9 @@
 package agent
 
 import (
+	"fmt"
 	"net"
 	"net/http"
-	"sync/atomic"
-	"time"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
@@ -67,25 +66,13 @@ type Agent struct {
 	// darwin and in unit tests that don't need it.
 	netlinkSubscriber cnetlink.Subscriber
 
-	// lastNeutronSync is the unix-nanos timestamp of the most
-	// recent successful Neutron cold-start or full-resync. Read by
-	// the `cubecos_neutron_sync_age_seconds` gauge on every
-	// Prometheus scrape; updated by `coldStartNeutron` and the
-	// future Kafka updater. Zero means never-synced — the gauge
-	// reports -1 in that case so dashboards can spot the condition
-	// with `< 0`.
-	lastNeutronSync atomic.Int64
-
-	// neutronSnapshot, trieEntries, and anomalies retain the most
-	// recent cold-start / full-resync outputs for the /debug pages.
-	// Written by `coldStartNeutron` (and the future Kafka updater)
-	// via atomic pointer swap — whole-value replace, never in-place
-	// mutation — so the debug handlers read lock-free while a resync
-	// runs. nil until the first successful sync (Neutron disabled or
-	// not yet synced); the handlers render the empty state.
-	neutronSnapshot atomic.Pointer[neutron.Snapshot]
-	trieEntries     atomic.Pointer[[]neutron.TrieEntry]
-	anomalies       atomic.Pointer[neutron.Anomalies]
+	// neutron carries the whole Neutron subsystem: the resolved
+	// credentials, the API client, its metrics bundle, and the
+	// retained outputs of the most recent successful sync (snapshot,
+	// trie rows, anomalies, sync time) that the /debug pages read.
+	// `coldStartNeutron` (and the future Kafka updater) drive it via
+	// Sync/Commit.
+	neutron *neutron.Neutron
 
 	// meta is the userspace MAC → TenantMeta store. Constructed
 	// empty in [New]; populated by Bootstrap from Neutron and, in
@@ -109,8 +96,10 @@ type Agent struct {
 // resolved address.
 //
 // New reads top-to-bottom as the agent's composition order: validate
-// inputs, bundle the subsystem metrics, wire the data plane (state +
-// scraper + collector — the scraper's reader is wrapped in
+// inputs, construct the Neutron subsystem (credentials resolve here,
+// so a malformed openrc fails construction instead of the cold-start
+// retry loop), bundle the subsystem metrics, wire the data plane
+// (state + scraper + collector — the scraper's reader is wrapped in
 // [telemetryFillReader], which feeds the bundle's telemetry_map fill
 // gauge), then mount the HTTP surface and open the listener. The
 // bundle and HTTP steps live in [newSubsystemMetrics] and
@@ -122,14 +111,19 @@ func New(opts Options) (*Agent, error) {
 
 	st := state.New()
 	meta := metadata.New()
+	n, err := neutron.New(opts.Config.Neutron)
+	if err != nil {
+		return nil, fmt.Errorf("agent: neutron credentials: %w", err)
+	}
 
 	a := &Agent{
 		cfg:      opts.Config,
 		state:    st,
 		meta:     meta,
+		neutron:  n,
 		interner: metadata.NewTenantInterner(),
 	}
-	a.mx = newSubsystemMetrics(a.lastNeutronSyncTime)
+	a.mx = newSubsystemMetrics(n.Metrics())
 	a.scraper = scraper.New(
 		telemetryFillReader{inner: opts.Reader, mx: a.mx.bpf},
 		st, opts.Config.Scrape.Interval)
@@ -139,23 +133,6 @@ func New(opts Options) (*Agent, error) {
 		return nil, err
 	}
 	return a, nil
-}
-
-// markNeutronSync records `t` as the most recent successful Neutron
-// sync. Read by the `cubecos_neutron_sync_age_seconds` gauge.
-func (a *Agent) markNeutronSync(t time.Time) {
-	a.lastNeutronSync.Store(t.UnixNano())
-}
-
-// lastNeutronSyncTime returns the timestamp marked by the most
-// recent [Agent.markNeutronSync] call, or the zero time.Time if
-// none. Used by the neutron metrics' sync_age gauge provider.
-func (a *Agent) lastNeutronSyncTime() time.Time {
-	ns := a.lastNeutronSync.Load()
-	if ns == 0 {
-		return time.Time{}
-	}
-	return time.Unix(0, ns)
 }
 
 // SeedState seeds the agent's [state.GlobalState] from records,

@@ -1,7 +1,7 @@
-// Package neutron is the OpenStack metadata cold-start path. It
-// owns Keystone v3 authentication (via gophercloud) and the
-// Neutron v2.0 API client used by the trie builder. See
-// docs/DESIGN.md §5.
+// credentials.go owns the two credential sources: inline config
+// fields and admin-openrc-style files. Both resolve to the same
+// [Credentials] value [NewClient] authenticates with.
+
 package neutron
 
 import (

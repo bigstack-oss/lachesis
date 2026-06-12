@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 )
 
@@ -42,51 +43,39 @@ func TestRenderLivePages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	creds, err := loadCredsFromEnv()
+	cfg, err := loadNeutronConfigFromEnv()
 	if err != nil {
 		t.Skipf("creds unavailable (set OS_CREDS_FILE or OS_AUTH_URL/OS_USERNAME/...): %v", err)
 	}
 
-	client, err := neutron.NewClient(ctx, creds)
+	// Same Sync → Commit pair the agent's cold-start drives, minus
+	// the kernel push in between (nothing to push here).
+	n, err := neutron.New(cfg)
 	if err != nil {
-		t.Fatalf("neutron auth (AuthURL=%s ProjectName=%s): %v",
-			creds.AuthURL, creds.ProjectName, err)
+		t.Fatalf("neutron credentials: %v", err)
 	}
-	t.Logf("authenticated against %s (project=%s)", creds.AuthURL, creds.ProjectName)
+	result, err := n.Sync(ctx)
+	if err != nil {
+		t.Fatalf("neutron sync: %v", err)
+	}
+	n.Commit(result, time.Now())
+	t.Logf("synced from %s", n.EndpointURL())
 
-	var snap neutron.Snapshot
-	if snap.Networks, err = client.ListNetworks(ctx); err != nil {
-		t.Fatalf("list networks: %v", err)
-	}
-	if snap.Subnets, err = client.ListSubnets(ctx); err != nil {
-		t.Fatalf("list subnets: %v", err)
-	}
-	if snap.Ports, err = client.ListPorts(ctx); err != nil {
-		t.Fatalf("list ports: %v", err)
-	}
-	if snap.Routers, err = client.ListRouters(ctx); err != nil {
-		t.Fatalf("list routers: %v", err)
-	}
-	if snap.Projects, err = client.ListProjects(ctx); err != nil {
-		t.Fatalf("list projects: %v", err)
-	}
+	snap := result.Snapshot
 	t.Logf("snapshot: networks=%d subnets=%d ports=%d routers=%d projects=%d",
 		len(snap.Networks), len(snap.Subnets), len(snap.Ports), len(snap.Routers), len(snap.Projects))
-
-	entries, ambiguities, cycles := neutron.BuildTrie(snap)
-	t.Logf("trie: entries=%d ambiguities=%d cycles=%d", len(entries), len(ambiguities), len(cycles))
-
-	anomalies := neutron.DetectAnomalies(snap, entries, cycles, ambiguities)
+	t.Logf("trie: entries=%d ambiguities=%d cycles=%d",
+		len(result.Entries), len(result.Ambiguities), len(result.Cycles))
+	anomalies := result.Anomalies
 	t.Logf("anomalies: cycles=%d ambiguities=%d dangling=%d zero-trie=%d dup-mac=%d (total=%d)",
 		len(anomalies.Cycles), len(anomalies.Ambiguities), len(anomalies.DanglingRoutes),
 		len(anomalies.ZeroTrieTenants), len(anomalies.DuplicateRouterMACs), anomalies.Total())
 
-	now := time.Now()
 	s := New(Options{
-		Snapshot:  func() *neutron.Snapshot { return &snap },
-		Trie:      func() []neutron.TrieEntry { return entries },
-		Anomalies: func() *neutron.Anomalies { return &anomalies },
-		LastSync:  func() time.Time { return now },
+		Snapshot:  n.Snapshot,
+		Trie:      n.Trie,
+		Anomalies: n.Anomalies,
+		LastSync:  n.LastSyncTime,
 	})
 
 	srv := httptest.NewServer(s.Handler())
@@ -116,16 +105,17 @@ func TestRenderLivePages(t *testing.T) {
 	}
 }
 
-// loadCredsFromEnv resolves Neutron credentials from the environment.
-// If OS_CREDS_FILE points at an admin-openrc file we delegate to the
-// existing ParseOpenRC; otherwise we fall back to reading individual
-// OS_* variables. Either path yields the same [neutron.Credentials]
-// the agent's cold-start consumes.
-func loadCredsFromEnv() (neutron.Credentials, error) {
+// loadNeutronConfigFromEnv resolves a [config.NeutronConfig] from the
+// environment. OS_CREDS_FILE points the config's credentials_file
+// mode at an admin-openrc file; otherwise individual OS_* variables
+// populate the inline mode. Either path yields the same config the
+// agent's [neutron.New] consumes.
+func loadNeutronConfigFromEnv() (config.NeutronConfig, error) {
 	if path := os.Getenv("OS_CREDS_FILE"); path != "" {
-		return neutron.ParseOpenRC(path)
+		return config.NeutronConfig{Enabled: true, CredentialsFile: path}, nil
 	}
-	c := neutron.Credentials{
+	c := config.NeutronConfig{
+		Enabled:       true,
 		AuthURL:       os.Getenv("OS_AUTH_URL"),
 		Username:      os.Getenv("OS_USERNAME"),
 		Password:      os.Getenv("OS_PASSWORD"),
@@ -136,7 +126,7 @@ func loadCredsFromEnv() (neutron.Credentials, error) {
 		Interface:     os.Getenv("OS_INTERFACE"),
 	}
 	if c.AuthURL == "" || c.Username == "" || c.Password == "" || c.ProjectName == "" {
-		return neutron.Credentials{}, &missingCredErr{}
+		return config.NeutronConfig{}, &missingCredErr{}
 	}
 	return c, nil
 }
