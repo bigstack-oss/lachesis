@@ -23,12 +23,14 @@ import (
 //   - cubecos_neutron_unknown_device_owner_total{owner}         counter
 //   - cubecos_neutron_builder_step_duration_seconds{step}       histogram
 //   - cubecos_neutron_anomalies{class}                          gauge (topology health)
+//   - cubecos_neutron_trunk_subports                            gauge (data-plane blind spot)
 type Metrics struct {
 	syncAge       prometheus.GaugeFunc
 	apiErrors     *prometheus.CounterVec
 	unknownOwners *prometheus.CounterVec
 	builderStep   *prometheus.HistogramVec
 	anomalies     *prometheus.GaugeVec
+	trunkSubports prometheus.Gauge
 }
 
 // NewMetrics constructs the bundle. `lastSync` returns the most
@@ -63,6 +65,10 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 			Name: "cubecos_neutron_anomalies",
 			Help: "Count of topology anomalies by class detected at the last Neutron cold-start or resync.",
 		}, []string{"class"}),
+		trunkSubports: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "cubecos_neutron_trunk_subports",
+			Help: "Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).",
+		}),
 	}
 	m.syncAge = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "cubecos_neutron_sync_age_seconds",
@@ -87,7 +93,7 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 // Collectors returns the underlying prometheus.Collector values for
 // the agent's registry to register.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.syncAge, m.apiErrors, m.unknownOwners, m.builderStep, m.anomalies}
+	return []prometheus.Collector{m.syncAge, m.apiErrors, m.unknownOwners, m.builderStep, m.anomalies, m.trunkSubports}
 }
 
 // ObserveBuilderStep records the duration of one BuildTrie step. The
@@ -121,6 +127,19 @@ func (m *Metrics) RecordUnknownOwner(deviceOwner string) {
 		return
 	}
 	m.unknownOwners.WithLabelValues(deviceOwner).Inc()
+}
+
+// SetTrunkSubports publishes how many trunk subport MACs the latest
+// cold-start or resync admitted to mac_tenant_map. Gauge semantics —
+// every sync replaces the previous count, so deleting the last trunk
+// drops the gauge back to 0 on the next pass. The data plane cannot
+// count 802.1Q-tagged subport traffic (docs/DESIGN.md §8 Tier 1), so
+// a nonzero value flags a billing blind spot. nil receivers no-op.
+func (m *Metrics) SetTrunkSubports(n int) {
+	if m == nil {
+		return
+	}
+	m.trunkSubports.Set(float64(n))
 }
 
 // SetAnomalies publishes the per-class counts from the latest

@@ -198,12 +198,15 @@ const maxStaticRouteHops = 16
 // partition infra ports from VM-like ports; deviceOwnerComputePrefix
 // is Nova's namespace — Nova writes `compute:<az-name>` ("nova" is
 // only the default AZ's name), so [IsComputePort] matches the prefix;
+// deviceOwnerTrunkPrefix is the namespace Neutron's trunk extension
+// writes on subports, matched by [IsTrunkSubport];
 // DeviceOwnerRouterInterface is the specific owner the static-route
 // resolver follows hop-to-hop (exported: the /debug topology builders
 // classify attachments with it too).
 const (
 	deviceOwnerNetworkPrefix   = "network:"
 	deviceOwnerComputePrefix   = "compute:"
+	deviceOwnerTrunkPrefix     = "trunk:"
 	DeviceOwnerRouterInterface = "network:router_interface"
 )
 

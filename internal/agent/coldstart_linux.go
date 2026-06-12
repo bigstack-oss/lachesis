@@ -89,9 +89,12 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 // userspace shard map. Logs every port admitted with an unknown
 // device_owner (the IsKnownVMOwner allowlist miss) so operators
 // notice when a vendor / plugin string slipped past the broad
-// blacklist.
+// blacklist, and emits one summary warning when the snapshot
+// contains trunk subports — their MACs admit here but the data plane
+// passes 802.1Q-tagged frames uncounted (docs/DESIGN.md §8 Tier 1).
 func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, ports []neutron.Port, mx *neutron.Metrics) populateStats {
 	var s populateStats
+	trunkSubports := 0
 	for _, p := range ports {
 		if !neutron.IsVMPort(p.DeviceOwner) || p.ProjectID == "" || p.MACAddress == "" {
 			continue
@@ -113,11 +116,20 @@ func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, ports []neutro
 			mx.RecordUnknownOwner(p.DeviceOwner)
 			s.unknownOwners++
 		}
+		if neutron.IsTrunkSubport(p.DeviceOwner) {
+			trunkSubports++
+		}
 		var key [6]uint8
 		copy(key[:], hw)
 		meta.Insert(bpf.MACKey(key), &metadata.TenantMeta{ProjectID: p.ProjectID})
 		s.inserted++
 	}
+	if trunkSubports > 0 {
+		slog.Warn("trunk subports present; 802.1Q-tagged traffic on trunk parents is not counted (docs/DESIGN.md §8)",
+			"component", componentNeutron,
+			"trunk_subports", trunkSubports)
+	}
+	mx.SetTrunkSubports(trunkSubports)
 	return s
 }
 
