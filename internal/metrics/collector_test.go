@@ -56,10 +56,10 @@ func TestCollect_EmitsCumulativeBytesAndPackets(t *testing.T) {
 	expected := `
 # HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
 # TYPE cubecos_bytes_total counter
-cubecos_bytes_total{direction="egress",tenant_id="unknown",zone="external"} 1000
+cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 1000
 # HELP cubecos_packets_total Network packets observed by the agent, cumulative since first sight.
 # TYPE cubecos_packets_total counter
-cubecos_packets_total{direction="egress",tenant_id="unknown",zone="external"} 10
+cubecos_packets_total{direction="rx",tenant_id="unknown",zone="external"} 10
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"cubecos_bytes_total", "cubecos_packets_total"); err != nil {
@@ -136,11 +136,11 @@ func TestCollect_LabelsCoverAllZonesAndDirections(t *testing.T) {
 		wantDir  string
 		wantZone string
 	}{
-		{bpf.DirectionIngress, bpf.ZoneExternal, "ingress", "external"},
-		{bpf.DirectionEgress, bpf.ZoneSameTenant, "egress", "same_tenant"},
-		{bpf.DirectionEgress, bpf.ZoneOtherTenant, "egress", "other_tenant"},
-		{bpf.DirectionIngress, bpf.ZoneInfra, "ingress", "infra"},
-		{bpf.DirectionEgress, bpf.ZoneMiss, "egress", "miss"},
+		{bpf.DirectionIngress, bpf.ZoneExternal, "tx", "external"},
+		{bpf.DirectionEgress, bpf.ZoneSameTenant, "rx", "same_tenant"},
+		{bpf.DirectionEgress, bpf.ZoneOtherTenant, "rx", "other_tenant"},
+		{bpf.DirectionIngress, bpf.ZoneInfra, "tx", "infra"},
+		{bpf.DirectionEgress, bpf.ZoneMiss, "rx", "miss"},
 	}
 
 	st := state.New()
@@ -237,10 +237,10 @@ func TestCollect_AggregatesFlowsSharingLabels(t *testing.T) {
 	expected := `
 # HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
 # TYPE cubecos_bytes_total counter
-cubecos_bytes_total{direction="egress",tenant_id="unknown",zone="external"} 500
+cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 500
 # HELP cubecos_packets_total Network packets observed by the agent, cumulative since first sight.
 # TYPE cubecos_packets_total counter
-cubecos_packets_total{direction="egress",tenant_id="unknown",zone="external"} 5
+cubecos_packets_total{direction="rx",tenant_id="unknown",zone="external"} 5
 # HELP cubecos_state_flows Distinct flow keys currently tracked in GlobalState.
 # TYPE cubecos_state_flows gauge
 cubecos_state_flows 5
