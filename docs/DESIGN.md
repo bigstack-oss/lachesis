@@ -595,6 +595,13 @@ For each tenant T (run once at cold start, then incrementally on Kafka events):
     The `network:distributed` filter is kept here (for its fixed_ip → trie
     entry) but is NOT used by `mac_tenant_map` population (§3.1).
 
+    DHCP nit: the gateway_ip/32 → INFRA rule only catches the DHCP server's
+    side of the exchange. The broadcast DISCOVER/REQUEST half — destined for
+    255.255.255.255 — matches no per-tenant trie row and bills EXTERNAL
+    (the §8 Tier 3 broadcast/multicast row; covered by that row's optional
+    global-INFRA-prefix fix if ever taken), while the unicast response half
+    bills INFRA. Trivial volume; document-accepted.
+
   Step 5 — Static routes (extraroutes) on T's routers   [the hard part]
     for each router R where R.tenant_id == T:
       for each (destination_cidr, nexthop) in R.routes:
@@ -863,6 +870,8 @@ HAProxy is an application-layer terminator. From the kernel's perspective these 
 
 This is the same model AWS (ELB) and GCP (Cloud Load Balancing) use: each segment is independently captured at its interface (ENI/VNIC/tap) and independently billed. The billing pipeline sums and dedupes downstream — charging postures and consumption rules in [§11.5 Billing model & consumption contract](#billing-model--consumption-contract).
 
+**Provider scope: amphora only.** The two-connection model below assumes the **amphora** provider — the only Octavia provider enabled on target deployments (verified empirically: the provider list shows amphora alone, and every live LB uses it). The **OVN provider** (no Amphora VM, source IP preserved end-to-end, a single network segment) is a fundamentally different shape and is explicitly out of scope. When Octavia support lands, the agent should log the configured provider at cold-start so a non-amphora deployment is caught loudly rather than silently mis-modeled.
+
 ### Billing model — both segments attribute to the LB owner
 
 Naïvely, traffic at the backend's tap appears to come from the Amphora's MAC and would attribute to admin (Amphora's owner). But the customer is the LB's owning tenant. The fix: tag Amphora MACs at cold-start.
@@ -1053,10 +1062,10 @@ OVS forwards packet within br-int, no VXLAN. Each tap sees the packet.
 
 Both-sides counting is intentional: the transfer emits exactly one `tx` series (VM-A's tap) and one `rx` series (VM-B's tap). The per-side charging postures (§11.5) make the pair safe by construction — `same_tenant` bills $0, so nothing is double-charged.
 
-### Scenario J — Cross-host, same-tenant (VXLAN tunneled)
+### Scenario J — Cross-host, same-tenant (Geneve tunneled)
 
 ```
-VM-A on host1 ──→ OVS encap ──→ VXLAN ──→ host2 OVS decap ──→ VM-B
+VM-A on host1 ──→ OVS encap ──→ Geneve ──→ host2 OVS decap ──→ VM-B
 ```
 
 | Hook | What it sees | dst_zone |
@@ -1064,7 +1073,7 @@ VM-A on host1 ──→ OVS encap ──→ VXLAN ──→ host2 OVS decap ─�
 | VM-A tap on host1, ingress | plain Ethernet (pre-encap) | SAME ✓ |
 | VM-B tap on host2, egress | plain Ethernet (post-decap) | SAME ✓ |
 
-VXLAN tunnel is invisible to TC at the tap layer, which is correct.
+The overlay tunnel is invisible to TC at the tap layer, which is correct. (OVN ML2 tunnels with Geneve, not VXLAN; the distinction has zero behavioral impact here — we observe pre-encap/post-decap frames either way.)
 
 ### Scenario K — Multi-hop static route across multiple tenants
 
@@ -1123,7 +1132,7 @@ At packet time (VM-A → 172.16.99.x):
 |---|---|---|---|
 | 4 | Map full (>65k flows) | `bpf_map_update_elem` returns `-E2BIG`; bytes lost | Pressure-relief GC at >80% fill; evict oldest by `last_seen_ns`, **flush to GlobalState first**. The loss is observable: the kernel counts every rejected insert into `cubecos_bpf_update_failures_total{reason="update_failure"}` (§11.4) |
 | 5 | PERCPU first-packet TOCTOU | Two CPUs race on creation; one's BPF_ANY overwrites the other | At most 1 packet lost per new flow per race. Documented & accepted |
-| 6 | GSO/TSO offload | `skb->len` is aggregate (correct bytes); packets undercounted | Bill on bytes, not packets |
+| 6 | GSO/TSO/GRO offload | `skb->len` is the aggregated-skb byte count — correct payload, but per-segment L2/L3/L4 headers are counted once per superpacket rather than per wire segment, so bulk MTU-1500 TCP measures ≈4.35% under wire-equivalent (verified empirically on a single-node OVN deployment; provider-favorable to the customer). Both hooks count the same aggregated-skb basis — confirmed symmetric, no direction skew. Packet counts are superpacket counts, far under the wire segment count | Bill on bytes, not packets; the byte-basis contract is stated in §11.5 |
 | 7 | Boot ordering: TC attached before trie populated | First flows permanently keyed `dst_zone=MISS` | Enforce sequence with sync gates ([§9](#9-boot-sequence-order-matters)) |
 | 8 | WAL window (60s) | Up to 60s data loss on hard reboot | Documented; tunable |
 
@@ -1132,12 +1141,15 @@ At packet time (VM-A → 172.16.99.x):
 | # | Edge case | Failure | Fix |
 |---|---|---|---|
 | 9 | OS-level static route inside VM | Falls to EXTERNAL | Unsolvable; safe-billing fallback |
-| 10 | Port security disabled + MAC spoof | `mac_tenant_map[spoofed]` misses or hits wrong tenant | Require Neutron port_security_enabled=true (default) |
+| 10 | Port security disabled + MAC spoof | Classification trusts the L2 headers, so a port with `port_security_enabled=false` (common for NFV) breaks the trust model two ways: a VM can emit frames carrying *another* tenant's MAC — `mac_tenant_map[spoofed]` hits the wrong tenant and inflates that tenant's bill — and any VM can spray random peer MACs to mint flow keys in the shared per-node `telemetry_map` (max 65,536 entries), a noisy-neighbor pressure vector | Billing integrity assumes port security on (the Neutron default); ports with it disabled are **attributed-but-untrusted**. The minting attack is observable: the spray pressures the map toward full and the resulting rejected inserts land in `cubecos_bpf_update_failures_total{reason="update_failure"}` (§11.4) |
 | 11 | DVR with per-host router MACs (traditional Neutron only — n/a on OVN) | Each compute node's [DVR](#b8-openstack-networking-primer) router has a different MAC | Not encountered on OVN deployments (single MAC per logical router across chassis); if a traditional Neutron deployment is ever supported, reinstate the cold-start enumeration step — see §13.2 |
 | 12 | VM uses its own GRE/VXLAN/IPsec | We see outer headers; classification on tunnel endpoint | Document; treat as external |
 | 13 | IPv6 not in trie | All v6 → ZONE_MISS | Extend trie schema to 32-byte v6 keys (future work) |
 | 14 | Late Kafka delivery (new VM not yet in MAC map) | First packets → ZONE_MISS | UnresolvedBuffer late-binding + write-back to LastEbpfRaw |
 | 14a | OVN-synthesized DHCP `server_mac` not visible in Neutron port API (verified empirically) | DHCP responses to VMs have a `peer_mac` that misses `mac_tenant_map` | LPM trie carries the classification via `gateway_ip/32 → INFRA` (§5.2 Step 4). Visible as a small fraction of packets classified via the LPM-only path instead of the hybrid path; functionally correct |
+| 14b | Allowed-address-pairs / VRRP virtual MAC | A keepalived pair in vMAC mode (`00:00:5e:00:01:xx`) or an allowed-address-pair configured with an explicit MAC sources frames from a MAC that is not a Neutron port MAC → `mac_tenant_map` miss → bytes land in `tenant_id="unknown"`, `zone="miss"` (unbillable). Default keepalived (GARP over the real port MACs) classifies correctly | Already counted as a structural revenue-leak contributor (§11.5 revenue-leak SLO). Deferred fix: fetch `allowed_address_pairs` in `ListPorts` and admit those MACs into `mac_tenant_map` (§13.2 #9) |
+| 14c | VM→FIP hairpin | Same-cloud (even same-hypervisor, same-subnet) traffic addressed via a peer's floating IP bills `external` on *both* taps — OVN hairpin-SNATs the source to the client's own FIP, so each side sees an external-net address | Deliberate, not a misclassification to fix: documented as the chosen posture in §11.5 (public-cloud norm; tenants avoid it by addressing fixed IPs). Verified empirically on a single-node OVN deployment |
+| 14d | Broadcast / multicast destinations | `255.255.255.255` (the DHCP DISCOVER/REQUEST half) and `224.0.0.0/4` (IGMP / mDNS / VRRP advertisement chatter) match no per-tenant trie row → sentinel catchall → `external` | Document-accepted (trivial volume). Optional one-line fix if it ever matters: add global INFRA trie rows for both prefixes |
 
 ### Tier 4 — Subtle correctness
 
@@ -1148,7 +1160,7 @@ At packet time (VM-A → 172.16.99.x):
 | 17 | Conntrack miss on Segment 1 zone classification | The optional `bpf_skb_ct_lookup` at the Amphora's tap may miss (first SYN, TTL expiry, UDP >30s idle, lookup at the wrong tap). Segment 1 zone falls back to EXTERNAL | Attribution to LB owner is unaffected — it comes from the Amphora MAC flag, not conntrack. See §6 |
 | 18 | u64 wraparound | At 10 Gbps continuous, ~467 years to overflow (2⁶⁴ / 1.25 GB/s ≈ 1.5×10¹⁰ seconds). The guard is one comparison, so add it anyway | — |
 | 19 | Crashed agent leaves orphan TC filters | Stale filters double-count if agent restarts | Either zombie hunter at startup, or accept until reboot |
-| 20 | Multicast / broadcast | One sent packet, many receivers → ingress sum doubles | Filter or accept as <0.1% noise |
+| 20 | Multicast / broadcast | One sent packet, many receivers → ingress sum doubles (this row is the *counting* angle; the *zone* angle — these destinations missing the trie → EXTERNAL — is Tier 3 row 14d) | Filter or accept as <0.1% noise |
 | 21 | VM-appliance forwarding double-billing | Traffic via a compute:nova nexthop is billed at the originating VM's tap (at the appliance's tenant zone) AND again at the appliance's tap for the forwarded egress — same bytes, different MAC pairs, different flows | Documented; billing aggregation must dedup forwarding chains. Scenario L. |
 
 ### Honest accuracy ceiling
@@ -1165,6 +1177,12 @@ At packet time (VM-A → 172.16.99.x):
 3. Documented exceptions billed at uniform external rate
 
 eBPF gives exact counting on every packet it sees. It cannot count packets it doesn't see — and that's a deployment-design issue, not an algorithm issue.
+
+### Platform floor
+
+The 5.10+ kernel requirement (§1) has two distinct origins worth recording. `BPF_MAP_LOOKUP_BATCH`, the syscall the scraper drains the map with, needs ≥5.6. The per-CPU zero-fill of recycled `PERCPU_HASH` elements — so a map slot reused after pressure-relief GC deletes an entry never returns a previous flow's stale counter on a CPU that didn't touch it — needs ≥5.10; this only starts to matter once GC actually deletes entries. Both staging clusters run 6.12.x, comfortably above the floor.
+
+One related GC design rule: `last_seen_ns` is `CLOCK_MONOTONIC` (§3.1), which resets at every boot. The GC must never compare a WAL-restored timestamp from a prior boot against a current-boot kernel value — they live on different monotonic timelines, and a cross-boot subtraction yields garbage. WAL-restored state carries cumulative byte counters across boots; the eviction-age clock does not.
 
 ---
 
@@ -1576,6 +1594,7 @@ Explicitly out of MVP scope. Documented so future contributors know it's open by
 | 6 | Workqueue-backed event handling for the netlink subscriber and Kafka updater | Reference: `k8s.io/client-go/util/workqueue` (dedup/coalescing + rate-limited retry with exponential backoff) — the standard informer → workqueue → reconciler triple. Earmarked for: (a) the netlink subscriber, if flapping interfaces produce event storms or transient attach failures need retry-with-backoff instead of a log line; (b) the Kafka metadata updater, to coalesce rapid per-port update bursts and retry failed kernel-map writes. Not applicable to boot — the boot sequence stays straight-line code plus ordering barriers (`boot.Sequencer`), matching how Kubernetes boots components (`WaitForCacheSync`, post-start hooks), with queues reserved for steady-state events. Adopt when those requirements materialize, not before |
 | 7 | Map pinning for zero-loss agent-crash recovery | §10's agent-crash path currently equals the hard-reboot path: nothing pins the maps (`config.BPFConfig.PinPath` exists but no caller pins), a restarted agent cannot reach the old unpinned maps, and the boot-time Zombie Hunter drops the orphan TC filters that were keeping them alive — so recovery is WAL-bounded at ≤60s. Pinning under `bpf.pin_path` and reusing the pinned maps on boot restores the designed zero-loss path. Touches boot ordering (zombie hunt vs. pinned-map reuse) and `ValidateMapSizes` against a pinned spec. Estimated <1 sprint, medium care: a stale pinned map with wrong sizing must refuse-to-reuse, not silently adopt |
 | 8 | Trunk port (VLAN-aware VM) support — single 802.1Q parse | When `h_proto` is `0x8100`/`0x88A8`, parse one VLAN level: `bpf_skb_pull_data` for the 4 extra tag bytes, re-read the data pointers, dispatch on the inner ethertype, and offset the IP header by 4; also handle the offloaded-tag direction (`skb->vlan_present`, where the tag lives in skb metadata and the linear data already starts at the inner header). Blocked on a billing decision: whether `flow_key.eth_proto` records the inner or outer proto (and whether counted bytes include the 4 tag bytes) must be settled **before** WAL entries bake the key shape. Until then trunk deployments are detection-only — cold-start warn-log, `cubecos_neutron_trunk_subports` gauge, and the kernel skipped-ethertype counter (issue #39); see §8 Tier 1 row 3a and issue #37. Estimated ~1 sprint |
+| 9 | Allowed-address-pairs MAC ingestion | `ListPorts` does not fetch a port's `allowed_address_pairs`, so a MAC a VM is *permitted* to source (a keepalived/VRRP virtual MAC, or an AAP entry with an explicit MAC) never enters `mac_tenant_map` and its bytes leak to `tenant_id="unknown"` (§8 Tier 3 row 14b; §11.5 revenue-leak SLO). Fix: add `allowed_address_pairs` to the port query and admit each pair's MAC against the owning port's tenant — userspace-then-kernel like any other insert (§3.4). The default keepalived case (real port MACs via GARP) already classifies, so this targets vMAC-mode and explicit-MAC AAP deployments. Estimated <1 sprint, low risk |
 
 ### 13.3 Construction Conventions
 
@@ -1801,7 +1820,7 @@ For engineers without OpenStack background, here's the minimum needed.
 
 **tap interface (tapXXX)** — a virtual network interface created per VM port. The VM's vNIC is connected to the tap on one end; the other end is plugged into OVS br-int. Our TC hooks attach here.
 
-**VXLAN** — overlay tunneling protocol that wraps an Ethernet frame in UDP/IP for transport between hypervisors. Each tenant network gets a unique 24-bit **VNI** (VXLAN Network Identifier). At our tap layer, packets are pre-encapsulation; we never see the VXLAN header.
+**VXLAN / Geneve** — overlay tunneling protocols that wrap an Ethernet frame in UDP/IP for transport between hypervisors, each tenant network getting a unique tunnel ID (VXLAN's 24-bit **VNI**, or Geneve's VNI plus extensible options). OVN ML2 — what CubeCOS runs — tunnels with **Geneve**; VXLAN is the traditional-Neutron default. The distinction is immaterial to this design: at our tap layer packets are pre-encapsulation, so we never see either tunnel header.
 
 **Floating IP** — a public IP address allocated to a tenant. When attached to a VM port, the network node performs DNAT (destination NAT) for inbound traffic. The VM still uses its private IP internally; the floating IP is invisible to the VM.
 
