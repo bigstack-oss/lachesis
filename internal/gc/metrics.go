@@ -28,11 +28,11 @@ func NewMetrics() *Metrics {
 	m := &Metrics{
 		evictions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "cubecos_gc_evictions_total",
-			Help: "Map entries the GC evicted, by reason: ttl = lingering-ghost expiry from mac_tenant_map; pressure_relief = oldest-flow eviction from telemetry_map above the 80% fill threshold.",
+			Help: "Map entries the GC evicted, by reason: ttl = lingering-ghost expiry from mac_tenant_map; pressure_relief = oldest-flow eviction from telemetry_map above the configured fill high watermark.",
 		}, []string{labelReason}),
 		pressureReliefRun: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "cubecos_gc_pressure_relief_runs_total",
-			Help: "Pressure-relief passes run after a scrape drain found telemetry_map above the 80% fill threshold (docs/DESIGN.md §3.1).",
+			Help: "Pressure-relief passes run after a scrape drain found telemetry_map above the configured fill high watermark (docs/DESIGN.md §3.1).",
 		}),
 		ghostsActive: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "cubecos_lingering_ghosts_active",

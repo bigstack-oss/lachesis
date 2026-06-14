@@ -37,6 +37,7 @@ type Config struct {
 	Logging LoggingConfig `yaml:"logging"`
 	WAL     WALConfig     `yaml:"wal"`
 	Neutron NeutronConfig `yaml:"neutron"`
+	GC      GCConfig      `yaml:"gc"`
 }
 
 // Defaults returns the production-ready configuration baseline. Each
@@ -50,6 +51,7 @@ func Defaults() Config {
 		Logging: loggingDefaults(),
 		WAL:     walDefaults(),
 		Neutron: neutronDefaults(),
+		GC:      gcDefaults(),
 	}
 }
 
@@ -77,6 +79,9 @@ func (c Config) Validate() error {
 	}
 	if err := c.Neutron.Validate(); err != nil {
 		return fmt.Errorf("neutron: %w", err)
+	}
+	if err := c.GC.Validate(); err != nil {
+		return fmt.Errorf("gc: %w", err)
 	}
 	return nil
 }

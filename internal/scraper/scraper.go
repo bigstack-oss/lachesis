@@ -31,6 +31,18 @@ type MapReader interface {
 	BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) error
 }
 
+// Evictor relieves kernel telemetry_map pressure. [Scraper.Tick] calls
+// Relieve once per tick, after the drained readings have been applied
+// to GlobalState — so every byte is accounted before any kernel entry
+// is removed (docs/DESIGN.md §3.1). The argument is the scraper's
+// just-drained buffer: its key count is the current kernel population
+// and each value's LastSeenNs is the eviction key. Implementations must
+// only read it. nil (the default) disables pressure relief, which is
+// the case off-Linux and in unit tests that don't wire one.
+type Evictor interface {
+	Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics)
+}
+
 // Scraper periodically drains a [MapReader] and updates a
 // [state.GlobalState]. Construct one with [New], then call [Scraper.Run]
 // on a long-lived goroutine.
@@ -43,6 +55,12 @@ type Scraper struct {
 	// allocation on the scraper side. The MapReader is expected to
 	// clear and repopulate.
 	buf map[bpf.FlowKey]bpf.FlowMetrics
+
+	// evictor, when set, relieves telemetry_map pressure at the end of
+	// each tick. Wired once by Bootstrap before Run starts the scrape
+	// goroutine (it needs the kernel map handle); nil otherwise. Read
+	// only from the single scrape goroutine, so it needs no lock.
+	evictor Evictor
 
 	errors atomic.Uint64
 	lastOK atomic.Int64 // unix seconds; 0 = never succeeded
@@ -58,6 +76,12 @@ func New(reader MapReader, st *state.GlobalState, interval time.Duration) *Scrap
 		buf:      make(map[bpf.FlowKey]bpf.FlowMetrics, initialBufCap),
 	}
 }
+
+// SetEvictor wires the pressure-relief evictor. Call once before [Run]
+// starts the scrape goroutine — Bootstrap does so after it has the
+// kernel telemetry_map handle. Passing nil leaves pressure relief
+// disabled.
+func (s *Scraper) SetEvictor(e Evictor) { s.evictor = e }
 
 // Run drives the scrape loop until ctx is cancelled. The first tick
 // fires immediately so /metrics has data within one interval of
@@ -102,6 +126,12 @@ func (s *Scraper) Tick() error {
 		s.state.ApplyDelta(k, v)
 	}
 	s.lastOK.Store(time.Now().Unix())
+	// Relieve telemetry_map pressure after the flush: every byte in buf
+	// is now in GlobalState, so evicting the oldest kernel entries loses
+	// nothing (docs/DESIGN.md §3.1).
+	if s.evictor != nil {
+		s.evictor.Relieve(s.buf)
+	}
 	return nil
 }
 

@@ -29,10 +29,17 @@ const labelReason = "reason"
 // reasonTTL and reasonPressureRelief are the two values of the
 // [labelReason] label. ttl is a lingering-ghost expiry deleting a MAC
 // from mac_tenant_map; pressure_relief is an oldest-flow eviction from
-// telemetry_map when it crosses the 80% fill threshold (docs/DESIGN.md
-// §3.1). Both are seeded at zero so the series exist from the first
-// scrape.
+// telemetry_map when it crosses the configured fill high watermark
+// (docs/DESIGN.md §3.1). Both are seeded at zero so the series exist
+// from the first scrape.
 const (
 	reasonTTL            = "ttl"
 	reasonPressureRelief = "pressure_relief"
 )
+
+// The pressure-relief bounds (fill watermarks and per-pass cap) are not
+// constants here: they are operator-tunable and hot-reloadable, supplied
+// via [PressureOptions] and swapped atomically by
+// [PressureReliever.SetPressureParams]. Their defaults and the rationale
+// for each live in config.GCConfig (the single source of truth for the
+// default values).

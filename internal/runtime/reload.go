@@ -6,7 +6,8 @@
 //
 // Hot vs load-time fields:
 //
-//   - Hot: applied immediately on reload. Today: logging.level.
+//   - Hot: applied immediately on reload. Today: logging.level and the
+//     gc.* pressure-relief tunables (via the [PressureTunable] seam).
 //   - Load-time: change in the YAML is logged as a warning and ignored;
 //     restart is required for it to take effect. Today: http.listen,
 //     bpf.pin_path, scrape.interval (until the scraper supports retiming),
@@ -32,6 +33,14 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 )
 
+// PressureTunable receives hot-reloaded pressure-relief parameters. The
+// GC's pressure reliever implements it; the agent wires the instance via
+// [Manager.SetPressureTunable]. Defined here (the consumer) so the
+// runtime package needs no dependency on the gc package.
+type PressureTunable interface {
+	SetPressureParams(high, low float64, maxPerPass int)
+}
+
 // Manager owns the agent's runtime configuration state. Construct one in
 // main after [config.Load] and [logging.Init], then call [Manager.InstallSIGHUP]
 // and mount [Manager.DebugHandler] on the HTTP server.
@@ -40,6 +49,7 @@ type Manager struct {
 	configPath string        // YAML path; empty disables SIGHUP reload
 	current    config.Config // last applied snapshot
 	log        *logging.Handle
+	pressure   PressureTunable // nil off-Linux, where no reliever runs
 }
 
 // New creates a Manager seeded with the initial config snapshot. The
@@ -51,6 +61,16 @@ func New(configPath string, initial config.Config, log *logging.Handle) *Manager
 		current:    initial,
 		log:        log,
 	}
+}
+
+// SetPressureTunable wires the pressure-relief reliever so SIGHUP
+// reloads of the gc.* fields apply live. Call once during boot, before
+// [Manager.InstallSIGHUP]. A nil tunable (off-Linux, where no reliever
+// runs) leaves the gc.* fields effectively load-time.
+func (m *Manager) SetPressureTunable(t PressureTunable) {
+	m.mu.Lock()
+	m.pressure = t
+	m.mu.Unlock()
 }
 
 // Current returns a snapshot of the most recently applied configuration.
@@ -89,6 +109,20 @@ func (m *Manager) Reload() error {
 		slog.Info("logging.level changed",
 			"component", componentReload,
 			"from", m.current.Logging.Level, "to", next.Logging.Level)
+	}
+
+	if next.GC != m.current.GC {
+		if m.pressure != nil {
+			m.pressure.SetPressureParams(
+				next.GC.PressureHighWatermark,
+				next.GC.PressureLowWatermark,
+				next.GC.PressureMaxPerPass)
+		}
+		slog.Info("gc pressure params changed",
+			"component", componentReload,
+			"high", next.GC.PressureHighWatermark,
+			"low", next.GC.PressureLowWatermark,
+			"max_per_pass", next.GC.PressureMaxPerPass)
 	}
 
 	warnLoadTimeChange("http.listen", m.current.HTTP.Listen, next.HTTP.Listen)

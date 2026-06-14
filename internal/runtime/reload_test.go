@@ -244,6 +244,82 @@ func TestInstallSIGHUP_TriggersReload(t *testing.T) {
 	t.Errorf("SIGHUP did not trigger reload; level still %q", logHandle.CurrentLevel())
 }
 
+// fakePressureTunable records the most recent SetPressureParams call so
+// reload tests can assert the gc.* fields were applied live.
+type fakePressureTunable struct {
+	high, low float64
+	cap       int
+	calls     int
+}
+
+func (f *fakePressureTunable) SetPressureParams(high, low float64, maxPerPass int) {
+	f.high, f.low, f.cap = high, low, maxPerPass
+	f.calls++
+}
+
+func TestReload_AppliesGCParamsLive(t *testing.T) {
+	path, initial := setup(t, "info")
+	logHandle, _ := logging.Init(initial.Logging, &bytes.Buffer{})
+	mgr := runtime.New(path, initial, logHandle)
+	tun := &fakePressureTunable{}
+	mgr.SetPressureTunable(tun)
+
+	updated := `
+version: "1"
+gc:
+  pressure_high_watermark: 0.90
+  pressure_low_watermark: 0.85
+  pressure_max_per_pass: 500
+`
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	if err := mgr.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	if tun.calls != 1 {
+		t.Errorf("SetPressureParams calls = %d, want 1", tun.calls)
+	}
+	if tun.high != 0.90 || tun.low != 0.85 || tun.cap != 500 {
+		t.Errorf("applied params = (%v, %v, %d), want (0.90, 0.85, 500)", tun.high, tun.low, tun.cap)
+	}
+	if got := mgr.Current().GC.PressureHighWatermark; got != 0.90 {
+		t.Errorf("Current().GC.PressureHighWatermark = %v, want 0.90", got)
+	}
+}
+
+func TestReload_RejectsInvalidGCParams(t *testing.T) {
+	path, initial := setup(t, "info")
+	logHandle, _ := logging.Init(initial.Logging, &bytes.Buffer{})
+	mgr := runtime.New(path, initial, logHandle)
+	tun := &fakePressureTunable{}
+	mgr.SetPressureTunable(tun)
+
+	// high == 1.0 is the dangerous footgun: relief would never fire and
+	// the kernel would silently drop counters. Reload must reject it and
+	// keep the running config.
+	bad := `
+version: "1"
+gc:
+  pressure_high_watermark: 1.0
+  pressure_low_watermark: 0.75
+  pressure_max_per_pass: 1000
+`
+	if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	if err := mgr.Reload(); err == nil {
+		t.Fatal("Reload accepted pressure_high_watermark=1.0")
+	}
+	if tun.calls != 0 {
+		t.Errorf("invalid reload applied params anyway (%d calls), want 0", tun.calls)
+	}
+	if got := mgr.Current().GC.PressureHighWatermark; got != 0.80 {
+		t.Errorf("Current().GC.PressureHighWatermark = %v, want 0.80 (unchanged after a rejected reload)", got)
+	}
+}
+
 // setup writes an initial YAML with the given log level and returns the
 // path plus the loaded Config.
 func setup(t *testing.T, level string) (string, config.Config) {

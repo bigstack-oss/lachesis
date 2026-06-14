@@ -173,12 +173,13 @@ VALUE: struct flow_metrics  (24 bytes, one slot per CPU)
 **Pressure-relief GC.** Capacity is recovered by a userspace pass that flushes bytes to GlobalState *before* deleting the map entry (never the other way around — see §10). Trigger and bounds:
 
 - Fill ratio sampled at the start of each scrape (every 10s).
-- Above **80%**, run pressure-relief in the same goroutine as the scrape, after the BatchLookup completes.
+- Above the **high watermark** (default **80%**), run pressure-relief in the same goroutine as the scrape, after the BatchLookup completes. Relief then runs on every scrape until fill falls back below the **low watermark** (default **75%**) — a hysteresis, so the map settles near the low watermark rather than oscillating at the high one.
 - Eviction order: oldest by `last_seen_ns` first.
-- **Per-pass cap: 1,000 entries.** Bounds the worst-case stall to ~50 ms (≈50 µs/entry × 1,000) regardless of how full the map is.
-- **Algorithm: single-pass scan with a min-heap of size K=1000** to track the oldest-K by `last_seen_ns`. Cost is O(N log K) where N is current entry count, K=1000. For N=52k (80% fill), this is ~50 ms — included in the per-pass budget. Naïve full sort (O(N log N)) would be ~200 ms; avoid it.
-- Floor: **75%** (not 70%). One pass evicts ~3,250 entries at the floor; the cap kicks in first, so the floor is reached over 3–4 successive scrapes — still well under a minute.
+- **Per-pass cap: 1,000 entries** (default). Bounds the worst-case stall to ~50 ms (≈50 µs/entry × 1,000) regardless of how full the map is.
+- **Algorithm: single-pass scan with a bounded size-K heap** (K = the per-pass cap) to select the oldest-K by `last_seen_ns`. The heap is ordered *max*-by-`last_seen_ns`, so the newest of the K candidates retained so far sits at the root and is evicted in favour of an older flow as the scan proceeds. Cost is O(N log K) where N is the current entry count. For N=52k (80% fill), this is ~50 ms — included in the per-pass budget. A naïve full sort (O(N log N)) would be ~200 ms; avoid it.
+- Floor: the low watermark (default **75%**, not 70%). One pass evicts ~3,250 entries to reach the floor; the cap kicks in first, so the floor is reached over 3–4 successive scrapes — still well under a minute.
 - Each pass increments `cubecos_gc_pressure_relief_runs_total` and `cubecos_gc_evictions_total{reason="pressure_relief"}` (§11.4 health metrics).
+- The two watermarks and the per-pass cap are operator-tunable via the `gc:` config section and **hot-reloadable on SIGHUP** — the reliever reads them through an atomic snapshot, so retuning needs no restart. The high watermark is validated `< 1.0`: at 1.0 the map fills and the kernel drops counters on its own, the exact byte loss this GC prevents. The defaults are the values quoted above.
 
 If the map sustains >80% fill across many scrapes despite the GC, the deployment has outgrown the configured `max_entries` and the operator must rebuild with a larger value — surfaced via the fill-ratio gauge before it becomes a billing problem.
 

@@ -9,9 +9,9 @@
 # CUBECOS_* env vars → CLI flags. The YAML path is set via the
 # -config flag or CUBECOS_CONFIG; SIGHUP re-reads it.
 #
-# Hot-reloadable on SIGHUP: logging.level only. Every other field is
-# load-time — changes in YAML are warned about and ignored until the
-# next agent restart.
+# Hot-reloadable on SIGHUP: logging.level and the whole gc section.
+# Every other field is load-time — changes in YAML are warned about and
+# ignored until the next agent restart.
 
 # Schema version; the binary refuses to start if this disagrees.
 version: "1"
@@ -118,3 +118,22 @@ neutron:
   # Env: CUBECOS_NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES
   # Flag: -unsafe-allow-ambiguous-routes
   unsafe_allow_ambiguous_routes: false
+
+gc:
+  # Pressure-relief eviction of the kernel telemetry_map (DESIGN §3.1).
+  # The whole section is HOT-RELOADABLE on SIGHUP (YAML only — no env or
+  # flag, since those resolve once at boot and cannot hot-reload).
+
+  # Fill ratio that starts a relief cycle. Must be < 1.0: relief has to
+  # begin before the map fills, or the kernel drops counters itself
+  # (silent byte loss).
+  pressure_high_watermark: 0.80
+
+  # Fill ratio that ends a relief cycle. Eviction continues every scrape
+  # until fill drops below this. Must be in (0, pressure_high_watermark).
+  pressure_low_watermark: 0.75
+
+  # Entries evicted per scrape, at most. Bounds the per-scrape stall
+  # (~50 µs/delete → ~50 ms at 1000); draining high→low takes a few
+  # scrapes. Must be >= 1.
+  pressure_max_per_pass: 1000
