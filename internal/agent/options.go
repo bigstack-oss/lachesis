@@ -8,6 +8,7 @@ package agent
 import (
 	"errors"
 
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
@@ -37,6 +38,11 @@ type Options struct {
 	// zero-seeded — which is the case on darwin and in unit tests;
 	// the Linux Bootstrap always wires it.
 	Stats *bpf.StatsReader
+	// Sequencer is the boot phase sequencer the agent's phase-gated
+	// workers await. Bootstrap passes the one it advances so the agent
+	// and the boot steps share a single sequencer; nil means New
+	// constructs a fresh one (unit-test agents, which never advance it).
+	Sequencer *boot.Sequencer
 }
 
 // validate rejects required fields that the caller forgot to fill.
@@ -64,4 +70,15 @@ func (o Options) resolverOrDefault(meta *metadata.ShardedMetadataMap) metrics.Te
 		return o.Resolver
 	}
 	return metadata.NewResolver(meta)
+}
+
+// sequencerOrDefault returns the caller's [boot.Sequencer] when set,
+// otherwise a fresh one. Bootstrap supplies the sequencer it advances;
+// a unit-test agent gets its own, which stays at PhaseInit — harmless
+// because such agents never wire a phase-gated worker.
+func (o Options) sequencerOrDefault() *boot.Sequencer {
+	if o.Sequencer != nil {
+		return o.Sequencer
+	}
+	return boot.New()
 }

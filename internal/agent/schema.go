@@ -32,6 +32,7 @@ const (
 	componentBPF     = "bpf"
 	componentZombie  = "zombie"
 	componentNetlink = "netlink"
+	componentGC      = "gc"
 )
 
 // httpReadHeaderTimeout bounds how long the HTTP server will wait

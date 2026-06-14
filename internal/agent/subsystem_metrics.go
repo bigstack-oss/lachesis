@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
@@ -29,6 +30,7 @@ type subsystemMetrics struct {
 	bpf      *bpf.Metrics
 	zombie   *zombie.Metrics
 	netlink  *cnetlink.Metrics
+	gc       *gc.Metrics
 	registry *cnetlink.Registry
 }
 
@@ -57,6 +59,7 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics) subsystemMetrics {
 		bpf:      bpfMx,
 		zombie:   zombie.NewMetrics(),
 		netlink:  cnetlink.NewMetrics(nlReg.Len),
+		gc:       gc.NewMetrics(),
 		registry: nlReg,
 	}
 }
@@ -116,5 +119,6 @@ func (m subsystemMetrics) registrations() []labelledCollectors {
 		{componentBPF, m.bpf.Collectors()},
 		{componentZombie, m.zombie.Collectors()},
 		{componentNetlink, m.netlink.Collectors()},
+		{componentGC, m.gc.Collectors()},
 	}
 }

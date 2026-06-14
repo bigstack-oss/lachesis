@@ -40,6 +40,12 @@ const (
 	PhaseStateRestored
 )
 
+// phaseCount is the number of distinct phases, including PhaseInit. It
+// sizes the [Sequencer]'s per-phase reached-channel array and bounds
+// the phase index Advance and Await accept. Adding a phase to the enum
+// above grows it automatically.
+const phaseCount = int(PhaseStateRestored) + 1
+
 // String returns the snake-case phase name, suitable for log
 // attributes and (eventually) Prometheus label values.
 func (p Phase) String() string {
