@@ -1,9 +1,12 @@
 package boot
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestPhaseString(t *testing.T) {
@@ -102,6 +105,123 @@ func TestSequencer_RejectsBadTransitions(t *testing.T) {
 				t.Errorf("after rejected Advance: Current() = %s, want %s (unchanged)", got, last)
 			}
 		})
+	}
+}
+
+func TestSequencer_AwaitAlreadyReached(t *testing.T) {
+	s := New()
+	for _, p := range []Phase{PhaseBPFLoaded, PhaseMetadataReady} {
+		if err := s.Advance(p); err != nil {
+			t.Fatalf("Advance(%s): %v", p, err)
+		}
+	}
+	// Awaiting a phase that has already passed must return immediately.
+	if err := s.Await(context.Background(), PhaseBPFLoaded); err != nil {
+		t.Errorf("Await(already-reached) = %v, want nil", err)
+	}
+	if err := s.Await(context.Background(), PhaseInit); err != nil {
+		t.Errorf("Await(init) = %v, want nil", err)
+	}
+}
+
+func TestSequencer_AwaitReleasedByAdvance(t *testing.T) {
+	s := New()
+	got := make(chan error, 1)
+	go func() { got <- s.Await(context.Background(), PhaseStateRestored) }()
+
+	// The awaiter must still be blocked before the phase is reached.
+	if err := s.Advance(PhaseBPFLoaded); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	select {
+	case err := <-got:
+		t.Fatalf("Await returned early with %v, want still blocked at PhaseBPFLoaded", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	for _, p := range []Phase{PhaseMetadataReady, PhaseAttached, PhaseStateRestored} {
+		if err := s.Advance(p); err != nil {
+			t.Fatalf("Advance(%s): %v", p, err)
+		}
+	}
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Errorf("Await = %v, want nil once phase reached", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Await did not return after its phase was reached")
+	}
+}
+
+func TestSequencer_AwaitCtxCancel(t *testing.T) {
+	s := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan error, 1)
+	go func() { got <- s.Await(ctx, PhaseStateRestored) }()
+	cancel()
+	select {
+	case err := <-got:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Await after cancel = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Await did not return after ctx cancel")
+	}
+}
+
+func TestSequencer_FailReleasesAwaiters(t *testing.T) {
+	s := New()
+	const n = 4
+	got := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() { got <- s.Await(context.Background(), PhaseStateRestored) }()
+	}
+	sentinel := errors.New("neutron unreachable")
+	s.Fail(PhaseMetadataReady, sentinel)
+	for i := 0; i < n; i++ {
+		select {
+		case err := <-got:
+			if !errors.Is(err, sentinel) {
+				t.Errorf("Await after Fail = %v, want wrapping %v", err, sentinel)
+			}
+			if !strings.Contains(err.Error(), "metadata_ready") {
+				t.Errorf("Await error = %q, want it to name the failing phase", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Await did not return after Fail")
+		}
+	}
+}
+
+func TestSequencer_FailFirstWins(t *testing.T) {
+	s := New()
+	first := errors.New("first")
+	s.Fail(PhaseBPFLoaded, first)
+	s.Fail(PhaseAttached, errors.New("second"))
+	err := s.Await(context.Background(), PhaseStateRestored)
+	if !errors.Is(err, first) {
+		t.Errorf("Await = %v, want the first Fail (%v)", err, first)
+	}
+}
+
+func TestSequencer_ReachedBeatsLaterFail(t *testing.T) {
+	s := New()
+	if err := s.Advance(PhaseBPFLoaded); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+	s.Fail(PhaseMetadataReady, errors.New("aborted after bpf_loaded"))
+	// PhaseBPFLoaded was reached before the failure, so its guarantee
+	// holds: Await must report success, not the later abort.
+	if err := s.Await(context.Background(), PhaseBPFLoaded); err != nil {
+		t.Errorf("Await(reached-before-fail) = %v, want nil", err)
+	}
+}
+
+func TestSequencer_AwaitInvalidPhase(t *testing.T) {
+	s := New()
+	if err := s.Await(context.Background(), Phase(99)); err == nil {
+		t.Error("Await(invalid) = nil, want error")
 	}
 }
 

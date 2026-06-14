@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
@@ -64,6 +66,7 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		{"build agent", b.buildAgent},
 		{"cold-start Neutron", b.coldStart},
 		{"subscribe netlink", b.subscribeNetlink},
+		{"wire GC", b.wireGC},
 		{"prepare WAL directory", b.prepareWALDir},
 		{"restore WAL", b.restoreWAL},
 	})
@@ -177,6 +180,7 @@ func (b *bootstrapper) buildAgent() error {
 		Reader:     reader,
 		Log:        b.log,
 		Stats:      stats,
+		Sequencer:  b.seq,
 	})
 	if err != nil {
 		return err
@@ -209,6 +213,42 @@ func (b *bootstrapper) subscribeNetlink() error {
 		b.ag.netlinkSubscriber = sub
 	}
 	return b.seq.Advance(boot.PhaseAttached)
+}
+
+// wireGC constructs the lingering-ghost sweeper over the kernel
+// mac_tenant_map and hands it to the agent, which runs it as a worker.
+// It establishes no boot phase — it only wires a goroutine that
+// [Agent.Run] starts later, and that goroutine awaits
+// [boot.PhaseStateRestored] itself before its first sweep. The
+// mac_tenant_map must be present (it is the cold-start write target);
+// a missing map is a build-time problem, never a runtime one.
+func (b *bootstrapper) wireGC() error {
+	macMap := b.coll.Maps[bpf.MapMacTenant]
+	if macMap == nil {
+		return fmt.Errorf("%s map missing from collection", bpf.MapMacTenant)
+	}
+	b.ag.ghostSweeper = gc.New(gc.Options{
+		Meta:    b.ag.meta,
+		Evictor: macTenantEvictor{m: macMap},
+		Seq:     b.ag.seq,
+		Metrics: b.ag.mx.gc,
+	})
+	return nil
+}
+
+// macTenantEvictor adapts a kernel mac_tenant_map [*ebpf.Map] to the
+// [gc.MacEvictor] seam the ghost sweeper deletes through. A MAC already
+// absent from the kernel (ErrKeyNotExist) is treated as success: the
+// sweep's job is "ensure this MAC is gone", and a concurrent reload may
+// have removed it first.
+type macTenantEvictor struct{ m *ebpf.Map }
+
+// Delete removes mac from the kernel mac_tenant_map.
+func (e macTenantEvictor) Delete(mac uint64) error {
+	if err := e.m.Delete(&mac); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return err
+	}
+	return nil
 }
 
 // prepareWALDir creates the WAL directory if missing and probes it

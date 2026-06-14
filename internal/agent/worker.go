@@ -22,12 +22,13 @@ type worker struct {
 }
 
 // workers returns the agent's long-lived goroutines in DRAIN order:
-// netlink first (stop attaching while tearing down), then scraper
-// before wal so the scraper's final tick lands its deltas in
-// GlobalState before the WAL final flush snapshots them. The order is
-// enforced structurally: [Agent.drainWorkers] cancels each row's own
-// context and awaits its exit before moving to the next row, so the
-// WAL flusher's final flush cannot start until the scraper has
+// netlink first (stop attaching while tearing down), then the ghost
+// sweeper (metadata cleanup, no ordering constraint with the billing
+// drain), then scraper before wal so the scraper's final tick lands
+// its deltas in GlobalState before the WAL final flush snapshots them.
+// The order is enforced structurally: [Agent.drainWorkers] cancels each
+// row's own context and awaits its exit before moving to the next row,
+// so the WAL flusher's final flush cannot start until the scraper has
 // returned.
 //
 // This list is the single source of truth for Run's goroutines:
@@ -38,6 +39,7 @@ type worker struct {
 func (a *Agent) workers() []worker {
 	return []worker{
 		{"netlink subscriber", a.netlinkSubscriber != nil, a.runNetlink},
+		{"ghost sweeper", a.ghostSweeper != nil, a.ghostSweeper.Run},
 		{"scraper", true, a.scraper.Run},
 		{"wal", a.cfg.WAL.Enabled, a.walFlushLoop},
 	}

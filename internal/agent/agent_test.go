@@ -18,6 +18,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
@@ -630,6 +631,91 @@ func TestAgent_WALFinalFlushOnServerError(t *testing.T) {
 	if res.Records[0].Counter.Total.Bytes != 4242 {
 		t.Errorf("final flush Total.Bytes = %d, want 4242",
 			res.Records[0].Counter.Total.Bytes)
+	}
+}
+
+// recordingEvictor is a gc.MacEvictor that records the MACs the ghost
+// sweeper deletes. Safe for concurrent use: the sweeper goroutine
+// writes while the test reads.
+type recordingEvictor struct {
+	mu      sync.Mutex
+	deleted []uint64
+}
+
+func (e *recordingEvictor) Delete(mac uint64) error {
+	e.mu.Lock()
+	e.deleted = append(e.deleted, mac)
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *recordingEvictor) count() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.deleted)
+}
+
+// TestAgent_GhostSweeperEvictsAndDrains proves the enabled ghost-sweeper
+// workers() row is spawned by Run, evicts an expired metadata entry
+// (kernel-first via the evictor, then userspace), and drains cleanly on
+// shutdown — goleak fails if the goroutine outlives Run.
+func TestAgent_GhostSweeperEvictsAndDrains(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	r := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{}}
+	cfg := config.Defaults()
+	cfg.HTTP.Listen = "127.0.0.1:0"
+	cfg.Scrape.Interval = 25 * time.Millisecond
+	cfg.WAL.Enabled = false
+	log, err := logging.Init(cfg.Logging, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	ag, err := agent.New(agent.Options{Config: cfg, Reader: r, Log: log})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	const ghost = uint64(0xABC)
+	meta := agent.MetadataForTest(ag)
+	meta.Insert(ghost, &metadata.TenantMeta{ProjectID: "doomed"})
+	meta.MarkDelete(ghost, time.Now().Add(-time.Second)) // grace already elapsed
+
+	ev := &recordingEvictor{}
+	agent.WireGhostSweeperForTest(ag, ev, 10*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = ag.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	swept := false
+	for time.Now().Before(deadline) {
+		if ev.count() > 0 {
+			if _, ok := meta.Lookup(ghost); !ok {
+				swept = true
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !swept {
+		cancel()
+		<-done
+		t.Fatalf("ghost not swept: evictor calls=%d, still-present=%v", ev.count(), func() bool {
+			_, ok := meta.Lookup(ghost)
+			return ok
+		}())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return within 2s of cancel")
 	}
 }
 

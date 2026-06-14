@@ -30,7 +30,9 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
@@ -65,6 +67,20 @@ type Agent struct {
 	// AttachPrefixes / AttachInterfaces are configured; nil on
 	// darwin and in unit tests that don't need it.
 	netlinkSubscriber cnetlink.Subscriber
+
+	// seq is the boot phase sequencer. Workers that must not run before
+	// a boot phase completes (the ghost sweeper awaits PhaseStateRestored)
+	// block on it. Bootstrap advances it through the startup phases;
+	// unit-test agents constructed via New get a fresh sequencer that
+	// stays at PhaseInit.
+	seq *boot.Sequencer
+
+	// ghostSweeper drops metadata entries whose 60s Lingering-Ghost
+	// grace window has elapsed, deleting kernel-first then userspace.
+	// Set by Linux Bootstrap (it needs the kernel mac_tenant_map
+	// handle); nil on darwin and in unit tests, which disables its
+	// workers() row.
+	ghostSweeper *gc.GhostSweeper
 
 	// neutron carries the whole Neutron subsystem: the resolved
 	// credentials, the API client, its metrics bundle, and the
@@ -127,6 +143,7 @@ func New(opts Options) (*Agent, error) {
 		meta:     meta,
 		neutron:  n,
 		interner: metadata.NewTenantInterner(),
+		seq:      opts.sequencerOrDefault(),
 		buildID:  agentBuildID(),
 	}
 	a.mx = newSubsystemMetrics(n.Metrics())
