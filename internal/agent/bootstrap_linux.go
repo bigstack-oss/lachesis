@@ -215,17 +215,22 @@ func (b *bootstrapper) subscribeNetlink() error {
 	return b.seq.Advance(boot.PhaseAttached)
 }
 
-// wireGC constructs the lingering-ghost sweeper over the kernel
-// mac_tenant_map and hands it to the agent, which runs it as a worker.
-// It establishes no boot phase — it only wires a goroutine that
-// [Agent.Run] starts later, and that goroutine awaits
-// [boot.PhaseStateRestored] itself before its first sweep. The
-// mac_tenant_map must be present (it is the cold-start write target);
-// a missing map is a build-time problem, never a runtime one.
+// wireGC constructs the two GC mechanisms over the kernel maps and
+// hands them to the agent: the lingering-ghost sweeper (its own worker)
+// and the pressure-relief evictor (injected into the scraper, which
+// runs it inline after each drain). It establishes no boot phase — it
+// only wires goroutine work that [Agent.Run] starts later, and the
+// sweeper awaits [boot.PhaseStateRestored] itself. Both maps must be
+// present (they are cold-start write / drain targets); a missing map is
+// a build-time problem, never a runtime one.
 func (b *bootstrapper) wireGC() error {
 	macMap := b.coll.Maps[bpf.MapMacTenant]
 	if macMap == nil {
 		return fmt.Errorf("%s map missing from collection", bpf.MapMacTenant)
+	}
+	telMap := b.coll.Maps[bpf.MapTelemetry]
+	if telMap == nil {
+		return fmt.Errorf("%s map missing from collection", bpf.MapTelemetry)
 	}
 	b.ag.ghostSweeper = gc.New(gc.Options{
 		Meta:    b.ag.meta,
@@ -233,6 +238,18 @@ func (b *bootstrapper) wireGC() error {
 		Seq:     b.ag.seq,
 		Metrics: b.ag.mx.gc,
 	})
+	reliever := gc.NewPressureReliever(gc.PressureOptions{
+		Evictor:       telemetryFlowEvictor{m: telMap},
+		MaxEntries:    bpf.MapTelemetryMaxEntries,
+		Metrics:       b.ag.mx.gc,
+		HighWatermark: b.cfg.GC.PressureHighWatermark,
+		LowWatermark:  b.cfg.GC.PressureLowWatermark,
+		MaxPerPass:    b.cfg.GC.PressureMaxPerPass,
+	})
+	b.ag.scraper.SetEvictor(reliever)
+	// Make the gc.* config hot-reloadable: SIGHUP reloads swap the
+	// reliever's tuning snapshot through this seam.
+	b.ag.runtime.SetPressureTunable(reliever)
 	return nil
 }
 
@@ -246,6 +263,20 @@ type macTenantEvictor struct{ m *ebpf.Map }
 // Delete removes mac from the kernel mac_tenant_map.
 func (e macTenantEvictor) Delete(mac uint64) error {
 	if err := e.m.Delete(&mac); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return err
+	}
+	return nil
+}
+
+// telemetryFlowEvictor adapts the kernel telemetry_map [*ebpf.Map] to
+// the [gc.FlowEvictor] seam the pressure-relief pass deletes through. As
+// with the MAC evictor, a key already gone (ErrKeyNotExist) is success.
+type telemetryFlowEvictor struct{ m *ebpf.Map }
+
+// Delete removes one flow key from the kernel telemetry_map. The map is
+// a PERCPU_HASH; a single Delete drops the key across all CPUs.
+func (e telemetryFlowEvictor) Delete(key bpf.FlowKey) error {
+	if err := e.m.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return err
 	}
 	return nil

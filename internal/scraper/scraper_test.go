@@ -264,3 +264,57 @@ func TestRun_SurvivesReaderErrors(t *testing.T) {
 		t.Errorf("reader.calls = %d, want ≥3 (loop survived the error)", got)
 	}
 }
+
+// flushCheckEvictor records each Relieve call and verifies the drained
+// readings were already applied to GlobalState by the time it runs —
+// the flush-before-evict ordering pressure relief depends on.
+type flushCheckEvictor struct {
+	st       *state.GlobalState
+	probe    bpf.FlowKey
+	calls    int
+	sawFlush bool
+}
+
+func (e *flushCheckEvictor) Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics) {
+	e.calls++
+	for _, ent := range e.st.Snapshot(nil) {
+		if ent.Key == e.probe && ent.Total.Bytes > 0 {
+			e.sawFlush = true
+		}
+	}
+}
+
+func TestTick_InvokesEvictorAfterFlush(t *testing.T) {
+	probe := key(1, 2)
+	r := &fakeReader{returns: []map[bpf.FlowKey]bpf.FlowMetrics{
+		{probe: {Bytes: 100, Packets: 2, LastSeenNs: 10}},
+	}}
+	st := state.New()
+	ev := &flushCheckEvictor{st: st, probe: probe}
+	s := scraper.New(r, st, time.Second)
+	s.SetEvictor(ev)
+
+	if err := s.Tick(); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if ev.calls != 1 {
+		t.Errorf("evictor called %d times, want 1 per tick", ev.calls)
+	}
+	if !ev.sawFlush {
+		t.Error("evictor ran before the drain was applied to GlobalState (flush-before-evict violated)")
+	}
+}
+
+func TestTick_ErroredDrainSkipsEvictor(t *testing.T) {
+	r := &fakeReader{returns: []map[bpf.FlowKey]bpf.FlowMetrics{{}}, errOn: 1}
+	ev := &flushCheckEvictor{st: state.New()}
+	s := scraper.New(r, state.New(), time.Second)
+	s.SetEvictor(ev)
+
+	if err := s.Tick(); err == nil {
+		t.Fatal("Tick should have returned the reader error")
+	}
+	if ev.calls != 0 {
+		t.Errorf("evictor called %d times on a failed drain, want 0", ev.calls)
+	}
+}
