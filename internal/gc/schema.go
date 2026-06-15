@@ -26,15 +26,18 @@ const ghostSweepInterval = 60 * time.Second
 // cubecos_gc_evictions_total.
 const labelReason = "reason"
 
-// reasonTTL and reasonPressureRelief are the two values of the
-// [labelReason] label. ttl is a lingering-ghost expiry deleting a MAC
-// from mac_tenant_map; pressure_relief is an oldest-flow eviction from
-// telemetry_map when it crosses the configured fill high watermark
-// (docs/DESIGN.md §3.1). Both are seeded at zero so the series exist
-// from the first scrape.
+// reason* are the values of the [labelReason] label. ttl is a
+// lingering-ghost expiry deleting a MAC from mac_tenant_map;
+// pressure_relief is an oldest-flow eviction from telemetry_map when it
+// crosses the configured fill high watermark (docs/DESIGN.md §3.1);
+// ghost_residual_flow is a telemetry_map flow deleted because its VM's
+// MAC was swept from mac_tenant_map — the residual counter that would
+// otherwise be re-drained as "unknown" (docs/DESIGN.md §3.3). All are
+// seeded at zero so the series exist from the first scrape.
 const (
-	reasonTTL            = "ttl"
-	reasonPressureRelief = "pressure_relief"
+	reasonTTL               = "ttl"
+	reasonPressureRelief    = "pressure_relief"
+	reasonGhostResidualFlow = "ghost_residual_flow"
 )
 
 // The pressure-relief bounds (fill watermarks and per-pass cap) are not

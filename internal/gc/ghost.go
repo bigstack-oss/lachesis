@@ -45,27 +45,43 @@ type MacEvictor interface {
 	Delete(mac uint64) error
 }
 
+// MacFlowEvictor deletes the kernel telemetry_map flow counters that
+// belong to a set of VM MACs — the residual flows of a deleted VM, which
+// outlive the MAC (the sweep removes mac_tenant_map, not telemetry_map)
+// and would otherwise be re-drained as "unknown" once the MAC leaves the
+// metadata map (docs/DESIGN.md §3.3). The agent wires a telemetry_map
+// adapter that scans by [metadata.VMMAC]; tests wire a recording mock.
+// Optional: a nil evictor skips residual-flow cleanup. Returns the count
+// deleted and the first error encountered (best-effort — a failure just
+// means a flow may re-fold to unknown once).
+type MacFlowEvictor interface {
+	DeleteFlowsForMACs(macs map[uint64]struct{}) (int, error)
+}
+
 // GhostSweeper periodically drops metadata entries whose 60s grace
 // window has elapsed. Construct with [New], then run [GhostSweeper.Run]
 // on a long-lived goroutine.
 type GhostSweeper struct {
-	meta     *metadata.ShardedMetadataMap
-	evictor  MacEvictor
-	seq      *boot.Sequencer
-	mx       *Metrics
-	interval time.Duration
+	meta        *metadata.ShardedMetadataMap
+	evictor     MacEvictor
+	flowEvictor MacFlowEvictor
+	seq         *boot.Sequencer
+	mx          *Metrics
+	interval    time.Duration
 }
 
 // Options bundles the inputs to [New]. Meta, Evictor, and Metrics are
-// required; Seq is optional (nil skips the boot barrier — used by
-// sweep-only unit tests); Interval defaults to the 60s sweep cadence
-// when zero.
+// required; FlowEvictor is optional (nil skips residual-flow cleanup —
+// used by tests without a kernel telemetry_map); Seq is optional (nil
+// skips the boot barrier — used by sweep-only unit tests); Interval
+// defaults to the 60s sweep cadence when zero.
 type Options struct {
-	Meta     *metadata.ShardedMetadataMap
-	Evictor  MacEvictor
-	Seq      *boot.Sequencer
-	Metrics  *Metrics
-	Interval time.Duration
+	Meta        *metadata.ShardedMetadataMap
+	Evictor     MacEvictor
+	FlowEvictor MacFlowEvictor
+	Seq         *boot.Sequencer
+	Metrics     *Metrics
+	Interval    time.Duration
 }
 
 // New constructs a GhostSweeper from opts, applying the default sweep
@@ -76,11 +92,12 @@ func New(opts Options) *GhostSweeper {
 		interval = ghostSweepInterval
 	}
 	return &GhostSweeper{
-		meta:     opts.Meta,
-		evictor:  opts.Evictor,
-		seq:      opts.Seq,
-		mx:       opts.Metrics,
-		interval: interval,
+		meta:        opts.Meta,
+		evictor:     opts.Evictor,
+		flowEvictor: opts.FlowEvictor,
+		seq:         opts.Seq,
+		mx:          opts.Metrics,
+		interval:    interval,
 	}
 }
 
@@ -110,44 +127,101 @@ func (g *GhostSweeper) Run(ctx context.Context) {
 	}
 }
 
-// sweep drops every entry whose DeleteAt has elapsed as of now. It
-// collects the expired MACs under the shard read locks (via Range),
-// then deletes outside the walk — a kernel Delete is a syscall, and
-// metadata.Delete takes a shard write lock, neither of which is safe to
-// call from inside Range. The active-ghosts gauge is set to the count
-// of entries still within their grace window after the pass.
+// sweep removes the ghosts whose grace has elapsed as of now. It is pure
+// orchestration: the load-bearing part is the order of the three delete
+// phases, which is exactly the sequence of calls below.
+//
+//  1. [GhostSweeper.deleteKernelMACs]  — mac_tenant_map, kernel-first for
+//     the kernel ⊆ userspace invariant (docs/DESIGN.md §3.4).
+//  2. [GhostSweeper.evictResidualFlows] — the swept MACs' telemetry_map
+//     flows, BEFORE phase 3.
+//  3. [GhostSweeper.deleteUserspace]   — the metadata map.
+//
+// Phase 2 precedes phase 3 deliberately: the Classifier decides
+// known-vs-unknown off the userspace map, so while a swept MAC is still
+// present there a concurrent scrape classifies its flows as known
+// (harmless). Removing the residual flows first means that once the MAC
+// becomes unknown there is nothing left to re-bill as "unknown"
+// (docs/DESIGN.md §3.3).
 func (g *GhostSweeper) sweep(now time.Time) {
-	var expired []uint64
-	activeGhosts := 0
+	expired, active := g.classify(now)
+	swept := g.deleteKernelMACs(expired)
+	residual := g.evictResidualFlows(swept)
+	g.deleteUserspace(swept)
+	g.report(len(swept), residual, active)
+}
+
+// classify partitions the metadata map as of now into the MACs whose
+// ghost grace has elapsed (returned, ready to sweep) and a count of
+// those still inside it. Collecting under Range's shard read locks and
+// acting afterwards keeps the syscall and write-lock work out of the
+// walk.
+func (g *GhostSweeper) classify(now time.Time) (expired []uint64, active int) {
 	g.meta.Range(func(mac uint64, meta *metadata.TenantMeta) bool {
 		switch {
 		case meta.DeleteAt.IsZero():
 			// Live entry — not a ghost.
 		case meta.DeleteAt.After(now):
-			activeGhosts++ // ghosted, grace not yet elapsed
+			active++ // ghosted, grace not yet elapsed
 		default:
 			expired = append(expired, mac)
 		}
 		return true
 	})
+	return expired, active
+}
 
-	evicted := 0
+// deleteKernelMACs removes each expired MAC from the kernel
+// mac_tenant_map and returns the set that succeeded — the only MACs safe
+// to finish removing. A failed delete leaves the userspace entry in place
+// (preserving kernel ⊆ userspace) for retry on the next sweep.
+func (g *GhostSweeper) deleteKernelMACs(expired []uint64) map[uint64]struct{} {
+	swept := make(map[uint64]struct{}, len(expired))
 	for _, mac := range expired {
 		if err := g.evictor.Delete(mac); err != nil {
-			// Keep the userspace entry so the kernel⊆userspace invariant
-			// holds; retry on the next sweep.
 			slog.Warn("ghost kernel delete failed; retaining userspace entry for next sweep",
 				"component", component, "mac", mac, "err", err)
 			continue
 		}
-		g.meta.Delete(mac)
-		evicted++
+		swept[mac] = struct{}{}
 	}
+	return swept
+}
 
+// evictResidualFlows deletes the swept MACs' residual telemetry_map flows
+// and returns the flow count removed. No-op when no flow evictor is wired
+// (darwin, tests) or nothing was swept. A failure is logged, not fatal —
+// the worst case is a flow re-folding to "unknown" once.
+func (g *GhostSweeper) evictResidualFlows(swept map[uint64]struct{}) int {
+	if g.flowEvictor == nil || len(swept) == 0 {
+		return 0
+	}
+	n, err := g.flowEvictor.DeleteFlowsForMACs(swept)
+	if err != nil {
+		slog.Warn("ghost residual-flow eviction failed; some flows may re-fold to unknown once",
+			"component", component, "err", err)
+	}
+	return n
+}
+
+// deleteUserspace drops the swept MACs from the userspace metadata map.
+// Runs last so a MAC never becomes unknown while its residual flows still
+// exist (docs/DESIGN.md §3.3).
+func (g *GhostSweeper) deleteUserspace(swept map[uint64]struct{}) {
+	for mac := range swept {
+		g.meta.Delete(mac)
+	}
+}
+
+// report records the pass's outcome on the GC metrics and logs a line
+// when anything was swept.
+func (g *GhostSweeper) report(evicted, residual, active int) {
 	g.mx.RecordTTLEvictions(evicted)
-	g.mx.SetGhostsActive(activeGhosts)
+	g.mx.RecordResidualFlowEvictions(residual)
+	g.mx.SetGhostsActive(active)
 	if evicted > 0 {
 		slog.Info("swept expired lingering ghosts",
-			"component", component, "evicted", evicted, "still_active", activeGhosts)
+			"component", component, "evicted", evicted,
+			"residual_flows", residual, "still_active", active)
 	}
 }
