@@ -37,6 +37,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/reconcile"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
@@ -89,6 +90,14 @@ type Agent struct {
 	// `coldStartNeutron` (and the future Kafka updater) drive it via
 	// Sync/Commit.
 	neutron *neutron.Neutron
+
+	// reconciler periodically re-syncs Neutron and applies the trie
+	// delta to the kernel, bounding metadata staleness to one interval
+	// if Kafka is unavailable. Set by Linux Bootstrap when Neutron is
+	// enabled (it needs the kernel subnet_zone_trie handle); nil on
+	// darwin, in unit tests, and when Neutron is disabled — which
+	// disables its workers() row.
+	reconciler *reconcile.Reconciler
 
 	// meta is the userspace MAC → TenantMeta store. Constructed
 	// empty in [New]; populated by Bootstrap from Neutron and, in

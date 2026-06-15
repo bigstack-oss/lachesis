@@ -13,6 +13,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/reconcile"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/unresolved"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
@@ -33,6 +34,7 @@ type subsystemMetrics struct {
 	netlink    *cnetlink.Metrics
 	gc         *gc.Metrics
 	unresolved *unresolved.Metrics
+	reconcile  *reconcile.Metrics
 	registry   *cnetlink.Registry
 }
 
@@ -63,6 +65,7 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics) subsystemMetrics {
 		netlink:    cnetlink.NewMetrics(nlReg.Len),
 		gc:         gc.NewMetrics(),
 		unresolved: unresolved.NewMetrics(),
+		reconcile:  reconcile.NewMetrics(),
 		registry:   nlReg,
 	}
 }
@@ -124,5 +127,6 @@ func (m subsystemMetrics) registrations() []labelledCollectors {
 		{componentNetlink, m.netlink.Collectors()},
 		{componentGC, m.gc.Collectors()},
 		{componentUnresolved, m.unresolved.Collectors()},
+		{componentReconcile, m.reconcile.Collectors()},
 	}
 }

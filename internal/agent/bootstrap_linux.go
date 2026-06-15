@@ -19,6 +19,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/reconcile"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/unresolved"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
@@ -68,6 +69,7 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		{"cold-start Neutron", b.coldStart},
 		{"subscribe netlink", b.subscribeNetlink},
 		{"wire GC", b.wireGC},
+		{"wire reconcile", b.wireReconcile},
 		{"prepare WAL directory", b.prepareWALDir},
 		{"restore WAL", b.restoreWAL},
 	})
@@ -264,6 +266,32 @@ func (b *bootstrapper) wireGC() error {
 		Metrics: b.ag.mx.unresolved,
 	})
 	b.ag.scraper.SetSink(unresolved.NewClassifier(b.ag.state, b.ag.meta, buf))
+	return nil
+}
+
+// wireReconcile constructs the periodic Neutron reconciler over the
+// kernel subnet_zone_trie and hands it to the agent as its own worker.
+// It establishes no boot phase — the reconciler awaits
+// [boot.PhaseStateRestored] itself before its first pass. Skipped when
+// Neutron is disabled: there is no metadata to keep fresh, so the
+// workers() row stays off. *neutron.Neutron satisfies the reconciler's
+// MetadataSource seam structurally. A missing trie map is a build-time
+// problem, never a runtime one.
+func (b *bootstrapper) wireReconcile() error {
+	if !b.cfg.Neutron.Enabled {
+		return nil
+	}
+	trieMap := b.coll.Maps[bpf.MapSubnetZoneTrie]
+	if trieMap == nil {
+		return fmt.Errorf("%s map missing from collection", bpf.MapSubnetZoneTrie)
+	}
+	b.ag.reconciler = reconcile.New(reconcile.Options{
+		Source:   b.ag.neutron,
+		Trie:     trieMap,
+		Interner: b.ag.interner,
+		Seq:      b.ag.seq,
+		Metrics:  b.ag.mx.reconcile,
+	})
 	return nil
 }
 
