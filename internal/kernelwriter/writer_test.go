@@ -12,19 +12,32 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 )
 
-// fakeMap is a [MapUpdater] that records every update. failAt, when
-// non-empty, makes the N-th update (1-indexed) return that error so
-// tests can exercise the partial-failure path.
+// fakeMap is a [MapUpdateDeleter] that records every update and delete.
+// failAt, when non-empty, makes the N-th update (1-indexed) return that
+// error so tests can exercise the partial-failure path; failDeleteAt
+// does the same for deletes. ops is the interleaved operation log the
+// delta tests use to assert the §5.7 upsert-before-delete ordering.
 type fakeMap struct {
-	updates []update
-	failAt  map[int]error
-	calls   int
+	updates      []update
+	deletes      []any
+	ops          []fakeOp
+	failAt       map[int]error
+	failDeleteAt map[int]error
+	calls        int
+	deleteCalls  int
 }
 
 type update struct {
 	key   any
 	value any
 	flags ebpf.MapUpdateFlags
+}
+
+// fakeOp records the kind ("update"/"delete") of each map mutation in
+// call order, so a test can verify no delete precedes any update.
+type fakeOp struct {
+	kind string
+	key  any
 }
 
 func (f *fakeMap) Update(k, v any, flags ebpf.MapUpdateFlags) error {
@@ -52,6 +65,23 @@ func (f *fakeMap) Update(k, v any, flags ebpf.MapUpdateFlags) error {
 		rec.value = v
 	}
 	f.updates = append(f.updates, rec)
+	f.ops = append(f.ops, fakeOp{kind: "update", key: rec.key})
+	return nil
+}
+
+// Delete records the key (deref'd for LpmKey so it isn't aliased) and
+// honours failDeleteAt for the partial-failure path.
+func (f *fakeMap) Delete(k any) error {
+	f.deleteCalls++
+	if err, ok := f.failDeleteAt[f.deleteCalls]; ok {
+		return err
+	}
+	var key any = k
+	if kk, ok := k.(*bpf.LpmKey); ok {
+		key = *kk
+	}
+	f.deletes = append(f.deletes, key)
+	f.ops = append(f.ops, fakeOp{kind: "delete", key: key})
 	return nil
 }
 
