@@ -53,25 +53,30 @@ type MetadataSource interface {
 // a fresh Neutron snapshot. Construct with [New], then run
 // [Reconciler.Run] on a long-lived goroutine.
 type Reconciler struct {
-	src      MetadataSource
-	trie     kernelwriter.MapUpdateDeleter
-	interner *metadata.TenantInterner
-	seq      *boot.Sequencer
-	mx       *Metrics
-	interval time.Duration
+	src       MetadataSource
+	trie      kernelwriter.MapUpdateDeleter
+	meta      *metadata.ShardedMetadataMap
+	macWriter MacWriter
+	interner  *metadata.TenantInterner
+	seq       *boot.Sequencer
+	mx        *Metrics
+	interval  time.Duration
 }
 
 // Options bundles the inputs to [New]. Source, Trie, Interner, and
-// Metrics are required; Seq is optional (nil skips the boot barrier,
-// used by reconcileOnce unit tests); Interval defaults to
-// [defaultInterval] when zero.
+// Metrics are required. Meta and MacWriter enable the mac_tenant_map
+// reconcile; both nil (the trie-only unit tests) skips it. Seq is
+// optional (nil skips the boot barrier, used by reconcileOnce unit
+// tests); Interval defaults to [defaultInterval] when zero.
 type Options struct {
-	Source   MetadataSource
-	Trie     kernelwriter.MapUpdateDeleter
-	Interner *metadata.TenantInterner
-	Seq      *boot.Sequencer
-	Metrics  *Metrics
-	Interval time.Duration
+	Source    MetadataSource
+	Trie      kernelwriter.MapUpdateDeleter
+	Meta      *metadata.ShardedMetadataMap
+	MacWriter MacWriter
+	Interner  *metadata.TenantInterner
+	Seq       *boot.Sequencer
+	Metrics   *Metrics
+	Interval  time.Duration
 }
 
 // New constructs a Reconciler from opts, applying the default interval
@@ -82,12 +87,14 @@ func New(opts Options) *Reconciler {
 		interval = defaultInterval
 	}
 	return &Reconciler{
-		src:      opts.Source,
-		trie:     opts.Trie,
-		interner: opts.Interner,
-		seq:      opts.Seq,
-		mx:       opts.Metrics,
-		interval: interval,
+		src:       opts.Source,
+		trie:      opts.Trie,
+		meta:      opts.Meta,
+		macWriter: opts.MacWriter,
+		interner:  opts.Interner,
+		seq:       opts.Seq,
+		mx:        opts.Metrics,
+		interval:  interval,
 	}
 }
 
@@ -119,24 +126,47 @@ func (r *Reconciler) Run(ctx context.Context) {
 }
 
 // reconcileOnce runs one full reconcile pass: fetch a fresh snapshot,
-// apply the trie delta against the last committed state, and commit on
-// success. Each terminal outcome increments cubecos_reconcile_runs_total
-// exactly once.
-//
-// On a Sync failure nothing is touched. On a kernel-apply failure the
-// new state is deliberately NOT committed: the retained trie stays the
-// "old" side, so the next pass re-diffs against it and retries the
-// failed writes (and any deletes [kernelwriter.ApplyTrieDelta] skipped
-// after the failure) rather than treating the partial state as done.
+// apply the trie and mac_tenant_map deltas against current state, and
+// commit on success. Orchestration only — each step records its own
+// terminal outcome on cubecos_reconcile_runs_total and signals whether
+// the pass may continue.
 func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
+	result, ok := r.fetch(ctx)
+	if !ok {
+		return
+	}
+	delta, ok := r.applyTrie(result)
+	if !ok {
+		return
+	}
+	mac := r.reconcileMACs(result.Snapshot.Ports, now)
+
+	r.src.Commit(result, now)
+	r.mx.RecordRun(resultOK)
+	r.logOutcome(delta, mac, len(result.Ambiguities))
+}
+
+// fetch runs one Sync. On failure it records a sync_error and returns
+// ok=false, so the rest of the pass is skipped and metadata staleness
+// grows until a later pass succeeds.
+func (r *Reconciler) fetch(ctx context.Context) (neutron.SyncResult, bool) {
 	result, err := r.src.Sync(ctx)
 	if err != nil {
 		slog.Warn("reconcile sync failed; metadata staleness grows until the next pass succeeds",
 			"component", component, "err", err)
 		r.mx.RecordRun(resultSyncError)
-		return
+		return neutron.SyncResult{}, false
 	}
+	return result, true
+}
 
+// applyTrie applies the subnet_zone_trie delta against the last committed
+// trie. On a kernel-write failure it records an apply_error and returns
+// ok=false so the caller does NOT commit: the retained trie stays the
+// "old" side, so the next pass re-diffs against it and retries the failed
+// writes (and any deletes [kernelwriter.ApplyTrieDelta] skipped after the
+// failure) rather than treating the partial state as done.
+func (r *Reconciler) applyTrie(result neutron.SyncResult) (kernelwriter.TrieDelta, bool) {
 	delta, err := kernelwriter.ApplyTrieDelta(r.trie, r.src.Trie(), result.Entries, r.interner)
 	if err != nil {
 		slog.Error("reconcile trie apply failed; not committing — next pass re-diffs and retries",
@@ -144,22 +174,29 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 			"added", delta.Added, "changed", delta.Changed, "removed", delta.Removed,
 			"err", err)
 		r.mx.RecordRun(resultApplyError)
-		return
+		return delta, false
 	}
+	return delta, true
+}
 
-	r.src.Commit(result, now)
-	r.mx.RecordRun(resultOK)
-
+// logOutcome reports a committed pass: trie and MAC deltas log only when
+// non-empty, and runtime static-route ambiguities log as a warning —
+// unlike cold-start (which can abort under strict mode), a running agent
+// applies the EXTERNAL fallback already baked into the entries and
+// continues.
+func (r *Reconciler) logOutcome(delta kernelwriter.TrieDelta, mac macDelta, ambiguities int) {
 	if delta != (kernelwriter.TrieDelta{}) {
 		slog.Info("reconcile applied trie delta",
 			"component", component,
 			"added", delta.Added, "changed", delta.Changed, "removed", delta.Removed)
 	}
-	// Runtime ambiguities resolve to EXTERNAL fallback in the entries
-	// already; unlike cold-start (which can abort under strict mode), a
-	// running agent applies and logs rather than stopping.
-	if n := len(result.Ambiguities); n > 0 {
+	if mac != (macDelta{}) {
+		slog.Info("reconcile applied mac_tenant_map delta",
+			"component", component,
+			"inserted", mac.Inserted, "changed", mac.Changed, "ghosted", mac.Ghosted)
+	}
+	if ambiguities > 0 {
 		slog.Warn("reconcile: static-route ambiguities resolved to EXTERNAL fallback",
-			"component", component, "count", n)
+			"component", component, "count", ambiguities)
 	}
 }
