@@ -32,6 +32,14 @@ type TenantMeta struct {
 	DeleteAt time.Time
 }
 
+// GhostGrace is the lingering-ghost window (docs/DESIGN.md §3.3):
+// [ShardedMetadataMap.MarkDelete] callers set DeleteAt = now + GhostGrace,
+// and the GC sweeps the entry once it elapses. The single source of truth
+// for the value every MarkDelete caller uses (the Neutron reconcile and,
+// later, the Kafka consumer); the effective grace is GhostGrace plus up to
+// one GC sweep interval.
+const GhostGrace = 60 * time.Second
+
 // numShards is the fixed shard count. Must be a power of two so the
 // `mac & (numShards-1)` index is a single AND.
 const numShards = 64

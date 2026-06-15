@@ -287,12 +287,18 @@ func (b *bootstrapper) wireReconcile() error {
 	if trieMap == nil {
 		return fmt.Errorf("%s map missing from collection", bpf.MapSubnetZoneTrie)
 	}
+	macMap := b.coll.Maps[bpf.MapMacTenant]
+	if macMap == nil {
+		return fmt.Errorf("%s map missing from collection", bpf.MapMacTenant)
+	}
 	b.ag.reconciler = reconcile.New(reconcile.Options{
-		Source:   b.ag.neutron,
-		Trie:     trieMap,
-		Interner: b.ag.interner,
-		Seq:      b.ag.seq,
-		Metrics:  b.ag.mx.reconcile,
+		Source:    b.ag.neutron,
+		Trie:      trieMap,
+		Meta:      b.ag.meta,
+		MacWriter: macTenantWriter{m: macMap},
+		Interner:  b.ag.interner,
+		Seq:       b.ag.seq,
+		Metrics:   b.ag.mx.reconcile,
 	})
 	return nil
 }
@@ -310,6 +316,17 @@ func (e macTenantEvictor) Delete(mac uint64) error {
 		return err
 	}
 	return nil
+}
+
+// macTenantWriter adapts a kernel mac_tenant_map [*ebpf.Map] to the
+// [reconcile.MacWriter] seam: the reconcile worker inserts a learned MAC's
+// interned tenant id through it (upsert). Removals are not its concern —
+// those go through the lingering-ghost path (userspace MarkDelete + GC).
+type macTenantWriter struct{ m *ebpf.Map }
+
+// Update upserts mac → tenantID in the kernel mac_tenant_map.
+func (w macTenantWriter) Update(mac uint64, tenantID uint32) error {
+	return w.m.Update(&mac, &tenantID, ebpf.UpdateAny)
 }
 
 // telemetryFlowEvictor adapts the kernel telemetry_map [*ebpf.Map] to
