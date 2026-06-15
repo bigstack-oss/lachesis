@@ -14,10 +14,23 @@ replaces the earlier per-topic set; its rows:
 | Neutron             | API error rate, BuildTrie step durations, unknown device_owner |
 | WAL                 | per-phase p99 latency, flush failures, load fallbacks |
 | Netlink / TC        | attached-interface trend, attach failures, zombie cleanups |
+| GC & Eviction       | UnresolvedBuffer depth (vs the 10k cap), GC/buffer eviction & pressure-relief rates, lingering ghosts |
 
 The dashboard selects its Prometheus through a `datasource` template
 variable, so the same JSON imports cleanly into any Grafana that has
 a Prometheus datasource (e.g. a staging host's own Grafana).
+
+## Alerting
+
+`alerts.rules.yml` (loaded via `rule_files` in `prometheus.yml`) ships
+one paging rule: **`CubecosTelemetryMapInsertFailures`** fires when
+`cubecos_bpf_update_failures_total{reason="update_failure"}` rises —
+the kernel dropped flows because `telemetry_map` filled, which the
+pressure-relief GC is meant to prevent, so any firing is active billing
+loss. It carries `severity="page"`; route that to the on-call via
+Alertmanager in a real deployment. The local stack has no Alertmanager,
+so a firing rule shows in Prometheus's `/alerts` UI
+(<http://localhost:9091/alerts>) only.
 
 ## Default profile — visualisation only
 

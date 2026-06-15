@@ -4,6 +4,12 @@ global:
   external_labels:
     monitor: cubecos-local
 
+# Alerting rules. severity="page" routes to the on-call via Alertmanager
+# in a real deployment; the local demo ships no Alertmanager, so firing
+# rules surface in Prometheus's /alerts UI instead.
+rule_files:
+  - /etc/prometheus/alerts.rules.yml
+
 scrape_configs:
   # The agent. Edit the target if you run the agent somewhere other
   # than the host machine reachable via the Docker host gateway.

@@ -1,0 +1,34 @@
+# Prometheus alerting rules for the CubeCOS network-telemetry agent.
+#
+# Loaded via rule_files in prometheus.yml. In a real deployment these
+# route through Alertmanager; the severity="page" label is the routing
+# contract for "wake the on-call". The local demo compose ships no
+# Alertmanager, so a firing rule simply shows up in Prometheus's
+# /alerts UI (pending → firing) rather than actually paging.
+groups:
+  - name: cubecos-telemetry
+    rules:
+      # telemetry_map insert failures mean the kernel rejected a flow
+      # because the map was full — those bytes are lost outright. The
+      # pressure-relief GC keeps the map below its high watermark, so
+      # with the GC running this must never fire; any occurrence is both
+      # active billing loss and a sign the GC is not keeping up (or the
+      # host has outgrown telemetry_map max_entries). increase()[5m] so
+      # the alert clears once the loss stops, rather than latching on the
+      # cumulative counter forever.
+      - alert: CubecosTelemetryMapInsertFailures
+        expr: increase(cubecos_bpf_update_failures_total{reason="update_failure"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: 'telemetry_map inserts failing on {{ $labels.instance }} — billing bytes are being lost'
+          description: >-
+            cubecos_bpf_update_failures_total{reason="update_failure"} is rising:
+            the kernel rejected telemetry_map inserts because the map is full, so
+            those flows' bytes are lost. Pressure-relief GC should hold the map
+            below its high watermark, so this should never fire while the GC is
+            healthy. Check the dashboard's "BPF Maps" (fill ratio) and
+            "GC & Eviction" (pressure-relief runs/evictions) rows: either the GC
+            is wedged / not keeping up, or the deployment has outgrown
+            telemetry_map max_entries and the agent must be rebuilt larger.
