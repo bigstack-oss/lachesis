@@ -750,7 +750,7 @@
           "show": false
         }
       },
-      "description": "Lifetime billed bytes per (zone, direction). Cumulative across agent restarts — the WAL preserves continuity."
+      "description": "Lifetime billed bytes per (zone, direction). Cumulative across agent restarts \u2014 the WAL preserves continuity."
     },
     {
       "id": 102,
@@ -1568,6 +1568,231 @@
         }
       },
       "description": "Orphaned TC filters removed at boot, left over from a previous crashed run. Nonzero after a clean restart deserves a look."
+    },
+    {
+      "id": 107,
+      "title": "GC & Eviction",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 67,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 70,
+      "title": "UnresolvedBuffer depth",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 68,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cubecos_unresolved_buffer_depth",
+          "legendFormat": "depth",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 9000
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "UnresolvedBuffer occupancy. Hard cap 10,000 (memory bound, Contract #1); SLO is <1000 sustained. Yellow=SLO breach, red=near-cap panic. Sustained near-cap means a no-Neutron deployment, an unknown-MAC flood, or a Kafka outage (S7)."
+    },
+    {
+      "id": 71,
+      "title": "GC evictions & runs (rate over 5m)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 68,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(cubecos_gc_evictions_total[5m])",
+          "legendFormat": "gc {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "rate(cubecos_unresolved_buffer_evictions_total[5m])",
+          "legendFormat": "buffer {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "rate(cubecos_gc_pressure_relief_runs_total[5m])",
+          "legendFormat": "pressure-relief runs",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Per-second eviction activity. gc ttl = lingering-ghost expiry (mac_tenant_map); gc pressure_relief = oldest-flow eviction at >80% telemetry_map fill; buffer lru/expired = UnresolvedBuffer entries folded to \"unknown\"."
+    },
+    {
+      "id": 72,
+      "title": "Lingering ghosts & late-binding",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 68,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cubecos_lingering_ghosts_active",
+          "legendFormat": "ghosts active",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "rate(cubecos_unresolved_resolved_total[5m])",
+          "legendFormat": "resolved/s",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Lingering ghosts = metadata entries inside the 60s deletion grace window. resolved/s is the late-binding success path \u2014 stays zero until the Kafka consumer (S7) can resolve a buffered MAC."
     }
   ],
   "refresh": "10s",
@@ -1594,8 +1819,8 @@
     "to": "now"
   },
   "timepicker": {},
-  "title": "CubeCOS · Network Telemetry",
+  "title": "CubeCOS \u00b7 Network Telemetry",
   "uid": "cubecos-telemetry",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
