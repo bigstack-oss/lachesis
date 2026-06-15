@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
@@ -20,12 +22,72 @@ func newClassifier(t *testing.T) (*Classifier, *state.GlobalState, *metadata.Sha
 
 // stateHas reports whether GlobalState holds key with a positive byte total.
 func stateHas(st *state.GlobalState, key bpf.FlowKey) bool {
+	return stateBytes(st, key) > 0
+}
+
+// stateBytes returns the byte total GlobalState holds for key, or 0.
+func stateBytes(st *state.GlobalState, key bpf.FlowKey) uint64 {
 	for _, e := range st.Snapshot(nil) {
-		if e.Key == key && e.Total.Bytes > 0 {
-			return true
+		if e.Key == key {
+			return e.Total.Bytes
 		}
 	}
-	return false
+	return 0
+}
+
+// TestClassifier_LateBindingResolvesToTenant exercises the full
+// late-binding path: a flow buffered while its MAC is unknown is handed
+// to the right tenant on the first drain after the MAC becomes known,
+// with no double-count and without resetting the live kernel entry.
+func TestClassifier_LateBindingResolvesToTenant(t *testing.T) {
+	st := state.New()
+	meta := metadata.New()
+	mx := NewMetrics()
+	ev := &recordingEvictor{}
+	clk := &fakeClock{t: time.Unix(1000, 0)}
+	buf := NewBuffer(Options{State: st, Evictor: ev, Metrics: mx, TTL: time.Minute, Now: clk.now})
+	c := NewClassifier(st, meta, buf)
+
+	key := flowKey(42, bpf.ZoneExternal, bpf.DirectionEgress)
+
+	// Unknown MAC: two readings accumulate in the buffer (cumulative 1500).
+	c.Absorb(key, bpf.FlowMetrics{Bytes: 1000, Packets: 5, LastSeenNs: 1})
+	c.Absorb(key, bpf.FlowMetrics{Bytes: 1500, Packets: 8, LastSeenNs: 2})
+	if buf.Len() != 1 {
+		t.Fatalf("buffer len = %d, want 1", buf.Len())
+	}
+	if stateHas(st, key) {
+		t.Fatal("unknown flow leaked into GlobalState before resolve")
+	}
+
+	// A reconcile / Kafka event makes the MAC known.
+	meta.Insert(metadata.VMMAC(key), &metadata.TenantMeta{ProjectID: "tenant-late"})
+
+	// First drain after the MAC is known: resolve + integrate current reading.
+	c.Absorb(key, bpf.FlowMetrics{Bytes: 1800, Packets: 9, LastSeenNs: 3})
+
+	if buf.Len() != 0 {
+		t.Errorf("buffer not drained after resolve: len = %d", buf.Len())
+	}
+	if got := stateBytes(st, key); got != 1800 {
+		t.Errorf("resolved total = %d bytes, want 1800 (full cumulative, no double-count)", got)
+	}
+	if n := testutil.ToFloat64(mx.resolved); n != 1 {
+		t.Errorf("cubecos_unresolved_resolved_total = %v, want 1", n)
+	}
+	if len(ev.deleted) != 0 {
+		t.Errorf("resolve reset the kernel entry (%d deletes); a resolved flow must keep counting", len(ev.deleted))
+	}
+
+	// Continued counting: a later reading adds only its delta, and the
+	// resolved counter does not re-increment.
+	c.Absorb(key, bpf.FlowMetrics{Bytes: 2000, Packets: 10, LastSeenNs: 4})
+	if got := stateBytes(st, key); got != 2000 {
+		t.Errorf("post-resolve total = %d bytes, want 2000", got)
+	}
+	if n := testutil.ToFloat64(mx.resolved); n != 1 {
+		t.Errorf("resolved counter re-incremented = %v, want 1", n)
+	}
 }
 
 func TestClassifier_KnownToStateUnknownToBuffer(t *testing.T) {

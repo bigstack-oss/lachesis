@@ -30,8 +30,19 @@ func NewClassifier(st *state.GlobalState, meta *metadata.ShardedMetadataMap, buf
 
 // Absorb integrates one drained reading. Known VM-MAC → GlobalState
 // delta math; unknown → buffer.
+//
+// Late binding: a MAC that was unknown when the flow was first buffered
+// can become known between scrapes (a Neutron reconcile or Kafka
+// port.created inserts it into the metadata map). On the first drain
+// after that, [Buffer.Resolve] hands the buffered bytes to the right
+// tenant and seeds the delta baseline before [GlobalState.ApplyDelta]
+// integrates the current reading — so the same bytes are never counted
+// twice and the pre-resolve traffic is attributed correctly instead of
+// folding to "unknown" at TTL. Resolve is a no-op when nothing was
+// buffered for the key (the common steady-state path).
 func (c *Classifier) Absorb(key bpf.FlowKey, raw bpf.FlowMetrics) {
 	if _, known := c.meta.Lookup(metadata.VMMAC(key)); known {
+		c.buffer.Resolve(key)
 		c.state.ApplyDelta(key, raw)
 		return
 	}
