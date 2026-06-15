@@ -43,6 +43,20 @@ type Evictor interface {
 	Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics)
 }
 
+// FlowSink classifies each drained reading: known VM-MAC flows go to
+// GlobalState, unknown ones to the UnresolvedBuffer (docs/DESIGN.md
+// §3.2). When set, it replaces the scraper's default straight-to-
+// GlobalState [state.GlobalState.ApplyDelta] for every entry. [Sweep]
+// runs once per tick to age out buffered entries; force=true on the
+// shutdown final tick folds the whole buffer so no unknown bytes are
+// lost to the final WAL flush. nil (the default) keeps the legacy
+// direct-to-GlobalState path — off-Linux and in unit tests that don't
+// wire one.
+type FlowSink interface {
+	Absorb(key bpf.FlowKey, raw bpf.FlowMetrics)
+	Sweep(force bool)
+}
+
 // Scraper periodically drains a [MapReader] and updates a
 // [state.GlobalState]. Construct one with [New], then call [Scraper.Run]
 // on a long-lived goroutine.
@@ -61,6 +75,13 @@ type Scraper struct {
 	// goroutine (it needs the kernel map handle); nil otherwise. Read
 	// only from the single scrape goroutine, so it needs no lock.
 	evictor Evictor
+
+	// sink, when set, classifies each drained reading (known →
+	// GlobalState, unknown → UnresolvedBuffer) and ages the buffer once
+	// per tick. nil keeps the legacy direct-ApplyDelta path. Like
+	// evictor, wired once before Run and touched only by the scrape
+	// goroutine.
+	sink FlowSink
 
 	errors atomic.Uint64
 	lastOK atomic.Int64 // unix seconds; 0 = never succeeded
@@ -82,6 +103,12 @@ func New(reader MapReader, st *state.GlobalState, interval time.Duration) *Scrap
 // kernel telemetry_map handle. Passing nil leaves pressure relief
 // disabled.
 func (s *Scraper) SetEvictor(e Evictor) { s.evictor = e }
+
+// SetSink wires the unknown-MAC classifier. Call once before [Run]
+// starts the scrape goroutine. Passing nil keeps the legacy
+// direct-to-GlobalState path (every flow integrated regardless of
+// whether its MAC is known).
+func (s *Scraper) SetSink(sink FlowSink) { s.sink = sink }
 
 // Run drives the scrape loop until ctx is cancelled. The first tick
 // fires immediately so /metrics has data within one interval of
@@ -105,6 +132,12 @@ func (s *Scraper) Run(ctx context.Context) {
 			if err := s.Tick(); err != nil {
 				slog.Warn("final tick failed", "component", componentScraper, "err", err)
 			}
+			// Fold the whole UnresolvedBuffer into GlobalState so the
+			// WAL final flush (drained after this goroutine) captures the
+			// last unknown bytes instead of dropping them with the buffer.
+			if s.sink != nil {
+				s.sink.Sweep(true)
+			}
 			return
 		case <-t.C:
 			if err := s.Tick(); err != nil {
@@ -122,8 +155,19 @@ func (s *Scraper) Tick() error {
 		s.errors.Add(1)
 		return err
 	}
-	for k, v := range s.buf {
-		s.state.ApplyDelta(k, v)
+	// Integrate each reading. With a sink wired, it classifies known vs
+	// unknown (unknown diverts to the UnresolvedBuffer); otherwise every
+	// reading goes straight to GlobalState. The no-sink branch stays a
+	// direct call so the default path takes no interface dispatch.
+	if s.sink != nil {
+		for k, v := range s.buf {
+			s.sink.Absorb(k, v)
+		}
+		s.sink.Sweep(false) // age out expired buffered flows
+	} else {
+		for k, v := range s.buf {
+			s.state.ApplyDelta(k, v)
+		}
 	}
 	s.lastOK.Store(time.Now().Unix())
 	// Relieve telemetry_map pressure after the flush: every byte in buf

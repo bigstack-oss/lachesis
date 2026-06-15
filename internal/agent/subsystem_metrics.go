@@ -14,6 +14,7 @@ import (
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/unresolved"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
 )
@@ -25,13 +26,14 @@ import (
 // netlink subscriber (when non-nil) but also read by the netlink
 // metrics for its current-size gauge.
 type subsystemMetrics struct {
-	wal      *wal.Metrics
-	neutron  *neutron.Metrics
-	bpf      *bpf.Metrics
-	zombie   *zombie.Metrics
-	netlink  *cnetlink.Metrics
-	gc       *gc.Metrics
-	registry *cnetlink.Registry
+	wal        *wal.Metrics
+	neutron    *neutron.Metrics
+	bpf        *bpf.Metrics
+	zombie     *zombie.Metrics
+	netlink    *cnetlink.Metrics
+	gc         *gc.Metrics
+	unresolved *unresolved.Metrics
+	registry   *cnetlink.Registry
 }
 
 // newSubsystemMetrics constructs every subsystem's instrument bundle.
@@ -54,13 +56,14 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics) subsystemMetrics {
 	bpfMx.SetCurrent(bpf.MapTelemetry, 0)
 
 	return subsystemMetrics{
-		wal:      wal.NewMetrics(),
-		neutron:  neutronMx,
-		bpf:      bpfMx,
-		zombie:   zombie.NewMetrics(),
-		netlink:  cnetlink.NewMetrics(nlReg.Len),
-		gc:       gc.NewMetrics(),
-		registry: nlReg,
+		wal:        wal.NewMetrics(),
+		neutron:    neutronMx,
+		bpf:        bpfMx,
+		zombie:     zombie.NewMetrics(),
+		netlink:    cnetlink.NewMetrics(nlReg.Len),
+		gc:         gc.NewMetrics(),
+		unresolved: unresolved.NewMetrics(),
+		registry:   nlReg,
 	}
 }
 
@@ -120,5 +123,6 @@ func (m subsystemMetrics) registrations() []labelledCollectors {
 		{componentZombie, m.zombie.Collectors()},
 		{componentNetlink, m.netlink.Collectors()},
 		{componentGC, m.gc.Collectors()},
+		{componentUnresolved, m.unresolved.Collectors()},
 	}
 }

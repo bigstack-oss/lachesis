@@ -21,15 +21,23 @@ func NewResolver(m *ShardedMetadataMap) *Resolver {
 	return &Resolver{m: m}
 }
 
+// VMMAC returns the VM-side MAC of key as a [bpf.MACKey] u64, applying
+// the directional swap (CLAUDE.md "Critical Invariants" and
+// bpf/telemetry.c `handle_packet`): on INGRESS the VM is the source, on
+// EGRESS the destination. It is the single source of the swap rule —
+// both [Resolver.ResolveTenant] and the UnresolvedBuffer classifier
+// key off it, so the "which MAC is the VM" decision lives in exactly
+// one place.
+func VMMAC(key bpf.FlowKey) uint64 {
+	if key.Direction == bpf.DirectionIngress {
+		return bpf.MACKey(key.SrcMac)
+	}
+	return bpf.MACKey(key.DstMac)
+}
+
 // ResolveTenant satisfies the `metrics.TenantResolver` interface.
 func (r *Resolver) ResolveTenant(key bpf.FlowKey) string {
-	var vmMAC [6]uint8
-	if key.Direction == bpf.DirectionIngress {
-		vmMAC = key.SrcMac
-	} else {
-		vmMAC = key.DstMac
-	}
-	meta, ok := r.m.Lookup(bpf.MACKey(vmMAC))
+	meta, ok := r.m.Lookup(VMMAC(key))
 	if !ok {
 		return UnknownTenantID
 	}

@@ -252,3 +252,40 @@ func TestConcurrent_ApplyAndSnapshot(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestAdd_AccumulatesMonotonicallyWithoutDeltaMath(t *testing.T) {
+	g := state.New()
+	// Add is additive: two Adds sum, with no delta math against a raw
+	// reading (the UnresolvedBuffer fold path).
+	g.Add(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 2, LastSeenNs: 10})
+	g.Add(keyA(), bpf.FlowMetrics{Bytes: 250, Packets: 3, LastSeenNs: 5}) // older LastSeenNs ignored
+
+	dst := g.Snapshot(nil)
+	if len(dst) != 1 {
+		t.Fatalf("Snapshot returned %d entries, want 1", len(dst))
+	}
+	got := dst[0].Total
+	want := bpf.FlowMetrics{Bytes: 350, Packets: 5, LastSeenNs: 10}
+	if got != want {
+		t.Errorf("Add Total = %+v, want %+v", got, want)
+	}
+}
+
+func TestAdd_DoesNotPrimeDeltaBaseline(t *testing.T) {
+	// A key only ever touched by Add must keep its LastEbpfRaw at zero so
+	// it stays a pure additive ("unknown") series; Add never reads it.
+	// We can't see LastEbpfRaw directly, but a WAL round-trip exposes the
+	// Counter — assert the cumulative is exactly what was Added.
+	g := state.New()
+	g.Add(keyA(), bpf.FlowMetrics{Bytes: 4242, Packets: 7, LastSeenNs: 1})
+	recs := g.SnapshotForWAL(nil)
+	if len(recs) != 1 {
+		t.Fatalf("SnapshotForWAL returned %d records, want 1", len(recs))
+	}
+	if recs[0].Counter.Total.Bytes != 4242 {
+		t.Errorf("Total.Bytes = %d, want 4242", recs[0].Counter.Total.Bytes)
+	}
+	if recs[0].Counter.LastEbpfRaw.Bytes != 0 {
+		t.Errorf("LastEbpfRaw.Bytes = %d, want 0 (Add must not prime the delta baseline)", recs[0].Counter.LastEbpfRaw.Bytes)
+	}
+}

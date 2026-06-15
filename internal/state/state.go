@@ -61,8 +61,8 @@ func (g *GlobalState) ApplyDelta(key bpf.FlowKey, raw bpf.FlowMetrics) {
 		g.mu.Unlock()
 		return
 	}
-	addDelta(&c.Total.Bytes, &c.LastEbpfRaw.Bytes, raw.Bytes)
-	addDelta(&c.Total.Packets, &c.LastEbpfRaw.Packets, raw.Packets)
+	AddDelta(&c.Total.Bytes, &c.LastEbpfRaw.Bytes, raw.Bytes)
+	AddDelta(&c.Total.Packets, &c.LastEbpfRaw.Packets, raw.Packets)
 	if raw.LastSeenNs > c.Total.LastSeenNs {
 		c.Total.LastSeenNs = raw.LastSeenNs
 	}
@@ -70,10 +70,39 @@ func (g *GlobalState) ApplyDelta(key bpf.FlowKey, raw bpf.FlowMetrics) {
 	g.mu.Unlock()
 }
 
-// addDelta integrates a raw counter into a cumulative total.
+// Add folds m into the cumulative total for key without delta math:
+// Total grows by m's bytes/packets and tracks the max LastSeenNs. It is
+// the entry point for already-computed deltas — the UnresolvedBuffer
+// folds an expired flow's accumulated total into a synthetic
+// "unknown"-tenant key this way (docs/DESIGN.md §3.2). Unlike
+// [GlobalState.ApplyDelta] it never reads or writes LastEbpfRaw, so a
+// key only ever touched by Add stays monotonic: its series can only
+// rise, so rate() never goes negative. Callers must not mix Add and
+// ApplyDelta on the same key.
+func (g *GlobalState) Add(key bpf.FlowKey, m bpf.FlowMetrics) {
+	g.mu.Lock()
+	c, ok := g.counts[key]
+	if !ok {
+		g.counts[key] = &Counter{Total: m}
+		g.mu.Unlock()
+		return
+	}
+	c.Total.Bytes += m.Bytes
+	c.Total.Packets += m.Packets
+	if m.LastSeenNs > c.Total.LastSeenNs {
+		c.Total.LastSeenNs = m.LastSeenNs
+	}
+	g.mu.Unlock()
+}
+
+// AddDelta integrates a raw counter into a cumulative total.
 // current < lastRaw is treated as a kernel-side reset: the new
-// current is itself the delta, not (max_u64 − lastRaw + current).
-func addDelta(total, lastRaw *uint64, current uint64) {
+// current is itself the delta, not (max_u64 − lastRaw + current)
+// (Implementation Contract #5, the u64 wraparound guard). Exported so
+// the UnresolvedBuffer (internal/unresolved) computes per-scrape deltas
+// for buffered flows with the identical guard rather than a second copy
+// that could drift.
+func AddDelta(total, lastRaw *uint64, current uint64) {
 	if current >= *lastRaw {
 		*total += current - *lastRaw
 	} else {
