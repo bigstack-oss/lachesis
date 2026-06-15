@@ -241,9 +241,11 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 6 — Lingering Ghost + UnresolvedBuffer + Pressure-Relief GC [NEXT UP]
+## Sprint 6 — Lingering Ghost + UnresolvedBuffer + Pressure-Relief GC [DONE 2026-06-15, PR #56]
 
-> Groundwork already landed with 4a/refactors: `ShardedMetadataMap.MarkDelete` + `DeleteAt` + the userspace-first/kernel-first ordering invariants exist (internal/metadata). Still to build: the 60s ghost-sweep goroutine, UnresolvedBuffer, pressure-relief GC, and all six metrics below.
+> **Done 2026-06-15 (PR #56).** Built: the 60s ghost-sweep goroutine (`internal/gc`), the UnresolvedBuffer (`internal/unresolved`), pressure-relief eviction (inline in the scrape tick), and all six metrics. As-built deviations from the plan below: pressure-relief is **operator-tunable + SIGHUP-hot-reloadable** (new `gc:` config section) rather than fixed constants; oldest-K selection uses a **max-heap of size K** (the plan said "min-heap" — to keep the K smallest you must evict the newest-of-kept, so the heap root is a max; DESIGN §3.1 corrected); the UnresolvedBuffer folds each evicted flow's bytes into a **bounded, monotonic synthetic `tenant_id="unknown"` key and resets the flow's kernel entry** so a reappearing flow never double-counts, and it is wired Linux-side beside the pressure-relief evictor; late-binding **resolution** write-back is deferred to Sprint 7 (Kafka) — `cubecos_unresolved_resolved_total` ships declared-but-zero. `boot.Sequencer.Await`/`Fail` (deferred in Sprint 5) landed here as the ghost sweeper's barrier. Validated live on a staging OVN single-node.
+>
+> Original plan follows.
 
 **Goal.** Eviction with no byte loss, capped buffers.
 
@@ -259,7 +261,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 7 — Kafka live updates + Neutron reconcile safety net
+## Sprint 7 — Kafka live updates + Neutron reconcile safety net [NEXT UP]
 
 **Goal.** Trie + MAC map track Neutron in real time; survive Kafka outages with bounded staleness.
 
