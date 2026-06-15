@@ -318,3 +318,59 @@ func TestTick_ErroredDrainSkipsEvictor(t *testing.T) {
 		t.Errorf("evictor called %d times on a failed drain, want 0", ev.calls)
 	}
 }
+
+// recordingSink is a mock scraper.FlowSink: it counts Absorb calls and
+// records the force flag of each Sweep so tests can assert the scraper's
+// per-tick routing and shutdown drain.
+type recordingSink struct {
+	absorbed int
+	sweeps   []bool
+}
+
+func (s *recordingSink) Absorb(bpf.FlowKey, bpf.FlowMetrics) { s.absorbed++ }
+func (s *recordingSink) Sweep(force bool)                    { s.sweeps = append(s.sweeps, force) }
+
+func TestTick_RoutesEachReadingThroughSink(t *testing.T) {
+	r := &fakeReader{returns: []map[bpf.FlowKey]bpf.FlowMetrics{
+		{key(1, 2): {Bytes: 100, LastSeenNs: 1}, key(3, 4): {Bytes: 200, LastSeenNs: 2}},
+	}}
+	st := state.New()
+	sink := &recordingSink{}
+	s := scraper.New(r, st, time.Second)
+	s.SetSink(sink)
+
+	if err := s.Tick(); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if sink.absorbed != 2 {
+		t.Errorf("Absorb called %d times, want 2 (one per drained reading)", sink.absorbed)
+	}
+	if len(sink.sweeps) != 1 || sink.sweeps[0] {
+		t.Errorf("Sweep calls = %v, want one Sweep(false) after the absorb loop", sink.sweeps)
+	}
+	// With a sink wired, the scraper does NOT also write GlobalState directly.
+	if got := len(st.Snapshot(nil)); got != 0 {
+		t.Errorf("GlobalState got %d entries; the sink should own routing", got)
+	}
+}
+
+func TestRun_ShutdownForceSweepsTheSink(t *testing.T) {
+	r := &fakeReader{returns: []map[bpf.FlowKey]bpf.FlowMetrics{{}}}
+	sink := &recordingSink{}
+	s := scraper.New(r, state.New(), time.Hour) // only the initial + final tick fire
+	s.SetSink(sink)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+	if len(sink.sweeps) == 0 || !sink.sweeps[len(sink.sweeps)-1] {
+		t.Errorf("Sweep calls = %v, want the final one to be force=true (shutdown drain)", sink.sweeps)
+	}
+}

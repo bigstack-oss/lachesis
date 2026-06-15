@@ -178,10 +178,10 @@ type flowAge struct {
 // older flow. It satisfies container/heap.Interface.
 type ageHeap []flowAge
 
-func (h ageHeap) Len() int            { return len(h) }
-func (h ageHeap) Less(i, j int) bool  { return h[i].seen > h[j].seen }
-func (h ageHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *ageHeap) Push(x any)         { *h = append(*h, x.(flowAge)) }
+func (h ageHeap) Len() int           { return len(h) }
+func (h ageHeap) Less(i, j int) bool { return h[i].seen > h[j].seen }
+func (h ageHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *ageHeap) Push(x any)        { *h = append(*h, x.(flowAge)) }
 func (h *ageHeap) Pop() any {
 	old := *h
 	n := len(old)

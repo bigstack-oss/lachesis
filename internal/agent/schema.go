@@ -26,13 +26,14 @@ import (
 // keeping a single vocabulary means a /metrics registration error and a
 // log line name the same subsystem.
 const (
-	componentAgent   = "agent"
-	componentWAL     = "wal"
-	componentNeutron = "neutron"
-	componentBPF     = "bpf"
-	componentZombie  = "zombie"
-	componentNetlink = "netlink"
-	componentGC      = "gc"
+	componentAgent      = "agent"
+	componentWAL        = "wal"
+	componentNeutron    = "neutron"
+	componentBPF        = "bpf"
+	componentZombie     = "zombie"
+	componentNetlink    = "netlink"
+	componentGC         = "gc"
+	componentUnresolved = "unresolved"
 )
 
 // httpReadHeaderTimeout bounds how long the HTTP server will wait

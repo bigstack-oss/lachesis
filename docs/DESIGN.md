@@ -297,12 +297,37 @@ GlobalState                         keyed by tenant flow ID
   Write-locked during Scraper merge.
 
 UnresolvedBuffer                    late-binding for unknown MACs
-                                    (NOT YET BUILT — sprint 6; §11.4 planned)
-  Key: MAC uint64
-  Value: { Bytes, CurrentEbpfValueAtCapture, FirstSeen }
-  Capped at ~10,000 entries with LRU eviction.
+  Key:   flow_key (same as telemetry_map; delta math is per-flow)
+  Value: { Total, LastEbpfRaw, FirstSeen }
+  Capped at 10,000 entries with LRU eviction.
   Retried every scrape interval.
-  On 60s expiry: export under tenant_id="unknown", clear from buffer.
+
+  The scraper classifies each drained reading by its VM-side MAC:
+  known (incl. lingering ghosts) → GlobalState; unknown → here. An
+  entry accumulates the flow's cumulative since first sight (first
+  sight seeds Total=LastEbpfRaw=current; later sightings add the delta
+  with the same wraparound guard GlobalState uses).
+
+  On eviction — 60s TTL OR LRU-over-cap — the accumulated Total is
+  folded into a synthetic "unknown" GlobalState key (both MACs zeroed,
+  real eth_proto/direction/zone), which resolves to tenant_id="unknown"
+  and collapses all unknown traffic into a handful of monotonic
+  (unknown, zone, direction) series — so rate() never goes negative and
+  cardinality stays bounded. Eviction ALSO deletes the flow's kernel
+  telemetry_map entry: resetting the counter means a flow that reappears
+  re-baselines from a fresh value, so its already-folded bytes are never
+  folded twice. (The graceful-shutdown drain folds every entry without
+  the kernel delete — the maps are replaced on the next boot.)
+
+  Because eviction deletes a kernel entry, the buffer is wired only
+  where that handle exists (the Linux Bootstrap), beside the
+  pressure-relief evictor; both run in the scrape goroutine, so their
+  telemetry_map deletes never race.
+
+  Late-binding resolution — attributing a buffered flow to the right
+  tenant once its MAC becomes known mid-window — is the Kafka consumer's
+  job (a later sprint); until then every unresolved flow ages out to
+  "unknown" at the TTL.
 
 WAL                                 /var/lib/cubecos/network_agent_state.json (+ .bak)
   Atomic JSON snapshot of GlobalState (see B.11).
@@ -1432,19 +1457,19 @@ reintroduce hook-frame strings into the metric labels.
 | `cubecos_zombie_filters_cleaned_total` | counter | — | startup Zombie Hunter |
 | `cubecos_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher |
 | `cubecos_attached_interfaces` | gauge | — | current Interface Registry size |
+| `cubecos_gc_evictions_total` | counter | `reason="ttl\|pressure_relief"` | GC: lingering-ghost sweep (`ttl`, mac_tenant_map) + scraper pressure-relief (`pressure_relief`, telemetry_map) |
+| `cubecos_gc_pressure_relief_runs_total` | counter | — | scraper pressure-relief pass (fill above the high watermark) |
+| `cubecos_lingering_ghosts_active` | gauge | — | metadata entries inside the 60s ghost grace window (meaningful once Kafka-driven deletions exercise MarkDelete) |
+| `cubecos_unresolved_buffer_depth` | gauge | — | UnresolvedBuffer occupancy (panic threshold near the cap) |
+| `cubecos_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer entries folded to "unknown", by cause |
+| `cubecos_unresolved_resolved_total` | counter | — | late-binding success path (declared; stays zero until the Kafka consumer can make a buffered MAC known) |
 
 #### Health — planned (subsystem not yet built; add with the subsystem)
 
 | Metric | Type | Labels | Source |
 |---|---|---|---|
-| `cubecos_gc_evictions_total` | counter | `reason="ttl\|pressure_relief"` | GC loop |
-| `cubecos_gc_pressure_relief_runs_total` | counter | — | pressure-relief trigger |
-| `cubecos_unresolved_buffer_depth` | gauge | — | UnresolvedBuffer |
-| `cubecos_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer |
-| `cubecos_unresolved_resolved_total` | counter | — | late-binding success path |
 | `cubecos_kafka_lag_messages` | gauge | `topic` | Kafka consumer |
 | `cubecos_kafka_consume_errors_total` | counter | `topic` | Kafka consumer |
-| `cubecos_lingering_ghosts_active` | gauge | — | metadata GC (meaningful once Kafka-driven deletions exercise MarkDelete) |
 
 A drafted generic `cubecos_internal_errors_total{subsystem}` sink was
 dropped: every billing-path error site today lands in a dedicated counter
