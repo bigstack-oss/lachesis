@@ -41,6 +41,7 @@ func NewMetrics() *Metrics {
 	}
 	m.evictions.WithLabelValues(reasonTTL)
 	m.evictions.WithLabelValues(reasonPressureRelief)
+	m.evictions.WithLabelValues(reasonGhostResidualFlow)
 	return m
 }
 
@@ -66,6 +67,16 @@ func (m *Metrics) RecordPressureReliefEvictions(n int) {
 		return
 	}
 	m.evictions.WithLabelValues(reasonPressureRelief).Add(float64(n))
+}
+
+// RecordResidualFlowEvictions adds n telemetry_map flows deleted because
+// their VM's MAC was swept, to
+// cubecos_gc_evictions_total{reason="ghost_residual_flow"}.
+func (m *Metrics) RecordResidualFlowEvictions(n int) {
+	if m == nil || n == 0 {
+		return
+	}
+	m.evictions.WithLabelValues(reasonGhostResidualFlow).Add(float64(n))
 }
 
 // IncPressureReliefRuns increments cubecos_gc_pressure_relief_runs_total

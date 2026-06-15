@@ -18,6 +18,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/reconcile"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
@@ -236,10 +237,11 @@ func (b *bootstrapper) wireGC() error {
 		return fmt.Errorf("%s map missing from collection", bpf.MapTelemetry)
 	}
 	b.ag.ghostSweeper = gc.New(gc.Options{
-		Meta:    b.ag.meta,
-		Evictor: macTenantEvictor{m: macMap},
-		Seq:     b.ag.seq,
-		Metrics: b.ag.mx.gc,
+		Meta:        b.ag.meta,
+		Evictor:     macTenantEvictor{m: macMap},
+		FlowEvictor: telemetryMacFlowEvictor{m: telMap},
+		Seq:         b.ag.seq,
+		Metrics:     b.ag.mx.gc,
 	})
 	telEvictor := telemetryFlowEvictor{m: telMap}
 	reliever := gc.NewPressureReliever(gc.PressureOptions{
@@ -322,6 +324,47 @@ func (e telemetryFlowEvictor) Delete(key bpf.FlowKey) error {
 		return err
 	}
 	return nil
+}
+
+// telemetryMacFlowEvictor adapts the kernel telemetry_map [*ebpf.Map] to
+// the [gc.MacFlowEvictor] seam: it deletes the residual flow counters of
+// a swept VM's MAC set so they are not re-drained as "unknown" after the
+// MAC leaves mac_tenant_map (docs/DESIGN.md §3.3). telemetry_map is a
+// PERCPU_HASH keyed by [bpf.FlowKey]; the VM-side MAC of each flow is
+// [metadata.VMMAC]. Keys are collected during the single Iterate pass
+// and deleted after it — deleting mid-iteration can skip or repeat
+// entries.
+type telemetryMacFlowEvictor struct{ m *ebpf.Map }
+
+// DeleteFlowsForMACs scans telemetry_map once and deletes every flow
+// whose VM MAC is in macs. Best-effort: per-key delete failures are
+// counted out (not returned) except the first, so one bad key does not
+// abort the rest. A key already gone (ErrKeyNotExist) is success.
+func (e telemetryMacFlowEvictor) DeleteFlowsForMACs(macs map[uint64]struct{}) (int, error) {
+	var key bpf.FlowKey
+	var vals []bpf.FlowMetrics // PERCPU value; unused but required by Iterate
+	it := e.m.Iterate()
+	var toDelete []bpf.FlowKey
+	for it.Next(&key, &vals) {
+		if _, ok := macs[metadata.VMMAC(key)]; ok {
+			toDelete = append(toDelete, key)
+		}
+	}
+	if err := it.Err(); err != nil {
+		return 0, fmt.Errorf("iterate telemetry_map: %w", err)
+	}
+	var firstErr error
+	deleted := 0
+	for i := range toDelete {
+		if err := e.m.Delete(&toDelete[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete telemetry_map flow: %w", err)
+			}
+			continue
+		}
+		deleted++
+	}
+	return deleted, firstErr
 }
 
 // prepareWALDir creates the WAL directory if missing and probes it

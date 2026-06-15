@@ -42,6 +42,97 @@ func newSweeper(t *testing.T, meta *metadata.ShardedMetadataMap, ev MacEvictor) 
 	return g, mx
 }
 
+// recordingFlowEvictor mocks the kernel telemetry_map residual-flow
+// cleanup. It reports flowsPerMAC deleted per MAC, and — like
+// recordingEvictor — checks at call time that the swept MACs still exist
+// in userspace, so an inverted order (userspace dropped before residual
+// flows are evicted) is caught.
+type recordingFlowEvictor struct {
+	meta             *metadata.ShardedMetadataMap
+	flowsPerMAC      int
+	calls            int
+	got              map[uint64]struct{}
+	sawUserspaceGone bool
+}
+
+func (e *recordingFlowEvictor) DeleteFlowsForMACs(macs map[uint64]struct{}) (int, error) {
+	e.calls++
+	e.got = make(map[uint64]struct{}, len(macs))
+	for mac := range macs {
+		if _, ok := e.meta.Lookup(mac); !ok {
+			e.sawUserspaceGone = true
+		}
+		e.got[mac] = struct{}{}
+	}
+	return len(macs) * e.flowsPerMAC, nil
+}
+
+// TestSweep_EvictsResidualFlowsBeforeUserspaceDelete locks the
+// known→unknown residual-flow fix: a swept MAC's telemetry_map flows are
+// evicted (for exactly the expired MACs) before the userspace entry is
+// dropped, so they can never be re-billed as "unknown" (docs/DESIGN.md
+// §3.3).
+func TestSweep_EvictsResidualFlowsBeforeUserspaceDelete(t *testing.T) {
+	meta := metadata.New()
+	now := time.Now()
+	const expired1, expired2, live = uint64(0x11), uint64(0x12), uint64(0x13)
+	meta.Insert(expired1, &metadata.TenantMeta{ProjectID: "a"})
+	meta.Insert(expired2, &metadata.TenantMeta{ProjectID: "b"})
+	meta.Insert(live, &metadata.TenantMeta{ProjectID: "c"})
+	meta.MarkDelete(expired1, now.Add(-time.Second))
+	meta.MarkDelete(expired2, now.Add(-time.Second))
+
+	ev := &recordingEvictor{meta: meta}
+	fe := &recordingFlowEvictor{meta: meta, flowsPerMAC: 2}
+	mx := NewMetrics()
+	g := New(Options{Meta: meta, Evictor: ev, FlowEvictor: fe, Metrics: mx, Interval: time.Hour})
+	g.sweep(now)
+
+	if fe.sawUserspaceGone {
+		t.Error("residual flows evicted after the userspace entry was dropped — a concurrent scrape could re-bill them as unknown")
+	}
+	if fe.calls != 1 {
+		t.Fatalf("DeleteFlowsForMACs called %d times, want 1 (one batch per sweep)", fe.calls)
+	}
+	if _, ok := fe.got[expired1]; !ok {
+		t.Error("expired1 missing from the residual-flow eviction set")
+	}
+	if _, ok := fe.got[expired2]; !ok {
+		t.Error("expired2 missing from the residual-flow eviction set")
+	}
+	if _, ok := fe.got[live]; ok {
+		t.Error("live MAC included in the residual-flow eviction set")
+	}
+	if got := testutil.ToFloat64(mx.evictions.WithLabelValues(reasonGhostResidualFlow)); got != 4 {
+		t.Errorf("residual-flow evictions = %v, want 4 (2 MACs × 2 flows)", got)
+	}
+	if _, ok := meta.Lookup(expired1); ok {
+		t.Error("expired1 still in userspace after sweep")
+	}
+}
+
+// TestSweep_NilFlowEvictorStillSweeps confirms residual-flow cleanup is
+// optional: with no FlowEvictor wired (tests, darwin) the ghost sweep
+// still deletes expired MACs.
+func TestSweep_NilFlowEvictorStillSweeps(t *testing.T) {
+	meta := metadata.New()
+	now := time.Now()
+	const mac = uint64(0x21)
+	meta.Insert(mac, &metadata.TenantMeta{ProjectID: "a"})
+	meta.MarkDelete(mac, now.Add(-time.Second))
+
+	ev := &recordingEvictor{meta: meta}
+	g, mx := newSweeper(t, meta, ev) // no FlowEvictor
+	g.sweep(now)
+
+	if _, ok := meta.Lookup(mac); ok {
+		t.Error("expired entry not swept when FlowEvictor is nil")
+	}
+	if got := testutil.ToFloat64(mx.evictions.WithLabelValues(reasonTTL)); got != 1 {
+		t.Errorf("ttl evictions = %v, want 1", got)
+	}
+}
+
 func TestSweep_DeletesExpiredKernelFirst(t *testing.T) {
 	meta := metadata.New()
 	now := time.Now()
