@@ -172,6 +172,27 @@ func (b *Buffer) Sweep(force bool) {
 	b.mx.SetDepth(len(b.entries))
 }
 
+// Resolve hands a buffered flow off to the right tenant once its MAC has
+// become known. If an entry exists for key, its accumulated total and
+// kernel baseline (lastRaw) are seeded into GlobalState via
+// [state.GlobalState.Resolve] — so the next per-scrape delta continues
+// from the buffer's last reading without re-counting — and the entry is
+// dropped. Unlike a TTL/LRU eviction it does NOT fold to "unknown" (the
+// bytes go to the real tenant) and does NOT reset the kernel entry (the
+// flow lives on and the scraper keeps integrating it). Returns whether
+// an entry was resolved. Driven by the scraper goroutine via the
+// [Classifier], so it shares the buffer's single-writer discipline.
+func (b *Buffer) Resolve(key bpf.FlowKey) bool {
+	e, ok := b.entries[key]
+	if !ok {
+		return false
+	}
+	b.state.Resolve(key, e.total, e.lastRaw)
+	b.drop(key, e, false)
+	b.mx.RecordResolved()
+	return true
+}
+
 // Len reports the current entry count. Exposed for tests.
 func (b *Buffer) Len() int { return len(b.entries) }
 

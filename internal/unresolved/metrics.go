@@ -73,3 +73,12 @@ func (m *Metrics) RecordExpiredEvictions(n int) {
 	}
 	m.evictions.WithLabelValues(reasonExpired).Add(float64(n))
 }
+
+// RecordResolved counts one buffered flow whose MAC became known and was
+// handed off to the right tenant — call once per late-binding success.
+func (m *Metrics) RecordResolved() {
+	if m == nil {
+		return
+	}
+	m.resolved.Inc()
+}

@@ -24,6 +24,31 @@ func keyB() bpf.FlowKey {
 	return k
 }
 
+// TestResolve_WriteBackNoDoubleCount locks the late-binding write-back
+// (docs/DESIGN.md §3.2): Resolve credits the buffered cumulative AND
+// sets LastEbpfRaw, so the next ApplyDelta adds only the post-hand-off
+// delta. A buggy Resolve that left LastEbpfRaw zero would re-count the
+// full kernel cumulative (1500 + 1800 = 3300 here).
+func TestResolve_WriteBackNoDoubleCount(t *testing.T) {
+	g := state.New()
+	// The UnresolvedBuffer accumulated 1500 bytes while the MAC was
+	// unknown; the kernel cumulative it last observed was also 1500.
+	g.Resolve(keyA(),
+		bpf.FlowMetrics{Bytes: 1500, Packets: 8, LastSeenNs: 2},
+		bpf.FlowMetrics{Bytes: 1500, Packets: 8, LastSeenNs: 2})
+	// The next scrape sees the kernel at 1800 — only the 300-byte delta
+	// since the hand-off should be added.
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 1800, Packets: 9, LastSeenNs: 3})
+
+	dst := g.Snapshot(nil)
+	if len(dst) != 1 {
+		t.Fatalf("Snapshot returned %d entries, want 1", len(dst))
+	}
+	if got := dst[0].Total; got.Bytes != 1800 || got.Packets != 9 {
+		t.Errorf("resolved Total = %+v, want {Bytes:1800 Packets:9} (1500 buffered + 300/1 delta, no double-count)", got)
+	}
+}
+
 func TestApplyDelta_FirstSightDoesNotDoubleCount(t *testing.T) {
 	g := state.New()
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 1000, Packets: 7, LastSeenNs: 42})

@@ -95,6 +95,34 @@ func (g *GlobalState) Add(key bpf.FlowKey, m bpf.FlowMetrics) {
 	g.mu.Unlock()
 }
 
+// Resolve credits a late-bound flow whose VM MAC just became known: it
+// folds total (the bytes the UnresolvedBuffer accumulated while the MAC
+// was unknown) into the flow's GlobalState total, and sets LastEbpfRaw
+// to lastRaw — the kernel cumulative the buffer last observed. The next
+// [GlobalState.ApplyDelta] for this key then counts only bytes that
+// arrive after the hand-off (current − lastRaw), never re-counting what
+// total already captured. Omitting the LastEbpfRaw write-back is the
+// classic double-count documented in docs/DESIGN.md §3.2.
+//
+// First sight of the key is the expected case — a buffered flow is, by
+// the Classifier's known/unknown split, never simultaneously in
+// GlobalState. The merge branch is defensive only.
+func (g *GlobalState) Resolve(key bpf.FlowKey, total, lastRaw bpf.FlowMetrics) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	c, ok := g.counts[key]
+	if !ok {
+		g.counts[key] = &Counter{Total: total, LastEbpfRaw: lastRaw}
+		return
+	}
+	c.Total.Bytes += total.Bytes
+	c.Total.Packets += total.Packets
+	if total.LastSeenNs > c.Total.LastSeenNs {
+		c.Total.LastSeenNs = total.LastSeenNs
+	}
+	c.LastEbpfRaw = lastRaw
+}
+
 // AddDelta integrates a raw counter into a cumulative total.
 // current < lastRaw is treated as a kernel-side reset: the new
 // current is itself the delta, not (max_u64 − lastRaw + current)
