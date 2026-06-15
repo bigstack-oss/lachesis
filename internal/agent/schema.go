@@ -34,6 +34,7 @@ const (
 	componentNetlink    = "netlink"
 	componentGC         = "gc"
 	componentUnresolved = "unresolved"
+	componentReconcile  = "reconcile"
 )
 
 // httpReadHeaderTimeout bounds how long the HTTP server will wait
