@@ -9,8 +9,39 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 )
+
+// fakeGauge records the last value set for each kernel map.
+type fakeGauge struct{ vals map[string]float64 }
+
+func (f *fakeGauge) SetCurrent(name string, v float64) {
+	if f.vals == nil {
+		f.vals = map[string]float64{}
+	}
+	f.vals[name] = v
+}
+
+// TestSweep_RefreshesMacGauge locks the gauge-gap fix on the ghost path:
+// after a sweep deletes ghosts, cubecos_bpf_map_current_entries for
+// mac_tenant_map reflects the post-sweep metadata count.
+func TestSweep_RefreshesMacGauge(t *testing.T) {
+	meta := metadata.New()
+	now := time.Now()
+	meta.Insert(0x01, &metadata.TenantMeta{ProjectID: "live"})
+	meta.Insert(0x02, &metadata.TenantMeta{ProjectID: "gone"})
+	meta.MarkDelete(0x02, now.Add(-time.Second)) // expired → swept
+
+	ev := &recordingEvictor{meta: meta}
+	fg := &fakeGauge{}
+	g := New(Options{Meta: meta, Evictor: ev, MapGauge: fg, Metrics: NewMetrics(), Interval: time.Hour})
+	g.sweep(now)
+
+	if got := fg.vals[bpf.MapMacTenant]; got != 1 {
+		t.Errorf("mac_tenant_map gauge = %v, want 1 (2 entries, 1 swept)", got)
+	}
+}
 
 // recordingEvictor mocks the kernel mac_tenant_map. It records each
 // deleted MAC and — crucially — checks at delete time that the

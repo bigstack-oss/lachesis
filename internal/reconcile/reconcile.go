@@ -31,10 +31,20 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/kernelwriter"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 )
+
+// MapGauge refreshes a kernel map's current-entry gauge
+// (cubecos_bpf_map_current_entries). Cold-start sets it once; the
+// incremental path must keep it current or it drifts as the reconcile
+// rewrites the trie and mac_tenant_map. Consumer-defined seam;
+// *bpf.Metrics satisfies it.
+type MapGauge interface {
+	SetCurrent(mapName string, value float64)
+}
 
 // MetadataSource is the subset of [neutron.Neutron] the reconcile loop
 // drives: a full list-and-build [MetadataSource.Sync], the retained
@@ -60,6 +70,7 @@ type Reconciler struct {
 	interner  *metadata.TenantInterner
 	seq       *boot.Sequencer
 	mx        *Metrics
+	bpfGauge  MapGauge
 	interval  time.Duration
 	// kick requests an out-of-band reconcile pass (the Kafka consumer
 	// signals it on a Neutron notification). Buffered to one so a burst
@@ -81,7 +92,10 @@ type Options struct {
 	Interner  *metadata.TenantInterner
 	Seq       *boot.Sequencer
 	Metrics   *Metrics
-	Interval  time.Duration
+	// BPFGauge refreshes the kernel map-fill gauges after each pass.
+	// Optional (nil skips); the agent wires its bpf metrics bundle.
+	BPFGauge MapGauge
+	Interval time.Duration
 }
 
 // New constructs a Reconciler from opts, applying the default interval
@@ -99,6 +113,7 @@ func New(opts Options) *Reconciler {
 		interner:  opts.Interner,
 		seq:       opts.Seq,
 		mx:        opts.Metrics,
+		bpfGauge:  opts.BPFGauge,
 		interval:  interval,
 		kick:      make(chan struct{}, 1),
 	}
@@ -167,7 +182,24 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 
 	r.src.Commit(result, now)
 	r.mx.RecordRun(resultOK)
+	r.refreshMapGauges(len(result.Entries))
 	r.logOutcome(delta, mac, len(result.Ambiguities))
+}
+
+// refreshMapGauges keeps cubecos_bpf_map_current_entries current after the
+// incremental rewrite: cold-start sets it once, so without this the
+// subnet_zone_trie and mac_tenant_map fill gauges drift as the reconcile
+// changes them. trieRows is the committed trie size; the mac_tenant_map
+// count tracks the userspace metadata map (kernel ⊆ userspace, and they
+// converge). No-op when no gauge is wired (trie-only unit tests).
+func (r *Reconciler) refreshMapGauges(trieRows int) {
+	if r.bpfGauge == nil {
+		return
+	}
+	r.bpfGauge.SetCurrent(bpf.MapSubnetZoneTrie, float64(trieRows))
+	if r.meta != nil {
+		r.bpfGauge.SetCurrent(bpf.MapMacTenant, float64(r.meta.Len()))
+	}
 }
 
 // fetch runs one Sync. On failure it records a sync_error and returns
