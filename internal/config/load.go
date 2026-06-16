@@ -189,6 +189,16 @@ func applyEnv(cfg *Config, prefix string, getenv func(string) string) error {
 		}
 		cfg.Neutron.UnsafeAllowAmbiguousRoutes = b
 	}
+	if v := getenv(prefix + "_" + envKafkaEnabled); v != "" {
+		b, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s_%s=%q: %w", prefix, envKafkaEnabled, v, err)
+		}
+		cfg.Kafka.Enabled = b
+	}
+	if v := getenv(prefix + "_" + envKafkaBrokers); v != "" {
+		cfg.Kafka.Brokers = splitList(v)
+	}
 	return nil
 }
 
@@ -247,6 +257,11 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 		"Absolute path to admin-openrc-style credentials file"+envHint(envNeutronCredentialsFile))
 	fs.BoolVar(&cfg.Neutron.UnsafeAllowAmbiguousRoutes, "unsafe-allow-ambiguous-routes", cfg.Neutron.UnsafeAllowAmbiguousRoutes,
 		"Allow boot to continue when BuildTrie reports static-route Step C ambiguities; default false (strict)"+envHint(envNeutronUnsafeAllowAmbiguousRoutes))
+	fs.BoolVar(&cfg.Kafka.Enabled, "kafka-enabled", cfg.Kafka.Enabled,
+		"Enable the Kafka notification consumer (live metadata updates)"+envHint(envKafkaEnabled))
+	brokersFlag := strings.Join(cfg.Kafka.Brokers, ",")
+	fs.StringVar(&brokersFlag, "kafka-brokers", brokersFlag,
+		"Comma-separated Kafka bootstrap brokers (host:port)"+envHint(envKafkaBrokers))
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -260,6 +275,9 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 	}
 	if interfacesFlag != "" {
 		cfg.BPF.AttachInterfaces = splitList(interfacesFlag)
+	}
+	if brokersFlag != "" {
+		cfg.Kafka.Brokers = splitList(brokersFlag)
 	}
 	return nil
 }

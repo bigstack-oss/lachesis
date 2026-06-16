@@ -11,6 +11,7 @@ import (
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/kafka"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/reconcile"
@@ -35,6 +36,7 @@ type subsystemMetrics struct {
 	gc         *gc.Metrics
 	unresolved *unresolved.Metrics
 	reconcile  *reconcile.Metrics
+	kafka      *kafka.Metrics
 	registry   *cnetlink.Registry
 }
 
@@ -46,7 +48,7 @@ type subsystemMetrics struct {
 // 0 until the first cold-start push (mac_tenant_map,
 // subnet_zone_trie) or the first scrape drain (telemetry_map, via
 // [telemetryFillReader]) overwrites it.
-func newSubsystemMetrics(neutronMx *neutron.Metrics) subsystemMetrics {
+func newSubsystemMetrics(neutronMx *neutron.Metrics, kafkaTopic string) subsystemMetrics {
 	nlReg := cnetlink.NewRegistry()
 
 	bpfMx := bpf.NewMetrics()
@@ -66,6 +68,7 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics) subsystemMetrics {
 		gc:         gc.NewMetrics(),
 		unresolved: unresolved.NewMetrics(),
 		reconcile:  reconcile.NewMetrics(),
+		kafka:      kafka.NewMetrics(kafkaTopic),
 		registry:   nlReg,
 	}
 }
@@ -128,5 +131,6 @@ func (m subsystemMetrics) registrations() []labelledCollectors {
 		{componentGC, m.gc.Collectors()},
 		{componentUnresolved, m.unresolved.Collectors()},
 		{componentReconcile, m.reconcile.Collectors()},
+		{componentKafka, m.kafka.Collectors()},
 	}
 }

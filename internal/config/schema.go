@@ -40,4 +40,6 @@ const (
 	envNeutronEnabled                    = "NEUTRON_ENABLED"
 	envNeutronCredentialsFile            = "NEUTRON_CREDENTIALS_FILE"
 	envNeutronUnsafeAllowAmbiguousRoutes = "NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES"
+	envKafkaEnabled                      = "KAFKA_ENABLED"
+	envKafkaBrokers                      = "KAFKA_BROKERS"
 )

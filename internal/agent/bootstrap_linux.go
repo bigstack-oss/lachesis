@@ -12,11 +12,13 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
+	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/kafka"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
@@ -71,6 +73,7 @@ func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 		{"subscribe netlink", b.subscribeNetlink},
 		{"wire GC", b.wireGC},
 		{"wire reconcile", b.wireReconcile},
+		{"wire kafka", b.wireKafka},
 		{"prepare WAL directory", b.prepareWALDir},
 		{"restore WAL", b.restoreWAL},
 	})
@@ -299,6 +302,37 @@ func (b *bootstrapper) wireReconcile() error {
 		Interner:  b.ag.interner,
 		Seq:       b.ag.seq,
 		Metrics:   b.ag.mx.reconcile,
+	})
+	return nil
+}
+
+// wireKafka constructs the notification consumer and hands it to the
+// agent as its own worker. It kicks the reconciler on each committed
+// Neutron change, so the consumer only runs when a reconciler exists.
+// Skipped when Kafka is disabled; when Kafka is enabled but Neutron is
+// not (so no reconciler), it logs and skips rather than failing boot —
+// the agent still runs on the (disabled) metadata path. Establishes no
+// boot phase; the consumer awaits [boot.PhaseStateRestored] itself.
+func (b *bootstrapper) wireKafka() error {
+	if !b.cfg.Kafka.Enabled {
+		return nil
+	}
+	if b.ag.reconciler == nil {
+		slog.Warn("kafka enabled but neutron disabled; consumer not started (nothing to reconcile)",
+			"component", componentKafka)
+		return nil
+	}
+	reader := kafkago.NewReader(kafkago.ReaderConfig{
+		Brokers: b.cfg.Kafka.Brokers,
+		GroupID: b.cfg.Kafka.GroupID,
+		Topic:   b.cfg.Kafka.Topic,
+	})
+	b.ag.kafkaConsumer = kafka.New(kafka.Options{
+		Reader:  reader,
+		Trigger: b.ag.reconciler,
+		Seq:     b.ag.seq,
+		Metrics: b.ag.mx.kafka,
+		Topic:   b.cfg.Kafka.Topic,
 	})
 	return nil
 }
