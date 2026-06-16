@@ -146,6 +146,44 @@ func TestReconcileMACs_ChangedAndResurrected(t *testing.T) {
 	}
 }
 
+// TestReconcileMACs_TenantChangeIsPointerReplace hardens Implementation
+// Contract #3 for the reconcile path: a tenant reassignment must replace
+// the *TenantMeta pointer, never mutate a stored one in place. Two MACs
+// share one pointer (the contract permits this), and a hot-path reader
+// holds it; reassigning one MAC must leave the held pointer — and the
+// other MAC — untouched. (The static-lint detection lands in Sprint 9;
+// this is the behavioral guard.)
+func TestReconcileMACs_TenantChangeIsPointerReplace(t *testing.T) {
+	meta := metadata.New()
+	m1 := mac(t, "dd:00:00:00:00:01")
+	m2 := mac(t, "dd:00:00:00:00:02")
+	shared := &metadata.TenantMeta{ProjectID: "old"}
+	meta.Insert(m1, shared)
+	meta.Insert(m2, shared) // one VM, two ports → one shared pointer (DESIGN §3.2)
+
+	captured, _ := meta.Lookup(m1) // a scrape holding the pointer
+
+	r := newMacReconciler(meta, &fakeMacWriter{})
+	r.reconcileMACs([]neutron.Port{
+		vmPort("dd:00:00:00:00:01", "new"), // m1 reassigned
+		vmPort("dd:00:00:00:00:02", "old"), // m2 unchanged
+	}, time.Unix(2000, 0))
+
+	if captured.ProjectID != "old" {
+		t.Fatalf("reconcile mutated a shared TenantMeta in place: ProjectID=%q (Contract #3 violated)", captured.ProjectID)
+	}
+	n1, _ := meta.Lookup(m1)
+	if n1 == captured {
+		t.Fatal("reconcile reused the prior pointer for the reassigned MAC; want pointer-replace")
+	}
+	if n1.ProjectID != "new" {
+		t.Errorf("reassigned m1 ProjectID = %q, want new", n1.ProjectID)
+	}
+	if n2, _ := meta.Lookup(m2); n2.ProjectID != "old" {
+		t.Errorf("unchanged m2 ProjectID = %q, want old", n2.ProjectID)
+	}
+}
+
 // TestReconcileMACs_NilSkips confirms the MAC reconcile is optional: a
 // reconciler with no metadata map / kernel writer (trie-only tests) does
 // nothing rather than panicking.
