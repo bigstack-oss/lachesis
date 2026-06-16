@@ -192,6 +192,70 @@ func TestRun_AwaitsStateRestored(t *testing.T) {
 	}
 }
 
+// TestKick_TriggersReconcilePass proves a Kick runs a pass out of band:
+// with a long interval (so the timer never fires) the only way a commit
+// happens is the kick.
+func TestKick_TriggersReconcilePass(t *testing.T) {
+	committed := make(chan struct{}, 1)
+	src := &fakeSrc{
+		syncResult: neutron.SyncResult{Entries: []neutron.TrieEntry{
+			te("A", "10.0.0.0/24", bpf.ZoneSameTenant),
+		}},
+		onCommit: func() {
+			select {
+			case committed <- struct{}{}:
+			default:
+			}
+		},
+	}
+	r := New(Options{
+		Source:   src,
+		Trie:     &fakeMap{},
+		Interner: metadata.NewTenantInterner(),
+		Metrics:  NewMetrics(),
+		Interval: time.Hour, // timer must not fire; only the kick should
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() { r.Run(ctx); close(runDone) }()
+
+	r.Kick()
+	select {
+	case <-committed:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("kick did not trigger a reconcile pass")
+	}
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit after cancel")
+	}
+}
+
+// TestKick_NonBlockingWhenPending confirms Kick never blocks, even with a
+// full buffer and no draining Run — the coalescing default branch.
+func TestKick_NonBlockingWhenPending(t *testing.T) {
+	r := New(Options{
+		Source: &fakeSrc{}, Trie: &fakeMap{},
+		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(), Interval: time.Hour,
+	})
+	done := make(chan struct{})
+	go func() {
+		r.Kick()
+		r.Kick() // buffer already full → must take the default branch
+		r.Kick()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Kick blocked when a kick was already pending")
+	}
+}
+
 // TestRun_ReconcilesOnTick drives the full loop: with the barrier
 // satisfied (Seq nil) and a short interval, Run reconciles on the tick
 // and exits cleanly on cancel.
