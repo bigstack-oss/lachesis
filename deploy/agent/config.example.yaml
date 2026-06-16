@@ -137,3 +137,25 @@ gc:
   # (~50 µs/delete → ~50 ms at 1000); draining high→low takes a few
   # scrapes. Must be >= 1.
   pressure_max_per_pass: 1000
+
+kafka:
+  # Live OpenStack notification consumer (Neutron port/subnet/router
+  # events) that kicks an immediate reconcile, so metadata refreshes in
+  # seconds rather than at the periodic safety-net cadence (DESIGN §5.7).
+  # When disabled the agent relies on the periodic Neutron reconcile.
+  enabled: false
+
+  # Kafka bootstrap brokers (host:port). REQUIRED when enabled. Left
+  # commented so the default parses empty; uncomment and set for your
+  # cluster. Also settable via CUBECOS_KAFKA_BROKERS / -kafka-brokers.
+  # brokers:
+  #   - 10.0.0.1:9095
+
+  # oslo notification topic. CubeCOS publishes INFO-priority notifications
+  # to notifications.info (the messagingv2 Kafka driver default).
+  topic: notifications.info
+
+  # Consumer-group id. A stable id tracks the agent's offset across
+  # restarts; delivery is at-least-once (each event just triggers a
+  # reconcile, which is idempotent).
+  group_id: cubecos-network-telemetry

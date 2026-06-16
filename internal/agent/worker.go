@@ -23,11 +23,12 @@ type worker struct {
 
 // workers returns the agent's long-lived goroutines in DRAIN order:
 // netlink first (stop attaching while tearing down), then the ghost
-// sweeper and reconciler (metadata maintenance, no ordering constraint
-// with the billing drain — cancelling the reconciler also aborts any
-// in-flight Neutron fetch via its ctx), then scraper before wal so the
-// scraper's final tick lands its deltas in GlobalState before the WAL
-// final flush snapshots them.
+// sweeper, then the kafka consumer before the reconciler (so it stops
+// kicking before its target drains), then the reconciler (metadata
+// maintenance, no ordering constraint with the billing drain — cancelling
+// it also aborts any in-flight Neutron fetch via its ctx), then scraper
+// before wal so the scraper's final tick lands its deltas in GlobalState
+// before the WAL final flush snapshots them.
 // The order is enforced structurally: [Agent.drainWorkers] cancels each
 // row's own context and awaits its exit before moving to the next row,
 // so the WAL flusher's final flush cannot start until the scraper has
@@ -42,6 +43,7 @@ func (a *Agent) workers() []worker {
 	return []worker{
 		{"netlink subscriber", a.netlinkSubscriber != nil, a.runNetlink},
 		{"ghost sweeper", a.ghostSweeper != nil, a.ghostSweeper.Run},
+		{"kafka consumer", a.kafkaConsumer != nil, a.kafkaConsumer.Run},
 		{"reconciler", a.reconciler != nil, a.reconciler.Run},
 		{"scraper", true, a.scraper.Run},
 		{"wal", a.cfg.WAL.Enabled, a.walFlushLoop},

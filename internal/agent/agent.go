@@ -33,6 +33,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/kafka"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
 	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
@@ -99,6 +100,13 @@ type Agent struct {
 	// disables its workers() row.
 	reconciler *reconcile.Reconciler
 
+	// kafkaConsumer reads OpenStack notifications and kicks the
+	// reconciler on each committed Neutron change, so metadata refreshes
+	// in seconds rather than at the reconcile interval. Set by Linux
+	// Bootstrap when Kafka is enabled and a reconciler exists; nil
+	// otherwise — which disables its workers() row.
+	kafkaConsumer *kafka.Consumer
+
 	// meta is the userspace MAC → TenantMeta store. Constructed
 	// empty in [New]; populated by Bootstrap from Neutron and, in
 	// a future change, from Kafka events. The metrics Collector's
@@ -155,7 +163,7 @@ func New(opts Options) (*Agent, error) {
 		seq:      opts.sequencerOrDefault(),
 		buildID:  agentBuildID(),
 	}
-	a.mx = newSubsystemMetrics(n.Metrics())
+	a.mx = newSubsystemMetrics(n.Metrics(), opts.Config.Kafka.Topic)
 	a.scraper = scraper.New(
 		telemetryFillReader{inner: opts.Reader, stats: opts.Stats, mx: a.mx.bpf},
 		st, opts.Config.Scrape.Interval)

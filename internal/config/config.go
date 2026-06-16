@@ -38,6 +38,7 @@ type Config struct {
 	WAL     WALConfig     `yaml:"wal"`
 	Neutron NeutronConfig `yaml:"neutron"`
 	GC      GCConfig      `yaml:"gc"`
+	Kafka   KafkaConfig   `yaml:"kafka"`
 }
 
 // Defaults returns the production-ready configuration baseline. Each
@@ -52,6 +53,7 @@ func Defaults() Config {
 		WAL:     walDefaults(),
 		Neutron: neutronDefaults(),
 		GC:      gcDefaults(),
+		Kafka:   kafkaDefaults(),
 	}
 }
 
@@ -82,6 +84,9 @@ func (c Config) Validate() error {
 	}
 	if err := c.GC.Validate(); err != nil {
 		return fmt.Errorf("gc: %w", err)
+	}
+	if err := c.Kafka.Validate(); err != nil {
+		return fmt.Errorf("kafka: %w", err)
 	}
 	return nil
 }
