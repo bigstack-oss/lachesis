@@ -261,7 +261,11 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 7 — Kafka live updates + Neutron reconcile safety net [NEXT UP]
+## Sprint 7 — Kafka live updates + Neutron reconcile safety net [DONE 2026-06-16]
+
+> **Done 2026-06-16.** Built: `kernelwriter.ApplyTrieDelta` (insert-then-delete trie diff), the periodic `internal/reconcile` worker (5-min), the UnresolvedBuffer resolve write-back (deferred from Sprint 6 — `cubecos_unresolved_resolved_total` now lives), the `internal/kafka` consumer (segmentio/kafka-go), and the metrics. **Key architecture decision (deviates from the "incremental diff" scope below):** the Kafka consumer does NOT maintain a parallel incremental-apply path. It only decodes notifications and **kicks** the reconciler; the reconciler is the **single applier** (one goroutine selects on the 5-min timer and the kicks), running one full Neutron `Sync` → `ApplyTrieDelta` + mac-reconcile → `Commit` for both. This reuses the whole reconcile engine, serializes for free (no lock, no overlap), and makes "trie matches cold-start" trivially true; the cost is a full `Sync` per debounced burst — the same operation the periodic reconcile already runs. So "incremental, NOT full rebuild" holds at the **kernel** (only the delta is pushed); the userspace trie is rebuilt from the full snapshot each pass (~30 µs at 200 tenants), not per-tenant surgically. MAC reconcile is the **first production `MarkDelete` caller** (new SSOT `metadata.GhostGrace=60s`). **Beyond the plan — a correctness fix surfaced in review:** a port deletion now flows port-delete → 60s ghost → GC sweep → MAC unknown, but the flow's `telemetry_map` counters outlived the MAC and would be re-billed as "unknown"; the GhostSweeper now evicts a swept MAC's residual flows (`cubecos_gc_evictions_total{reason="ghost_residual_flow"}`). Contract #3 hardening is a behavioral pointer-replace test on the new reconcile path (the metadata layer was already covered by 4a); the static lint stays Sprint 9. New metric `cubecos_reconcile_runs_total{result}` is the runtime kernelwriter-failure sink §11.4 anticipated. **Deferred within the sprint:** per-endpoint best-effort reconcile fetch (still all-or-nothing `Sync` — a 500 on one endpoint fails the whole pass and retries next pass). **Grounding:** the CubeCOS notification bus was confirmed live as Kafka (`notifications.info`, oslo messagingv2) with every `payload.<resource>` mirroring the Neutron API repr (port/subnet/router/router_interface captured on dev-cmp). **Pending:** live smoke on dev-cmp to validate the "Done when" below.
+>
+> Original plan follows.
 
 **Goal.** Trie + MAC map track Neutron in real time; survive Kafka outages with bounded staleness.
 
@@ -278,7 +282,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 8 — Octavia LB attribution (kernel-side)
+## Sprint 8 — Octavia LB attribution (kernel-side) [NEXT UP]
 
 **Goal.** Implement the two-segment Octavia model per the revised §6 (post-empirical-verification finding).
 
@@ -377,6 +381,6 @@ Sprints 1, 2, 3 can technically interleave; the linear ordering above gives a wo
 
 ---
 
-*Last updated: 2026-06-12 (status audit against the codebase: Sprints 1–5 marked DONE with PR numbers; Sprint 6 marked NEXT UP with its already-landed groundwork noted; dropped the false promtool-in-CI claim; recorded the dashboard consolidation into `cubecos-telemetry.json`; added the between-sprint work ledger).*
+*Last updated: 2026-06-16 (Sprint 6 marked DONE/PR #56; Sprint 7 marked DONE with as-built notes — Kafka consumer kicks the single-applier reconciler rather than a parallel incremental path, plus the ghost residual-flow correctness fix; Sprint 8 marked NEXT UP).*
 
 *Previous update: 2026-05-19 (Sprint 4c slice 1: locked sentinel `tenant_id=0` shape; dropped the pin-path-migration slice — pre-release product, agent doesn't pin maps today, so no v1 pin to refuse-reuse against; `MapSubnetZoneTrieMaxEntries` stays at 16384 for headroom; LOC re-estimated 400 → 250).*

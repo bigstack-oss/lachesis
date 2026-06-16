@@ -859,7 +859,9 @@ For production billing engines, **Strict is recommended** — better to refuse t
 
 ### 5.7 Update semantics — Kafka-driven incremental changes
 
-Sprint 7 will wire Kafka events into incremental trie updates. The BPF LPM trie supports per-entry insert and delete, but **not** transactional multi-entry batches. For changes that touch multiple entries (e.g., a `router.routes` update that affects N CIDR mappings), strict ordering is required:
+Live metadata updates are driven by the Kafka consumer (`internal/kafka`) and the periodic reconcile (`internal/reconcile`). The consumer never applies changes itself: it decodes oslo notifications from `notifications.info` and, on each committed (`*.end`) Neutron change, kicks the reconciler. The reconciler is the single applier — a 5-minute timer and the Kafka kicks feed the same goroutine — so it runs one full Neutron snapshot fetch, diffs it against the last committed state, and pushes only the delta. The kick path and the periodic safety net therefore execute identical apply logic and never overlap. (The kick carries no payload; routing every change through one re-sync keeps a single apply path and guarantees the post-event trie matches a cold-start at the same instant, at the cost of one Neutron `Sync` per debounced burst — the same operation the periodic reconcile already runs.)
+
+The trie delta is applied by `kernelwriter.ApplyTrieDelta`. The BPF LPM trie supports per-entry insert and delete, but **not** transactional multi-entry batches. For changes that touch multiple entries (e.g., a `router.routes` update that affects N CIDR mappings), strict ordering is required:
 
 ```
 For a change set that REPLACES entries:
@@ -867,6 +869,8 @@ For a change set that REPLACES entries:
   2. Insert / overwrite all new_entries[]   (LPM allows upsert at same key)
   3. Delete obsolete_entries[]              (only after all inserts complete)
 ```
+
+`ApplyTrieDelta` implements exactly this: it skips unchanged rows, upserts added/changed rows, and — only if every upsert succeeded — deletes the obsolete ones (an upsert failure keeps the stale rows, harmless under LPM longest-match, and the next pass retries). The mac_tenant_map side is reconciled in the same pass: new ports are learned (userspace→kernel), and deleted ports are MarkDeleted into the 60s lingering ghost (§3.3) rather than removed outright.
 
 **Why this order matters.** If we deleted first, there would be a window (microseconds, but real on a busy system) where the entry doesn't exist; packets matching that CIDR would fall through to the next-longest match — typically the catchall `(T, 0.0.0.0/0) → EXTERNAL`. Those packets would then be **permanently miskeyed in the kernel `flow_key`** because `dst_zone` is baked into the key — the entry never reclassifies even after the trie is fixed. Insert-first guarantees at least one valid entry exists at every moment.
 
@@ -1246,17 +1250,19 @@ One related GC design rule: `last_seen_ns` is `CLOCK_MONOTONIC` (§3.1), which r
      GlobalState against the WAL-restored LastEbpfRaw values
 
 7. Start GC goroutine (lingering ghost + map pressure relief)
-   [NOT YET BUILT — sprint 6]
 
-8. Start Kafka consumer (live metadata updates)
-   [NOT YET BUILT — sprint 7]
+8. Start periodic reconcile + Kafka consumer (live metadata updates):
+   the reconciler is the single applier; the Kafka consumer decodes
+   notifications and kicks it on each committed Neutron change, while
+   a 5-minute timer kicks it as the outage safety net (§5.7)
 ```
 
 Implementation mapping (`internal/agent/bootstrap_linux.go`): steps 1–5
 run straight-line inside `Bootstrap` — `boot.Sequencer` phases
-`BPFLoaded → MetadataReady → Attached → StateRestored` — and step 6's
-workers start in `Agent.Run` via the drain-ordered `workers()` table.
-Steps 7–8 arrive with their subsystems.
+`BPFLoaded → MetadataReady → Attached → StateRestored` — and steps 6–8's
+workers start in `Agent.Run` via the drain-ordered `workers()` table
+(ghost sweeper, kafka consumer, reconciler, scraper, WAL). Each
+post-`StateRestored` worker awaits that phase before its first action.
 
 ### Failure modes if order is violated
 
@@ -1278,11 +1284,11 @@ Steps 7–8 arrive with their subsystems.
 **Neutron API unreachable at runtime** (cold-start succeeded, periodic refresh fails):
 - Continue serving from the in-memory snapshot.
 - Each failed call increments `cubecos_neutron_api_errors_total{endpoint, code}` and ages `cubecos_neutron_sync_age_seconds`.
-- The Kafka consumer keeps state fresh when it's available; the periodic Neutron refresh is a safety net (see Kafka outage below).
+- When Kafka is available each committed change kicks a reconcile within one pass; the 5-minute periodic reconcile is the safety net (see Kafka outage below). Both run on the one reconciler goroutine, so a kick and a timer tick never apply concurrently.
 
 **Kafka unreachable** (cold-start succeeded, then Kafka becomes unreachable):
-- The agent's metadata becomes increasingly stale: new VMs miss in `mac_tenant_map` → land in UnresolvedBuffer; deleted VMs over-stay their 60s ghost; route changes don't apply.
-- **Periodic Neutron reconcile every 5 minutes** mitigates this. The reconcile is a full snapshot fetch (same as cold-start step 3) + diff against current state; differences are applied as if Kafka had delivered them. **Bounds metadata staleness to 5 minutes regardless of Kafka availability.**
+- No more kicks arrive, so the agent's metadata becomes increasingly stale: new VMs miss in `mac_tenant_map` → land in UnresolvedBuffer; deleted VMs over-stay their 60s ghost; route changes don't apply.
+- **The periodic 5-minute reconcile mitigates this.** It is the same pass a kick triggers — a full snapshot fetch (as in cold-start step 3) diffed against current state, applying only the delta (trie via insert-then-delete, mac_tenant_map via insert / MarkDelete). **Bounds metadata staleness to 5 minutes regardless of Kafka availability.**
 - `cubecos_kafka_lag_messages` and `cubecos_kafka_consume_errors_total` surface the outage; alerting threshold suggested: `lag > 1000` sustained.
 
 **Partial Neutron failures** (e.g., `GET /v2.0/ports` succeeds, `GET /v2.0/routers` returns 500):
@@ -1457,19 +1463,19 @@ reintroduce hook-frame strings into the metric labels.
 | `cubecos_zombie_filters_cleaned_total` | counter | — | startup Zombie Hunter |
 | `cubecos_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher |
 | `cubecos_attached_interfaces` | gauge | — | current Interface Registry size |
-| `cubecos_gc_evictions_total` | counter | `reason="ttl\|pressure_relief"` | GC: lingering-ghost sweep (`ttl`, mac_tenant_map) + scraper pressure-relief (`pressure_relief`, telemetry_map) |
+| `cubecos_gc_evictions_total` | counter | `reason="ttl\|pressure_relief\|ghost_residual_flow"` | GC: lingering-ghost sweep (`ttl`, mac_tenant_map), scraper pressure-relief (`pressure_relief`, telemetry_map), and a swept MAC's residual telemetry_map flows removed so they are not re-billed as "unknown" (`ghost_residual_flow`, §3.3) |
 | `cubecos_gc_pressure_relief_runs_total` | counter | — | scraper pressure-relief pass (fill above the high watermark) |
-| `cubecos_lingering_ghosts_active` | gauge | — | metadata entries inside the 60s ghost grace window (meaningful once Kafka-driven deletions exercise MarkDelete) |
+| `cubecos_lingering_ghosts_active` | gauge | — | metadata entries inside the 60s ghost grace window; the Neutron reconcile's MarkDelete on a deleted port/subnet now exercises it (§5.7) |
 | `cubecos_unresolved_buffer_depth` | gauge | — | UnresolvedBuffer occupancy (panic threshold near the cap) |
 | `cubecos_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer entries folded to "unknown", by cause |
-| `cubecos_unresolved_resolved_total` | counter | — | late-binding success path (declared; stays zero until the Kafka consumer can make a buffered MAC known) |
+| `cubecos_unresolved_resolved_total` | counter | — | late-binding successes: a buffered flow whose MAC became known (reconcile or Kafka) attributed to the right tenant with the §3.2 delta write-back |
+| `cubecos_reconcile_runs_total` | counter | `result="ok\|sync_error\|apply_error"` | periodic + Kafka-kicked Neutron reconcile passes by outcome; `apply_error` is the runtime kernelwriter-failure sink the revisit note below anticipated |
+| `cubecos_kafka_lag_messages` | gauge | `topic` | Kafka consumer lag behind the topic head; sustained growth = falling behind live updates |
+| `cubecos_kafka_consume_errors_total` | counter | `topic` | Kafka consumer read failures (broker unreachable, fetch errors) |
 
 #### Health — planned (subsystem not yet built; add with the subsystem)
 
-| Metric | Type | Labels | Source |
-|---|---|---|---|
-| `cubecos_kafka_lag_messages` | gauge | `topic` | Kafka consumer |
-| `cubecos_kafka_consume_errors_total` | counter | `topic` | Kafka consumer |
+The Octavia LB attribution metrics (Sprint 8) land with that subsystem.
 
 A drafted generic `cubecos_internal_errors_total{subsystem}` sink was
 dropped: every billing-path error site today lands in a dedicated counter
