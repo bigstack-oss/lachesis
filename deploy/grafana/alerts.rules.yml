@@ -32,3 +32,41 @@ groups:
             "GC & Eviction" (pressure-relief runs/evictions) rows: either the GC
             is wedged / not keeping up, or the deployment has outgrown
             telemetry_map max_entries and the agent must be rebuilt larger.
+
+      # Kafka consumer falling behind: live Neutron updates aren't being
+      # applied promptly. Not immediate billing loss — the 5-minute
+      # periodic reconcile bounds metadata staleness regardless — so
+      # warning, not page. Sustained lag points at a slow/unreachable
+      # broker or a wedged consumer.
+      - alert: CubecosKafkaConsumerLag
+        expr: cubecos_kafka_lag_messages > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Kafka notification consumer lagging on {{ $labels.instance }} (topic {{ $labels.topic }})'
+          description: >-
+            cubecos_kafka_lag_messages has exceeded 1000 for 10m: the agent is not
+            applying live Neutron updates promptly and is leaning on the 5-minute
+            periodic reconcile for freshness. Check broker reachability and
+            cubecos_kafka_consume_errors_total; metadata staleness stays bounded to
+            ~5 minutes as long as the Neutron API is reachable.
+
+      # Reconcile passes failing to apply: a kernel map write failed, so
+      # the new state was deliberately not committed and the trie / MAC
+      # maps are diverging from Neutron until a later pass succeeds.
+      # Persistent apply_error usually means a kernel map is full or
+      # mis-sized. Warning — misclassification risk, not outright byte loss.
+      - alert: CubecosReconcileApplyErrors
+        expr: increase(cubecos_reconcile_runs_total{result="apply_error"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Neutron reconcile cannot apply to the kernel on {{ $labels.instance }}'
+          description: >-
+            cubecos_reconcile_runs_total{result="apply_error"} is rising: a kernel
+            map write failed during reconcile, so the new metadata was not
+            committed and will be retried next pass. Persistent failures mean the
+            kernel maps are full or mis-sized — check the "BPF Maps" row and
+            cubecos_bpf_update_failures_total.
