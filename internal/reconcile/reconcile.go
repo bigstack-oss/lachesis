@@ -61,6 +61,11 @@ type Reconciler struct {
 	seq       *boot.Sequencer
 	mx        *Metrics
 	interval  time.Duration
+	// kick requests an out-of-band reconcile pass (the Kafka consumer
+	// signals it on a Neutron notification). Buffered to one so a burst
+	// of events coalesces into a single pending pass; [Reconciler.Run]
+	// drains it.
+	kick chan struct{}
 }
 
 // Options bundles the inputs to [New]. Source, Trie, Interner, and
@@ -95,16 +100,33 @@ func New(opts Options) *Reconciler {
 		seq:       opts.Seq,
 		mx:        opts.Metrics,
 		interval:  interval,
+		kick:      make(chan struct{}, 1),
 	}
 }
 
-// Run reconciles every interval until ctx is cancelled. It first blocks
-// on [boot.PhaseStateRestored] so no kernel write races the boot
-// sequence — the cold-start push must have committed the initial trie
-// before any delta is computed against it. If the boot aborts (or ctx
-// is cancelled) before that phase, Run returns without reconciling.
+// Kick requests an immediate reconcile pass out of band. The Kafka
+// consumer calls it when a Neutron notification shows metadata changed,
+// so the trie and mac_tenant_map refresh within one pass instead of
+// waiting up to a full interval. It is non-blocking and coalescing — the
+// buffered channel holds at most one pending kick, so a burst of events
+// costs a single extra pass — and safe to call from any goroutine.
+func (r *Reconciler) Kick() {
+	select {
+	case r.kick <- struct{}{}:
+	default: // a pass is already pending; coalesce
+	}
+}
+
+// Run reconciles on every interval tick and on every [Reconciler.Kick]
+// until ctx is cancelled — one applier goroutine for both the periodic
+// safety net and the Kafka-driven kicks, so passes never overlap. It
+// first blocks on [boot.PhaseStateRestored] so no kernel write races the
+// boot sequence — the cold-start push must have committed the initial
+// trie before any delta is computed against it. If the boot aborts (or
+// ctx is cancelled) before that phase, Run returns without reconciling.
 // There is no immediate first pass: cold-start already populated the
-// trie, so the first reconcile fires one interval in.
+// trie, so the first periodic reconcile fires one interval in (a kick
+// can run one sooner).
 func (r *Reconciler) Run(ctx context.Context) {
 	if r.seq != nil {
 		if err := r.seq.Await(ctx, boot.PhaseStateRestored); err != nil {
@@ -121,6 +143,8 @@ func (r *Reconciler) Run(ctx context.Context) {
 			return
 		case now := <-t.C:
 			r.reconcileOnce(ctx, now)
+		case <-r.kick:
+			r.reconcileOnce(ctx, time.Now())
 		}
 	}
 }
