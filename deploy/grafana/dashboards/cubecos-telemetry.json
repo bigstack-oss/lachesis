@@ -1727,7 +1727,7 @@
           ]
         }
       },
-      "description": "Per-second eviction activity. gc ttl = lingering-ghost expiry (mac_tenant_map); gc pressure_relief = oldest-flow eviction at >80% telemetry_map fill; buffer lru/expired = UnresolvedBuffer entries folded to \"unknown\"."
+      "description": "Per-second eviction activity. gc ttl = lingering-ghost expiry (mac_tenant_map); gc pressure_relief = oldest-flow eviction at >80% telemetry_map fill; gc ghost_residual_flow = a swept MAC's residual telemetry_map flows removed so they are not re-billed as \"unknown\"; buffer lru/expired = UnresolvedBuffer entries folded to \"unknown\"."
     },
     {
       "id": 72,
@@ -1793,6 +1793,187 @@
         }
       },
       "description": "Lingering ghosts = metadata entries inside the 60s deletion grace window. resolved/s is the late-binding success path \u2014 stays zero until the Kafka consumer (S7) can resolve a buffered MAC."
+    },
+    {
+      "id": 108,
+      "title": "Live Updates (Kafka & Reconcile)",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 76,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 80,
+      "title": "Kafka consumer lag",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 77,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cubecos_kafka_lag_messages",
+          "legendFormat": "{{topic}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Messages the notification consumer is behind the topic head. Sustained growth means the agent is falling back on the periodic reconcile; suggested alert: lag > 1000 sustained."
+    },
+    {
+      "id": 81,
+      "title": "Kafka consume errors (rate over 5m)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 77,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(cubecos_kafka_consume_errors_total[5m])",
+          "legendFormat": "{{topic}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Failed reads from Kafka (broker unreachable, fetch errors); the consumer logs and retries with backoff."
+    },
+    {
+      "id": 82,
+      "title": "Reconcile passes (rate over 5m)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 77,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(cubecos_reconcile_runs_total[5m])",
+          "legendFormat": "{{result}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Periodic + Kafka-kicked Neutron reconcile passes by outcome: ok = applied & committed; sync_error = Neutron fetch failed; apply_error = a kernel write failed and state was not committed (retried next pass)."
     }
   ],
   "refresh": "10s",
