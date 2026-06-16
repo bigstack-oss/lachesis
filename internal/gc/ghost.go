@@ -34,8 +34,17 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 )
+
+// MapGauge refreshes the kernel mac_tenant_map current-entry gauge after
+// the sweep deletes ghosts — cold-start sets it once, so without this it
+// over-reports fill until the next reconcile. Consumer-defined seam;
+// *bpf.Metrics satisfies it.
+type MapGauge interface {
+	SetCurrent(mapName string, value float64)
+}
 
 // MacEvictor deletes a MAC entry from the kernel mac_tenant_map. It is
 // the consumer-defined seam over the kernel map: the agent wires a thin
@@ -65,6 +74,7 @@ type GhostSweeper struct {
 	meta        *metadata.ShardedMetadataMap
 	evictor     MacEvictor
 	flowEvictor MacFlowEvictor
+	mapGauge    MapGauge
 	seq         *boot.Sequencer
 	mx          *Metrics
 	interval    time.Duration
@@ -79,9 +89,12 @@ type Options struct {
 	Meta        *metadata.ShardedMetadataMap
 	Evictor     MacEvictor
 	FlowEvictor MacFlowEvictor
-	Seq         *boot.Sequencer
-	Metrics     *Metrics
-	Interval    time.Duration
+	// MapGauge refreshes the mac_tenant_map fill gauge after a sweep.
+	// Optional (nil skips); the agent wires its bpf metrics bundle.
+	MapGauge MapGauge
+	Seq      *boot.Sequencer
+	Metrics  *Metrics
+	Interval time.Duration
 }
 
 // New constructs a GhostSweeper from opts, applying the default sweep
@@ -95,6 +108,7 @@ func New(opts Options) *GhostSweeper {
 		meta:        opts.Meta,
 		evictor:     opts.Evictor,
 		flowEvictor: opts.FlowEvictor,
+		mapGauge:    opts.MapGauge,
 		seq:         opts.Seq,
 		mx:          opts.Metrics,
 		interval:    interval,
@@ -148,7 +162,20 @@ func (g *GhostSweeper) sweep(now time.Time) {
 	swept := g.deleteKernelMACs(expired)
 	residual := g.evictResidualFlows(swept)
 	g.deleteUserspace(swept)
+	g.refreshMacGauge()
 	g.report(len(swept), residual, active)
+}
+
+// refreshMacGauge keeps cubecos_bpf_map_current_entries{map="mac_tenant_map"}
+// current after the sweep's deletes — cold-start sets it once, so without
+// this it over-reports fill until the next reconcile. The count tracks
+// the userspace metadata map, which the kernel map mirrors. No-op when no
+// gauge is wired (sweep-only unit tests).
+func (g *GhostSweeper) refreshMacGauge() {
+	if g.mapGauge == nil {
+		return
+	}
+	g.mapGauge.SetCurrent(bpf.MapMacTenant, float64(g.meta.Len()))
 }
 
 // classify partitions the metadata map as of now into the MACs whose

@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -181,6 +182,45 @@ func TestReconcileMACs_TenantChangeIsPointerReplace(t *testing.T) {
 	}
 	if n2, _ := meta.Lookup(m2); n2.ProjectID != "old" {
 		t.Errorf("unchanged m2 ProjectID = %q, want old", n2.ProjectID)
+	}
+}
+
+// fakeGauge records the last value set for each kernel map.
+type fakeGauge struct{ vals map[string]float64 }
+
+func (f *fakeGauge) SetCurrent(name string, v float64) {
+	if f.vals == nil {
+		f.vals = map[string]float64{}
+	}
+	f.vals[name] = v
+}
+
+// TestReconcileOnce_RefreshesMapGauges locks the fix for the gauge gap:
+// a reconcile pass refreshes cubecos_bpf_map_current_entries for both the
+// subnet_zone_trie (committed rows) and mac_tenant_map (metadata count),
+// so the fill gauges don't stay stuck at the cold-start value.
+func TestReconcileOnce_RefreshesMapGauges(t *testing.T) {
+	meta := metadata.New()
+	src := &fakeSrc{syncResult: neutron.SyncResult{
+		Entries: []neutron.TrieEntry{
+			te("A", "10.0.0.0/24", bpf.ZoneSameTenant),
+			te("", "0.0.0.0/0", bpf.ZoneExternal),
+		},
+		Snapshot: neutron.Snapshot{Ports: []neutron.Port{vmPort("aa:00:00:00:00:01", "proj-a")}},
+	}}
+	fg := &fakeGauge{}
+	r := New(Options{
+		Source: src, Trie: &fakeMap{}, Meta: meta, MacWriter: &fakeMacWriter{},
+		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(), BPFGauge: fg,
+	})
+
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+
+	if got := fg.vals[bpf.MapSubnetZoneTrie]; got != 2 {
+		t.Errorf("subnet_zone_trie gauge = %v, want 2 (committed rows)", got)
+	}
+	if got := fg.vals[bpf.MapMacTenant]; got != 1 {
+		t.Errorf("mac_tenant_map gauge = %v, want 1 (the learned MAC)", got)
 	}
 }
 

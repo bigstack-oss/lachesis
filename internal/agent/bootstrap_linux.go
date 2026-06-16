@@ -243,6 +243,7 @@ func (b *bootstrapper) wireGC() error {
 		Meta:        b.ag.meta,
 		Evictor:     macTenantEvictor{m: macMap},
 		FlowEvictor: telemetryMacFlowEvictor{m: telMap},
+		MapGauge:    b.ag.mx.bpf,
 		Seq:         b.ag.seq,
 		Metrics:     b.ag.mx.gc,
 	})
@@ -302,6 +303,7 @@ func (b *bootstrapper) wireReconcile() error {
 		Interner:  b.ag.interner,
 		Seq:       b.ag.seq,
 		Metrics:   b.ag.mx.reconcile,
+		BPFGauge:  b.ag.mx.bpf,
 	})
 	return nil
 }
