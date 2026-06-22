@@ -282,7 +282,11 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 
 ---
 
-## Sprint 8 — Octavia LB attribution (kernel-side) [NEXT UP]
+> **Re-sequencing (2026-06-23).** Before Octavia, the next delivered sprint is the **live scenario-validation harness (`scenariotest`)** plus **netlink attach-presence robustness** (a present-but-unattached gauge and the periodic re-attach reconciler — un-deferring DESIGN §13.2 #5). The harness automates the manual deploy→traffic→scrape→assert→teardown loop and de-risks Octavia; the netlink work closes a silent-billing-loss gap (missed NEWLINK events under churn are invisible to `cubecos_tc_attach_failures_total`). Tracked on the board (cubecos #984 feature + tasks #985–#990; netlink #992/#993; Kafka-debounce #991 backlogged). Octavia, Hardening, and IPv6 each shift one slot; the sprint numbers below are intentionally **not** renumbered, to avoid churning the §-cross-references throughout this doc.
+>
+> Also added to the backlog this round (not yet sprint-scheduled): a **per-server billing-grade usage export** feature (DESIGN §11 "Per-server usage export"; the CMP integration + MongoDB schema was designed in a spike completed this sprint), and an **observability & operability** feature (multi-agent-aware dashboards, a dedicated traffic dashboard, control-plane debug logging), plus a repo-wide **comment tidy-up** (self-contained comments + `doc.go` per package).
+
+## Sprint 8 — Octavia LB attribution (kernel-side)
 
 **Goal.** Implement the two-segment Octavia model per the revised §6 (post-empirical-verification finding).
 
@@ -381,6 +385,8 @@ Sprints 1, 2, 3 can technically interleave; the linear ordering above gives a wo
 
 ---
 
-*Last updated: 2026-06-16 (Sprint 6 marked DONE/PR #56; Sprint 7 marked DONE with as-built notes — Kafka consumer kicks the single-applier reconciler rather than a parallel incremental path, plus the ghost residual-flow correctness fix; Sprint 8 marked NEXT UP).*
+*Last updated: 2026-06-23 (re-sequenced: scenariotest harness + netlink attach-presence robustness inserted ahead of Octavia; §13.2 #5 un-deferred; Octavia/Hardening/IPv6 shift one slot, not renumbered).*
+
+*Previous update: 2026-06-16 (Sprint 6 marked DONE/PR #56; Sprint 7 marked DONE with as-built notes — Kafka consumer kicks the single-applier reconciler rather than a parallel incremental path, plus the ghost residual-flow correctness fix; Sprint 8 marked NEXT UP).*
 
 *Previous update: 2026-05-19 (Sprint 4c slice 1: locked sentinel `tenant_id=0` shape; dropped the pin-path-migration slice — pre-release product, agent doesn't pin maps today, so no v1 pin to refuse-reuse against; `MapSubnetZoneTrieMaxEntries` stays at 16384 for headroom; LOC re-estimated 400 → 250).*
