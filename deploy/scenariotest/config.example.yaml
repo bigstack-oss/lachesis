@@ -1,0 +1,51 @@
+# scenariotest configuration — live scenario-validation harness.
+#
+# Resolution: built-in defaults are overlaid by this file, then
+# validated. Credentials must be admin-scoped (reuse-or-create
+# projects and host-pinned placement both require it).
+
+version: "1"
+
+openstack:
+  # Two modes, mutually exclusive — mirror the agent's pattern.
+  #
+  # Mode 1: an admin-openrc-style file (export OS_* lines).
+  credentials_file: /etc/admin-openrc.sh
+  #
+  # Mode 2: inline (uncomment and drop credentials_file above).
+  # auth_url: https://keystone.example.invalid:5000/v3
+  # username: admin
+  # password: CHANGE_ME
+  # project_name: admin
+  # user_domain: default
+  # project_domain: default
+  # region: RegionOne
+  # interface: public          # public | internal | admin
+  request_timeout: 30s
+
+cluster:
+  name: staging
+  # One entry per compute node whose agent /metrics scenariotest scrapes.
+  # host must match the Nova hypervisor name (and any Placement pin).
+  agents:
+    - host: compute-0
+      metrics_url: http://compute-0.example.invalid:9100/metrics
+
+# Pre-staged resources scenariotest looks up by name and never creates.
+prerequisites:
+  image_name: ubuntu-22.04
+  flavor_name: m1.small          # global default; a scenario may override
+  keypair_name: scenariotest-key
+  secgroup_name: scenariotest-allow-all
+  external_network_name: public
+
+# In-VM traffic driver transport (used by `drive`). key_path's public
+# half must be registered as prerequisites.keypair_name in Nova.
+ssh:
+  user: ubuntu
+  key_path: ~/.ssh/scenariotest-key
+  timeout: 60s
+
+naming:
+  # Prefix mangled into every created resource: "<prefix>-<run-id>-<dsl-id>".
+  prefix: scenariotest

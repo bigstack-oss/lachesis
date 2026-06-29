@@ -1,0 +1,37 @@
+package scenarios
+
+import (
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scenariotest"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/scenario"
+)
+
+// vmToGateway exercises the infra zone. One VM on a routed subnet; the
+// router interface and the Nova metadata service (169.254.169.254) are
+// both /32 INFRA rows (DESIGN §5.2 Step 4). The flow targets the
+// metadata service, which — unlike the bare gateway — runs a real
+// HTTP responder, so infra traffic is generatable.
+//
+// Infra is not a bulk-transfer zone: the drive slice probes metadata
+// (small HTTP responses) rather than streaming, so MinBytes is a
+// modest lower bound, not a megabyte. Driving and the exact probe land
+// with the drive slice.
+func vmToGateway() *scenariotest.Scenario {
+	b := scenario.New()
+	b.Network("net-T1", "T1").
+		Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
+		VM("vm-a", "T1", "10.0.1.5")
+	// A router on the subnet makes 10.0.1.1 an INFRA /32 too, matching
+	// the canonical infra topology (scenarios_test.go Scenario B).
+	b.Router("r-T1", "T1").Attach("sub-T1", "10.0.1.1")
+	return &scenariotest.Scenario{
+		Name:    "vm-to-gateway",
+		Desc:    "VM probing the metadata service / gateway. Infra zone.",
+		Builder: b,
+		Flows: []scenariotest.Flow{
+			{From: "vm-a", To: scenariotest.ExternalTarget("169.254.169.254"), Bytes: 1 << 10, Proto: scenariotest.TCP},
+		},
+		Expect: []scenariotest.Expect{
+			{TenantID: "T1", Zone: "infra", Direction: "tx", MinBytes: 1 << 10},
+		},
+	}
+}
