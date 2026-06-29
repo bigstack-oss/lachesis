@@ -78,6 +78,31 @@ iperf3-measured BPF overhead is documented in DESIGN §12 ("Demo Workflow"). Not
 
 ---
 
+## Tier 4 — Live-cluster validation
+
+**Goal.** Verify per-tenant / zone / direction byte attribution end to end against a **real OVN cluster** — the automated form of the deploy → traffic → scrape → assert → teardown loop previously run by hand on staging every sprint. Tiers 1–3 prove the pipeline in isolation; Tier 4 proves it against live OpenStack, and de-risks the Octavia billing path by giving it a repeatable live-assertion harness.
+
+**Where.** `cmd/scenariotest` (the operator-run binary) and `internal/scenariotest` (the library). Scenarios are declarative Go literals under `cmd/scenariotest/scenarios/`, one per file. The registered set covers all five billing zones — `same_tenant`, `infra`, `external`, `shared`, `other_tenant` — mirroring the proven in-memory topologies in `internal/neutron/scenarios_test.go`.
+
+**Lifecycle.** Subcommands compose the loop:
+
+| Subcommand | Does |
+|---|---|
+| `list` | Show registered scenarios. |
+| `preflight <name>` | Read-only: verify prerequisites (image, flavor, keypair, secgroup, external network), validate any pinned hypervisors, confirm each agent's `/metrics` is reachable and exposes `cubecos_bytes_total` + `cubecos_attached_interfaces`. |
+| `up <name>` | Reuse-or-create projects (never deleted), realize the topology (name-mangled `<prefix>-<runid>-<dsl-id>`), allocate a floating IP per VM, and block on the **attach-ready gate** before returning. Writes run-state. |
+| `drive` / `assert` / `down` / `run` | Push flows, compare `/metrics` deltas as `MinBytes` lower bounds, tear the topology down (projects excepted), and the full sequence. |
+
+**Run-state.** `up` records every created resource — plus the DSL-name → Keystone-UUID project map — to a JSON file (`.scenariotest/<prefix>-<runid>.json` by default). `down` and `assert` consume it; a partial `up` still leaves a record `down` can clean up.
+
+**Credentials.** Config mirrors the agent's two-mode pattern: `credentials_file` (admin-openrc-style) **or** inline. Credentials must be admin-scoped — reuse-or-create projects and host-pinned placement both require it. No SSH-source-openrc auto-discovery.
+
+**Key facts the assertions hinge on.** The `tenant_id` label is the Keystone **project UUID** (not the DSL name), so `assert` resolves DSL name → UUID via run-state before matching. The `direction` label is `tx`/`rx` (VM-frame), not ingress/egress. The attach gate watches the `cubecos_attached_interfaces` **count** gauge — there is no per-interface HTTP surface — so it can be perturbed by background tenant churn; that limitation is inherent to the available signal.
+
+**How to run.** Not part of `go test ./...` — it is an operator binary, not a tagged test, and needs a live cluster. `go test` covers the library (config, name-mangling, the snapshot→resource translation, metrics parsing, the attach gate) with the OpenStack / SSH / metrics IO behind seam interfaces. Run live with `scenariotest preflight -config <cfg> <scenario>` then `scenariotest up -config <cfg> <scenario>` against a staging cluster.
+
+---
+
 ## CI
 
 `.github/workflows/ci.yml` runs three jobs on every push to `develop`/`main` and on every PR:
@@ -111,4 +136,4 @@ Local equivalent: `task ci` runs unit + bench-gate (skips integration because it
 
 ---
 
-*Last updated: 2026-05-11 (Sprint 0.5 complete).*
+*Last updated: 2026-06-29 (Tier 4 — live-cluster validation added).*
