@@ -44,15 +44,17 @@ Subcommands:
   up        <name>      Realize topology and wait for the agents to attach.
   drive     <name>      Re-check the attach gate, snapshot the metrics baseline, push declared flows.
   assert    <name>      Evaluate MinBytes expectations against /metrics deltas; write the report.
-  run       <name>      preflight → up → drive → assert → down (not yet implemented).
-  down                  Tear down (not yet implemented).
+  down      <name>      Tear down everything in the run-state (idempotent; projects and
+                        report/run-state files are never touched).
+  run       <name>      preflight → up → drive → assert → down, one command. -keep skips down.
 
 Common flags:
   -config <path>        Config file path. Required for everything except list.
-  -output <human|json>  preflight/assert output format (default human).
-  -state  <path>        Run-state file: written by up (default .scenariotest/<prefix>-<runid>.json),
-                        required by drive and assert.
-  -report <path>        assert report file (default <state>-report.json). Survives down.
+  -output <human|json>  preflight/assert/run output format (default human).
+  -state  <path>        Run-state file: written by up/run (default .scenariotest/<prefix>-<runid>.json),
+                        required by drive, assert, and down.
+  -report <path>        assert/run report file (default <state>-report.json). Survives down.
+  -keep                 run only: leave the topology up after assert.
 `
 
 func main() {
@@ -72,9 +74,10 @@ func main() {
 		os.Exit(runDrive(args))
 	case "assert":
 		os.Exit(runAssert(args))
-	case "run", "down":
-		fmt.Fprintf(os.Stderr, "scenariotest %s: not implemented yet\n", sub)
-		os.Exit(2)
+	case "down":
+		os.Exit(runDown(args))
+	case "run":
+		os.Exit(runRun(args))
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 		os.Exit(0)
@@ -283,6 +286,114 @@ func runAssert(args []string) int {
 		fmt.Fprintln(os.Stderr, "assert:", err)
 		return 1
 	}
+	if !res.OK {
+		return 1
+	}
+	return 0
+}
+
+func runDown(args []string) int {
+	fs := flag.NewFlagSet("down", flag.ContinueOnError)
+	configPath := fs.String("config", "", "config file path (required)")
+	statePath := fs.String("state", "", "run-state file written by up (required)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, sc, code := loadConfigAndScenario(*configPath, fs.Arg(0))
+	if code != 0 {
+		return code
+	}
+	if *statePath == "" {
+		fmt.Fprintln(os.Stderr, "missing required -state (the file `up` wrote)")
+		return 2
+	}
+	rs, err := scenariotest.LoadRunState(*statePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "down:", err)
+		return 1
+	}
+	if rs.Scenario != sc.Name {
+		fmt.Fprintf(os.Stderr, "down: run-state %s is for scenario %q, not %q\n", *statePath, rs.Scenario, sc.Name)
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	cloud, err := newCloud(ctx, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "down:", err)
+		return 1
+	}
+	if err := scenariotest.Down(ctx, scenariotest.DownOptions{
+		Config:    cfg,
+		State:     rs,
+		StatePath: *statePath,
+		Cloud:     cloud,
+		Log:       os.Stderr,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "down:", err)
+		return 1
+	}
+	fmt.Printf("down ok: scenario=%s run-id=%s (projects kept; state and report files kept)\n", sc.Name, rs.RunID)
+	return 0
+}
+
+func runRun(args []string) int {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	configPath := fs.String("config", "", "config file path (required)")
+	statePath := fs.String("state", "", "run-state file path (default .scenariotest/<prefix>-<runid>.json)")
+	reportPath := fs.String("report", "", "report file (default <state>-report.json)")
+	output := fs.String("output", "human", "output format: human|json")
+	keep := fs.Bool("keep", false, "leave the topology up after assert")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, sc, code := loadConfigAndScenario(*configPath, fs.Arg(0))
+	if code != 0 {
+		return code
+	}
+	runID, err := scenariotest.NewRunID()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "run:", err)
+		return 1
+	}
+	state := *statePath
+	if state == "" {
+		state = scenariotest.DefaultStatePath(cfg.Naming.Prefix, runID)
+	}
+	report := *reportPath
+	if report == "" {
+		report = scenariotest.DefaultReportPath(state)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	cloud, err := newCloud(ctx, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "run:", err)
+		return 1
+	}
+	res, err := scenariotest.Run(ctx, scenariotest.RunOptions{
+		Config:     cfg,
+		Scenario:   sc,
+		RunID:      runID,
+		StatePath:  state,
+		ReportPath: report,
+		Cloud:      cloud,
+		Metrics:    scenariotest.NewHTTPMetrics(nil),
+		Exec:       scenariotest.NewSSHExec(cfg.SSH),
+		Log:        os.Stderr,
+		Keep:       *keep,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "run:", err)
+		return 1
+	}
+	if err := res.Emit(os.Stdout, *output); err != nil {
+		fmt.Fprintln(os.Stderr, "run:", err)
+		return 1
+	}
+	fmt.Printf("report: %s\n", report)
 	if !res.OK {
 		return 1
 	}

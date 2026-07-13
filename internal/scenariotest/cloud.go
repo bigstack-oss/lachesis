@@ -70,6 +70,40 @@ type Cloud interface {
 	// CreateFIP allocates a floating IP and (when PortID is set) binds
 	// it, returning the allocation ID and the assigned address.
 	CreateFIP(ctx context.Context, projectID string, spec FIPCreateSpec) (id, addr string, err error)
+
+	// --- teardown (every delete is 404-tolerant: removing the
+	// already-gone succeeds, so `down` re-runs converge) ---
+	//
+	// Deliberately NO project deletion method: projects are never
+	// torn down by policy, and leaving the verb off the interface
+	// makes that unrepresentable.
+
+	// DeleteFIP releases a floating IP by exact allocation ID.
+	DeleteFIP(ctx context.Context, projectID, id string) error
+	// DeleteServer requests deletion; pair with WaitServerGone.
+	DeleteServer(ctx context.Context, projectID, id string) error
+	// WaitServerGone blocks until Nova no longer knows the server or
+	// the context deadline fires.
+	WaitServerGone(ctx context.Context, projectID, id string) error
+	// DeletePort deletes a Neutron port.
+	DeletePort(ctx context.Context, projectID, id string) error
+	// RemoveRouterInterface detaches a subnet or port from a router
+	// (exactly one of subnetID/portID set). Neutron deletes the
+	// interface port itself. Also 404-tolerant for "not an interface".
+	RemoveRouterInterface(ctx context.Context, projectID, routerID, subnetID, portID string) error
+	// DeleteRouter deletes a router. Neutron removes the external
+	// gateway port automatically; internal interfaces must already be
+	// detached.
+	DeleteRouter(ctx context.Context, projectID, id string) error
+	// ListNetworkPorts returns the IDs of every port still on a
+	// network (admin view) — the residual sweep for platform-created
+	// ports (e.g. CubeCOS `cube:mgr`) that block subnet/network
+	// deletion and appear in no run-state.
+	ListNetworkPorts(ctx context.Context, networkID string) ([]string, error)
+	// DeleteSubnet deletes a subnet.
+	DeleteSubnet(ctx context.Context, projectID, id string) error
+	// DeleteNetwork deletes a network.
+	DeleteNetwork(ctx context.Context, projectID, id string) error
 }
 
 // NetworkSpec describes a Neutron network to create. External

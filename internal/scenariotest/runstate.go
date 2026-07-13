@@ -38,6 +38,12 @@ type RunState struct {
 	// all agents, captured by `drive` immediately before it pushes
 	// traffic; `assert` diffs against it.
 	Baseline []BytesSample `json:"baseline,omitempty"`
+
+	// TornDown marks a successful `down`: every recorded resource is
+	// gone (projects excepted, by policy). The file itself is kept —
+	// together with the assert report it is the run's surviving
+	// evidence.
+	TornDown bool `json:"torn_down,omitempty"`
 }
 
 // AttachRecord is the attach gate's result: the gauge value the gate
