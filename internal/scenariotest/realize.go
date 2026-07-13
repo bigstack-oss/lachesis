@@ -123,7 +123,7 @@ func (r *realizer) run() error {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
 
-	if err := r.bootServers(snap); err != nil {
+	if err := r.bootServers(); err != nil {
 		return err
 	}
 	if err := r.waitActive(); err != nil {
@@ -355,7 +355,7 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 	return nil
 }
 
-func (r *realizer) bootServers(snap neutron.Snapshot) error {
+func (r *realizer) bootServers() error {
 	for _, vmID := range r.vmOrder {
 		proj := r.vmProject[vmID]
 		az := ""
