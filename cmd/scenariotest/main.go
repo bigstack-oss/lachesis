@@ -43,15 +43,16 @@ Subcommands:
   preflight <name>      Check cluster readiness (read-only).
   up        <name>      Realize topology and wait for the agents to attach.
   drive     <name>      Re-check the attach gate, snapshot the metrics baseline, push declared flows.
-  assert    <name>      Scrape + compare deltas (not yet implemented).
+  assert    <name>      Evaluate MinBytes expectations against /metrics deltas; write the report.
   run       <name>      preflight → up → drive → assert → down (not yet implemented).
   down                  Tear down (not yet implemented).
 
 Common flags:
   -config <path>        Config file path. Required for everything except list.
-  -output <human|json>  preflight output format (default human).
+  -output <human|json>  preflight/assert output format (default human).
   -state  <path>        Run-state file: written by up (default .scenariotest/<prefix>-<runid>.json),
-                        required by drive.
+                        required by drive and assert.
+  -report <path>        assert report file (default <state>-report.json). Survives down.
 `
 
 func main() {
@@ -69,7 +70,9 @@ func main() {
 		os.Exit(runUp(args))
 	case "drive":
 		os.Exit(runDrive(args))
-	case "assert", "run", "down":
+	case "assert":
+		os.Exit(runAssert(args))
+	case "run", "down":
 		fmt.Fprintf(os.Stderr, "scenariotest %s: not implemented yet\n", sub)
 		os.Exit(2)
 	case "-h", "--help", "help":
@@ -228,6 +231,61 @@ func runDrive(args []string) int {
 		return 1
 	}
 	fmt.Printf("drive ok: scenario=%s flows=%d state=%s\n", sc.Name, len(sc.Flows), *statePath)
+	return 0
+}
+
+func runAssert(args []string) int {
+	fs := flag.NewFlagSet("assert", flag.ContinueOnError)
+	configPath := fs.String("config", "", "config file path (required)")
+	statePath := fs.String("state", "", "run-state file written by up + drive (required)")
+	reportPath := fs.String("report", "", "report file (default <state>-report.json)")
+	output := fs.String("output", "human", "output format: human|json")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, sc, code := loadConfigAndScenario(*configPath, fs.Arg(0))
+	if code != 0 {
+		return code
+	}
+	if *statePath == "" {
+		fmt.Fprintln(os.Stderr, "missing required -state (the file `up` wrote)")
+		return 2
+	}
+	rs, err := scenariotest.LoadRunState(*statePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "assert:", err)
+		return 1
+	}
+	if rs.Scenario != sc.Name {
+		fmt.Fprintf(os.Stderr, "assert: run-state %s is for scenario %q, not %q\n", *statePath, rs.Scenario, sc.Name)
+		return 1
+	}
+	report := *reportPath
+	if report == "" {
+		report = scenariotest.DefaultReportPath(*statePath)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	res, err := scenariotest.Assert(ctx, scenariotest.AssertOptions{
+		Config:     cfg,
+		Scenario:   sc,
+		State:      rs,
+		ReportPath: report,
+		Metrics:    scenariotest.NewHTTPMetrics(nil),
+		Log:        os.Stderr,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "assert:", err)
+		return 1
+	}
+	if err := res.Emit(os.Stdout, *output); err != nil {
+		fmt.Fprintln(os.Stderr, "assert:", err)
+		return 1
+	}
+	if !res.OK {
+		return 1
+	}
 	return 0
 }
 
