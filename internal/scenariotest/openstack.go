@@ -465,3 +465,138 @@ func (o *OpenStack) CreateFIP(ctx context.Context, projectID string, spec FIPCre
 	}
 	return fip.ID, fip.FloatingIP, nil
 }
+
+// --- teardown ---
+
+// ignoreNotFound swallows 404s so deletes are idempotent: removing a
+// resource that is already gone is success, and a re-run of `down`
+// converges instead of failing on the survivors of a partial pass.
+func ignoreNotFound(err error) error {
+	if err == nil || gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
+		return nil
+	}
+	return err
+}
+
+func (o *OpenStack) DeleteFIP(ctx context.Context, projectID, id string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := ignoreNotFound(floatingips.Delete(ctx, sc.network, id).ExtractErr()); err != nil {
+		return fmt.Errorf("openstack: delete floating ip %s: %w", id, err)
+	}
+	return nil
+}
+
+func (o *OpenStack) DeleteServer(ctx context.Context, projectID, id string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := ignoreNotFound(servers.Delete(ctx, sc.compute, id).ExtractErr()); err != nil {
+		return fmt.Errorf("openstack: delete server %s: %w", id, err)
+	}
+	return nil
+}
+
+func (o *OpenStack) WaitServerGone(ctx context.Context, projectID, id string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	ticker := time.NewTicker(serverPollInterval)
+	defer ticker.Stop()
+	for {
+		_, err := servers.Get(ctx, sc.compute, id).Extract()
+		if gophercloud.ResponseCodeIs(err, http.StatusNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("openstack: poll server %s: %w", id, err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("openstack: server %s still present at deadline: %w", id, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (o *OpenStack) DeletePort(ctx context.Context, projectID, id string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := ignoreNotFound(ports.Delete(ctx, sc.network, id).ExtractErr()); err != nil {
+		return fmt.Errorf("openstack: delete port %s: %w", id, err)
+	}
+	return nil
+}
+
+func (o *OpenStack) RemoveRouterInterface(ctx context.Context, projectID, routerID, subnetID, portID string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	_, err = routers.RemoveInterface(ctx, sc.network, routerID, routers.RemoveInterfaceOpts{
+		SubnetID: subnetID,
+		PortID:   portID,
+	}).Extract()
+	if err := ignoreNotFound(err); err != nil {
+		return fmt.Errorf("openstack: remove interface (router %s, subnet %q, port %q): %w", routerID, subnetID, portID, err)
+	}
+	return nil
+}
+
+func (o *OpenStack) DeleteRouter(ctx context.Context, projectID, id string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := ignoreNotFound(routers.Delete(ctx, sc.network, id).ExtractErr()); err != nil {
+		return fmt.Errorf("openstack: delete router %s: %w", id, err)
+	}
+	return nil
+}
+
+// ListNetworkPorts uses the admin network client: the residual ports
+// it exists to find (platform-created, e.g. cube:mgr) belong to other
+// projects and are invisible to a scenario-project-scoped token.
+func (o *OpenStack) ListNetworkPorts(ctx context.Context, networkID string) ([]string, error) {
+	pages, err := ports.List(o.network, ports.ListOpts{NetworkID: networkID}).AllPages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("openstack: list ports on network %s: %w", networkID, err)
+	}
+	all, err := ports.ExtractPorts(pages)
+	if err != nil {
+		return nil, fmt.Errorf("openstack: extract ports: %w", err)
+	}
+	ids := make([]string, 0, len(all))
+	for _, p := range all {
+		ids = append(ids, p.ID)
+	}
+	return ids, nil
+}
+
+func (o *OpenStack) DeleteSubnet(ctx context.Context, projectID, id string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := ignoreNotFound(subnets.Delete(ctx, sc.network, id).ExtractErr()); err != nil {
+		return fmt.Errorf("openstack: delete subnet %s: %w", id, err)
+	}
+	return nil
+}
+
+func (o *OpenStack) DeleteNetwork(ctx context.Context, projectID, id string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := ignoreNotFound(networks.Delete(ctx, sc.network, id).ExtractErr()); err != nil {
+		return fmt.Errorf("openstack: delete network %s: %w", id, err)
+	}
+	return nil
+}

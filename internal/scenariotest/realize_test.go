@@ -52,6 +52,14 @@ type fakeCloud struct {
 	portSubnet    map[string]string          // port id → subnet id
 	routerExt     map[string]string          // router id → ext network id
 	routerSubnets map[string]map[string]bool // router id → attached subnet ids
+
+	// teardown model: residualPorts seeds platform-created ports
+	// (cube:mgr) per network id; deletions and detaches append to
+	// downOps in call order ("fip:<id>", "server:<id>", …).
+	residualPorts map[string][]string
+	downOps       []string
+	deleted       map[string]bool
+	failDown      map[string]bool // ops (kind:id) that refuse to delete
 }
 
 type ifaceRec struct{ routerID, subnetID, portID string }
@@ -66,6 +74,7 @@ func newFakeCloud(env *fakeEnv) *fakeCloud {
 		preProjects: map[string]string{}, findErrs: map[string]error{},
 		portSubnet: map[string]string{}, routerExt: map[string]string{},
 		routerSubnets: map[string]map[string]bool{},
+		residualPorts: map[string][]string{}, deleted: map[string]bool{},
 	}
 }
 
@@ -157,6 +166,46 @@ func (c *fakeCloud) CreateFIP(_ context.Context, _ string, spec FIPCreateSpec) (
 	}
 	c.fips = append(c.fips, spec)
 	return c.id("fip"), fmt.Sprintf("203.0.113.%d", len(c.fips)), nil
+}
+
+// --- teardown fakes: record in order, idempotent like the real
+// 404-tolerant implementations ---
+
+func (c *fakeCloud) down(kind, id string) error {
+	if c.failDown[kind+":"+id] {
+		return fmt.Errorf("fake neutron: %s %s refuses to delete", kind, id)
+	}
+	if !c.deleted[kind+":"+id] {
+		c.deleted[kind+":"+id] = true
+		c.downOps = append(c.downOps, kind+":"+id)
+	}
+	return nil
+}
+func (c *fakeCloud) DeleteFIP(_ context.Context, _, id string) error    { return c.down("fip", id) }
+func (c *fakeCloud) DeleteServer(_ context.Context, _, id string) error { return c.down("server", id) }
+func (c *fakeCloud) WaitServerGone(context.Context, string, string) error {
+	return nil
+}
+func (c *fakeCloud) DeletePort(_ context.Context, _, id string) error { return c.down("port", id) }
+func (c *fakeCloud) RemoveRouterInterface(_ context.Context, _, routerID, subnetID, portID string) error {
+	return c.down("detach", routerID+"/"+subnetID+portID)
+}
+func (c *fakeCloud) DeleteRouter(_ context.Context, _, id string) error { return c.down("router", id) }
+func (c *fakeCloud) ListNetworkPorts(_ context.Context, networkID string) ([]string, error) {
+	var out []string
+	for _, id := range c.residualPorts[networkID] {
+		if !c.deleted["port:"+id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+func (c *fakeCloud) DeleteSubnet(_ context.Context, _, id string) error { return c.down("subnet", id) }
+func (c *fakeCloud) DeleteNetwork(_ context.Context, _, id string) error {
+	if rem, _ := c.ListNetworkPorts(context.Background(), id); len(rem) > 0 {
+		return fmt.Errorf("fake neutron: network %s has %d port(s) in use", id, len(rem))
+	}
+	return c.down("network", id)
 }
 
 // fakeMetrics reports an attached-interface count that grows as the
