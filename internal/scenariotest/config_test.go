@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/osclient"
 )
 
 // TestLoadConfig_RejectsUnknownKeys pins the strict decoder: a typo'd
@@ -85,9 +87,11 @@ export OS_INTERFACE=public
 	if err != nil {
 		t.Fatalf("ResolveCredentials: %v", err)
 	}
-	want := OpenStackCreds{
+	// The shared osclient parser applies the Keystone domain defaults.
+	want := osclient.Credentials{
 		AuthURL: "http://k:5000/v3", Username: "admin", Password: "secret#1",
 		ProjectName: "admin", Region: "RegionOne", Interface: "public",
+		UserDomain: "default", ProjectDomain: "default",
 	}
 	if got != want {
 		t.Errorf("parsed creds:\n got %+v\nwant %+v", got, want)
@@ -100,8 +104,9 @@ func TestResolveCredentials_Inline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != in {
-		t.Errorf("inline creds changed: got %+v want %+v", got, in)
+	want := osclient.Credentials{AuthURL: "http://k", Username: "u", Password: "p", ProjectName: "admin"}
+	if got != want {
+		t.Errorf("inline creds changed: got %+v want %+v", got, want)
 	}
 }
 

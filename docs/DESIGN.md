@@ -1688,13 +1688,14 @@ Two sanctioned one-offs (not archetypes — don't replicate): the composition ro
 | `metrics` | Driven | custom `prometheus.Collector` (billing path, §13.1 #2) |
 | `netlink` | Service + Store | `Subscriber` + `Registry` + Metrics |
 | `neutron` | Driven | + Library surface (`BuildTrie`, `DetectAnomalies`, lookups are pure funcs) |
+| `osclient` | Library | shared Keystone bootstrap (`Credentials`, `ParseOpenRC`, `Authenticate`/`AuthenticateProject`); consumed by `neutron` and `scenariotest` |
 | `runtime` | Driven | `Manager` |
 | `scraper` | Service | reference Service example |
 | `state` | Store | reference Store example |
 | `tcattach` | Library | `NewLinkAttacher` returns the `Attacher` impl |
 | `testenv` | exempt | test-only builders/fixtures |
 | `wal`, `zombie` | Library | + Metrics bundles |
-| `perfbench`, `loadtest` | CLI harness | `Run(Config)` |
+| `perfbench`, `loadtest`, `scenariotest` | CLI harness | `Run(Config)`-style single-shot entrypoints (scenariotest: one per subcommand, live-cluster IO behind the `Cloud`/`MetricsSource` seams) |
 
 ---
 
