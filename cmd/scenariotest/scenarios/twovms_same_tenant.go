@@ -16,12 +16,22 @@ import (
 // dev-cmp that is the only host; on multi-node clusters this is only
 // meaningful when both VMs land on the same hypervisor (a Placement
 // pin, added once the baseline passes).
+//
+// The router + external gateway exist purely for floating-IP
+// reachability: Neutron only associates a FIP when a router with a
+// gateway on the external network also has an interface on the VM's
+// subnet. The asserted traffic is L2-adjacent (MAC-classified), so
+// the router does not change the same_tenant classification.
 func twoVMsSameTenant() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").
 		Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
 		VM("vm-a", "T1", "10.0.1.5").
 		VM("vm-b", "T1", "10.0.1.6")
+	b.ExternalNetwork("net-ext", "admin")
+	b.Router("r-T1", "T1").
+		Attach("sub-T1", "10.0.1.1").
+		ExternalGateway("net-ext")
 	return &scenariotest.Scenario{
 		Name:    "twovms-same-tenant",
 		Desc:    "Two VMs, same tenant, same subnet. Baseline that closes the loop.",

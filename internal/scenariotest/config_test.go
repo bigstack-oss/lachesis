@@ -3,8 +3,32 @@ package scenariotest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestLoadConfig_RejectsUnknownKeys pins the strict decoder: a typo'd
+// key must be a parse error, not a silently-ignored field that later
+// fails validation with a misleading "missing" message.
+func TestLoadConfig_RejectsUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := `version: "1"
+openstack:
+  auth_url: http://k
+  username: u
+  password: p
+  project_name: admin
+prerequisites:
+  flavour_name: m1.small
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "flavour_name") {
+		t.Fatalf("want unknown-key error naming flavour_name, got %v", err)
+	}
+}
 
 func TestConfigValidate(t *testing.T) {
 	base := func() Config {

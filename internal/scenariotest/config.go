@@ -1,6 +1,7 @@
 package scenariotest
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,7 +121,12 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("read config %s: %w", path, err)
 	}
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	// KnownFields makes a typo'd key (e.g. flavour_name) a parse error
+	// instead of a silently-ignored field — same strictness as the
+	// agent's config loader.
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
 		return cfg, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if err := cfg.Validate(); err != nil {
