@@ -69,11 +69,14 @@ type stageErr struct {
 func (e *stageErr) Error() string { return fmt.Sprintf("wal %s: %v", e.Stage, e.Err) }
 func (e *stageErr) Unwrap() error { return e.Err }
 
-// Save writes records to path via the atomic tmp+fsync+rename
-// rotation described in the package doc. agentBuild is informational
-// (correlation with build logs); empty is acceptable. m may be nil
-// when phase timings and failure stages are not needed.
-func Save(path, agentBuild string, records []state.Record, m *Metrics) error {
+// Save writes records and settled to path via the atomic
+// tmp+fsync+rename rotation described in the package doc. The two
+// slices must come from one [state.GlobalState.SnapshotForWAL] call —
+// a pair snapshotted separately can tear across a concurrent settle
+// fold and persist the folded bytes twice or not at all. agentBuild is
+// informational (correlation with build logs); empty is acceptable. m
+// may be nil when phase timings and failure stages are not needed.
+func Save(path, agentBuild string, records []state.Record, settled []state.SettledRecord, m *Metrics) error {
 	snap := snapshotWire{
 		SchemaVersion: SchemaVersion,
 		AgentBuild:    agentBuild,
@@ -82,6 +85,18 @@ func Save(path, agentBuild string, records []state.Record, m *Metrics) error {
 	}
 	for i := range records {
 		snap.GlobalState[i] = toWire(records[i])
+	}
+	if len(settled) > 0 {
+		snap.Settled = make([]settledWire, len(settled))
+		for i, s := range settled {
+			snap.Settled[i] = settledWire{
+				TenantID:  s.Key.Tenant,
+				Zone:      uint8(s.Key.Zone),
+				Direction: uint8(s.Key.Dir),
+				Bytes:     s.Bytes,
+				Packets:   s.Packets,
+			}
+		}
 	}
 
 	marshalStart := time.Now()
@@ -194,7 +209,7 @@ func writeAndFsync(path string, data []byte) error {
 func Load(path string) (LoadResult, error) {
 	primary, primaryErr := readAndParse(path)
 	if primaryErr == nil {
-		return LoadResult{Records: fromSnapshot(primary), Source: LoadFromPrimary}, nil
+		return LoadResult{Records: fromSnapshot(primary), Settled: fromSettled(primary), Source: LoadFromPrimary}, nil
 	}
 
 	// The .bak behind a newer-schema primary may well parse — it can
@@ -207,7 +222,7 @@ func Load(path string) (LoadResult, error) {
 	bakPath := path + BackupSuffix
 	backup, backupErr := readAndParse(bakPath)
 	if backupErr == nil {
-		return LoadResult{Records: fromSnapshot(backup), Source: LoadFromBackup}, nil
+		return LoadResult{Records: fromSnapshot(backup), Settled: fromSettled(backup), Source: LoadFromBackup}, nil
 	}
 
 	// Both missing is the first-boot path; report as empty.
@@ -260,9 +275,9 @@ func readAndParse(path string) (snapshotWire, error) {
 			ErrSchemaNewer, path, snap.SchemaVersion, SchemaVersion)
 	}
 	// SchemaVersion < ours would normally trigger a migration step,
-	// one per version. v1 is the first version; no migrations exist
-	// yet, so anything older than 1 is also unrepresentable. Keep
-	// the check open for future versions.
+	// one per version. v1→v2 is purely additive (the settled section;
+	// absent in a v1 file decodes as nil), so no migration exists.
+	// Anything older than 1 is unrepresentable.
 	if snap.SchemaVersion < 1 {
 		return snap, fmt.Errorf("wal: %s schema_version=%d unsupported", path, snap.SchemaVersion)
 	}
@@ -312,4 +327,23 @@ func fromSnapshot(snap snapshotWire) []state.Record {
 
 func fromMetricsWire(w flowMetricsWire) bpf.FlowMetrics {
 	return bpf.FlowMetrics{Bytes: w.Bytes, Packets: w.Packets, LastSeenNs: w.LastSeenNs}
+}
+
+func fromSettled(snap snapshotWire) []state.SettledRecord {
+	if len(snap.Settled) == 0 {
+		return nil
+	}
+	out := make([]state.SettledRecord, len(snap.Settled))
+	for i, s := range snap.Settled {
+		out[i] = state.SettledRecord{
+			Key: state.SettledKey{
+				Tenant: s.TenantID,
+				Zone:   bpf.ZoneCode(s.Zone),
+				Dir:    bpf.Direction(s.Direction),
+			},
+			Bytes:   s.Bytes,
+			Packets: s.Packets,
+		}
+	}
+	return out
 }

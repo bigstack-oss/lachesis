@@ -57,9 +57,9 @@ func (a *Agent) walFlushLoop(ctx context.Context) {
 // timings are recorded inside Save.
 func (a *Agent) flushWAL() error {
 	copyStart := time.Now()
-	a.walRecBuf = a.state.SnapshotForWAL(a.walRecBuf[:0])
+	a.walRecBuf, a.walSettledBuf = a.state.SnapshotForWAL(a.walRecBuf[:0], a.walSettledBuf[:0])
 	a.mx.wal.ObserveCopy(time.Since(copyStart))
-	return wal.Save(a.cfg.WAL.Path, a.buildID, a.walRecBuf, a.mx.wal)
+	return wal.Save(a.cfg.WAL.Path, a.buildID, a.walRecBuf, a.walSettledBuf, a.mx.wal)
 }
 
 // restoreFromWAL reads the on-disk snapshot (if enabled) and seeds
@@ -114,6 +114,9 @@ func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 	}
 	if len(res.Records) > 0 {
 		ag.SeedState(res.Records)
+	}
+	if len(res.Settled) > 0 {
+		ag.SeedSettled(res.Settled)
 	}
 	return nil
 }

@@ -1,4 +1,4 @@
-// schema.go defines what a v1 WAL file *is*: the on-disk schema version,
+// schema.go defines what a WAL file *is*: the on-disk schema version,
 // the file-suffix constants, the metric stage/fallback label vocabularies,
 // the Load outcome types, and the JSON wire structs. These declarations are
 // the persisted-serialization contract and change together — a format bump
@@ -11,10 +11,17 @@ package wal
 import "github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 
 // SchemaVersion is the on-disk envelope version. Bumped only on a
-// breaking change to the wire types below; each bump needs a
-// migration step in Load. Newer-than-this on disk causes Load to
-// refuse to start (we can't safely interpret a future schema).
-const SchemaVersion uint = 1
+// change to the wire types below; each bump needs a migration step (or
+// an explicit additive-compatibility note) in Load. Newer-than-this on
+// disk causes Load to refuse to start (we can't safely interpret a
+// future schema).
+//
+// History:
+//   - v1: global_state flow records only.
+//   - v2: adds the settled section (docs/DESIGN.md §3.5). Purely
+//     additive — a v1 file is a valid v2 file with no settled buckets,
+//     so Load reads both without migration.
+const SchemaVersion uint = 2
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
 // previous snapshot. TempSuffix is the in-progress write target.
@@ -61,19 +68,36 @@ const (
 )
 
 // LoadResult bundles a successful Load. Records is nil when Source
-// is LoadEmpty.
+// is LoadEmpty; Settled is nil for LoadEmpty and for v1 snapshots,
+// which predate the settled section.
 type LoadResult struct {
 	Records []state.Record
+	Settled []state.SettledRecord
 	Source  LoadSource
 }
 
 // snapshotWire is the on-disk envelope. Field order and JSON tags
-// are the wire format; do not reorder casually.
+// are the wire format; do not reorder casually. Settled is omitempty
+// so a v2 writer with nothing settled produces a byte-identical
+// envelope to v1 apart from the version field.
 type snapshotWire struct {
-	SchemaVersion uint        `json:"schema_version"`
-	AgentBuild    string      `json:"agent_build"`
-	WrittenAtNs   uint64      `json:"written_at_ns,string"`
-	GlobalState   []entryWire `json:"global_state"`
+	SchemaVersion uint          `json:"schema_version"`
+	AgentBuild    string        `json:"agent_build"`
+	WrittenAtNs   uint64        `json:"written_at_ns,string"`
+	GlobalState   []entryWire   `json:"global_state"`
+	Settled       []settledWire `json:"settled,omitempty"`
+}
+
+// settledWire mirrors state.SettledRecord on the wire. The tenant is
+// the Keystone project UUID string — the only tenant identifier stable
+// across boots (see the state.Record invariant note); zone and
+// direction reuse the flow-key enum encodings.
+type settledWire struct {
+	TenantID  string `json:"tenant_id"`
+	Zone      uint8  `json:"zone"`
+	Direction uint8  `json:"direction"`
+	Bytes     uint64 `json:"bytes,string"`
+	Packets   uint64 `json:"packets,string"`
 }
 
 // entryWire mirrors state.Record on the wire. u64 fields use the

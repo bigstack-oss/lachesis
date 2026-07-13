@@ -9,6 +9,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 )
 
 // fakeMacWriter records the kernel mac_tenant_map upserts the reconcile
@@ -182,6 +183,99 @@ func TestReconcileMACs_TenantChangeIsPointerReplace(t *testing.T) {
 	}
 	if n2, _ := meta.Lookup(m2); n2.ProjectID != "old" {
 		t.Errorf("unchanged m2 ProjectID = %q, want old", n2.ProjectID)
+	}
+}
+
+// TestReconcileMACs_TenantChangeSettlesOldTenant locks the tenant-change
+// half of the settled-bytes fold (docs/DESIGN.md §3.5): re-pointing a
+// live MAC at a new tenant first settles the MAC's accumulated flows
+// under the OLD tenant, and — because the port's kernel counters keep
+// running — the rows survive with their delta watermark intact, so the
+// next drain credits only post-fold bytes (which late-bind to the new
+// tenant). Without the fold the whole history would re-attribute.
+func TestReconcileMACs_TenantChangeSettlesOldTenant(t *testing.T) {
+	meta := metadata.New()
+	macStr := "cc:00:00:00:00:01"
+	m := mac(t, macStr)
+	meta.Insert(m, &metadata.TenantMeta{ProjectID: "proj-old"})
+
+	var vmMAC [6]uint8
+	hw, _ := net.ParseMAC(macStr)
+	copy(vmMAC[:], hw)
+	key := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+
+	st := state.New()
+	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 100, Packets: 4, LastSeenNs: 1})
+
+	r := New(Options{
+		Meta:      meta,
+		MacWriter: &fakeMacWriter{},
+		Settler:   st,
+		Interner:  metadata.NewTenantInterner(),
+		Metrics:   NewMetrics(),
+	})
+	d := r.reconcileMACs([]neutron.Port{vmPort(macStr, "proj-new")}, time.Unix(2000, 0))
+	if d != (macDelta{Changed: 1}) {
+		t.Fatalf("macDelta = %+v, want {Changed:1}", d)
+	}
+
+	flows, settled := st.SnapshotWithSettled(nil, nil)
+	wantKey := state.SettledKey{Tenant: "proj-old", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}
+	if len(settled) != 1 || settled[0].Key != wantKey || settled[0].Bytes != 100 {
+		t.Fatalf("settled = %+v, want 100 bytes under %+v", settled, wantKey)
+	}
+	// The row survives (SettleRebase), zeroed: the kernel counters are
+	// still live, so eviction would make the next drain re-count the
+	// full kernel cumulative as first sight.
+	if len(flows) != 1 || flows[0].Key != key || flows[0].Total.Bytes != 0 {
+		t.Fatalf("flows = %+v, want the row kept with Total zeroed", flows)
+	}
+	// Next drain: kernel cumulative moved 100→130; only the 30 new
+	// bytes may accrue (and will late-bind to proj-new at scrape).
+	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 130, Packets: 5, LastSeenNs: 2})
+	flows, settled = st.SnapshotWithSettled(nil, nil)
+	if flows[0].Total.Bytes != 30 {
+		t.Errorf("post-fold delta = %d bytes, want 30 (old cumulative must not replay)", flows[0].Total.Bytes)
+	}
+	if settled[0].Bytes != 100 {
+		t.Errorf("settled bytes = %d, want 100 (unchanged by later drains)", settled[0].Bytes)
+	}
+}
+
+// TestReconcileMACs_ResurrectedSameTenantDoesNotSettle: a ghost coming
+// back within its grace under the SAME tenant keeps its history in
+// place — nothing to re-attribute, so nothing folds.
+func TestReconcileMACs_ResurrectedSameTenantDoesNotSettle(t *testing.T) {
+	meta := metadata.New()
+	macStr := "cc:00:00:00:00:02"
+	m := mac(t, macStr)
+	meta.Insert(m, &metadata.TenantMeta{ProjectID: "proj-z"})
+	meta.MarkDelete(m, time.Unix(1000, 0))
+
+	var vmMAC [6]uint8
+	hw, _ := net.ParseMAC(macStr)
+	copy(vmMAC[:], hw)
+	st := state.New()
+	st.ApplyDelta(bpf.FlowKey{SrcMac: vmMAC, EthProto: 0x0800,
+		Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant},
+		bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 1})
+
+	r := New(Options{
+		Meta:      meta,
+		MacWriter: &fakeMacWriter{},
+		Settler:   st,
+		Interner:  metadata.NewTenantInterner(),
+		Metrics:   NewMetrics(),
+	})
+	r.reconcileMACs([]neutron.Port{vmPort(macStr, "proj-z")}, time.Unix(2000, 0))
+
+	flows, settled := st.SnapshotWithSettled(nil, nil)
+	if len(settled) != 0 {
+		t.Errorf("settled = %+v, want none (same tenant resurrected)", settled)
+	}
+	if len(flows) != 1 || flows[0].Total.Bytes != 100 {
+		t.Errorf("flows = %+v, want the history untouched", flows)
 	}
 }
 

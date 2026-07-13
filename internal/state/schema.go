@@ -1,6 +1,7 @@
 // schema.go holds package state's pure-data value types: the per-flow
-// Counter, the Snapshot Entry, and the WAL Record. The authoritative
-// store GlobalState and the delta math that mutates these values live in
+// Counter, the Snapshot Entry, the WAL Record, and the settled-
+// accumulator key/record/mode types. The authoritative store
+// GlobalState and the delta math that mutates these values live in
 // state.go.
 
 package state
@@ -48,3 +49,46 @@ type Record struct {
 	Key     bpf.FlowKey
 	Counter Counter
 }
+
+// SettledKey identifies one settled-accumulator bucket. It is exactly
+// the metric label tuple the Collector emits — the resolved tenant plus
+// the flow key's zone and direction — because settling happens at the
+// moment the finer flow-level identity (the MAC pair) stops being
+// resolvable: the bytes are re-homed at the granularity that must stay
+// monotonic.
+type SettledKey struct {
+	Tenant string
+	Zone   bpf.ZoneCode
+	Dir    bpf.Direction
+}
+
+// SettledRecord is one settled bucket's cumulative totals, emitted by
+// the snapshot methods and round-tripped through the WAL. Settled
+// buckets carry no LastEbpfRaw — they are past delta math by
+// definition — and no LastSeenNs — recency belongs to live flows.
+type SettledRecord struct {
+	Key     SettledKey
+	Bytes   uint64
+	Packets uint64
+}
+
+// SettleMode selects what [GlobalState.Settle] does with a flow row
+// after folding its Total into the settled accumulator. The right mode
+// is decided by whether the row's kernel telemetry_map counters still
+// exist — see the constants.
+type SettleMode int
+
+const (
+	// SettleEvict deletes the folded row. Correct when the flow's
+	// kernel counters are already gone (the ghost sweep deletes them
+	// first), so nothing will feed the row again: a later reappearance
+	// of the same key is a genuinely new flow whose kernel counter
+	// restarts at zero and must re-baseline from first sight.
+	SettleEvict SettleMode = iota
+	// SettleRebase zeroes the folded row's Total but keeps the row and
+	// its LastEbpfRaw. Correct when the kernel counters live on (a live
+	// port changed tenant): the next ApplyDelta must count only bytes
+	// arriving after the fold, not re-count the kernel cumulative that
+	// was just settled.
+	SettleRebase
+)

@@ -173,7 +173,7 @@ func TestSnapshotForWAL_ReturnsTotalAndLastRaw(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 10})
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 250, Packets: 3, LastSeenNs: 20})
 
-	records := g.SnapshotForWAL(nil)
+	records, _ := g.SnapshotForWAL(nil, nil)
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
@@ -202,7 +202,7 @@ func TestRestore_SeedsBothTotalAndLastRaw(t *testing.T) {
 	// LastEbpfRaw, not re-baseline. Raw 1000 → delta = 100 → Total = 1100.
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 1000, Packets: 11, LastSeenNs: 200})
 
-	records := g.SnapshotForWAL(nil)
+	records, _ := g.SnapshotForWAL(nil, nil)
 	r := records[0]
 	if got, want := r.Counter.Total.Bytes, uint64(1100); got != want {
 		t.Errorf("Total.Bytes after restore + delta = %d, want %d (= 1000 + (1000-900))", got, want)
@@ -223,7 +223,7 @@ func TestRestore_OverwritesExistingKey(t *testing.T) {
 		},
 	}})
 
-	records := g.SnapshotForWAL(nil)
+	records, _ := g.SnapshotForWAL(nil, nil)
 	if got, want := records[0].Counter.Total.Bytes, uint64(9999); got != want {
 		t.Errorf("Restore did not overwrite: got %d, want %d", got, want)
 	}
@@ -236,9 +236,9 @@ func TestSnapshotForWAL_ReusesCapacity(t *testing.T) {
 		k.SrcMac[5] = byte(i)
 		g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1})
 	}
-	dst := g.SnapshotForWAL(nil)
+	dst, _ := g.SnapshotForWAL(nil, nil)
 	cap1 := cap(dst)
-	dst = g.SnapshotForWAL(dst[:0])
+	dst, _ = g.SnapshotForWAL(dst[:0], nil)
 	if cap(dst) != cap1 {
 		t.Errorf("SnapshotForWAL grew capacity: %d → %d", cap1, cap(dst))
 	}
@@ -303,7 +303,7 @@ func TestAdd_DoesNotPrimeDeltaBaseline(t *testing.T) {
 	// Counter — assert the cumulative is exactly what was Added.
 	g := state.New()
 	g.Add(keyA(), bpf.FlowMetrics{Bytes: 4242, Packets: 7, LastSeenNs: 1})
-	recs := g.SnapshotForWAL(nil)
+	recs, _ := g.SnapshotForWAL(nil, nil)
 	if len(recs) != 1 {
 		t.Fatalf("SnapshotForWAL returned %d records, want 1", len(recs))
 	}
@@ -312,5 +312,101 @@ func TestAdd_DoesNotPrimeDeltaBaseline(t *testing.T) {
 	}
 	if recs[0].Counter.LastEbpfRaw.Bytes != 0 {
 		t.Errorf("LastEbpfRaw.Bytes = %d, want 0 (Add must not prime the delta baseline)", recs[0].Counter.LastEbpfRaw.Bytes)
+	}
+}
+
+// settleAll resolves every key to one tenant — the common test fold.
+func settleAll(tenant string) func(bpf.FlowKey) (string, bool) {
+	return func(bpf.FlowKey) (string, bool) { return tenant, true }
+}
+
+// TestSettle_EvictMovesTotalsAndDeletesRows: the ghost-sweep fold.
+// Value moves from the flow rows into per-(tenant, zone, direction)
+// settled buckets — the per-tuple sum is unchanged — and the folded
+// rows are gone. Unresolved rows are untouched.
+func TestSettle_EvictMovesTotalsAndDeletesRows(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 2, LastSeenNs: 1})
+	g.ApplyDelta(keyB(), bpf.FlowMetrics{Bytes: 50, Packets: 1, LastSeenNs: 2})
+
+	folded := g.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, bool) {
+		if k == keyA() {
+			return "tenant-a", true
+		}
+		return "", false
+	})
+	if folded != 1 {
+		t.Fatalf("Settle folded %d rows, want 1", folded)
+	}
+	flows, settled := g.SnapshotWithSettled(nil, nil)
+	if len(flows) != 1 || flows[0].Key != keyB() || flows[0].Total.Bytes != 50 {
+		t.Errorf("flows = %+v, want only keyB with 50 bytes", flows)
+	}
+	want := state.SettledKey{Tenant: "tenant-a", Zone: keyA().DstZone, Dir: keyA().Direction}
+	if len(settled) != 1 || settled[0].Key != want || settled[0].Bytes != 100 || settled[0].Packets != 2 {
+		t.Errorf("settled = %+v, want 100 bytes / 2 packets under %+v", settled, want)
+	}
+}
+
+// TestSettle_EvictAccumulatesIntoExistingBucket: two folds to the same
+// tuple add up — settled buckets only grow.
+func TestSettle_EvictAccumulatesIntoExistingBucket(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 1})
+	g.Settle(state.SettleEvict, settleAll("t1"))
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 30, Packets: 1, LastSeenNs: 2})
+	g.Settle(state.SettleEvict, settleAll("t1"))
+
+	_, settled := g.SnapshotWithSettled(nil, nil)
+	if len(settled) != 1 || settled[0].Bytes != 130 {
+		t.Errorf("settled = %+v, want one bucket with 130 bytes", settled)
+	}
+}
+
+// TestSettle_RebaseZerosTotalKeepsWatermark: the tenant-change fold.
+// The row survives with Total zeroed and LastEbpfRaw intact, so the
+// next ApplyDelta counts only bytes that arrived after the fold.
+func TestSettle_RebaseZerosTotalKeepsWatermark(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 4, LastSeenNs: 1})
+
+	g.Settle(state.SettleRebase, settleAll("t-old"))
+
+	flows, settled := g.SnapshotWithSettled(nil, nil)
+	if len(flows) != 1 || flows[0].Total.Bytes != 0 {
+		t.Fatalf("flows = %+v, want the row kept with Total zeroed", flows)
+	}
+	if len(settled) != 1 || settled[0].Bytes != 100 {
+		t.Fatalf("settled = %+v, want 100 bytes", settled)
+	}
+
+	// Kernel cumulative advances 100→130: only the 30 delta accrues.
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 130, Packets: 5, LastSeenNs: 2})
+	flows, _ = g.SnapshotWithSettled(nil, nil)
+	if flows[0].Total.Bytes != 30 {
+		t.Errorf("post-rebase Total = %d, want 30 (settled cumulative must not replay)", flows[0].Total.Bytes)
+	}
+}
+
+// TestSettledWALRoundTrip: SnapshotForWAL emits the settled buckets and
+// RestoreSettled seeds them back — restart-safe.
+func TestSettledWALRoundTrip(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 2, LastSeenNs: 1})
+	g.Settle(state.SettleEvict, settleAll("t1"))
+
+	_, settled := g.SnapshotForWAL(nil, nil)
+	if len(settled) != 1 {
+		t.Fatalf("SnapshotForWAL settled = %+v, want 1 bucket", settled)
+	}
+
+	fresh := state.New()
+	fresh.RestoreSettled(settled)
+	if fresh.SettledLen() != 1 {
+		t.Fatalf("SettledLen after restore = %d, want 1", fresh.SettledLen())
+	}
+	_, got := fresh.SnapshotWithSettled(nil, nil)
+	if got[0] != settled[0] {
+		t.Errorf("restored settled = %+v, want %+v", got[0], settled[0])
 	}
 }

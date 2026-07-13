@@ -404,7 +404,7 @@ The kernel `mac_tenant_map` is the load-bearing copy for billing — every packe
 |---|---|---|
 | **Insert** (Kafka `port.created` or cold-start) | userspace `ShardedMetadataMap` FIRST → then kernel `mac_tenant_map` | When the kernel classifies the next packet, userspace is already ready to enrich the resulting `tenant_id` into a project_id label at scrape time |
 | **Mark for delete** (Kafka `port.deleted` / `subnet.deleted`) | set `DeleteAt = now + 60s` on the userspace entry. **Kernel entry is NOT touched.** | Dying FIN/RST packets continue to classify correctly during the grace window (§3.3) |
-| **GC sweep** (every 60s; entries with `DeleteAt < now`) | kernel `mac_tenant_map` FIRST → then userspace `ShardedMetadataMap` | At no point does the kernel return a `tenant_id` that userspace can't translate; avoids `tenant=unknown` labels on scrapes that happen to race the deletion |
+| **GC sweep** (every 60s; entries with `DeleteAt < now`) | kernel `mac_tenant_map` → the swept MACs' residual kernel `telemetry_map` flows (§3.3) → settled-bytes fold of their GlobalState rows (§3.5) → userspace `ShardedMetadataMap` LAST | At no point does the kernel return a `tenant_id` that userspace can't translate; the fold runs while the metadata still resolves the tenant, so the dead VM's historical bytes stay attributed instead of re-bucketing to `unknown` |
 
 **Violations are silent** — they don't crash the agent, they produce small but real billing errors:
 
@@ -412,7 +412,32 @@ The kernel `mac_tenant_map` is the load-bearing copy for billing — every packe
 |---|---|
 | Insert kernel-first | First packets of a brand-new VM miss in the kernel → land in UnresolvedBuffer for a brief window before the kernel entry catches up |
 | Delete kernel immediately on `port.deleted` (skipping the 60s grace) | Dying FIN/RST packets attribute to `tenant=unknown` instead of the right tenant. The Lingering Ghost is functionally dead — under-billing on every shut-down VM |
-| GC deletes userspace first | Brief window where a kernel hit can't be enriched → `tenant=unknown` labels on the next scrape's Collect output |
+| GC deletes userspace first | Brief window where a kernel hit can't be enriched → `tenant=unknown` labels on the next scrape's Collect output — and the settled-bytes fold (§3.5) can no longer learn the tenant, so the dead VM's history re-buckets to `unknown` permanently |
+
+### 3.5 Settled bytes (fold-forward when attribution dies)
+
+The Collector late-binds `tenant_id`: every scrape resolves each GlobalState flow's VM MAC through the metadata map (§3.2). Series identity is therefore a function of *current* metadata — and two lifecycle events change the answer for bytes that were already counted:
+
+- the **ghost sweep** deletes a dead VM's metadata (§3.3): its flows stop resolving and would re-aggregate under `tenant_id="unknown"`;
+- a **live port is reassigned** to another project: its flows' entire history would re-aggregate under the new tenant.
+
+Either way an exposed per-tenant series would *decrease* — breaking Contract 7 (§13.1) and the §11.5 subtraction-billing contract (silent under-billing), while the re-bucketed step spikes the revenue-leak SLO with bytes that are historical, not leaking.
+
+The fix is **fold-forward at the moment attribution dies**. GlobalState carries a second map — the **settled accumulator**, keyed `(tenant_id, zone, direction)`, exactly the exposed label tuple — and `Settle(mode, resolve)` folds matching rows' totals into it inside one write-lock critical section. Two callers, two modes:
+
+| Caller | Moment | Mode | Why that mode |
+|---|---|---|---|
+| Ghost sweep (§3.3/§3.4) | after the kernel MAC + residual-flow deletes, before the userspace metadata delete — the last instant the tenant is knowable | **SettleEvict** — fold, then delete the rows | The flow's kernel counters are already gone, so the rows are dead; evicting them is also what stops GlobalState (and the WAL) growing with every VM that ever lived on the host |
+| MAC reconcile, tenant change | just before the `*TenantMeta` pointer-replace | **SettleRebase** — fold, zero `Total`, keep `LastEbpfRaw` | The port lives on and its kernel counters keep running; the intact watermark makes the next drain credit only post-fold bytes, which late-bind to the new tenant. Evicting instead would re-count the full kernel cumulative as first sight |
+
+`Collect()` emits **live + settled** per tuple, and snapshots both maps under ONE RLock — a snapshot torn across a concurrent fold would double-count (live then settled) or drop (settled then live) the folded bytes for one scrape, breaking monotonicity at the next. The WAL snapshot is combined for the same reason (a torn WAL pair would make the error permanent on crash-restore). The per-tuple sum is invariant across a fold; that invariance *is* the Contract 7 guarantee.
+
+Consequences and boundaries:
+
+- **MAC reuse is safe.** A swept MAC reborn on another tenant's port starts a fresh GlobalState row from a fresh kernel counter; the old tenant's bytes are already settled. Without the fold, the surviving row's whole history would re-bind to the new tenant at the next scrape (over-billing it) — raw bytes were never at risk (the §13.1 #5 wraparound guard treats the restarted kernel counter as a reset), but attribution was.
+- **Settled buckets only grow**, and their cardinality is bounded by `tenants × zones × 2 directions` — a few KB even at hub-tenant scale. They round-trip through the WAL (schema v2; purely additive, so a v1 snapshot loads with an empty accumulator) and restore before the scraper starts.
+- **Hard-crash window.** A fold becomes durable at the next WAL flush (≤60s, §B.11). A hard crash in between restores the pre-fold rows, whose metadata may already be gone — so up to one flush window of folds can degrade to `unknown` on the next boot. This is the same envelope as the WAL's general ≤60s tail-loss trade-off; a graceful shutdown's final flush loses nothing.
+- The UnresolvedBuffer's synthetic `unknown` keys (§3.2) have zero MACs and never settle — `unknown` is not a tenant whose history needs preserving, and those rows are already terminal.
 
 ---
 
@@ -1303,7 +1328,7 @@ post-`StateRestored` worker awaits that phase before its first action.
 
 **Designed (requires map pinning — deferred, §13.2 #7):**
 - Kernel map pinned under `bpf.pin_path` → survives the process.
-- New agent reads [WAL](#b11-write-ahead-log-wal) → restores GlobalState (cumulative counters).
+- New agent reads [WAL](#b11-write-ahead-log-wal) → restores GlobalState (cumulative counters and the settled-bytes accumulator, §3.5).
 - BatchLookup reads the surviving kernel map → merges since last WAL checkpoint.
 - **Net data loss: 0.**
 
@@ -1446,6 +1471,7 @@ reintroduce hook-frame strings into the metric labels.
 | `cubecos_bpf_map_current_entries` | gauge | same `map` label | userspace-tracked count: kernelwriter push for mac_tenant_map / subnet_zone_trie, scraper drain for telemetry_map. Fill ratio = `current / max` in PromQL (replaces the drafted `cubecos_bpf_map_fill_ratio`; exporting numerator and denominator keeps both visible) |
 | `cubecos_bpf_update_failures_total` | counter | `reason="update_failure\|skipped_ethertype"` | kernel `telemetry_stats` PERCPU_ARRAY, CPU-summed and drained by the scraper each tick; both reason series are zero-seeded at startup. `update_failure` = telemetry_map inserts the kernel rejected (map full — those flows' bytes are lost until GC frees space), `skipped_ethertype` = non-IP frames passed through uncounted (ARP/LLDP noise normally; a sustained rise flags a trunk/VLAN blind spot) |
 | `cubecos_state_flows` | gauge | — | distinct flow keys in GlobalState (Collector) |
+| `cubecos_state_settled_tuples` | gauge | — | distinct (tenant, zone, direction) buckets in the settled-bytes accumulator (§3.5) |
 | `cubecos_scraper_errors_total` | counter | — | failed BPF-map drain attempts (Collector, from scraper) |
 | `cubecos_scraper_last_success_unix_seconds` | gauge | — | most recent successful drain; 0 if never (Collector, from scraper) |
 | `cubecos_collect_duration_seconds` | histogram | — | one Collect pass: snapshot + aggregate + emit. Buckets 1ms..1s |
@@ -1465,6 +1491,7 @@ reintroduce hook-frame strings into the metric labels.
 | `cubecos_attached_interfaces` | gauge | — | current Interface Registry size |
 | `cubecos_gc_evictions_total` | counter | `reason="ttl\|pressure_relief\|ghost_residual_flow"` | GC: lingering-ghost sweep (`ttl`, mac_tenant_map), scraper pressure-relief (`pressure_relief`, telemetry_map), and a swept MAC's residual telemetry_map flows removed so they are not re-billed as "unknown" (`ghost_residual_flow`, §3.3) |
 | `cubecos_gc_pressure_relief_runs_total` | counter | — | scraper pressure-relief pass (fill above the high watermark) |
+| `cubecos_gc_settled_flows_total` | counter | — | GlobalState flow rows the ghost sweep folded into the settled-bytes accumulator, keeping deleted VMs' bytes attributed to their tenant (§3.5) |
 | `cubecos_lingering_ghosts_active` | gauge | — | metadata entries inside the 60s ghost grace window; the Neutron reconcile's MarkDelete on a deleted port/subnet now exercises it (§5.7) |
 | `cubecos_unresolved_buffer_depth` | gauge | — | UnresolvedBuffer occupancy (panic threshold near the cap) |
 | `cubecos_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer entries folded to "unknown", by cause |
@@ -1525,7 +1552,7 @@ The zone vocabulary is the §11.4 label table. The guiding principle: **each sid
 
 #### The consumption contract
 
-- **Counters are lifetime-cumulative and never decrease.** GlobalState has no eviction path, and WAL restore (§10) carries the running totals across agent restarts and reboots — series never reset to zero. (A crash can drop up to the ≤60s WAL window of tail bytes — provider-unfavorable, §10.) §13.1 #7 pins this as an implementation contract.
+- **Counters are lifetime-cumulative and never decrease.** A flow row lives in GlobalState while its attribution lives, and when the attribution dies — the VM deleted and ghost-swept, or the port reassigned to another project — the row's bytes fold forward into the settled accumulator under the same `(tenant_id, zone, direction)` tuple (§3.5). The exposed series is the live+settled sum, so its value is invariant across the fold: VM churn never decreases a tenant's series. WAL restore (§10) carries both halves across agent restarts and reboots — series never reset to zero. (A hard crash can drop up to the ≤60s WAL window of tail bytes and un-persist that window's folds — provider-unfavorable, §10/§3.5.) §13.1 #7 pins this as an implementation contract.
 - **Consume by endpoint-sample subtraction, not `increase()`.** For a billing period `[T₀, T₁]`, charge `value(T₁) − value(T₀)` per series. `increase()` extrapolates to compensate for counter resets and scrape-boundary gaps; these counters never reset, so the extrapolation only adds error. Plain subtraction is exact — the no-eviction property is precisely what makes it safe.
 - **Prometheus durability, retention, and HA are the platform's responsibility** (stated non-goal). The agent's promise ends at `/metrics`: cumulative, monotone, restart-surviving series. Whatever scrapes them must retain the two endpoint samples per billing period (or remote-write to something that does).
 - **Host identity is the Prometheus `instance` scrape label** — there is no host label on the metric itself. A live-migrated VM accrues series under several `instance` values over its lifetime; sum them (§8 Tier 4 #16).
@@ -1621,7 +1648,7 @@ These must be present in any implementation for correctness. They are not deferr
 | 4 | Boot sequence (§9) ordering enforced — currently by straight-line single-goroutine `Bootstrap`: every phase advances inline and `Bootstrap` returns before `Run` spawns the scraper/WAL/netlink goroutines, so no consumer can observe an out-of-order phase | High | Out-of-order startup silently produces permanently-misclassified flows. `boot.Sequencer` validates the step-by-one order and logs each transition; promoting it to a cross-goroutine `Await`/`Fail` barrier is deferred until concurrent phase-advancers exist (§13.2 #3) |
 | 5 | u64 wraparound guard in delta math | Low | At 10 Gbps continuous, ~467 years to overflow — but the guard is one comparison, so add it |
 | 6 | Lingering Ghost lifecycle ordering between kernel `mac_tenant_map` and userspace `ShardedMetadataMap` | High | Insertions go userspace→kernel; deletions are delayed 60s then go kernel→userspace (§3.4). Skipping the kernel-side delay silently breaks the ghost's purpose — dying FIN/RST packets mis-attribute to `unknown` |
-| 7 | `GlobalState` is append-only for the life of the process; exposed series never reset and are restored cumulatively across restarts (WAL, §10) | High | Billing consumers bill by endpoint-sample subtraction (§11.5) and depend on monotone cumulative counters. Any future eviction/retention feature must version the consumption contract first |
+| 7 | Exposed `(tenant_id, zone, direction)` series are monotone: any mutation that deletes or re-attributes a `GlobalState` flow row folds its total into the settled accumulator in the same critical section (§3.5), and snapshots (Collect, WAL) read both maps under one lock; series are restored cumulatively across restarts (WAL, §10) | High | Billing consumers bill by endpoint-sample subtraction (§11.5) and depend on monotone cumulative counters. Late-bound labels mean row-level append-only is NOT sufficient — deleting metadata re-buckets history, which is a series decrease. Any future eviction/retention feature must preserve the fold-forward property or version the consumption contract first |
 
 ### 13.2 Deferred Work
 

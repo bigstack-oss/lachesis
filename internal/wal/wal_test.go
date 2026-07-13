@@ -52,7 +52,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.json")
 	want := sampleRecords()
 
-	if err := wal.Save(path, "test-build", want, nil); err != nil {
+	if err := wal.Save(path, "test-build", want, nil, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestSave_UsesStringEncodingForU64(t *testing.T) {
 			Total: bpf.FlowMetrics{Bytes: big, Packets: big, LastSeenNs: big},
 		},
 	}}
-	if err := wal.Save(path, "", in, nil); err != nil {
+	if err := wal.Save(path, "", in, nil, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestSave_RotatesPriorToBackup(t *testing.T) {
 	path := filepath.Join(dir, "wal.json")
 
 	// First Save: no prior file, no .bak should appear yet.
-	if err := wal.Save(path, "", sampleRecords()[:1], nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords()[:1], nil, nil); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
 	if _, err := os.Stat(path + wal.BackupSuffix); !errors.Is(err, fs.ErrNotExist) {
@@ -130,7 +130,7 @@ func TestSave_RotatesPriorToBackup(t *testing.T) {
 	}
 
 	// Second Save: previous file should rotate to .bak.
-	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
 		t.Fatalf("second Save: %v", err)
 	}
 	if _, err := os.Stat(path + wal.BackupSuffix); err != nil {
@@ -161,10 +161,10 @@ func TestLoad_FallsBackToBackupOnBadPrimary(t *testing.T) {
 
 	// Land a good snapshot on .bak by saving twice; the first
 	// save's content rotates into .bak on the second save.
-	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
 		t.Fatalf("seed save 1: %v", err)
 	}
-	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
 		t.Fatalf("seed save 2: %v", err)
 	}
 
@@ -249,10 +249,10 @@ func TestLoad_NewerSchemaDoesNotFallBackToBackup(t *testing.T) {
 	path := filepath.Join(dir, "wal.json")
 
 	// Land a perfectly good v1 snapshot on .bak ...
-	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
 		t.Fatalf("seed save 1: %v", err)
 	}
-	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
 		t.Fatalf("seed save 2: %v", err)
 	}
 	// ... then overwrite the primary with a future-schema snapshot,
@@ -354,7 +354,7 @@ func TestSave_RecordsMarshalAndFlushOnMetrics(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "wal.json")
-	if err := wal.Save(path, "", sampleRecords(), m); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, m); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -394,7 +394,7 @@ func TestSave_RecordsFailureStageOnBadDir(t *testing.T) {
 	// Target a directory that does not exist — the open in
 	// writeAndFsync will fail at the StageWrite stage.
 	path := filepath.Join(t.TempDir(), "no", "such", "dir", "wal.json")
-	if err := wal.Save(path, "", sampleRecords(), m); err == nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, m); err == nil {
 		t.Fatal("Save: expected error for bad dir, got nil")
 	}
 
@@ -459,7 +459,7 @@ func TestEnsureDir_CreatesMissingDir(t *testing.T) {
 		t.Fatalf("Stat dir after EnsureDir: info=%v err=%v", info, err)
 	}
 
-	if err := wal.Save(path, "", sampleRecords(), nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
 		t.Fatalf("Save after EnsureDir: %v", err)
 	}
 	res, err := wal.Load(path)
@@ -538,4 +538,76 @@ func u64Decimal(n uint64) string {
 		n /= 10
 	}
 	return string(b[i:])
+}
+
+func sampleSettled() []state.SettledRecord {
+	return []state.SettledRecord{
+		{
+			Key:   state.SettledKey{Tenant: "d1a509ba00000000000000000000aaaa", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
+			Bytes: 5_360_000, Packets: 3_600,
+		},
+		{
+			Key:   state.SettledKey{Tenant: "d1a509ba00000000000000000000aaaa", Zone: bpf.ZoneInfra, Dir: bpf.DirectionEgress},
+			Bytes: 7_408, Packets: 12,
+		},
+	}
+}
+
+// TestSaveLoad_RoundTripsSettled: the v2 settled section survives a
+// Save/Load cycle bit-exact — the restart-safety half of the
+// settled-bytes fold (docs/DESIGN.md §3.5).
+func TestSaveLoad_RoundTripsSettled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	want := sampleSettled()
+
+	if err := wal.Save(path, "test-build", sampleRecords(), want, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.Settled) != len(want) {
+		t.Fatalf("Settled len = %d, want %d", len(res.Settled), len(want))
+	}
+	for i := range want {
+		if res.Settled[i] != want[i] {
+			t.Errorf("Settled[%d] = %+v, want %+v", i, res.Settled[i], want[i])
+		}
+	}
+}
+
+// TestLoad_V1SnapshotAccepted: a v1 file (pre-settled schema) still
+// loads — the v2 change is additive, so a post-upgrade boot restores
+// the flow records and starts with an empty settled accumulator.
+func TestLoad_V1SnapshotAccepted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	v1 := `{
+  "schema_version": 1,
+  "agent_build": "pre-settled",
+  "written_at_ns": "1",
+  "global_state": [
+    {
+      "key": {"src_mac": [170,0,0,0,0,1], "dst_mac": [170,0,0,0,0,2], "eth_proto": 2048, "direction": 0, "dst_zone": 2},
+      "total": {"bytes": "1000", "packets": "10", "last_seen_ns": "1"},
+      "last_raw": {"bytes": "900", "packets": "9", "last_seen_ns": "1"}
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if res.Source != wal.LoadFromPrimary {
+		t.Errorf("Source = %v, want LoadFromPrimary", res.Source)
+	}
+	if len(res.Records) != 1 || res.Records[0].Counter.Total.Bytes != 1000 {
+		t.Errorf("Records = %+v, want the one v1 flow record", res.Records)
+	}
+	if res.Settled != nil {
+		t.Errorf("Settled = %+v, want nil for a v1 snapshot", res.Settled)
+	}
 }

@@ -117,10 +117,11 @@ type Agent struct {
 	// and the incremental Kafka updater share it.
 	interner *metadata.TenantInterner
 
-	// walRecBuf is the reused SnapshotForWAL destination so a
-	// steady-state flush does not allocate a fresh records slice.
-	// Owned solely by the WAL flush goroutine; no lock needed.
-	walRecBuf []state.Record
+	// walRecBuf and walSettledBuf are the reused SnapshotForWAL
+	// destinations so a steady-state flush does not allocate fresh
+	// slices. Owned solely by the WAL flush goroutine; no lock needed.
+	walRecBuf     []state.Record
+	walSettledBuf []state.SettledRecord
 
 	// buildID stamps the WAL envelope's agent_build field. Resolved
 	// once at construction from the binary's embedded VCS revision;
@@ -181,4 +182,10 @@ func New(opts Options) (*Agent, error) {
 // before any other goroutine touches the agent.
 func (a *Agent) SeedState(records []state.Record) {
 	a.state.Restore(records)
+}
+
+// SeedSettled seeds the agent's settled-bytes accumulator, the
+// companion of [Agent.SeedState] for the WAL's settled section.
+func (a *Agent) SeedSettled(records []state.SettledRecord) {
+	a.state.RestoreSettled(records)
 }

@@ -69,6 +69,7 @@ type Collector struct {
 	bytesDesc        *prometheus.Desc
 	packetsDesc      *prometheus.Desc
 	flowsDesc        *prometheus.Desc
+	settledDesc      *prometheus.Desc
 	scrapeErrorsDesc *prometheus.Desc
 	scrapeLastOKDesc *prometheus.Desc
 
@@ -85,9 +86,10 @@ type Collector struct {
 	// Prometheus registry is single-threaded but third-party
 	// registries are not.
 	collectMu sync.Mutex
-	// emitBuf is reused across Collect calls so the snapshot walk is
-	// zero-alloc in steady state.
-	emitBuf []state.Entry
+	// emitBuf and settledBuf are reused across Collect calls so the
+	// combined snapshot walk is zero-alloc in steady state.
+	emitBuf    []state.Entry
+	settledBuf []state.SettledRecord
 	// aggBuf groups per-flow entries by (tenant, zone, direction)
 	// before emission. Reused across Collect calls; clear(aggBuf)
 	// resets without releasing the bucket allocations.
@@ -122,6 +124,11 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 			"Distinct flow keys currently tracked in GlobalState.",
 			nil, nil,
 		),
+		settledDesc: prometheus.NewDesc(
+			"cubecos_state_settled_tuples",
+			"Distinct (tenant, zone, direction) buckets in the settled-bytes accumulator — flows folded out when their tenant binding was about to disappear (docs/DESIGN.md §3.5).",
+			nil, nil,
+		),
 		scrapeErrorsDesc: prometheus.NewDesc(
 			"cubecos_scraper_errors_total",
 			"Cumulative count of failed BPF-map drain attempts since agent start.",
@@ -145,24 +152,40 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.bytesDesc
 	ch <- c.packetsDesc
 	ch <- c.flowsDesc
+	ch <- c.settledDesc
 	ch <- c.scrapeErrorsDesc
 	ch <- c.scrapeLastOKDesc
 	c.collectDuration.Describe(ch)
 }
 
-// Collect implements [prometheus.Collector]. It copies GlobalState
-// into a reusable buffer via Snapshot — which holds the state RLock
-// for the entire walk — and then does the allocating per-flow emission
-// lock-free over that copy. Collect itself never locks GlobalState, so
-// it cannot deadlock against the scraper writer or race a concurrent
-// map iteration.
+// Collect implements [prometheus.Collector]. It copies GlobalState —
+// live flows and settled buckets together, in one RLock via
+// SnapshotWithSettled so a concurrent settle fold cannot tear the
+// exposure — into reusable buffers, and then does the allocating
+// emission lock-free over those copies. Collect itself never locks
+// GlobalState, so it cannot deadlock against the scraper writer or
+// race a concurrent map iteration.
+//
+// The emitted value per (tenant, zone, direction) is live + settled:
+// live flows resolve their tenant at scrape time; settled buckets
+// carry the tenants of flows whose binding is gone (deleted VMs,
+// reassigned ports). The sum is what stays monotonic (docs/DESIGN.md
+// §3.5, §13.1 Contract 7).
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectMu.Lock()
 	defer c.collectMu.Unlock()
 	start := time.Now()
 
-	c.emitBuf = c.state.Snapshot(c.emitBuf[:0])
+	c.emitBuf, c.settledBuf = c.state.SnapshotWithSettled(c.emitBuf[:0], c.settledBuf[:0])
 	clear(c.aggBuf)
+	for i := range c.settledBuf {
+		s := &c.settledBuf[i]
+		k := aggKey{tenant: s.Key.Tenant, zone: s.Key.Zone, dir: s.Key.Dir}
+		v := c.aggBuf[k]
+		v.bytes += s.Bytes
+		v.packets += s.Packets
+		c.aggBuf[k] = v
+	}
 	for i := range c.emitBuf {
 		e := &c.emitBuf[i]
 		k := aggKey{
@@ -192,6 +215,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 	ch <- prometheus.MustNewConstMetric(
 		c.flowsDesc, prometheus.GaugeValue, float64(len(c.emitBuf)),
+	)
+	ch <- prometheus.MustNewConstMetric(
+		c.settledDesc, prometheus.GaugeValue, float64(len(c.settledBuf)),
 	)
 	ch <- prometheus.MustNewConstMetric(
 		c.scrapeErrorsDesc, prometheus.CounterValue, float64(c.scraper.ErrorCount()),

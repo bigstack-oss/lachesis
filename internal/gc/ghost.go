@@ -36,6 +36,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 )
 
 // MapGauge refreshes the kernel mac_tenant_map current-entry gauge after
@@ -67,6 +68,17 @@ type MacFlowEvictor interface {
 	DeleteFlowsForMACs(macs map[uint64]struct{}) (int, error)
 }
 
+// FlowSettler folds userspace flow rows into the settled-bytes
+// accumulator (docs/DESIGN.md §3.5). The sweep calls it just before
+// deleting a dead MAC's userspace metadata — the last moment the MAC
+// still resolves to its tenant — so the VM's lifetime bytes stay
+// attributed instead of re-bucketing to "unknown" at the next scrape.
+// The agent wires *state.GlobalState; tests may wire it too (it is
+// cheap to construct) or leave it nil to skip settling.
+type FlowSettler interface {
+	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (string, bool)) int
+}
+
 // GhostSweeper periodically drops metadata entries whose 60s grace
 // window has elapsed. Construct with [New], then run [GhostSweeper.Run]
 // on a long-lived goroutine.
@@ -74,6 +86,7 @@ type GhostSweeper struct {
 	meta        *metadata.ShardedMetadataMap
 	evictor     MacEvictor
 	flowEvictor MacFlowEvictor
+	settler     FlowSettler
 	mapGauge    MapGauge
 	seq         *boot.Sequencer
 	mx          *Metrics
@@ -82,13 +95,18 @@ type GhostSweeper struct {
 
 // Options bundles the inputs to [New]. Meta, Evictor, and Metrics are
 // required; FlowEvictor is optional (nil skips residual-flow cleanup —
-// used by tests without a kernel telemetry_map); Seq is optional (nil
-// skips the boot barrier — used by sweep-only unit tests); Interval
-// defaults to the 60s sweep cadence when zero.
+// used by tests without a kernel telemetry_map); Settler is optional
+// (nil skips the settled-bytes fold — pre-fold unit tests); Seq is
+// optional (nil skips the boot barrier — used by sweep-only unit
+// tests); Interval defaults to the 60s sweep cadence when zero.
 type Options struct {
 	Meta        *metadata.ShardedMetadataMap
 	Evictor     MacEvictor
 	FlowEvictor MacFlowEvictor
+	// Settler folds swept MACs' flow rows into the settled-bytes
+	// accumulator before their metadata (the tenant binding) is
+	// deleted. The agent wires its *state.GlobalState.
+	Settler FlowSettler
 	// MapGauge refreshes the mac_tenant_map fill gauge after a sweep.
 	// Optional (nil skips); the agent wires its bpf metrics bundle.
 	MapGauge MapGauge
@@ -108,6 +126,7 @@ func New(opts Options) *GhostSweeper {
 		meta:        opts.Meta,
 		evictor:     opts.Evictor,
 		flowEvictor: opts.FlowEvictor,
+		settler:     opts.Settler,
 		mapGauge:    opts.MapGauge,
 		seq:         opts.Seq,
 		mx:          opts.Metrics,
@@ -142,28 +161,37 @@ func (g *GhostSweeper) Run(ctx context.Context) {
 }
 
 // sweep removes the ghosts whose grace has elapsed as of now. It is pure
-// orchestration: the load-bearing part is the order of the three delete
-// phases, which is exactly the sequence of calls below.
+// orchestration: the load-bearing part is the order of the four phases,
+// which is exactly the sequence of calls below.
 //
 //  1. [GhostSweeper.deleteKernelMACs]  — mac_tenant_map, kernel-first for
 //     the kernel ⊆ userspace invariant (docs/DESIGN.md §3.4).
 //  2. [GhostSweeper.evictResidualFlows] — the swept MACs' telemetry_map
-//     flows, BEFORE phase 3.
-//  3. [GhostSweeper.deleteUserspace]   — the metadata map.
+//     flows, BEFORE phases 3–4.
+//  3. [GhostSweeper.settleSwept]       — fold the swept MACs' GlobalState
+//     rows into the settled accumulator, BEFORE phase 4.
+//  4. [GhostSweeper.deleteUserspace]   — the metadata map.
 //
-// Phase 2 precedes phase 3 deliberately: the Classifier decides
+// Phase 2 precedes phase 4 deliberately: the Classifier decides
 // known-vs-unknown off the userspace map, so while a swept MAC is still
 // present there a concurrent scrape classifies its flows as known
 // (harmless). Removing the residual flows first means that once the MAC
 // becomes unknown there is nothing left to re-bill as "unknown"
 // (docs/DESIGN.md §3.3).
+//
+// Phase 3 precedes phase 4 because settling needs the tenant, and the
+// userspace metadata entry is the last place the swept MAC still
+// resolves. Its position after phase 2 matters too: the kernel flows
+// are gone, so [state.SettleEvict] (fold + delete the row) is safe —
+// nothing will feed the evicted rows again (docs/DESIGN.md §3.5).
 func (g *GhostSweeper) sweep(now time.Time) {
 	expired, active := g.classify(now)
 	swept := g.deleteKernelMACs(expired)
 	residual := g.evictResidualFlows(swept)
+	settled := g.settleSwept(swept)
 	g.deleteUserspace(swept)
 	g.refreshMacGauge()
-	g.report(len(swept), residual, active)
+	g.report(len(swept), residual, settled, active)
 }
 
 // refreshMacGauge keeps cubecos_bpf_map_current_entries{map="mac_tenant_map"}
@@ -231,9 +259,35 @@ func (g *GhostSweeper) evictResidualFlows(swept map[uint64]struct{}) int {
 	return n
 }
 
+// settleSwept folds the swept MACs' GlobalState flow rows into the
+// settled-bytes accumulator, attributing each row to the tenant its MAC
+// still resolves to — the metadata entries are deleted only in the next
+// phase, so the binding is intact here. Rows fold with
+// [state.SettleEvict]: their kernel counters were removed in phase 2,
+// so the rows are dead and deleting them is what stops GlobalState (and
+// the WAL) growing with every VM that ever lived (docs/DESIGN.md §3.5).
+// Returns the number of rows folded. No-op when no settler is wired or
+// nothing was swept.
+func (g *GhostSweeper) settleSwept(swept map[uint64]struct{}) int {
+	if g.settler == nil || len(swept) == 0 {
+		return 0
+	}
+	tenants := make(map[uint64]string, len(swept))
+	for mac := range swept {
+		if meta, ok := g.meta.Lookup(mac); ok {
+			tenants[mac] = meta.ProjectID
+		}
+	}
+	return g.settler.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, bool) {
+		tenant, ok := tenants[metadata.VMMAC(k)]
+		return tenant, ok
+	})
+}
+
 // deleteUserspace drops the swept MACs from the userspace metadata map.
 // Runs last so a MAC never becomes unknown while its residual flows still
-// exist (docs/DESIGN.md §3.3).
+// exist (docs/DESIGN.md §3.3) and so settleSwept could still resolve the
+// tenant (docs/DESIGN.md §3.5).
 func (g *GhostSweeper) deleteUserspace(swept map[uint64]struct{}) {
 	for mac := range swept {
 		g.meta.Delete(mac)
@@ -242,13 +296,15 @@ func (g *GhostSweeper) deleteUserspace(swept map[uint64]struct{}) {
 
 // report records the pass's outcome on the GC metrics and logs a line
 // when anything was swept.
-func (g *GhostSweeper) report(evicted, residual, active int) {
+func (g *GhostSweeper) report(evicted, residual, settled, active int) {
 	g.mx.RecordTTLEvictions(evicted)
 	g.mx.RecordResidualFlowEvictions(residual)
+	g.mx.RecordSettledFlows(settled)
 	g.mx.SetGhostsActive(active)
 	if evicted > 0 {
 		slog.Info("swept expired lingering ghosts",
 			"component", component, "evicted", evicted,
-			"residual_flows", residual, "still_active", active)
+			"residual_flows", residual, "settled_flows", settled,
+			"still_active", active)
 	}
 }
