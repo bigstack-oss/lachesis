@@ -178,11 +178,14 @@ func (d *driver) runVMFlow(i int, f Flow, srcFIP string) error {
 }
 
 // runExternalFlow pushes the flow's byte budget at a literal IP with
-// sized pings. `|| true` because an unanswered ping exits non-zero,
-// and transmission — not the reply — is what the tx assertion needs.
+// sized pings. Exit 1 (no replies) is tolerated — transmission, not
+// the reply, is what the tx assertion needs — but any other failure
+// (127 = ping missing from the image, bad address, …) still errors,
+// so a broken driver is caught here rather than as a mystifying
+// zero-delta at assert.
 func (d *driver) runExternalFlow(f Flow, srcFIP string) error {
 	count := (f.Bytes + pingPayloadBytes - 1) / pingPayloadBytes
-	cmd := fmt.Sprintf("ping -c %d -s %d %s >/dev/null 2>&1 || true", count, pingPayloadBytes, f.To.IP)
+	cmd := fmt.Sprintf("ping -c %d -s %d %s >/dev/null 2>&1 || [ $? -eq 1 ]", count, pingPayloadBytes, f.To.IP)
 	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, cmd); err != nil {
 		return fmt.Errorf("ping push: %w", err)
 	}

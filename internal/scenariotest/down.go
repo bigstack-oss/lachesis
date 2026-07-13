@@ -55,47 +55,39 @@ func Down(ctx context.Context, opts DownOptions) error {
 	// port delete then 404s harmlessly).
 	for _, r := range rs.Routers {
 		for _, s := range rs.Subnets {
-			r, s := r, s
 			d.do("detach "+r.DSLID+"/"+s.DSLID, func() error {
 				return opts.Cloud.RemoveRouterInterface(ctx, r.ProjectID, r.ID, s.ID, "")
 			})
 		}
 		for _, p := range rs.Ports {
-			r, p := r, p
 			d.do("detach "+r.DSLID+"/"+p.DSLID, func() error {
 				return opts.Cloud.RemoveRouterInterface(ctx, r.ProjectID, r.ID, "", p.ID)
 			})
 		}
 	}
 	for _, p := range rs.Ports {
-		p := p
 		d.do("port "+p.DSLID, func() error { return opts.Cloud.DeletePort(ctx, p.ProjectID, p.ID) })
 	}
 	for _, r := range rs.Routers {
-		r := r
 		d.do("router "+r.DSLID, func() error { return opts.Cloud.DeleteRouter(ctx, r.ProjectID, r.ID) })
 	}
 	// Residual sweep, scoped strictly to the scenario's own networks.
 	for _, n := range rs.Networks {
-		n := n
 		ids, err := opts.Cloud.ListNetworkPorts(ctx, n.ID)
 		if err != nil {
 			d.errs = append(d.errs, err)
 			continue
 		}
 		for _, id := range ids {
-			id := id
 			d.do("residual port "+id+" on "+n.DSLID, func() error {
 				return opts.Cloud.DeletePort(ctx, n.ProjectID, id)
 			})
 		}
 	}
 	for _, s := range rs.Subnets {
-		s := s
 		d.do("subnet "+s.DSLID, func() error { return opts.Cloud.DeleteSubnet(ctx, s.ProjectID, s.ID) })
 	}
 	for _, n := range rs.Networks {
-		n := n
 		d.do("network "+n.DSLID, func() error { return opts.Cloud.DeleteNetwork(ctx, n.ProjectID, n.ID) })
 	}
 

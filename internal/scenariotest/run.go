@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 )
 
 // RunOptions bundles everything the composed `run` needs.
@@ -21,6 +22,10 @@ type RunOptions struct {
 	// Keep skips the teardown, leaving the topology up for debugging.
 	// The run-state records everything a later `down` needs.
 	Keep bool
+
+	// SinkDelay passes through to [DriveOptions.SinkDelay]; tests set
+	// a negative value to skip the sink-bind pause.
+	SinkDelay time.Duration
 }
 
 // Run composes the whole loop: preflight → up → drive → assert →
@@ -36,6 +41,9 @@ type RunOptions struct {
 func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 	if opts.Log == nil {
 		opts.Log = io.Discard
+	}
+	if opts.ReportPath == "" {
+		opts.ReportPath = DefaultReportPath(opts.StatePath)
 	}
 
 	pre := Preflight(ctx, opts.Config, opts.Scenario, opts.Cloud, opts.Metrics)
@@ -83,6 +91,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 		Metrics:   opts.Metrics,
 		Exec:      opts.Exec,
 		Log:       opts.Log,
+		SinkDelay: opts.SinkDelay,
 	}); err != nil {
 		return AssertReport{}, fmt.Errorf("run: drive: %w", err)
 	}
