@@ -11,6 +11,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 )
 
 // fakeGauge records the last value set for each kernel map.
@@ -139,6 +140,62 @@ func TestSweep_EvictsResidualFlowsBeforeUserspaceDelete(t *testing.T) {
 	}
 	if _, ok := meta.Lookup(expired1); ok {
 		t.Error("expired1 still in userspace after sweep")
+	}
+}
+
+// TestSweep_SettlesFlowsToTenantBeforeUserspaceDelete locks the
+// settled-bytes fold (docs/DESIGN.md §3.5): the swept MAC's GlobalState
+// rows fold into the settled accumulator under the tenant its metadata
+// still resolves to — proving the fold runs before the userspace
+// delete, since afterwards the tenant would be unknowable — with the
+// rows' zone/direction preserved and the rows themselves evicted. A
+// live VM's rows are untouched.
+func TestSweep_SettlesFlowsToTenantBeforeUserspaceDelete(t *testing.T) {
+	meta := metadata.New()
+	now := time.Now()
+	macDead := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	macLive := [6]uint8{0xaa, 0, 0, 0, 0, 2}
+	peer := [6]uint8{0xee, 0, 0, 0, 0, 9}
+	meta.Insert(bpf.MACKey(macDead), &metadata.TenantMeta{ProjectID: "tenant-a"})
+	meta.Insert(bpf.MACKey(macLive), &metadata.TenantMeta{ProjectID: "tenant-b"})
+	meta.MarkDelete(bpf.MACKey(macDead), now.Add(-time.Second))
+
+	st := state.New()
+	// Dead VM sending (INGRESS → VM is SrcMac) and receiving (EGRESS →
+	// VM is DstMac): two rows, distinct zones, both must fold.
+	st.ApplyDelta(bpf.FlowKey{SrcMac: macDead, DstMac: peer, EthProto: 0x0800,
+		Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant},
+		bpf.FlowMetrics{Bytes: 100, Packets: 2, LastSeenNs: 1})
+	st.ApplyDelta(bpf.FlowKey{SrcMac: peer, DstMac: macDead, EthProto: 0x0800,
+		Direction: bpf.DirectionEgress, DstZone: bpf.ZoneInfra},
+		bpf.FlowMetrics{Bytes: 50, Packets: 1, LastSeenNs: 2})
+	liveKey := bpf.FlowKey{SrcMac: macLive, DstMac: peer, EthProto: 0x0800,
+		Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+	st.ApplyDelta(liveKey, bpf.FlowMetrics{Bytes: 70, Packets: 1, LastSeenNs: 3})
+
+	ev := &recordingEvictor{meta: meta}
+	mx := NewMetrics()
+	g := New(Options{Meta: meta, Evictor: ev, Settler: st, Metrics: mx, Interval: time.Hour})
+	g.sweep(now)
+
+	flows, settled := st.SnapshotWithSettled(nil, nil)
+	if len(flows) != 1 || flows[0].Key != liveKey {
+		t.Fatalf("flows after sweep = %+v, want only the live VM's row", flows)
+	}
+	want := map[state.SettledKey]uint64{
+		{Tenant: "tenant-a", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}: 100,
+		{Tenant: "tenant-a", Zone: bpf.ZoneInfra, Dir: bpf.DirectionEgress}:       50,
+	}
+	if len(settled) != len(want) {
+		t.Fatalf("settled buckets = %+v, want %d buckets", settled, len(want))
+	}
+	for _, s := range settled {
+		if want[s.Key] != s.Bytes {
+			t.Errorf("settled[%+v] = %d bytes, want %d", s.Key, s.Bytes, want[s.Key])
+		}
+	}
+	if got := testutil.ToFloat64(mx.settledFlows); got != 2 {
+		t.Errorf("cubecos_gc_settled_flows_total = %v, want 2", got)
 	}
 }
 

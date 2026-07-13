@@ -14,10 +14,12 @@ import "github.com/prometheus/client_golang/prometheus"
 //
 //   - cubecos_gc_evictions_total{reason}        counter
 //   - cubecos_gc_pressure_relief_runs_total     counter
+//   - cubecos_gc_settled_flows_total            counter
 //   - cubecos_lingering_ghosts_active           gauge
 type Metrics struct {
 	evictions         *prometheus.CounterVec
 	pressureReliefRun prometheus.Counter
+	settledFlows      prometheus.Counter
 	ghostsActive      prometheus.Gauge
 }
 
@@ -34,6 +36,10 @@ func NewMetrics() *Metrics {
 			Name: "cubecos_gc_pressure_relief_runs_total",
 			Help: "Pressure-relief passes run after a scrape drain found telemetry_map above the configured fill high watermark (docs/DESIGN.md §3.1).",
 		}),
+		settledFlows: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "cubecos_gc_settled_flows_total",
+			Help: "GlobalState flow rows folded into the settled-bytes accumulator by the ghost sweep, keeping deleted VMs' bytes attributed to their tenant (docs/DESIGN.md §3.5).",
+		}),
 		ghostsActive: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "cubecos_lingering_ghosts_active",
 			Help: "Metadata entries currently in the 60s Lingering-Ghost grace window (DeleteAt set, not yet swept).",
@@ -48,7 +54,7 @@ func NewMetrics() *Metrics {
 // Collectors returns the underlying prometheus.Collector values for
 // registration by the agent.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.evictions, m.pressureReliefRun, m.ghostsActive}
+	return []prometheus.Collector{m.evictions, m.pressureReliefRun, m.settledFlows, m.ghostsActive}
 }
 
 // RecordTTLEvictions adds n lingering-ghost expiries to
@@ -77,6 +83,15 @@ func (m *Metrics) RecordResidualFlowEvictions(n int) {
 		return
 	}
 	m.evictions.WithLabelValues(reasonGhostResidualFlow).Add(float64(n))
+}
+
+// RecordSettledFlows adds n folded GlobalState rows to
+// cubecos_gc_settled_flows_total.
+func (m *Metrics) RecordSettledFlows(n int) {
+	if m == nil || n == 0 {
+		return
+	}
+	m.settledFlows.Add(float64(n))
 }
 
 // IncPressureReliefRuns increments cubecos_gc_pressure_relief_runs_total

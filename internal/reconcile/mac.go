@@ -15,6 +15,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 )
 
 // MacWriter writes one (mac → tenant id) binding into the kernel
@@ -78,6 +79,13 @@ func desiredMACs(ports []neutron.Port) map[uint64]string {
 // Learning a previously-unknown MAC is what lets the next scrape resolve
 // its buffered flows. Returns (inserted, changed); an entry already live
 // with the same tenant is left untouched.
+//
+// A tenant change settles the MAC's accumulated flows to the OLD tenant
+// before the binding is replaced: the Collector late-binds tenant per
+// scrape, so without the fold the MAC's whole history would re-attribute
+// to the new tenant at the next scrape (docs/DESIGN.md §3.5). A ghost
+// resurrected under the same tenant does not fold — its history still
+// belongs where it is.
 func (r *Reconciler) learnMACs(desired map[uint64]string) (inserted, changed int) {
 	for mac, projectID := range desired {
 		cur, ok := r.meta.Lookup(mac)
@@ -85,13 +93,44 @@ func (r *Reconciler) learnMACs(desired map[uint64]string) (inserted, changed int
 		case !ok:
 			r.insertMAC(mac, projectID)
 			inserted++
-		case cur.ProjectID != projectID || !cur.DeleteAt.IsZero():
-			// Tenant reassigned, or a ghost came back within its grace.
+		case cur.ProjectID != projectID:
+			// Tenant reassigned (possibly a ghost resurrected under a
+			// new tenant): settle history to the old tenant first.
+			r.settleTenantChange(mac, cur.ProjectID, projectID)
+			r.insertMAC(mac, projectID)
+			changed++
+		case !cur.DeleteAt.IsZero():
+			// A ghost came back within its grace, same tenant.
 			r.insertMAC(mac, projectID)
 			changed++
 		}
 	}
 	return inserted, changed
+}
+
+// settleTenantChange folds mac's GlobalState flow rows into the settled
+// accumulator under oldTenant. The fold uses [state.SettleRebase] — the
+// port is alive and its kernel telemetry_map counters keep running, so
+// the rows must survive with their LastEbpfRaw watermarks intact: the
+// next drain then credits only bytes that arrived after the fold, and
+// those late-bind to the new tenant. Evicting the rows instead would
+// make the next drain re-count the full kernel cumulative as first
+// sight — double-billing the new tenant with the old one's bytes.
+func (r *Reconciler) settleTenantChange(mac uint64, oldTenant, newTenant string) {
+	if r.settler == nil {
+		return
+	}
+	folded := r.settler.Settle(state.SettleRebase, func(k bpf.FlowKey) (string, bool) {
+		if metadata.VMMAC(k) != mac {
+			return "", false
+		}
+		return oldTenant, true
+	})
+	if folded > 0 {
+		slog.Info("settled flows to previous tenant before reassignment",
+			"component", component, "mac", mac, "flows", folded,
+			"old_project", oldTenant, "new_project", newTenant)
+	}
 }
 
 // insertMAC writes one binding userspace-first then kernel (docs/DESIGN.md

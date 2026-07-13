@@ -35,6 +35,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/kernelwriter"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
 )
 
 // MapGauge refreshes a kernel map's current-entry gauge
@@ -44,6 +45,16 @@ import (
 // *bpf.Metrics satisfies it.
 type MapGauge interface {
 	SetCurrent(mapName string, value float64)
+}
+
+// FlowSettler folds userspace flow rows into the settled-bytes
+// accumulator (docs/DESIGN.md §3.5). The MAC reconcile calls it just
+// before re-pointing a live MAC at a different tenant, so the bytes
+// accumulated under the old tenant settle there instead of re-binding
+// wholesale to the new tenant at the next scrape. Consumer-defined
+// seam; the agent wires its *state.GlobalState.
+type FlowSettler interface {
+	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (string, bool)) int
 }
 
 // MetadataSource is the subset of [neutron.Neutron] the reconcile loop
@@ -67,6 +78,7 @@ type Reconciler struct {
 	trie      kernelwriter.MapUpdateDeleter
 	meta      *metadata.ShardedMetadataMap
 	macWriter MacWriter
+	settler   FlowSettler
 	interner  *metadata.TenantInterner
 	seq       *boot.Sequencer
 	mx        *Metrics
@@ -89,9 +101,14 @@ type Options struct {
 	Trie      kernelwriter.MapUpdateDeleter
 	Meta      *metadata.ShardedMetadataMap
 	MacWriter MacWriter
-	Interner  *metadata.TenantInterner
-	Seq       *boot.Sequencer
-	Metrics   *Metrics
+	// Settler folds a MAC's flow rows to its old tenant before a
+	// tenant reassignment replaces the binding. Optional (nil skips
+	// the fold — trie-only unit tests); the agent wires its
+	// *state.GlobalState.
+	Settler  FlowSettler
+	Interner *metadata.TenantInterner
+	Seq      *boot.Sequencer
+	Metrics  *Metrics
 	// BPFGauge refreshes the kernel map-fill gauges after each pass.
 	// Optional (nil skips); the agent wires its bpf metrics bundle.
 	BPFGauge MapGauge
@@ -110,6 +127,7 @@ func New(opts Options) *Reconciler {
 		trie:      opts.Trie,
 		meta:      opts.Meta,
 		macWriter: opts.MacWriter,
+		settler:   opts.Settler,
 		interner:  opts.Interner,
 		seq:       opts.Seq,
 		mx:        opts.Metrics,

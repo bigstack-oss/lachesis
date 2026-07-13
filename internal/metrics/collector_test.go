@@ -251,6 +251,143 @@ cubecos_state_flows 5
 	}
 }
 
+// TestCollect_SeriesMonotonicAcrossGhostSweep is the headline
+// regression for the ghost-sweep re-bucketing bug: a tenant's series
+// must expose the same cumulative after its VM's flows are settled and
+// its MAC's metadata deleted — not drop, not vanish, not re-bucket to
+// "unknown". The sweep itself is exercised in internal/gc; this test
+// pins the state+collector contract the fix rests on.
+func TestCollect_SeriesMonotonicAcrossGhostSweep(t *testing.T) {
+	meta := metadata.New()
+	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	macKey := bpf.MACKey(vmMAC)
+	meta.Insert(macKey, &metadata.TenantMeta{ProjectID: "tenant-a"})
+
+	st := state.New()
+	key := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 1000, Packets: 10, LastSeenNs: 1})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE cubecos_bytes_total counter
+cubecos_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"cubecos_bytes_total"); err != nil {
+		t.Errorf("before sweep: %v", err)
+	}
+
+	// The ghost sweep: fold the dead MAC's rows to its tenant, then
+	// delete the metadata (the exact order internal/gc performs).
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, bool) {
+		if metadata.VMMAC(k) != macKey {
+			return "", false
+		}
+		return "tenant-a", true
+	})
+	meta.Delete(macKey)
+
+	// The MAC no longer resolves, yet the series is unchanged — the
+	// settled bucket carries it. No live flows remain, and nothing
+	// re-bucketed to "unknown".
+	expected = `
+# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE cubecos_bytes_total counter
+cubecos_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
+# HELP cubecos_state_flows Distinct flow keys currently tracked in GlobalState.
+# TYPE cubecos_state_flows gauge
+cubecos_state_flows 0
+# HELP cubecos_state_settled_tuples Distinct (tenant, zone, direction) buckets in the settled-bytes accumulator — flows folded out when their tenant binding was about to disappear (docs/DESIGN.md §3.5).
+# TYPE cubecos_state_settled_tuples gauge
+cubecos_state_settled_tuples 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"cubecos_bytes_total", "cubecos_state_flows", "cubecos_state_settled_tuples"); err != nil {
+		t.Errorf("after sweep: %v", err)
+	}
+}
+
+// TestCollect_MACReuseDoesNotInheritOrReplay is the MAC-reuse
+// regression (Bug requirement): a MAC swept under tenant A and later
+// reborn on tenant B's port must neither hand A's history to B nor
+// count it twice. After the reuse, A holds exactly its settled bytes
+// and B counts from the reborn flow's fresh kernel counter only.
+func TestCollect_MACReuseDoesNotInheritOrReplay(t *testing.T) {
+	meta := metadata.New()
+	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	macKey := bpf.MACKey(vmMAC)
+	meta.Insert(macKey, &metadata.TenantMeta{ProjectID: "tenant-a"})
+
+	st := state.New()
+	key := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 1000, Packets: 10, LastSeenNs: 1})
+
+	// Sweep tenant A's VM (fold + evict + metadata delete), then the
+	// MAC is reborn on tenant B's port: metadata re-learned, and the
+	// reborn flow's kernel counter restarts from zero — its next drain
+	// reads a fresh cumulative (300), unrelated to A's 1000.
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, bool) {
+		if metadata.VMMAC(k) != macKey {
+			return "", false
+		}
+		return "tenant-a", true
+	})
+	meta.Delete(macKey)
+	meta.Insert(macKey, &metadata.TenantMeta{ProjectID: "tenant-b"})
+	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 2})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE cubecos_bytes_total counter
+cubecos_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
+cubecos_bytes_total{direction="tx",tenant_id="tenant-b",zone="same_tenant"} 300
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"cubecos_bytes_total"); err != nil {
+		t.Errorf("GatherAndCompare: %v", err)
+	}
+}
+
+// TestCollect_SettledAndLiveSumPerTuple: when a tenant has both a
+// settled bucket and live flows on the same (zone, direction), one
+// sample carries the sum — Prometheus rejects duplicate label sets.
+func TestCollect_SettledAndLiveSumPerTuple(t *testing.T) {
+	st := state.New()
+	st.RestoreSettled([]state.SettledRecord{{
+		Key:   state.SettledKey{Tenant: "tenant-a", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
+		Bytes: 400, Packets: 4,
+	}})
+	st.ApplyDelta(keyWith(bpf.DirectionIngress, bpf.ZoneSameTenant),
+		bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 1})
+
+	c := metrics.New(st, stubScraper{}, staticTenant("tenant-a"))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE cubecos_bytes_total counter
+cubecos_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 500
+# HELP cubecos_packets_total Network packets observed by the agent, cumulative since first sight.
+# TYPE cubecos_packets_total counter
+cubecos_packets_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 5
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"cubecos_bytes_total", "cubecos_packets_total"); err != nil {
+		t.Errorf("GatherAndCompare: %v", err)
+	}
+}
+
 func TestCollect_HealthMetrics(t *testing.T) {
 	st := state.New()
 	st.ApplyDelta(keyWith(bpf.DirectionEgress, bpf.ZoneExternal),
