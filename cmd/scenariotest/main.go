@@ -208,12 +208,8 @@ func loadConfigAndScenario(configPath, name string) (scenariotest.Config, *scena
 	return cfg, sc, 0
 }
 
-// newCloud resolves credentials and authenticates the live OpenStack
-// client.
+// newCloud authenticates the live OpenStack client (credential
+// resolution happens inside NewOpenStack).
 func newCloud(ctx context.Context, cfg scenariotest.Config) (scenariotest.Cloud, error) {
-	creds, err := cfg.OpenStack.ResolveCredentials()
-	if err != nil {
-		return nil, err
-	}
-	return scenariotest.NewOpenStack(ctx, creds)
+	return scenariotest.NewOpenStack(ctx, cfg.OpenStack)
 }

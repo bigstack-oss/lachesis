@@ -139,8 +139,10 @@ func TestNewClient_AuthFailureWrapsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on 401")
 	}
-	if !strings.Contains(err.Error(), "neutron: keystone auth") {
-		t.Errorf("error should be wrapped: %v", err)
+	// The auth mechanics live in osclient now; neutron adds its own
+	// prefix on top of osclient's "keystone auth" context.
+	if !strings.Contains(err.Error(), "neutron:") || !strings.Contains(err.Error(), "keystone auth") {
+		t.Errorf("error should be wrapped with package + auth context: %v", err)
 	}
 }
 

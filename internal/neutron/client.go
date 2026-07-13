@@ -6,14 +6,16 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
+
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/osclient"
 )
 
 // Client is the agent's Neutron API handle. Internally it wraps two
 // [gophercloud.ServiceClient]s — the Network v2 client for Neutron
 // calls and an Identity v3 client used to resolve project IDs to
-// names. gophercloud owns Keystone v3 authentication, token caching,
-// and reactive 401-driven reauth (AllowReauth=true). Construct with
-// [NewClient].
+// names. Keystone authentication, token caching, and reactive
+// 401-driven reauth live in [osclient.Authenticate]
+// (AllowReauth=true). Construct with [NewClient].
 type Client struct {
 	network  *gophercloud.ServiceClient
 	identity *gophercloud.ServiceClient
@@ -30,46 +32,19 @@ type Client struct {
 // a final error. This is gophercloud's standard AllowReauth model;
 // see docs/DESIGN.md §5.1 for the broader cold-start flow.
 func NewClient(ctx context.Context, creds Credentials) (*Client, error) {
-	iface := creds.Interface
-	if iface == "" {
-		iface = defaultInterface
-	}
-	switch gophercloud.Availability(iface) {
-	case gophercloud.AvailabilityInternal,
-		gophercloud.AvailabilityPublic,
-		gophercloud.AvailabilityAdmin:
-		// ok
-	default:
-		return nil, fmt.Errorf("neutron: invalid interface %q (want internal/public/admin)", iface)
-	}
-
-	authOpts := gophercloud.AuthOptions{
-		IdentityEndpoint: creds.AuthURL,
-		Username:         creds.Username,
-		Password:         creds.Password,
-		DomainName:       creds.UserDomain,
-		Scope: &gophercloud.AuthScope{
-			ProjectName: creds.ProjectName,
-			DomainName:  creds.ProjectDomain,
-		},
-		AllowReauth: true,
-	}
-
-	provider, err := openstack.AuthenticatedClient(ctx, authOpts)
+	eo, err := creds.EndpointOpts(defaultInterface)
 	if err != nil {
-		return nil, fmt.Errorf("neutron: keystone auth: %w", err)
+		return nil, fmt.Errorf("neutron: %w", err)
 	}
-	net, err := openstack.NewNetworkV2(provider, gophercloud.EndpointOpts{
-		Region:       creds.Region,
-		Availability: gophercloud.Availability(iface),
-	})
+	provider, err := osclient.Authenticate(ctx, creds)
+	if err != nil {
+		return nil, fmt.Errorf("neutron: %w", err)
+	}
+	net, err := openstack.NewNetworkV2(provider, eo)
 	if err != nil {
 		return nil, fmt.Errorf("neutron: endpoint discovery: %w", err)
 	}
-	id, err := openstack.NewIdentityV3(provider, gophercloud.EndpointOpts{
-		Region:       creds.Region,
-		Availability: gophercloud.Availability(iface),
-	})
+	id, err := openstack.NewIdentityV3(provider, eo)
 	if err != nil {
 		return nil, fmt.Errorf("neutron: identity endpoint discovery: %w", err)
 	}

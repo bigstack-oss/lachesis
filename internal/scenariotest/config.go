@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/osclient"
 )
 
 // Config is the on-disk YAML scenariotest consumes. Mirrors the
@@ -196,56 +198,24 @@ func (o *OpenStackCreds) validate() error {
 	return nil
 }
 
-// ResolveCredentials returns inline credentials, reading and parsing
-// CredentialsFile if that path is set. Recognises lines of the form
-// `export OS_FOO=value` and `OS_FOO=value`; ignores comments and
-// blank lines.
-func (o *OpenStackCreds) ResolveCredentials() (OpenStackCreds, error) {
-	if o.CredentialsFile == "" {
-		return *o, nil
+// ResolveCredentials resolves this two-mode credential block to the
+// shared [osclient.Credentials]: CredentialsFile (when set) is parsed
+// by [osclient.ParseOpenRC] — the same parser the agent uses — and
+// the inline fields copy over otherwise.
+func (o *OpenStackCreds) ResolveCredentials() (osclient.Credentials, error) {
+	if o.CredentialsFile != "" {
+		return osclient.ParseOpenRC(expandHome(o.CredentialsFile))
 	}
-	expanded := expandHome(o.CredentialsFile)
-	raw, err := os.ReadFile(expanded)
-	if err != nil {
-		return *o, fmt.Errorf("read credentials_file: %w", err)
-	}
-	parsed := *o
-	parsed.CredentialsFile = ""
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		line = strings.TrimPrefix(line, "export ")
-		eq := strings.IndexByte(line, '=')
-		if eq < 0 {
-			continue
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := strings.Trim(strings.TrimSpace(line[eq+1:]), `"'`)
-		switch key {
-		case "OS_AUTH_URL":
-			parsed.AuthURL = val
-		case "OS_USERNAME":
-			parsed.Username = val
-		case "OS_PASSWORD":
-			parsed.Password = val
-		case "OS_PROJECT_NAME", "OS_TENANT_NAME":
-			parsed.ProjectName = val
-		case "OS_USER_DOMAIN_NAME":
-			parsed.UserDomain = val
-		case "OS_PROJECT_DOMAIN_NAME":
-			parsed.ProjectDomain = val
-		case "OS_REGION_NAME":
-			parsed.Region = val
-		case "OS_INTERFACE":
-			parsed.Interface = val
-		}
-	}
-	if parsed.AuthURL == "" || parsed.Username == "" || parsed.Password == "" || parsed.ProjectName == "" {
-		return *o, fmt.Errorf("credentials_file: OS_AUTH_URL/OS_USERNAME/OS_PASSWORD/OS_PROJECT_NAME all required")
-	}
-	return parsed, nil
+	return osclient.Credentials{
+		AuthURL:       o.AuthURL,
+		Username:      o.Username,
+		Password:      o.Password,
+		ProjectName:   o.ProjectName,
+		UserDomain:    o.UserDomain,
+		ProjectDomain: o.ProjectDomain,
+		Region:        o.Region,
+		Interface:     o.Interface,
+	}, nil
 }
 
 func expandHome(p string) string {

@@ -181,12 +181,6 @@ const codeNetwork = "network"
 // only meaningful for off-cluster clients.
 const defaultInterface = "internal"
 
-// defaultDomain is the Keystone v3 domain assumed for the user and
-// project when an openrc file omits OS_USER_DOMAIN_NAME /
-// OS_PROJECT_DOMAIN_NAME — "default" is the standard single-domain
-// deployment name.
-const defaultDomain = "default"
-
 // maxStaticRouteHops bounds the multi-hop trace. Real OpenStack
 // deployments rarely exceed 3–4 hops; 16 is generous and an
 // exceedance almost certainly indicates a routing misconfig (per

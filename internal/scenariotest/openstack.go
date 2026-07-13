@@ -22,16 +22,20 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/ports"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/subnets"
+
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/osclient"
 )
 
 // OpenStack is the gophercloud-backed [Cloud]. It holds admin-scoped
 // service clients plus a cache of per-project-scoped Network/Compute
 // clients, minted lazily by re-authenticating the admin credentials
-// scoped to the target project. Used single-threaded by realize, so
-// the scoped-client cache needs no locking.
+// scoped to the target project (see [osclient.AuthenticateProject]).
+// Used single-threaded by realize, so the scoped-client cache needs
+// no locking.
 type OpenStack struct {
-	creds OpenStackCreds
-	eo    gophercloud.EndpointOpts
+	creds   osclient.Credentials
+	timeout time.Duration
+	eo      gophercloud.EndpointOpts
 
 	identity *gophercloud.ServiceClient
 	network  *gophercloud.ServiceClient
@@ -49,35 +53,32 @@ type scopedClients struct {
 	compute *gophercloud.ServiceClient
 }
 
-// NewOpenStack authenticates creds (admin, project-scoped to the
-// credential's own project) and returns a ready [Cloud]. The
-// endpoint-catalog interface defaults to "public" — scenariotest is
-// an operator-facing tool, not a compute-node agent.
-func NewOpenStack(ctx context.Context, creds OpenStackCreds) (*OpenStack, error) {
-	iface := creds.Interface
-	if iface == "" {
-		iface = "public"
-	}
-	switch gophercloud.Availability(iface) {
-	case gophercloud.AvailabilityInternal, gophercloud.AvailabilityPublic, gophercloud.AvailabilityAdmin:
-	default:
-		return nil, fmt.Errorf("openstack: invalid interface %q (want internal/public/admin)", iface)
-	}
-
-	o := &OpenStack{
-		creds:  creds,
-		eo:     gophercloud.EndpointOpts{Region: creds.Region, Availability: gophercloud.Availability(iface)},
-		scoped: map[string]*scopedClients{},
-	}
-
-	adminScope := &gophercloud.AuthScope{ProjectName: creds.ProjectName, DomainName: creds.ProjectDomain}
-	provider, err := openstack.AuthenticatedClient(ctx, o.authOpts(adminScope))
+// NewOpenStack resolves the config's two-mode credentials,
+// authenticates (admin, scoped to the credential's own project), and
+// returns a ready [Cloud]. The endpoint-catalog interface defaults
+// to "public" — scenariotest is an operator-facing tool, not a
+// compute-node agent.
+func NewOpenStack(ctx context.Context, oc OpenStackCreds) (*OpenStack, error) {
+	creds, err := oc.ResolveCredentials()
 	if err != nil {
-		return nil, fmt.Errorf("openstack: keystone auth: %w", err)
+		return nil, err
 	}
-	if creds.RequestTimeout > 0 {
-		provider.HTTPClient = http.Client{Timeout: creds.RequestTimeout}
+	eo, err := creds.EndpointOpts("public")
+	if err != nil {
+		return nil, fmt.Errorf("openstack: %w", err)
 	}
+	o := &OpenStack{
+		creds:   creds,
+		timeout: oc.RequestTimeout,
+		eo:      eo,
+		scoped:  map[string]*scopedClients{},
+	}
+
+	provider, err := osclient.Authenticate(ctx, creds)
+	if err != nil {
+		return nil, fmt.Errorf("openstack: %w", err)
+	}
+	o.applyTimeout(provider)
 
 	ar := provider.GetAuthResult()
 	ctr, ok := ar.(tokens.CreateResult)
@@ -105,14 +106,12 @@ func NewOpenStack(ctx context.Context, creds OpenStackCreds) (*OpenStack, error)
 	return o, nil
 }
 
-func (o *OpenStack) authOpts(scope *gophercloud.AuthScope) gophercloud.AuthOptions {
-	return gophercloud.AuthOptions{
-		IdentityEndpoint: o.creds.AuthURL,
-		Username:         o.creds.Username,
-		Password:         o.creds.Password,
-		DomainName:       o.creds.UserDomain,
-		Scope:            scope,
-		AllowReauth:      true,
+// applyTimeout caps every request on the provider with the config's
+// request_timeout. osclient deliberately leaves HTTP-client policy to
+// its consumers.
+func (o *OpenStack) applyTimeout(provider *gophercloud.ProviderClient) {
+	if o.timeout > 0 {
+		provider.HTTPClient = http.Client{Timeout: o.timeout}
 	}
 }
 
@@ -123,13 +122,11 @@ func (o *OpenStack) scopedFor(ctx context.Context, projectID string) (*scopedCli
 	if sc, ok := o.scoped[projectID]; ok {
 		return sc, nil
 	}
-	provider, err := openstack.AuthenticatedClient(ctx, o.authOpts(&gophercloud.AuthScope{ProjectID: projectID}))
+	provider, err := osclient.AuthenticateProject(ctx, o.creds, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("openstack: scope to project %s: %w", projectID, err)
 	}
-	if o.creds.RequestTimeout > 0 {
-		provider.HTTPClient = http.Client{Timeout: o.creds.RequestTimeout}
-	}
+	o.applyTimeout(provider)
 	net, err := openstack.NewNetworkV2(provider, o.eo)
 	if err != nil {
 		return nil, fmt.Errorf("openstack: scoped network endpoint: %w", err)
