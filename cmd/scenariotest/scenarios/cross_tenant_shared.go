@@ -25,10 +25,16 @@ func crossTenantShared() *scenariotest.Scenario {
 		Subnet("sub-shared", "10.10.0.0/24", "10.10.0.1").
 		VM("vm-b", "T2", "10.10.0.5")
 	// T1's router bridges T1's subnet and the shared subnet, so vm-a
-	// reaches the shared subnet over L3.
+	// reaches the shared subnet over L3. It sits on sub-shared's
+	// declared gateway (10.10.0.1) so vm-b's DHCP default route points
+	// at a live interface — attaching anywhere else leaves the gateway
+	// unbound and vm-b's replies to vm-a die. The external gateway is
+	// for floating-IP reachability on both subnets.
+	b.ExternalNetwork("net-ext", "admin")
 	b.Router("r-T1", "T1").
 		Attach("sub-T1", "10.0.1.1").
-		Attach("sub-shared", "10.10.0.2")
+		Attach("sub-shared", "10.10.0.1").
+		ExternalGateway("net-ext")
 	return &scenariotest.Scenario{
 		Name:    "cross-tenant-shared",
 		Desc:    "VM routed onto an admin shared subnet. Shared zone.",

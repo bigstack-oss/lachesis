@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/scenario"
 )
@@ -18,7 +20,11 @@ type fakeEnv struct {
 }
 
 // fakeCloud is a recording [Cloud]: lookups return configured IDs,
-// creates append to typed slices and hand back synthetic IDs.
+// creates append to typed slices and hand back synthetic IDs. It also
+// models Neutron's floating-IP reachability rule — a FIP only
+// associates when a router with a gateway on the FIP's external
+// network has an interface on the port's subnet — so a scenario whose
+// topology can't carry FIPs fails here the same way it would live.
 type fakeCloud struct {
 	env *fakeEnv
 
@@ -41,6 +47,11 @@ type fakeCloud struct {
 	ports           []PortSpec
 	servers         []ServerSpec
 	fips            []FIPCreateSpec
+
+	// reachability model (live IDs)
+	portSubnet    map[string]string          // port id → subnet id
+	routerExt     map[string]string          // router id → ext network id
+	routerSubnets map[string]map[string]bool // router id → attached subnet ids
 }
 
 type ifaceRec struct{ routerID, subnetID, portID string }
@@ -50,7 +61,12 @@ type routeRec struct {
 }
 
 func newFakeCloud(env *fakeEnv) *fakeCloud {
-	return &fakeCloud{env: env, extNetID: "ext-net-real", hyps: []string{"compute-0"}, preProjects: map[string]string{}, findErrs: map[string]error{}}
+	return &fakeCloud{
+		env: env, extNetID: "ext-net-real", hyps: []string{"compute-0"},
+		preProjects: map[string]string{}, findErrs: map[string]error{},
+		portSubnet: map[string]string{}, routerExt: map[string]string{},
+		routerSubnets: map[string]map[string]bool{},
+	}
 }
 
 func (c *fakeCloud) id(kind string) string { c.seq++; return fmt.Sprintf("%s-%d", kind, c.seq) }
@@ -94,14 +110,23 @@ func (c *fakeCloud) CreateSubnet(_ context.Context, _ string, spec SubnetSpec) (
 }
 func (c *fakeCloud) CreateRouter(_ context.Context, _ string, spec RouterSpec) (string, error) {
 	c.rtrs = append(c.rtrs, spec)
-	return c.id("rtr"), nil
+	id := c.id("rtr")
+	c.routerExt[id] = spec.ExternalNetworkID
+	c.routerSubnets[id] = map[string]bool{}
+	return id, nil
 }
 func (c *fakeCloud) CreatePort(_ context.Context, _ string, spec PortSpec) (string, error) {
 	c.ports = append(c.ports, spec)
-	return c.id("port"), nil
+	id := c.id("port")
+	c.portSubnet[id] = spec.SubnetID
+	return id, nil
 }
 func (c *fakeCloud) AddRouterInterface(_ context.Context, _, routerID, subnetID, portID string) error {
 	c.ifaces = append(c.ifaces, ifaceRec{routerID, subnetID, portID})
+	if subnetID == "" {
+		subnetID = c.portSubnet[portID]
+	}
+	c.routerSubnets[routerID][subnetID] = true
 	return nil
 }
 func (c *fakeCloud) SetRouterRoutes(_ context.Context, _, routerID string, routes []RouteSpec) error {
@@ -114,7 +139,22 @@ func (c *fakeCloud) CreateServer(_ context.Context, _ string, spec ServerSpec) (
 	return c.id("srv"), nil
 }
 func (c *fakeCloud) WaitServerActive(context.Context, string, string) error { return nil }
+
+// CreateFIP enforces the same reachability rule as Neutron: the FIP's
+// external network must be the gateway of a router that also has an
+// interface on the port's subnet.
 func (c *fakeCloud) CreateFIP(_ context.Context, _ string, spec FIPCreateSpec) (string, string, error) {
+	subnet := c.portSubnet[spec.PortID]
+	reachable := false
+	for routerID, ext := range c.routerExt {
+		if ext == spec.ExternalNetworkID && c.routerSubnets[routerID][subnet] {
+			reachable = true
+			break
+		}
+	}
+	if !reachable {
+		return "", "", fmt.Errorf("fake neutron: external network %s is not reachable from subnet %s (no gatewayed router)", spec.ExternalNetworkID, subnet)
+	}
 	c.fips = append(c.fips, spec)
 	return c.id("fip"), fmt.Sprintf("203.0.113.%d", len(c.fips)), nil
 }
@@ -159,28 +199,35 @@ func realizeFixture(t *testing.T, sc *Scenario) (*fakeCloud, *RunState) {
 	return cloud, rs
 }
 
+// sameTenantScenario mirrors the registered twovms-same-tenant
+// topology, gatewayed router included (FIP reachability).
 func sameTenantScenario() *Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").
 		Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
 		VM("vm-a", "T1", "10.0.1.5").
 		VM("vm-b", "T1", "10.0.1.6")
+	b.ExternalNetwork("net-ext", "admin")
+	b.Router("r-T1", "T1").Attach("sub-T1", "10.0.1.1").ExternalGateway("net-ext")
 	return &Scenario{Name: "same", Builder: b}
 }
 
 func TestRealize_SameTenant(t *testing.T) {
 	cloud, rs := realizeFixture(t, sameTenantScenario())
 
-	if len(cloud.nets) != 1 {
+	if len(cloud.nets) != 1 { // ext net resolves to the provider net, never created
 		t.Errorf("networks: got %d, want 1", len(cloud.nets))
 	}
 	if len(cloud.subs) != 1 {
 		t.Errorf("subnets: got %d, want 1", len(cloud.subs))
 	}
-	if len(cloud.rtrs) != 0 {
-		t.Errorf("routers: got %d, want 0", len(cloud.rtrs))
+	if len(cloud.rtrs) != 1 || cloud.rtrs[0].ExternalNetworkID != cloud.extNetID {
+		t.Errorf("routers: got %+v, want 1 gatewayed to %s", cloud.rtrs, cloud.extNetID)
 	}
-	if len(cloud.ports) != 2 {
+	if len(cloud.ifaces) != 1 || cloud.ifaces[0].subnetID == "" {
+		t.Errorf("router interfaces: got %+v, want 1 subnet-based (gateway) attach", cloud.ifaces)
+	}
+	if len(cloud.ports) != 2 { // VM ports only; the gateway attach creates no port
 		t.Errorf("ports: got %d, want 2", len(cloud.ports))
 	}
 	for _, p := range cloud.ports {
@@ -209,27 +256,34 @@ func TestRealize_SameTenant(t *testing.T) {
 }
 
 // crossTenantRoutedScenario mirrors the registered other_tenant
-// topology: two tenants, a transit subnet, routers with static routes.
+// topology: two tenants, a transit subnet, routers with static routes
+// and external gateways (FIP reachability).
 func crossTenantRoutedScenario() *Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").Subnet("sub-T1", "10.0.0.0/24", "10.0.0.1").VM("vm-a", "T1", "10.0.0.5")
 	b.Network("net-T2", "T2").Subnet("sub-T2", "10.50.0.0/24", "10.50.0.1").VM("vm-b", "T2", "10.50.0.5")
 	b.SharedNetwork("net-transit", "admin").Subnet("sub-transit", "192.168.100.0/24", "192.168.100.1")
+	b.ExternalNetwork("net-ext", "admin")
 	b.Router("r-T1", "T1").Attach("sub-T1", "10.0.0.1").Attach("sub-transit", "192.168.100.10").
-		ExtraRoute("10.50.0.0/24", "192.168.100.20")
+		ExtraRoute("10.50.0.0/24", "192.168.100.20").ExternalGateway("net-ext")
 	b.Router("r-T2", "T2").Attach("sub-T2", "10.50.0.1").Attach("sub-transit", "192.168.100.20").
-		ExtraRoute("10.0.0.0/24", "192.168.100.10")
+		ExtraRoute("10.0.0.0/24", "192.168.100.10").ExternalGateway("net-ext")
 	return &Scenario{Name: "other", Builder: b}
 }
 
 func TestRealize_CrossTenantRouted(t *testing.T) {
 	cloud, rs := realizeFixture(t, crossTenantRoutedScenario())
 
-	if len(cloud.nets) != 3 { // T1, T2, transit (all internal/shared, none external)
+	if len(cloud.nets) != 3 { // T1, T2, transit; the ext net is never created
 		t.Errorf("networks: got %d, want 3", len(cloud.nets))
 	}
 	if len(cloud.rtrs) != 2 {
 		t.Errorf("routers: got %d, want 2", len(cloud.rtrs))
+	}
+	for i, rt := range cloud.rtrs {
+		if rt.ExternalNetworkID != cloud.extNetID {
+			t.Errorf("router[%d] external gateway = %q, want %q", i, rt.ExternalNetworkID, cloud.extNetID)
+		}
 	}
 	if len(cloud.routes) != 2 {
 		t.Errorf("route-sets: got %d, want 2", len(cloud.routes))
@@ -286,6 +340,29 @@ func TestRealize_ExternalNetworkResolvesToProvider(t *testing.T) {
 	}
 }
 
+// TestRealize_FIPRequiresGatewayedRouter is the regression test for
+// the Neutron reachability rule: a topology whose VM subnet has no
+// router gatewayed to the external network cannot carry the FIP `up`
+// allocates for SSH reach, and must fail loudly rather than at drive
+// time.
+func TestRealize_FIPRequiresGatewayedRouter(t *testing.T) {
+	b := scenario.New()
+	b.Network("net-T1", "T1").
+		Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
+		VM("vm-a", "T1", "10.0.1.5")
+	sc := &Scenario{Name: "no-router", Builder: b}
+
+	env := &fakeEnv{baseAttached: 5}
+	cloud := newFakeCloud(env)
+	_, err := Realize(context.Background(), RealizeOptions{
+		Config: testConfig(), Scenario: sc, RunID: "run1",
+		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: &fakeMetrics{env: env}, Log: io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not reachable") {
+		t.Fatalf("want FIP reachability error, got %v", err)
+	}
+}
+
 func TestRealize_ReusesExistingProject(t *testing.T) {
 	env := &fakeEnv{baseAttached: 5}
 	cloud := newFakeCloud(env)
@@ -303,6 +380,17 @@ func TestRealize_ReusesExistingProject(t *testing.T) {
 	}
 	if len(cloud.createdProjects) != 0 {
 		t.Errorf("reused project should not be created, got %v", cloud.createdProjects)
+	}
+	// The reuse path still grants the admin role (idempotent), so a
+	// run that crashed between create and grant heals here.
+	granted := false
+	for _, g := range cloud.grants {
+		if g == "existing-T1" {
+			granted = true
+		}
+	}
+	if !granted {
+		t.Errorf("reused project did not receive the admin-role grant: %v", cloud.grants)
 	}
 }
 
@@ -331,7 +419,7 @@ func TestRealize_AttachGateTimesOut(t *testing.T) {
 	_, err := Realize(context.Background(), RealizeOptions{
 		Config: testConfig(), Scenario: sameTenantScenario(), RunID: "run1",
 		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: stuck, Log: io.Discard,
-		AttachTimeout: 50 * 1e6, // 50ms
+		AttachTimeout: 50 * time.Millisecond,
 	})
 	if err == nil {
 		t.Fatal("want attach-gate timeout error, got nil")

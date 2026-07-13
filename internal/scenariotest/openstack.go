@@ -408,9 +408,6 @@ func (o *OpenStack) CreateServer(ctx context.Context, projectID string, spec Ser
 		Networks:         []servers.Network{{Port: spec.PortID}},
 		AvailabilityZone: spec.AvailabilityZone,
 	}
-	if spec.SecGroupName != "" {
-		base.SecurityGroups = []string{spec.SecGroupName}
-	}
 	var opts servers.CreateOptsBuilder = base
 	if spec.KeypairName != "" {
 		opts = keypairs.CreateOptsExt{CreateOptsBuilder: base, KeyName: spec.KeypairName}

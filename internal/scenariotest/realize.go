@@ -31,6 +31,10 @@ const (
 	DefaultAttachTimeout = 90 * time.Second
 	// attachPollInterval is how often the attach gate re-scrapes.
 	attachPollInterval = 2 * time.Second
+	// serverActiveTimeout bounds each server's boot wait. Without it a
+	// server stuck in BUILD would hang `up` forever — the only other
+	// cancellation is the operator's SIGINT.
+	serverActiveTimeout = 5 * time.Minute
 )
 
 // Realize stands the scenario's topology up on the live cluster and
@@ -359,13 +363,15 @@ func (r *realizer) bootServers(snap neutron.Snapshot) error {
 			az = "nova:" + host
 		}
 		name := Mangle(r.prefix(), r.opts.RunID, vmID)
+		// No security group here: the VM boots on a pre-created port
+		// that already carries it, and Nova ignores boot-time secgroups
+		// for pre-existing ports anyway.
 		id, err := r.opts.Cloud.CreateServer(r.ctx, proj, ServerSpec{
 			Name:             name,
 			FlavorID:         r.flavorID,
 			ImageID:          r.imageID,
 			PortID:           r.vmPort[vmID],
 			KeypairName:      r.opts.Config.Prerequisites.KeypairName,
-			SecGroupName:     r.opts.Config.Prerequisites.SecGroupName,
 			AvailabilityZone: az,
 		})
 		if err != nil {
@@ -382,12 +388,21 @@ func (r *realizer) bootServers(snap neutron.Snapshot) error {
 
 func (r *realizer) waitActive() error {
 	for _, s := range r.rs.Servers {
-		if err := r.opts.Cloud.WaitServerActive(r.ctx, s.ProjectID, s.ID); err != nil {
+		if err := r.waitOneActive(s); err != nil {
 			return err
 		}
 		r.logf("server %s ACTIVE", s.DSLID)
 	}
 	return nil
+}
+
+// waitOneActive bounds a single server's boot wait with
+// [serverActiveTimeout] so a server stuck in BUILD fails the run
+// instead of hanging it.
+func (r *realizer) waitOneActive(s ResourceRef) error {
+	ctx, cancel := context.WithTimeout(r.ctx, serverActiveTimeout)
+	defer cancel()
+	return r.opts.Cloud.WaitServerActive(ctx, s.ProjectID, s.ID)
 }
 
 func (r *realizer) allocateFIPs() error {
@@ -474,10 +489,7 @@ func (r *realizer) agentURLs() []string {
 }
 
 func (r *realizer) save() error {
-	if err := r.rs.Save(r.opts.StatePath); err != nil {
-		return err
-	}
-	return nil
+	return r.rs.Save(r.opts.StatePath)
 }
 
 func (r *realizer) logf(format string, args ...any) {
@@ -486,8 +498,11 @@ func (r *realizer) logf(format string, args ...any) {
 
 // projectID resolves a DSL project name to its live Keystone ID,
 // reusing or creating per policy and caching the result in run-state.
-// A created project gets the admin user an admin-role grant so a
-// project-scoped token can be minted for it.
+// The admin user is granted the admin role on the project in both
+// paths — creation grants its creator nothing, and re-granting on
+// reuse is idempotent in Keystone, so a run that crashed between
+// create and grant heals on the next attempt instead of failing
+// token scoping with an opaque auth error.
 func (r *realizer) projectID(dslName string) (string, error) {
 	if ref, ok := r.rs.Projects[dslName]; ok {
 		return ref.ID, nil
@@ -506,10 +521,10 @@ func (r *realizer) projectID(dslName string) (string, error) {
 		if id, err = r.opts.Cloud.CreateProject(r.ctx, mangled); err != nil {
 			return "", err
 		}
-		if err := r.opts.Cloud.GrantAdminRole(r.ctx, id); err != nil {
-			return "", err
-		}
 		created = true
+	}
+	if err := r.opts.Cloud.GrantAdminRole(r.ctx, id); err != nil {
+		return "", err
 	}
 	r.rs.Projects[dslName] = ProjectRef{Name: mangled, ID: id, Created: created}
 	if err := r.save(); err != nil {

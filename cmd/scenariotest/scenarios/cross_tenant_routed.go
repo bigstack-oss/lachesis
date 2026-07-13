@@ -23,14 +23,21 @@ func crossTenantRouted() *scenariotest.Scenario {
 		VM("vm-b", "T2", "10.50.0.5")
 	b.SharedNetwork("net-transit", "admin").
 		Subnet("sub-transit", "192.168.100.0/24", "192.168.100.1")
+	// Each router carries an external gateway for its own tenant's
+	// floating-IP reachability (Neutron associates a FIP through the
+	// gatewayed router on the VM's subnet); the asserted east-west
+	// path still flows over the transit static routes.
+	b.ExternalNetwork("net-ext", "admin")
 	b.Router("r-T1", "T1").
 		Attach("sub-T1", "10.0.0.1").
 		Attach("sub-transit", "192.168.100.10").
-		ExtraRoute("10.50.0.0/24", "192.168.100.20")
+		ExtraRoute("10.50.0.0/24", "192.168.100.20").
+		ExternalGateway("net-ext")
 	b.Router("r-T2", "T2").
 		Attach("sub-T2", "10.50.0.1").
 		Attach("sub-transit", "192.168.100.20").
-		ExtraRoute("10.0.0.0/24", "192.168.100.10")
+		ExtraRoute("10.0.0.0/24", "192.168.100.10").
+		ExternalGateway("net-ext")
 	return &scenariotest.Scenario{
 		Name:    "cross-tenant-routed",
 		Desc:    "Two tenants routed via a transit subnet. Other-tenant zone.",

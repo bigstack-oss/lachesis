@@ -108,13 +108,14 @@ type PortSpec struct {
 
 // ServerSpec describes a Nova boot on a pre-created port.
 // AvailabilityZone carries the optional "nova:<host>" host pin.
+// There is no security-group field: the port already carries it, and
+// Nova ignores boot-time secgroups for pre-existing ports.
 type ServerSpec struct {
 	Name             string
 	FlavorID         string
 	ImageID          string
 	PortID           string
 	KeypairName      string
-	SecGroupName     string
 	AvailabilityZone string
 }
 

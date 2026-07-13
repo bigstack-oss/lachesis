@@ -36,6 +36,9 @@ CLAUDE.md
 .claude
 tmp/
 
+# scenariotest run-state (default -state location)
+.scenariotest/
+
 # Build artifacts
 build/
 *_bpfel*
