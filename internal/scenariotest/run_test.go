@@ -56,6 +56,7 @@ func runFixture(t *testing.T, keep bool, exec VMExec) (*fakeCloud, AssertReport,
 		Exec:       exec,
 		Log:        io.Discard,
 		Keep:       keep,
+		SinkDelay:  -1,
 	})
 	return cloud, rep, statePath, err
 }
