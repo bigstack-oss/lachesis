@@ -91,7 +91,8 @@ iperf3-measured BPF overhead is documented in DESIGN §12 ("Demo Workflow"). Not
 | `list` | Show registered scenarios. |
 | `preflight <name>` | Read-only: verify prerequisites (image, flavor, keypair, secgroup, external network), validate any pinned hypervisors, confirm each agent's `/metrics` is reachable and exposes `cubecos_bytes_total` + `cubecos_attached_interfaces`. |
 | `up <name>` | Reuse-or-create projects (never deleted), realize the topology (name-mangled `<prefix>-<runid>-<dsl-id>`), allocate a floating IP per VM, and block on the **attach-ready gate** before returning. Writes run-state. |
-| `drive` / `assert` / `down` / `run` | Push flows, compare `/metrics` deltas as `MinBytes` lower bounds, tear the topology down (projects excepted), and the full sequence. |
+| `drive <name>` | Re-check the attach gate against the run-state record, snapshot the pre-traffic `cubecos_bytes_total` baseline into run-state, then push the declared flows over SSH (VM targets: `dd \| nc` at the internal IP into a sink started via the target's FIP; external targets: sized pings — transmitted bytes count at the tap with or without replies). |
+| `assert` / `down` / `run` | Compare `/metrics` deltas as `MinBytes` lower bounds, tear the topology down (projects excepted), and the full sequence. |
 
 **Run-state.** `up` records every created resource — plus the DSL-name → Keystone-UUID project map — to a JSON file (`.scenariotest/<prefix>-<runid>.json` by default). `down` and `assert` consume it; a partial `up` still leaves a record `down` can clean up.
 

@@ -246,6 +246,11 @@ func TestRealize_SameTenant(t *testing.T) {
 	if len(cloud.fips) != 2 {
 		t.Errorf("fips: got %d, want 2 (one per VM)", len(cloud.fips))
 	}
+	// The attach gate's green state is recorded for drive's recheck:
+	// baseline 5 + 2 VM taps.
+	if rs.Attach.Target != 7 {
+		t.Errorf("attach record target = %v, want 7", rs.Attach.Target)
+	}
 	if ref, ok := rs.Projects["T1"]; !ok || !ref.Created {
 		t.Errorf("project T1 not recorded as created: %+v", rs.Projects)
 	}

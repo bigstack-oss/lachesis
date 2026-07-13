@@ -21,12 +21,14 @@ const (
 )
 
 // BytesSample is one cubecos_bytes_total series: the {tenant_id, zone,
-// direction} label tuple and its cumulative value.
+// direction} label tuple and its cumulative value. JSON-tagged
+// because drive persists the pre-traffic snapshot into the run-state
+// file for assert to diff against.
 type BytesSample struct {
-	TenantID  string
-	Zone      string
-	Direction string
-	Value     float64
+	TenantID  string  `json:"tenant_id"`
+	Zone      string  `json:"zone"`
+	Direction string  `json:"direction"`
+	Value     float64 `json:"value"`
 }
 
 // ScrapeResult is one agent's /metrics scrape: which of the metrics

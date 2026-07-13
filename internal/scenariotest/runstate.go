@@ -8,8 +8,9 @@ import (
 )
 
 // RunState is the on-disk record of everything one `up` invocation
-// created. `up` writes it; `down` and `assert` read it. It is the
-// only state shared between the otherwise-stateless subcommands.
+// created. `up` writes it; `drive`, `assert`, and `down` read it. It
+// is the only state shared between the otherwise-stateless
+// subcommands.
 //
 // Resources are recorded as they are created so a partial `up` leaves
 // a run-state `down` can still clean up. Projects are recorded too —
@@ -27,6 +28,23 @@ type RunState struct {
 	Ports    []ResourceRef         `json:"ports"`
 	Servers  []ResourceRef         `json:"servers"`
 	FIPs     []FIPRef              `json:"fips"`
+
+	// Attach records the attach gate's green state at the end of
+	// `up`, so a standalone `drive` can re-confirm the taps are still
+	// attached before pushing traffic.
+	Attach AttachRecord `json:"attach"`
+
+	// Baseline is the pre-drive cubecos_bytes_total snapshot across
+	// all agents, captured by `drive` immediately before it pushes
+	// traffic; `assert` diffs against it.
+	Baseline []BytesSample `json:"baseline,omitempty"`
+}
+
+// AttachRecord is the attach gate's result: the gauge value the gate
+// required and the failure count observed when it went green.
+type AttachRecord struct {
+	Target   float64 `json:"target"`
+	Failures float64 `json:"failures"`
 }
 
 // ProjectRef records a topology project's resolved Keystone identity.
