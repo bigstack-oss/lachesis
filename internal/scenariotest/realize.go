@@ -118,7 +118,7 @@ func (r *realizer) run() error {
 
 	// Capture the attach baseline now: VM ports exist but are unbound,
 	// so no taps yet. Booting binds them and taps appear.
-	baseline, err := sampleAcross(r.ctx, r.opts.Metrics, r.agentURLs())
+	baseline, err := sampleAcross(r.ctx, r.opts.Metrics, agentURLs(r.opts.Config))
 	if err != nil {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
@@ -457,7 +457,7 @@ func (r *realizer) attachGate(baseline MetricsSnapshot, expectedTaps int) error 
 	ticker := time.NewTicker(attachPollInterval)
 	defer ticker.Stop()
 	for {
-		snap, err := sampleAcross(ctx, r.opts.Metrics, r.agentURLs())
+		snap, err := sampleAcross(ctx, r.opts.Metrics, agentURLs(r.opts.Config))
 		if err != nil {
 			return fmt.Errorf("attach gate scrape: %w", err)
 		}
@@ -466,7 +466,10 @@ func (r *realizer) attachGate(baseline MetricsSnapshot, expectedTaps int) error 
 		}
 		if snap.AttachedInterfaces >= target {
 			r.logf("attach gate: green (attached_interfaces %.0f ≥ %.0f)", snap.AttachedInterfaces, target)
-			return nil
+			// Record the green state so a standalone `drive` can
+			// re-confirm the taps are still attached before traffic.
+			r.rs.Attach = AttachRecord{Target: target, Failures: snap.AttachFailures}
+			return r.save()
 		}
 		select {
 		case <-ctx.Done():
@@ -479,14 +482,6 @@ func (r *realizer) attachGate(baseline MetricsSnapshot, expectedTaps int) error 
 // --- helpers ---
 
 func (r *realizer) prefix() string { return r.opts.Config.Naming.Prefix }
-
-func (r *realizer) agentURLs() []string {
-	urls := make([]string, 0, len(r.opts.Config.Cluster.Agents))
-	for _, a := range r.opts.Config.Cluster.Agents {
-		urls = append(urls, a.MetricsURL)
-	}
-	return urls
-}
 
 func (r *realizer) save() error {
 	return r.rs.Save(r.opts.StatePath)

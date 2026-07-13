@@ -42,7 +42,7 @@ Subcommands:
   list                  Show registered scenarios.
   preflight <name>      Check cluster readiness (read-only).
   up        <name>      Realize topology and wait for the agents to attach.
-  drive     <name>      Push declared flows (not yet implemented).
+  drive     <name>      Re-check the attach gate, snapshot the metrics baseline, push declared flows.
   assert    <name>      Scrape + compare deltas (not yet implemented).
   run       <name>      preflight → up → drive → assert → down (not yet implemented).
   down                  Tear down (not yet implemented).
@@ -50,7 +50,8 @@ Subcommands:
 Common flags:
   -config <path>        Config file path. Required for everything except list.
   -output <human|json>  preflight output format (default human).
-  -state  <path>        up run-state file (default .scenariotest/<prefix>-<runid>.json).
+  -state  <path>        Run-state file: written by up (default .scenariotest/<prefix>-<runid>.json),
+                        required by drive.
 `
 
 func main() {
@@ -66,7 +67,9 @@ func main() {
 		os.Exit(runPreflight(args))
 	case "up":
 		os.Exit(runUp(args))
-	case "drive", "assert", "run", "down":
+	case "drive":
+		os.Exit(runDrive(args))
+	case "assert", "run", "down":
 		fmt.Fprintf(os.Stderr, "scenariotest %s: not implemented yet\n", sub)
 		os.Exit(2)
 	case "-h", "--help", "help":
@@ -181,6 +184,50 @@ func runUp(args []string) int {
 	}
 	fmt.Printf("up ok: scenario=%s run-id=%s vms=%d fips=%d state=%s\n",
 		sc.Name, runID, len(rs.Servers), len(rs.FIPs), state)
+	return 0
+}
+
+func runDrive(args []string) int {
+	fs := flag.NewFlagSet("drive", flag.ContinueOnError)
+	configPath := fs.String("config", "", "config file path (required)")
+	statePath := fs.String("state", "", "run-state file written by up (required)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	cfg, sc, code := loadConfigAndScenario(*configPath, fs.Arg(0))
+	if code != 0 {
+		return code
+	}
+	if *statePath == "" {
+		fmt.Fprintln(os.Stderr, "missing required -state (the file `up` wrote)")
+		return 2
+	}
+	rs, err := scenariotest.LoadRunState(*statePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "drive:", err)
+		return 1
+	}
+	if rs.Scenario != sc.Name {
+		fmt.Fprintf(os.Stderr, "drive: run-state %s is for scenario %q, not %q\n", *statePath, rs.Scenario, sc.Name)
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	err = scenariotest.Drive(ctx, scenariotest.DriveOptions{
+		Config:    cfg,
+		Scenario:  sc,
+		State:     rs,
+		StatePath: *statePath,
+		Metrics:   scenariotest.NewHTTPMetrics(nil),
+		Exec:      scenariotest.NewSSHExec(cfg.SSH),
+		Log:       os.Stderr,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "drive:", err)
+		return 1
+	}
+	fmt.Printf("drive ok: scenario=%s flows=%d state=%s\n", sc.Name, len(sc.Flows), *statePath)
 	return 0
 }
 
