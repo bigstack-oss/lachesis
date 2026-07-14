@@ -47,19 +47,19 @@ func TestMetrics_RecordAPIError_HTTPCode(t *testing.T) {
 	m.RecordAPIError("keystone", gophercloud.ErrUnexpectedResponseCode{Actual: 401})
 
 	const want = `
-# HELP cubecos_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
-# TYPE cubecos_neutron_api_errors_total counter
-cubecos_neutron_api_errors_total{code="401",endpoint="keystone"} 1
-cubecos_neutron_api_errors_total{code="503",endpoint="ports"} 2
-cubecos_neutron_api_errors_total{code="network",endpoint="keystone"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="ports"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="projects"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="routers"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="subnets"} 0
+# HELP lachesis_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
+# TYPE lachesis_neutron_api_errors_total counter
+lachesis_neutron_api_errors_total{code="401",endpoint="keystone"} 1
+lachesis_neutron_api_errors_total{code="503",endpoint="ports"} 2
+lachesis_neutron_api_errors_total{code="network",endpoint="keystone"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="networks"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="ports"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="projects"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="routers"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
-		"cubecos_neutron_api_errors_total"); err != nil {
+		"lachesis_neutron_api_errors_total"); err != nil {
 		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
@@ -69,17 +69,17 @@ func TestMetrics_RecordAPIError_NetworkLevel(t *testing.T) {
 	m.RecordAPIError("networks", errors.New("dial tcp: connection refused"))
 
 	const want = `
-# HELP cubecos_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
-# TYPE cubecos_neutron_api_errors_total counter
-cubecos_neutron_api_errors_total{code="network",endpoint="keystone"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 1
-cubecos_neutron_api_errors_total{code="network",endpoint="ports"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="projects"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="routers"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="subnets"} 0
+# HELP lachesis_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
+# TYPE lachesis_neutron_api_errors_total counter
+lachesis_neutron_api_errors_total{code="network",endpoint="keystone"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="networks"} 1
+lachesis_neutron_api_errors_total{code="network",endpoint="ports"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="projects"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="routers"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
-		"cubecos_neutron_api_errors_total"); err != nil {
+		"lachesis_neutron_api_errors_total"); err != nil {
 		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
@@ -92,17 +92,17 @@ func TestMetrics_RecordAPIError_NilErrorIgnored(t *testing.T) {
 	m.RecordAPIError("ports", nil) // should not panic, should not record
 
 	const want = `
-# HELP cubecos_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
-# TYPE cubecos_neutron_api_errors_total counter
-cubecos_neutron_api_errors_total{code="network",endpoint="keystone"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="networks"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="ports"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="projects"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="routers"} 0
-cubecos_neutron_api_errors_total{code="network",endpoint="subnets"} 0
+# HELP lachesis_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
+# TYPE lachesis_neutron_api_errors_total counter
+lachesis_neutron_api_errors_total{code="network",endpoint="keystone"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="networks"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="ports"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="projects"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="routers"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
-		"cubecos_neutron_api_errors_total"); err != nil {
+		"lachesis_neutron_api_errors_total"); err != nil {
 		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
@@ -114,13 +114,13 @@ func TestMetrics_RecordUnknownOwner(t *testing.T) {
 	m.RecordUnknownOwner("oslo:bar")
 
 	const want = `
-# HELP cubecos_neutron_unknown_device_owner_total Count of port admissions to mac_tenant_map under device_owner values outside the IsKnownVMOwner allowlist.
-# TYPE cubecos_neutron_unknown_device_owner_total counter
-cubecos_neutron_unknown_device_owner_total{owner="oslo:bar"} 1
-cubecos_neutron_unknown_device_owner_total{owner="vendor:foo"} 2
+# HELP lachesis_neutron_unknown_device_owner_total Count of port admissions to mac_tenant_map under device_owner values outside the IsKnownVMOwner allowlist.
+# TYPE lachesis_neutron_unknown_device_owner_total counter
+lachesis_neutron_unknown_device_owner_total{owner="oslo:bar"} 1
+lachesis_neutron_unknown_device_owner_total{owner="vendor:foo"} 2
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
-		"cubecos_neutron_unknown_device_owner_total"); err != nil {
+		"lachesis_neutron_unknown_device_owner_total"); err != nil {
 		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
@@ -140,16 +140,16 @@ func TestMetrics_SetAnomalies(t *testing.T) {
 	})
 
 	const want = `
-# HELP cubecos_neutron_anomalies Count of topology anomalies by class detected at the last Neutron cold-start or resync.
-# TYPE cubecos_neutron_anomalies gauge
-cubecos_neutron_anomalies{class="ambiguity"} 0
-cubecos_neutron_anomalies{class="cycle"} 1
-cubecos_neutron_anomalies{class="dangling_route"} 0
-cubecos_neutron_anomalies{class="duplicate_router_mac"} 0
-cubecos_neutron_anomalies{class="zero_trie_tenant"} 0
+# HELP lachesis_neutron_anomalies Count of topology anomalies by class detected at the last Neutron cold-start or resync.
+# TYPE lachesis_neutron_anomalies gauge
+lachesis_neutron_anomalies{class="ambiguity"} 0
+lachesis_neutron_anomalies{class="cycle"} 1
+lachesis_neutron_anomalies{class="dangling_route"} 0
+lachesis_neutron_anomalies{class="duplicate_router_mac"} 0
+lachesis_neutron_anomalies{class="zero_trie_tenant"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
-		"cubecos_neutron_anomalies"); err != nil {
+		"lachesis_neutron_anomalies"); err != nil {
 		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
@@ -164,12 +164,12 @@ func TestMetrics_SetTrunkSubports(t *testing.T) {
 	m.SetTrunkSubports(2)
 
 	const want = `
-# HELP cubecos_neutron_trunk_subports Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).
-# TYPE cubecos_neutron_trunk_subports gauge
-cubecos_neutron_trunk_subports 2
+# HELP lachesis_neutron_trunk_subports Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).
+# TYPE lachesis_neutron_trunk_subports gauge
+lachesis_neutron_trunk_subports 2
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
-		"cubecos_neutron_trunk_subports"); err != nil {
+		"lachesis_neutron_trunk_subports"); err != nil {
 		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }
@@ -192,7 +192,7 @@ func TestMetrics_ObserveBuilderStepEmitsHistogram(t *testing.T) {
 	// Each step labels its own series. Five labels are wired by
 	// BuildTrie but only two have observations here.
 	reg := newRegistry(t, m)
-	if got := testutil.CollectAndCount(reg, "cubecos_neutron_builder_step_duration_seconds"); got != 2 {
+	if got := testutil.CollectAndCount(reg, "lachesis_neutron_builder_step_duration_seconds"); got != 2 {
 		t.Fatalf("histogram series count = %d, want 2", got)
 	}
 }

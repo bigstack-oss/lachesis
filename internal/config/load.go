@@ -13,8 +13,8 @@ import (
 // Options customizes how [Load] resolves the configuration. The zero
 // value is acceptable; missing fields are filled in with defaults.
 type Options struct {
-	// EnvPrefix is prepended to every env var name (e.g. "CUBECOS" yields
-	// CUBECOS_HTTP_LISTEN). Empty means [DefaultEnvPrefix].
+	// EnvPrefix is prepended to every env var name (e.g. "LACHESIS" yields
+	// LACHESIS_HTTP_LISTEN). Empty means [DefaultEnvPrefix].
 	EnvPrefix string
 	// Getenv is the env-var lookup function. Empty means os.Getenv;
 	// tests typically inject their own.

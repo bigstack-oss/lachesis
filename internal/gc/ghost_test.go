@@ -25,7 +25,7 @@ func (f *fakeGauge) SetCurrent(name string, v float64) {
 }
 
 // TestSweep_RefreshesMacGauge locks the gauge-gap fix on the ghost path:
-// after a sweep deletes ghosts, cubecos_bpf_map_current_entries for
+// after a sweep deletes ghosts, lachesis_bpf_map_current_entries for
 // mac_tenant_map reflects the post-sweep metadata count.
 func TestSweep_RefreshesMacGauge(t *testing.T) {
 	meta := metadata.New()
@@ -195,7 +195,7 @@ func TestSweep_SettlesFlowsToTenantBeforeUserspaceDelete(t *testing.T) {
 		}
 	}
 	if got := testutil.ToFloat64(mx.settledFlows); got != 2 {
-		t.Errorf("cubecos_gc_settled_flows_total = %v, want 2", got)
+		t.Errorf("lachesis_gc_settled_flows_total = %v, want 2", got)
 	}
 }
 

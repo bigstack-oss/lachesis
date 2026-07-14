@@ -68,7 +68,7 @@ type Neutron struct {
 	anomalies atomic.Pointer[Anomalies]
 
 	// lastSync is the unix-nanos timestamp of the most recent
-	// [Neutron.Commit]. Read by the cubecos_neutron_sync_age_seconds
+	// [Neutron.Commit]. Read by the lachesis_neutron_sync_age_seconds
 	// gauge at scrape time; zero means never-synced (the gauge
 	// reports -1 so dashboards can spot the condition with `< 0`).
 	lastSync atomic.Int64

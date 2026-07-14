@@ -13,7 +13,7 @@
 services:
   prometheus:
     image: prom/prometheus:v2.55.0
-    container_name: cubecos-prometheus
+    container_name: lachesis-prometheus
     restart: unless-stopped
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -33,7 +33,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.3.0
-    container_name: cubecos-grafana
+    container_name: lachesis-grafana
     restart: unless-stopped
     volumes:
       - ./provisioning:/etc/grafana/provisioning:ro
@@ -57,7 +57,7 @@ services:
   agent:
     profiles: ["full"]
     image: ubuntu:24.04
-    container_name: cubecos-agent
+    container_name: lachesis-agent
     restart: unless-stopped
     privileged: true
     network_mode: host
@@ -67,16 +67,16 @@ services:
       - NET_ADMIN
       - SYS_ADMIN
     volumes:
-      - ../../build/agent:/usr/local/bin/cubecos-agent:ro
+      - ../../build/agent:/usr/local/bin/lachesis-agent:ro
       - /sys/fs/bpf:/sys/fs/bpf
       - /sys/kernel/btf:/sys/kernel/btf:ro
     environment:
       # Override these to attach to real host interfaces (comma-separated
       # allowlist). Empty means the agent assumes an external attach (BPF
       # won't capture traffic unless something else attaches the programs).
-      CUBECOS_BPF_ATTACH_INTERFACES: "${CUBECOS_BPF_ATTACH_INTERFACES:-}"
-      CUBECOS_HTTP_LISTEN: "${CUBECOS_HTTP_LISTEN:-:9090}"
-    command: ["/usr/local/bin/cubecos-agent"]
+      LACHESIS_BPF_ATTACH_INTERFACES: "${LACHESIS_BPF_ATTACH_INTERFACES:-}"
+      LACHESIS_HTTP_LISTEN: "${LACHESIS_HTTP_LISTEN:-:9090}"
+    command: ["/usr/local/bin/lachesis-agent"]
 
 volumes:
   prometheus-data:

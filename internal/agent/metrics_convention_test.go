@@ -19,14 +19,14 @@ type convNoopReader struct{}
 
 func (convNoopReader) BatchLookup(map[bpf.FlowKey]bpf.FlowMetrics) error { return nil }
 
-// metricName accepts the cubecos_ prefix followed by clean snake_case:
+// metricName accepts the lachesis_ prefix followed by clean snake_case:
 // lowercase alphanumeric segments joined by single underscores. It
 // rejects uppercase, leading/trailing/double underscores, and any other
 // prefix.
-var metricName = regexp.MustCompile(`^cubecos_[a-z0-9]+(_[a-z0-9]+)*$`)
+var metricName = regexp.MustCompile(`^lachesis_[a-z0-9]+(_[a-z0-9]+)*$`)
 
 // descFqName pulls the fully-qualified name out of a [prometheus.Desc]'s
-// String() form (`Desc{fqName: "cubecos_x", ...}`). Describe — not
+// String() form (`Desc{fqName: "lachesis_x", ...}`). Describe — not
 // Gather — is the enumeration source so unobserved CounterVec /
 // HistogramVec metrics (which emit no series until first use but are
 // still part of the exposed surface) are included.
@@ -38,7 +38,7 @@ var descFqName = regexp.MustCompile(`fqName: "([^"]+)"`)
 // agent actually registers — the billing Collector plus each bundle, via
 // the real [subsystemMetrics.registrations] list, so it cannot drift from
 // what /metrics exposes — and asserts the cross-cutting rules no single
-// package owns: the cubecos_ prefix, clean snake_case, and no duplicate
+// package owns: the lachesis_ prefix, clean snake_case, and no duplicate
 // name across subsystems.
 //
 // Type-specific Prometheus suffixes (counters end _total, time

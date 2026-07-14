@@ -2,7 +2,7 @@
 
 A local Prometheus + Grafana stack that visualises the agent's
 `/metrics` endpoint. One all-in-one dashboard
-(`dashboards/cubecos-telemetry.json`, uid `cubecos-telemetry`)
+(`dashboards/lachesis-telemetry.json`, uid `lachesis-telemetry`)
 replaces the earlier per-topic set; its rows:
 
 | Row | Focus |
@@ -23,8 +23,8 @@ a Prometheus datasource (e.g. a staging host's own Grafana).
 ## Alerting
 
 `alerts.rules.yml` (loaded via `rule_files` in `prometheus.yml`) ships
-one paging rule: **`CubecosTelemetryMapInsertFailures`** fires when
-`cubecos_bpf_update_failures_total{reason="update_failure"}` rises —
+one paging rule: **`LachesisTelemetryMapInsertFailures`** fires when
+`lachesis_bpf_update_failures_total{reason="update_failure"}` rises —
 the kernel dropped flows because `telemetry_map` filled, which the
 pressure-relief GC is meant to prevent, so any firing is active billing
 loss. It carries `severity="page"`; route that to the on-call via
@@ -55,7 +55,7 @@ editing `prometheus.yml` and reloading
 task binary
 
 # 2. Pick the interface(s) to attach TC clsact on (comma-separated allowlist)
-export CUBECOS_BPF_ATTACH_INTERFACES=eth0   # adjust to your host
+export LACHESIS_BPF_ATTACH_INTERFACES=eth0   # adjust to your host
 
 # 3. Bring up everything, including the agent
 docker compose --profile full up
@@ -69,7 +69,7 @@ not met; run the agent directly on a Linux host instead.
 ## Dashboards
 
 Dashboards are provisioned at startup via
-`provisioning/dashboards/cubecos.yaml` and pulled from
+`provisioning/dashboards/lachesis.yaml` and pulled from
 `/var/lib/grafana/dashboards`. UI edits are kept (`allowUiUpdates:
 true`) — export and commit them when you want a change to survive a
 restart.

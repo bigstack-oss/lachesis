@@ -13,7 +13,7 @@ import "github.com/bigstack-oss/lachesis/internal/bpf"
 // (internal/loadtest) — so both the Desc here and that scraper reference
 // this const instead of re-typing the string. Other metric names stay
 // inline in their NewMetrics, each pinned by a GatherAndCompare test.
-const MetricBytesTotal = "cubecos_bytes_total"
+const MetricBytesTotal = "lachesis_bytes_total"
 
 // aggKey is the granularity at which Collect aggregates per-flow
 // state for Prometheus emission. tenant is the resolver output.

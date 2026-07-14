@@ -290,7 +290,7 @@ func (f *fakeGauge) SetCurrent(name string, v float64) {
 }
 
 // TestReconcileOnce_RefreshesMapGauges locks the fix for the gauge gap:
-// a reconcile pass refreshes cubecos_bpf_map_current_entries for both the
+// a reconcile pass refreshes lachesis_bpf_map_current_entries for both the
 // subnet_zone_trie (committed rows) and mac_tenant_map (metadata count),
 // so the fill gauges don't stay stuck at the cold-start value.
 func TestReconcileOnce_RefreshesMapGauges(t *testing.T) {

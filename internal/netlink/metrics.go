@@ -9,11 +9,11 @@ import "github.com/prometheus/client_golang/prometheus"
 // The two instruments are cataloged in docs/DESIGN.md §11.4
 // (health metrics):
 //
-//   - cubecos_tc_attach_failures_total{iface_kind}  per-attempt
+//   - lachesis_tc_attach_failures_total{iface_kind}  per-attempt
 //     failure counter, labelled by iface_kind for which the attach
 //     was attempted ("tap" for prefix-matched links, "other" for
 //     explicit-allowlist entries)
-//   - cubecos_attached_interfaces                   current size of
+//   - lachesis_attached_interfaces                   current size of
 //     the Interface Registry
 type Metrics struct {
 	attachFailures *prometheus.CounterVec
@@ -29,11 +29,11 @@ type Metrics struct {
 func NewMetrics(registrySize func() int) *Metrics {
 	m := &Metrics{
 		attachFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "cubecos_tc_attach_failures_total",
+			Name: "lachesis_tc_attach_failures_total",
 			Help: "TC clsact attach failures from the netlink subscriber, labelled by iface_kind (\"tap\" for prefix-matched, \"other\" for explicit-list entries).",
 		}, []string{"iface_kind"}),
 		attached: prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-			Name: "cubecos_attached_interfaces",
+			Name: "lachesis_attached_interfaces",
 			Help: "Number of interfaces currently carrying telemetry TC programs.",
 		}, func() float64 { return float64(registrySize()) }),
 	}

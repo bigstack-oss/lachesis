@@ -3,8 +3,8 @@ package bpf
 import "testing"
 
 // TestZoneCode_String pins the canonical zone vocabulary. These
-// strings are the `zone` label values on cubecos_bytes_total /
-// cubecos_packets_total — dashboards and alert rules depend on
+// strings are the `zone` label values on lachesis_bytes_total /
+// lachesis_packets_total — dashboards and alert rules depend on
 // them, so a change here is a breaking metrics-contract change.
 func TestZoneCode_String(t *testing.T) {
 	cases := []struct {
@@ -67,7 +67,7 @@ func TestDirection_WireValuesPinned(t *testing.T) {
 }
 
 // TestStatReason_String pins the canonical stat-reason vocabulary —
-// the `reason` label values on cubecos_bpf_update_failures_total.
+// the `reason` label values on lachesis_bpf_update_failures_total.
 // Same contract weight as [TestZoneCode_String].
 func TestStatReason_String(t *testing.T) {
 	if got := StatUpdateFailure.String(); got != "update_failure" {

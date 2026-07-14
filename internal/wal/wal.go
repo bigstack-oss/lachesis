@@ -58,7 +58,7 @@ import (
 var ErrSchemaNewer = errors.New("wal: snapshot schema newer than this build")
 
 // stageErr attributes a Save failure to one of the labelled stages
-// in cubecos_wal_flush_failures_total — see the Stage* consts above.
+// in lachesis_wal_flush_failures_total — see the Stage* consts above.
 // Save returns errors wrapped this way so the caller can decide
 // which counter to bump without parsing error messages.
 type stageErr struct {

@@ -54,10 +54,10 @@ func TestLoadDefaultsOnly(t *testing.T) {
 
 func TestLoadFromEnv(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("CUBECOS_HTTP_LISTEN", ":9200")
-	t.Setenv("CUBECOS_SCRAPE_INTERVAL", "30s")
-	t.Setenv("CUBECOS_LOG_LEVEL", "warn")
-	t.Setenv("CUBECOS_LOG_FORMAT", "text")
+	t.Setenv("LACHESIS_HTTP_LISTEN", ":9200")
+	t.Setenv("LACHESIS_SCRAPE_INTERVAL", "30s")
+	t.Setenv("LACHESIS_LOG_LEVEL", "warn")
+	t.Setenv("LACHESIS_LOG_FORMAT", "text")
 
 	cfg, err := config.Load(config.Options{}, nil)
 	if err != nil {
@@ -169,7 +169,7 @@ version: "1"
 http:
   listen: ":1111"
 `)
-	t.Setenv("CUBECOS_HTTP_LISTEN", ":2222")
+	t.Setenv("LACHESIS_HTTP_LISTEN", ":2222")
 
 	// All three sources set http.listen — flag should win.
 	cfg, err := config.Load(config.Options{}, []string{"-config", path, "-http-listen", ":3333"})
@@ -206,7 +206,7 @@ http:
 
 func TestLoadRejectsBadEnv(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("CUBECOS_SCRAPE_INTERVAL", "not-a-duration")
+	t.Setenv("LACHESIS_SCRAPE_INTERVAL", "not-a-duration")
 	if _, err := config.Load(config.Options{}, nil); err == nil {
 		t.Fatal("expected error for malformed env value, got nil")
 	}
@@ -238,7 +238,7 @@ func TestLoad_CustomEnvPrefix(t *testing.T) {
 func TestLoad_ZeroOptsUsesDefaultPrefix(t *testing.T) {
 	clearEnv(t)
 	getenv := func(key string) string {
-		if key == "CUBECOS_HTTP_LISTEN" {
+		if key == "LACHESIS_HTTP_LISTEN" {
 			return ":8888"
 		}
 		return ""
@@ -252,22 +252,22 @@ func TestLoad_ZeroOptsUsesDefaultPrefix(t *testing.T) {
 	}
 }
 
-func TestLoad_CustomPrefixDoesNotReadCubecos(t *testing.T) {
+func TestLoad_CustomPrefixDoesNotReadLachesis(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("CUBECOS_HTTP_LISTEN", ":9999")
+	t.Setenv("LACHESIS_HTTP_LISTEN", ":9999")
 	getenv := func(key string) string { return os.Getenv(key) }
 	cfg, err := config.Load(config.Options{EnvPrefix: "ACME", Getenv: getenv}, nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.HTTP.Listen != ":9090" {
-		t.Errorf("HTTP.Listen = %q, want :9090 (CUBECOS_ should be ignored under ACME prefix)", cfg.HTTP.Listen)
+		t.Errorf("HTTP.Listen = %q, want :9090 (LACHESIS_ should be ignored under ACME prefix)", cfg.HTTP.Listen)
 	}
 }
 
 func TestDefaultEnvPrefix(t *testing.T) {
-	if config.DefaultEnvPrefix != "CUBECOS" {
-		t.Errorf("DefaultEnvPrefix = %q, want CUBECOS", config.DefaultEnvPrefix)
+	if config.DefaultEnvPrefix != "LACHESIS" {
+		t.Errorf("DefaultEnvPrefix = %q, want LACHESIS", config.DefaultEnvPrefix)
 	}
 }
 
@@ -339,8 +339,8 @@ http:
 func TestLoadAttachAllowlistFromEnvAndFlags(t *testing.T) {
 	clearEnv(t)
 	// Env: comma-separated lists, trimmed, override the ["tap"] default.
-	t.Setenv("CUBECOS_BPF_ATTACH_PREFIXES", "tap, qvo")
-	t.Setenv("CUBECOS_BPF_ATTACH_INTERFACES", "veth-test")
+	t.Setenv("LACHESIS_BPF_ATTACH_PREFIXES", "tap, qvo")
+	t.Setenv("LACHESIS_BPF_ATTACH_INTERFACES", "veth-test")
 	cfg, err := config.Load(config.Options{}, nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -354,7 +354,7 @@ func TestLoadAttachAllowlistFromEnvAndFlags(t *testing.T) {
 
 	// Flag wins over env.
 	clearEnv(t)
-	t.Setenv("CUBECOS_BPF_ATTACH_PREFIXES", "qvo")
+	t.Setenv("LACHESIS_BPF_ATTACH_PREFIXES", "qvo")
 	cfg, err = config.Load(config.Options{}, []string{"-bpf-attach-prefixes", "tap,eth"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -374,21 +374,21 @@ func TestLoadAttachAllowlistFromEnvAndFlags(t *testing.T) {
 	}
 }
 
-// clearEnv removes any CUBECOS_* env vars set by the host or earlier tests
+// clearEnv removes any LACHESIS_* env vars set by the host or earlier tests
 // so each test sees a clean slate.
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"CUBECOS_CONFIG",
-		"CUBECOS_HTTP_LISTEN",
-		"CUBECOS_BPF_PIN_PATH",
-		"CUBECOS_BPF_ATTACH_PREFIXES",
-		"CUBECOS_BPF_ATTACH_INTERFACES",
-		"CUBECOS_SCRAPE_INTERVAL",
-		"CUBECOS_LOG_LEVEL",
-		"CUBECOS_LOG_FORMAT",
-		"CUBECOS_NEUTRON_ENABLED",
-		"CUBECOS_NEUTRON_CREDENTIALS_FILE",
+		"LACHESIS_CONFIG",
+		"LACHESIS_HTTP_LISTEN",
+		"LACHESIS_BPF_PIN_PATH",
+		"LACHESIS_BPF_ATTACH_PREFIXES",
+		"LACHESIS_BPF_ATTACH_INTERFACES",
+		"LACHESIS_SCRAPE_INTERVAL",
+		"LACHESIS_LOG_LEVEL",
+		"LACHESIS_LOG_FORMAT",
+		"LACHESIS_NEUTRON_ENABLED",
+		"LACHESIS_NEUTRON_CREDENTIALS_FILE",
 	} {
 		t.Setenv(k, "")
 	}

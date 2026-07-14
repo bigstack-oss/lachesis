@@ -14,11 +14,11 @@ import (
 //
 // The five instruments mirror docs/DESIGN.md §11.4:
 //
-//   - cubecos_wal_snapshot_copy_seconds        copy-under-lock phase
-//   - cubecos_wal_marshal_seconds              JSON marshal phase
-//   - cubecos_wal_flush_latency_seconds        write+fsync+rename phase
-//   - cubecos_wal_flush_failures_total{stage}  per-stage failure counter
-//   - cubecos_wal_load_fallback_total{from}    boot-load fallback counter
+//   - lachesis_wal_snapshot_copy_seconds        copy-under-lock phase
+//   - lachesis_wal_marshal_seconds              JSON marshal phase
+//   - lachesis_wal_flush_latency_seconds        write+fsync+rename phase
+//   - lachesis_wal_flush_failures_total{stage}  per-stage failure counter
+//   - lachesis_wal_load_fallback_total{from}    boot-load fallback counter
 type Metrics struct {
 	snapshotCopySeconds prometheus.Histogram
 	marshalSeconds      prometheus.Histogram
@@ -37,26 +37,26 @@ type Metrics struct {
 func NewMetrics() *Metrics {
 	m := &Metrics{
 		snapshotCopySeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "cubecos_wal_snapshot_copy_seconds",
+			Name:    "lachesis_wal_snapshot_copy_seconds",
 			Help:    "WAL writer, copy-under-lock phase (critical section).",
 			Buckets: prometheus.DefBuckets,
 		}),
 		marshalSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "cubecos_wal_marshal_seconds",
+			Name:    "lachesis_wal_marshal_seconds",
 			Help:    "WAL writer, JSON marshal phase (no lock held).",
 			Buckets: prometheus.DefBuckets,
 		}),
 		flushLatencySeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "cubecos_wal_flush_latency_seconds",
+			Name:    "lachesis_wal_flush_latency_seconds",
 			Help:    "WAL writer, write+fsync+rename phase (no lock held).",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 11), // 1ms..1.024s
 		}),
 		flushFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "cubecos_wal_flush_failures_total",
+			Name: "lachesis_wal_flush_failures_total",
 			Help: "Failed WAL flush attempts, labelled by which sub-stage tripped.",
 		}, []string{"stage"}),
 		loadFallback: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "cubecos_wal_load_fallback_total",
+			Name: "lachesis_wal_load_fallback_total",
 			Help: "WAL boot loader fallbacks — bak when primary was unusable, empty on first boot or when both files were unreadable.",
 		}, []string{"from"}),
 	}

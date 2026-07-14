@@ -21,11 +21,11 @@ const component = "reconcile"
 // overrides it (tests use a short interval).
 const defaultInterval = 5 * time.Minute
 
-// labelResult is the label on cubecos_reconcile_runs_total; its values
+// labelResult is the label on lachesis_reconcile_runs_total; its values
 // are the result* constants below.
 const labelResult = "result"
 
-// result* are the cubecos_reconcile_runs_total{result} label values —
+// result* are the lachesis_reconcile_runs_total{result} label values —
 // one terminal outcome per reconcile pass. [NewMetrics] seeds all three
 // at zero so a healthy agent reads 0 rather than "No data".
 const (

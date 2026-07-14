@@ -5,7 +5,7 @@ import "sort"
 // Anomalies bundles every health issue derivable from a Neutron
 // snapshot plus the trie BuildTrie produced from it. Computed once
 // per cold-start (and per future incremental resync) so the /debug
-// pages and the cubecos_neutron_anomalies gauge can surface
+// pages and the lachesis_neutron_anomalies gauge can surface
 // misconfigurations before they corrupt billing.
 //
 // The classes are independent — a single misconfigured router can

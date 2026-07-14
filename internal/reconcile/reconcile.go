@@ -39,7 +39,7 @@ import (
 )
 
 // MapGauge refreshes a kernel map's current-entry gauge
-// (cubecos_bpf_map_current_entries). Cold-start sets it once; the
+// (lachesis_bpf_map_current_entries). Cold-start sets it once; the
 // incremental path must keep it current or it drifts as the reconcile
 // rewrites the trie and mac_tenant_map. Consumer-defined seam;
 // *bpf.Metrics satisfies it.
@@ -185,7 +185,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 // reconcileOnce runs one full reconcile pass: fetch a fresh snapshot,
 // apply the trie and mac_tenant_map deltas against current state, and
 // commit on success. Orchestration only — each step records its own
-// terminal outcome on cubecos_reconcile_runs_total and signals whether
+// terminal outcome on lachesis_reconcile_runs_total and signals whether
 // the pass may continue.
 func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 	result, ok := r.fetch(ctx)
@@ -204,7 +204,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 	r.logOutcome(delta, mac, len(result.Ambiguities))
 }
 
-// refreshMapGauges keeps cubecos_bpf_map_current_entries current after the
+// refreshMapGauges keeps lachesis_bpf_map_current_entries current after the
 // incremental rewrite: cold-start sets it once, so without this the
 // subnet_zone_trie and mac_tenant_map fill gauges drift as the reconcile
 // changes them. trieRows is the committed trie size; the mac_tenant_map

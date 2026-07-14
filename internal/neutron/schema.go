@@ -142,7 +142,7 @@ type ResourceMatch struct {
 const componentNeutron = "neutron"
 
 // endpoint* are the `endpoint` label values for
-// cubecos_neutron_api_errors_total. The [Neutron.Sync] auth and
+// lachesis_neutron_api_errors_total. The [Neutron.Sync] auth and
 // fetch paths pass these to [Metrics.RecordAPIError]; [NewMetrics]
 // seeds each at zero (with the codeNetwork code class) so the
 // counter is visible before any error occurs.
@@ -156,7 +156,7 @@ const (
 )
 
 // anomalyClass* are the `class` label values for the
-// cubecos_neutron_anomalies gauge — one per [Anomalies] field.
+// lachesis_neutron_anomalies gauge — one per [Anomalies] field.
 // [NewMetrics] seeds each at zero so a healthy agent reads 0
 // instead of "No data"; [Metrics.SetAnomalies] replaces all five
 // on every detection pass.
@@ -205,7 +205,7 @@ const (
 )
 
 // Trie-builder step labels for the
-// cubecos_neutron_builder_step_duration_seconds{step=...} histogram.
+// lachesis_neutron_builder_step_duration_seconds{step=...} histogram.
 // The label-value set is the metric's contract with dashboards, so the
 // step calls in [buildTrie] and the catalogue in metrics.go reference
 // these consts rather than re-typing the strings.

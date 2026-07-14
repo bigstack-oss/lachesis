@@ -72,7 +72,7 @@ The hot tier grows as subsystems add the atomic plumbing needed to apply changes
 ### SIGHUP — batch reload of the YAML
 
 ```bash
-$ vim /etc/cubecos/agent.yaml      # change logging.level: info → debug
+$ vim /etc/lachesis/agent.yaml      # change logging.level: info → debug
 $ kill -HUP $(pidof agent)
 # In the agent's logs:
 # INFO  reload: logging.level changed  from=info to=debug

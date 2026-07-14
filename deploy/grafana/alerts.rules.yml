@@ -6,7 +6,7 @@
 # Alertmanager, so a firing rule simply shows up in Prometheus's
 # /alerts UI (pending → firing) rather than actually paging.
 groups:
-  - name: cubecos-telemetry
+  - name: lachesis-telemetry
     rules:
       # telemetry_map insert failures mean the kernel rejected a flow
       # because the map was full — those bytes are lost outright. The
@@ -16,15 +16,15 @@ groups:
       # host has outgrown telemetry_map max_entries). increase()[5m] so
       # the alert clears once the loss stops, rather than latching on the
       # cumulative counter forever.
-      - alert: CubecosTelemetryMapInsertFailures
-        expr: increase(cubecos_bpf_update_failures_total{reason="update_failure"}[5m]) > 0
+      - alert: LachesisTelemetryMapInsertFailures
+        expr: increase(lachesis_bpf_update_failures_total{reason="update_failure"}[5m]) > 0
         for: 2m
         labels:
           severity: page
         annotations:
           summary: 'telemetry_map inserts failing on {{ $labels.instance }} — billing bytes are being lost'
           description: >-
-            cubecos_bpf_update_failures_total{reason="update_failure"} is rising:
+            lachesis_bpf_update_failures_total{reason="update_failure"} is rising:
             the kernel rejected telemetry_map inserts because the map is full, so
             those flows' bytes are lost. Pressure-relief GC should hold the map
             below its high watermark, so this should never fire while the GC is
@@ -38,18 +38,18 @@ groups:
       # periodic reconcile bounds metadata staleness regardless — so
       # warning, not page. Sustained lag points at a slow/unreachable
       # broker or a wedged consumer.
-      - alert: CubecosKafkaConsumerLag
-        expr: cubecos_kafka_lag_messages > 1000
+      - alert: LachesisKafkaConsumerLag
+        expr: lachesis_kafka_lag_messages > 1000
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: 'Kafka notification consumer lagging on {{ $labels.instance }} (topic {{ $labels.topic }})'
           description: >-
-            cubecos_kafka_lag_messages has exceeded 1000 for 10m: the agent is not
+            lachesis_kafka_lag_messages has exceeded 1000 for 10m: the agent is not
             applying live Neutron updates promptly and is leaning on the 5-minute
             periodic reconcile for freshness. Check broker reachability and
-            cubecos_kafka_consume_errors_total; metadata staleness stays bounded to
+            lachesis_kafka_consume_errors_total; metadata staleness stays bounded to
             ~5 minutes as long as the Neutron API is reachable.
 
       # Reconcile passes failing to apply: a kernel map write failed, so
@@ -57,16 +57,16 @@ groups:
       # maps are diverging from Neutron until a later pass succeeds.
       # Persistent apply_error usually means a kernel map is full or
       # mis-sized. Warning — misclassification risk, not outright byte loss.
-      - alert: CubecosReconcileApplyErrors
-        expr: increase(cubecos_reconcile_runs_total{result="apply_error"}[15m]) > 0
+      - alert: LachesisReconcileApplyErrors
+        expr: increase(lachesis_reconcile_runs_total{result="apply_error"}[15m]) > 0
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: 'Neutron reconcile cannot apply to the kernel on {{ $labels.instance }}'
           description: >-
-            cubecos_reconcile_runs_total{result="apply_error"} is rising: a kernel
+            lachesis_reconcile_runs_total{result="apply_error"} is rising: a kernel
             map write failed during reconcile, so the new metadata was not
             committed and will be retried next pass. Persistent failures mean the
             kernel maps are full or mis-sized — check the "BPF Maps" row and
-            cubecos_bpf_update_failures_total.
+            lachesis_bpf_update_failures_total.

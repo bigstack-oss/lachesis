@@ -364,8 +364,8 @@ func TestSave_RecordsMarshalAndFlushOnMetrics(t *testing.T) {
 		t.Fatalf("Gather: %v", err)
 	}
 	wantNonEmpty := map[string]bool{
-		"cubecos_wal_marshal_seconds":       false,
-		"cubecos_wal_flush_latency_seconds": false,
+		"lachesis_wal_marshal_seconds":       false,
+		"lachesis_wal_flush_latency_seconds": false,
 	}
 	for _, fam := range mf {
 		if _, ok := wantNonEmpty[fam.GetName()]; !ok {
@@ -404,7 +404,7 @@ func TestSave_RecordsFailureStageOnBadDir(t *testing.T) {
 	}
 	var stageSeen string
 	for _, fam := range mf {
-		if fam.GetName() != "cubecos_wal_flush_failures_total" {
+		if fam.GetName() != "lachesis_wal_flush_failures_total" {
 			continue
 		}
 		for _, metric := range fam.GetMetric() {
@@ -431,16 +431,16 @@ func TestNewMetrics_SeedsFlushFailureStages(t *testing.T) {
 	}
 
 	expected := `
-# HELP cubecos_wal_flush_failures_total Failed WAL flush attempts, labelled by which sub-stage tripped.
-# TYPE cubecos_wal_flush_failures_total counter
-cubecos_wal_flush_failures_total{stage="dir_sync"} 0
-cubecos_wal_flush_failures_total{stage="fsync"} 0
-cubecos_wal_flush_failures_total{stage="rename_bak"} 0
-cubecos_wal_flush_failures_total{stage="rename_current"} 0
-cubecos_wal_flush_failures_total{stage="write"} 0
+# HELP lachesis_wal_flush_failures_total Failed WAL flush attempts, labelled by which sub-stage tripped.
+# TYPE lachesis_wal_flush_failures_total counter
+lachesis_wal_flush_failures_total{stage="dir_sync"} 0
+lachesis_wal_flush_failures_total{stage="fsync"} 0
+lachesis_wal_flush_failures_total{stage="rename_bak"} 0
+lachesis_wal_flush_failures_total{stage="rename_current"} 0
+lachesis_wal_flush_failures_total{stage="write"} 0
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"cubecos_wal_flush_failures_total"); err != nil {
+		"lachesis_wal_flush_failures_total"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
@@ -501,7 +501,7 @@ func TestRecordLoadFallback_IncrementsLabel(t *testing.T) {
 	}
 	counts := map[string]float64{}
 	for _, fam := range mf {
-		if fam.GetName() != "cubecos_wal_load_fallback_total" {
+		if fam.GetName() != "lachesis_wal_load_fallback_total" {
 			continue
 		}
 		for _, metric := range fam.GetMetric() {

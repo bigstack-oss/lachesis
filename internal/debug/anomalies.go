@@ -11,7 +11,7 @@ var anomaliesTemplate = parsePage("anomalies.html")
 
 // handleAnomalies renders /debug/anomalies: every health issue from
 // the last detection pass, flattened to per-class tables. This page
-// is the drill-down behind the cubecos_neutron_anomalies gauge —
+// is the drill-down behind the lachesis_neutron_anomalies gauge —
 // the gauge says "3 cycles", this page says which routers.
 func (s *Server) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 	model := buildAnomaliesModel(s.opts.Anomalies(), s.opts.Snapshot())

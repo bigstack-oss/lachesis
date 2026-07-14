@@ -72,7 +72,7 @@ type indexCounts struct {
 }
 
 // anomalyCounts mirrors the five [neutron.Anomalies] classes as
-// counts. Field order matches the cubecos_neutron_anomalies class
+// counts. Field order matches the lachesis_neutron_anomalies class
 // label set.
 type anomalyCounts struct {
 	Total               int `json:"total"`

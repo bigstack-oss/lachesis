@@ -115,32 +115,32 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 			[]string{"tenant_id", "zone", "direction"}, nil,
 		),
 		packetsDesc: prometheus.NewDesc(
-			"cubecos_packets_total",
+			"lachesis_packets_total",
 			"Network packets observed by the agent, cumulative since first sight.",
 			[]string{"tenant_id", "zone", "direction"}, nil,
 		),
 		flowsDesc: prometheus.NewDesc(
-			"cubecos_state_flows",
+			"lachesis_state_flows",
 			"Distinct flow keys currently tracked in GlobalState.",
 			nil, nil,
 		),
 		settledDesc: prometheus.NewDesc(
-			"cubecos_state_settled_tuples",
+			"lachesis_state_settled_tuples",
 			"Distinct (tenant, zone, direction) buckets in the settled-bytes accumulator — flows folded out when their tenant binding was about to disappear (docs/DESIGN.md §3.5).",
 			nil, nil,
 		),
 		scrapeErrorsDesc: prometheus.NewDesc(
-			"cubecos_scraper_errors_total",
+			"lachesis_scraper_errors_total",
 			"Cumulative count of failed BPF-map drain attempts since agent start.",
 			nil, nil,
 		),
 		scrapeLastOKDesc: prometheus.NewDesc(
-			"cubecos_scraper_last_success_unix_seconds",
+			"lachesis_scraper_last_success_unix_seconds",
 			"Unix timestamp of the most recent successful BPF-map drain; 0 if never.",
 			nil, nil,
 		),
 		collectDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "cubecos_collect_duration_seconds",
+			Name:    "lachesis_collect_duration_seconds",
 			Help:    "Duration of one Prometheus Collect pass over GlobalState (snapshot + aggregate + emit).",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 11), // 1ms..1.024s, same span as the WAL flush SLO buckets
 		}),

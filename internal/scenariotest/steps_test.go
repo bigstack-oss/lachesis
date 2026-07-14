@@ -261,7 +261,7 @@ func TestSteps_DetectsRebucketRegression(t *testing.T) {
 }
 
 // TestSteps_RefusesPreFoldAgent: an agent without
-// cubecos_gc_settled_flows_total can't signal its sweep; run must
+// lachesis_gc_settled_flows_total can't signal its sweep; run must
 // refuse up front — before realizing anything — instead of timing out
 // mid-scenario.
 func TestSteps_RefusesPreFoldAgent(t *testing.T) {

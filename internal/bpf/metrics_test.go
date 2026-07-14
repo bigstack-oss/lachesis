@@ -20,22 +20,22 @@ func TestMetrics_SetMaxAndCurrent(t *testing.T) {
 		reg.MustRegister(c)
 	}
 
-	// cubecos_bpf_update_failures_total appears untouched: the custom
+	// lachesis_bpf_update_failures_total appears untouched: the custom
 	// collector always emits every reason series, so both labels are
 	// zero-seeded from the first scrape.
 	const want = `
-# HELP cubecos_bpf_map_current_entries Userspace-tracked entry count of each BPF map after the most recent push.
-# TYPE cubecos_bpf_map_current_entries gauge
-cubecos_bpf_map_current_entries{map="mac_tenant_map"} 17
-cubecos_bpf_map_current_entries{map="subnet_zone_trie"} 245
-# HELP cubecos_bpf_map_max_entries Compiled-in max_entries of each BPF map the agent populates.
-# TYPE cubecos_bpf_map_max_entries gauge
-cubecos_bpf_map_max_entries{map="mac_tenant_map"} 8192
-cubecos_bpf_map_max_entries{map="subnet_zone_trie"} 16384
-# HELP cubecos_bpf_update_failures_total Kernel-side cumulative count of telemetry_map inserts the kernel rejected (reason=update_failure; those flows' bytes are lost) and non-IP frames passed through uncounted (reason=skipped_ethertype), drained from the telemetry_stats BPF map each scrape.
-# TYPE cubecos_bpf_update_failures_total counter
-cubecos_bpf_update_failures_total{reason="skipped_ethertype"} 0
-cubecos_bpf_update_failures_total{reason="update_failure"} 0
+# HELP lachesis_bpf_map_current_entries Userspace-tracked entry count of each BPF map after the most recent push.
+# TYPE lachesis_bpf_map_current_entries gauge
+lachesis_bpf_map_current_entries{map="mac_tenant_map"} 17
+lachesis_bpf_map_current_entries{map="subnet_zone_trie"} 245
+# HELP lachesis_bpf_map_max_entries Compiled-in max_entries of each BPF map the agent populates.
+# TYPE lachesis_bpf_map_max_entries gauge
+lachesis_bpf_map_max_entries{map="mac_tenant_map"} 8192
+lachesis_bpf_map_max_entries{map="subnet_zone_trie"} 16384
+# HELP lachesis_bpf_update_failures_total Kernel-side cumulative count of telemetry_map inserts the kernel rejected (reason=update_failure; those flows' bytes are lost) and non-IP frames passed through uncounted (reason=skipped_ethertype), drained from the telemetry_stats BPF map each scrape.
+# TYPE lachesis_bpf_update_failures_total counter
+lachesis_bpf_update_failures_total{reason="skipped_ethertype"} 0
+lachesis_bpf_update_failures_total{reason="update_failure"} 0
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want)); err != nil {
 		t.Fatalf("metric mismatch:\n%v", err)
@@ -55,13 +55,13 @@ func TestMetrics_SetUpdateFailures(t *testing.T) {
 	}
 
 	const want = `
-# HELP cubecos_bpf_update_failures_total Kernel-side cumulative count of telemetry_map inserts the kernel rejected (reason=update_failure; those flows' bytes are lost) and non-IP frames passed through uncounted (reason=skipped_ethertype), drained from the telemetry_stats BPF map each scrape.
-# TYPE cubecos_bpf_update_failures_total counter
-cubecos_bpf_update_failures_total{reason="skipped_ethertype"} 7
-cubecos_bpf_update_failures_total{reason="update_failure"} 42
+# HELP lachesis_bpf_update_failures_total Kernel-side cumulative count of telemetry_map inserts the kernel rejected (reason=update_failure; those flows' bytes are lost) and non-IP frames passed through uncounted (reason=skipped_ethertype), drained from the telemetry_stats BPF map each scrape.
+# TYPE lachesis_bpf_update_failures_total counter
+lachesis_bpf_update_failures_total{reason="skipped_ethertype"} 7
+lachesis_bpf_update_failures_total{reason="update_failure"} 42
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want),
-		"cubecos_bpf_update_failures_total"); err != nil {
+		"lachesis_bpf_update_failures_total"); err != nil {
 		t.Fatalf("metric mismatch:\n%v", err)
 	}
 }

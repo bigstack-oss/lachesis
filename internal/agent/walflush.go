@@ -78,7 +78,7 @@ func (a *Agent) flushWAL() error {
 //     flush rotation cannot destroy the evidence.
 //
 // Load fallbacks (bak or empty) are recorded on the agent's WAL
-// metrics so an operator can grep cubecos_wal_load_fallback_total
+// metrics so an operator can grep lachesis_wal_load_fallback_total
 // to spot a corrupt primary or a first-boot.
 func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 	if !cfg.Enabled {

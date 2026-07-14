@@ -25,7 +25,7 @@ const (
 )
 
 // labelReason is the Prometheus label key naming why an entry left the
-// buffer on cubecos_unresolved_buffer_evictions_total.
+// buffer on lachesis_unresolved_buffer_evictions_total.
 const labelReason = "reason"
 
 // reasonLRU and reasonExpired are the two values of [labelReason]. lru

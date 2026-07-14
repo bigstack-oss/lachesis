@@ -258,7 +258,7 @@ func (s DeleteVMStep) Run(ctx context.Context, env *StepEnv) error {
 }
 
 // AwaitSweepStep blocks until the agents' summed
-// cubecos_gc_settled_flows_total rises above the value the most recent
+// lachesis_gc_settled_flows_total rises above the value the most recent
 // [CaptureStep] recorded — the ghost sweep has folded something — or
 // Timeout (default [DefaultSweepTimeout]) fires.
 type AwaitSweepStep struct {

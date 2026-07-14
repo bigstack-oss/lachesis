@@ -70,8 +70,8 @@ const (
 
 // String returns the canonical name of the zone code — "external",
 // "same_tenant", etc. This is the single vocabulary for every
-// rendering of the enum: the `zone` label on cubecos_bytes_total /
-// cubecos_packets_total (pinned by dashboards), /debug pages, and
+// rendering of the enum: the `zone` label on lachesis_bytes_total /
+// lachesis_packets_total (pinned by dashboards), /debug pages, and
 // log enrichment. Unknown codes fall back to the numeric encoding
 // so a future kernel-side addition is still visible rather than
 // silently misclassified. Returns constant strings for all known
@@ -107,7 +107,7 @@ const (
 // String returns the canonical name of the direction — "tx" for
 // [DirectionIngress] (VM sending) and "rx" for [DirectionEgress]
 // (VM receiving). These strings are the metric-label contract: the
-// `direction` label on cubecos_bytes_total / cubecos_packets_total
+// `direction` label on lachesis_bytes_total / lachesis_packets_total
 // (pinned by dashboards), /debug pages, and log enrichment all render
 // through here — the same single-vocabulary contract as
 // [ZoneCode.String]. The vocabulary is deliberately VM-frame and
@@ -150,7 +150,7 @@ const statReasonCount = 2
 // String returns the canonical name of the stat reason —
 // "update_failure" or "skipped_ethertype". Same single-vocabulary
 // contract as [ZoneCode.String]: these are the `reason` label values
-// on cubecos_bpf_update_failures_total, pinned by dashboards and
+// on lachesis_bpf_update_failures_total, pinned by dashboards and
 // alert rules. Unknown values fall back to the numeric encoding.
 func (r StatReason) String() string {
 	switch r {
@@ -196,9 +196,9 @@ const (
 //  1. Load-time assertions can check the kernel spec matches what
 //     userspace expects, catching a stale `.o` build before the
 //     agent silently writes into an undersized map.
-//  2. The cubecos_bpf_map_max_entries gauge needs the denominator
+//  2. The lachesis_bpf_map_max_entries gauge needs the denominator
 //     so dashboards can compute "% of map occupied" against
-//     cubecos_bpf_map_current_entries.
+//     lachesis_bpf_map_current_entries.
 //
 // Sizing rationale lives in bpf/telemetry.c above each map decl.
 //
@@ -225,11 +225,11 @@ const (
 const LpmKeyTenantBits uint32 = 32
 
 // labelMap is the Prometheus label key naming the BPF map in the
-// cubecos_bpf_map_max_entries / cubecos_bpf_map_current_entries gauges
+// lachesis_bpf_map_max_entries / lachesis_bpf_map_current_entries gauges
 // (see metrics.go).
 const labelMap = "map"
 
 // labelReason is the Prometheus label key naming the kernel-side
-// failure/skip reason on cubecos_bpf_update_failures_total (see
+// failure/skip reason on lachesis_bpf_update_failures_total (see
 // metrics.go); values come from [StatReason.String].
 const labelReason = "reason"

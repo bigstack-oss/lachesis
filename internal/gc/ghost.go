@@ -194,7 +194,7 @@ func (g *GhostSweeper) sweep(now time.Time) {
 	g.report(len(swept), residual, settled, active)
 }
 
-// refreshMacGauge keeps cubecos_bpf_map_current_entries{map="mac_tenant_map"}
+// refreshMacGauge keeps lachesis_bpf_map_current_entries{map="mac_tenant_map"}
 // current after the sweep's deletes — cold-start sets it once, so without
 // this it over-reports fill until the next reconcile. The count tracks
 // the userspace metadata map, which the kernel map mirrors. No-op when no

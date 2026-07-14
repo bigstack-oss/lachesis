@@ -140,7 +140,7 @@ func sampleWindow(pid int, ctx context.Context, interval time.Duration, start pr
 }
 
 // sumBytesTotal fetches /metrics once and returns the sum of every
-// cubecos_bytes_total sample. Used as a liveness check that the BPF
+// lachesis_bytes_total sample. Used as a liveness check that the BPF
 // program actually saw the load-generated traffic.
 func sumBytesTotal(httpAddr string) (uint64, error) {
 	resp, err := http.Get("http://" + httpAddr + "/metrics")

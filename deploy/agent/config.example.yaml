@@ -6,8 +6,8 @@
 # defaults — copy this file, edit only the lines you need to change.
 #
 # Resolution order (later wins): built-in defaults → this YAML →
-# CUBECOS_* env vars → CLI flags. The YAML path is set via the
-# -config flag or CUBECOS_CONFIG; SIGHUP re-reads it.
+# LACHESIS_* env vars → CLI flags. The YAML path is set via the
+# -config flag or LACHESIS_CONFIG; SIGHUP re-reads it.
 #
 # Hot-reloadable on SIGHUP: logging.level and the whole gc section.
 # Every other field is load-time — changes in YAML are warned about and
@@ -18,13 +18,13 @@ version: "1"
 
 http:
   # HTTP listen address for /metrics and /debug. net.Listen syntax.
-  # Env: CUBECOS_HTTP_LISTEN   Flag: -http-listen
+  # Env: LACHESIS_HTTP_LISTEN   Flag: -http-listen
   listen: ":9090"
 
 bpf:
   # Directory under /sys/fs/bpf for pinned maps and programs.
   # Must be absolute.
-  # Env: CUBECOS_BPF_PIN_PATH   Flag: -bpf-pin-path
+  # Env: LACHESIS_BPF_PIN_PATH   Flag: -bpf-pin-path
   pin_path: "/sys/fs/bpf/telemetry"
 
   # Interface-name prefixes the netlink subscriber treats as eligible
@@ -41,40 +41,40 @@ bpf:
 scrape:
   # Cadence at which the scraper drains the BPF map and applies
   # deltas to GlobalState. Minimum 1s.
-  # Env: CUBECOS_SCRAPE_INTERVAL   Flag: -scrape-interval
+  # Env: LACHESIS_SCRAPE_INTERVAL   Flag: -scrape-interval
   interval: 10s
 
 logging:
   # Minimum severity emitted: debug, info, warn, error.
   # HOT-RELOADABLE via SIGHUP and PUT /debug/log-level.
-  # Env: CUBECOS_LOG_LEVEL   Flag: -log-level
+  # Env: LACHESIS_LOG_LEVEL   Flag: -log-level
   level: "info"
 
   # Output encoder: json, text. Load-time only.
-  # Env: CUBECOS_LOG_FORMAT   Flag: -log-format
+  # Env: LACHESIS_LOG_FORMAT   Flag: -log-format
   format: "json"
 
 wal:
   # Enable WAL persistence: boot-time restore + periodic flush.
   # Disabled is intentionally a no-op (no flush goroutine, no
   # restore on boot); useful for ephemeral test runs.
-  # Env: CUBECOS_WAL_ENABLED   Flag: -wal-enabled
+  # Env: LACHESIS_WAL_ENABLED   Flag: -wal-enabled
   enabled: true
 
   # WAL snapshot file. Must be absolute when enabled.
-  # Env: CUBECOS_WAL_PATH   Flag: -wal-path
-  path: "/var/lib/cubecos/network_agent_state.json"
+  # Env: LACHESIS_WAL_PATH   Flag: -wal-path
+  path: "/var/lib/lachesis/network_agent_state.json"
 
   # Flush cadence. Worst-case data loss on a hard reboot is one
   # flush interval. Minimum 1s.
-  # Env: CUBECOS_WAL_FLUSH_INTERVAL   Flag: -wal-flush-interval
+  # Env: LACHESIS_WAL_FLUSH_INTERVAL   Flag: -wal-flush-interval
   flush_interval: 60s
 
 neutron:
   # Toggle the Neutron cold-start subsystem. When false the agent
   # boots without metadata; /metrics emits tenant_id="unknown" for
   # every flow. Production must set this true.
-  # Env: CUBECOS_NEUTRON_ENABLED   Flag: -neutron-enabled
+  # Env: LACHESIS_NEUTRON_ENABLED   Flag: -neutron-enabled
   enabled: false
 
   # --- Exactly ONE of the next two credential modes is required when enabled. ---
@@ -83,7 +83,7 @@ neutron:
   # line. Recommended for production: keeps OS_PASSWORD out of this
   # YAML and lets the deploy tooling place the file with restrictive
   # permissions.
-  # Env: CUBECOS_NEUTRON_CREDENTIALS_FILE   Flag: -neutron-credentials-file
+  # Env: LACHESIS_NEUTRON_CREDENTIALS_FILE   Flag: -neutron-credentials-file
   credentials_file: ""
 
   # Mode 2 — inline credentials. When set, credentials_file must be
@@ -115,7 +115,7 @@ neutron:
   # refuses to start. Set true only with an operator's informed
   # consent — ambiguous routes systematically mis-bill the
   # cross-tenant CIDR they cover.
-  # Env: CUBECOS_NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES
+  # Env: LACHESIS_NEUTRON_UNSAFE_ALLOW_AMBIGUOUS_ROUTES
   # Flag: -unsafe-allow-ambiguous-routes
   unsafe_allow_ambiguous_routes: false
 
@@ -147,7 +147,7 @@ kafka:
 
   # Kafka bootstrap brokers (host:port). REQUIRED when enabled. Left
   # commented so the default parses empty; uncomment and set for your
-  # cluster. Also settable via CUBECOS_KAFKA_BROKERS / -kafka-brokers.
+  # cluster. Also settable via LACHESIS_KAFKA_BROKERS / -kafka-brokers.
   # brokers:
   #   - 10.0.0.1:9095
 
@@ -158,4 +158,4 @@ kafka:
   # Consumer-group id. A stable id tracks the agent's offset across
   # restarts; delivery is at-least-once (each event just triggers a
   # reconcile, which is idempotent).
-  group_id: cubecos-network-telemetry
+  group_id: lachesis

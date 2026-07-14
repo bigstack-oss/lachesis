@@ -39,7 +39,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{job=\"cubecos-agent\"}",
+          "expr": "up{job=\"lachesis-agent\"}",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -113,7 +113,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_state_flows",
+          "expr": "lachesis_state_flows",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -176,7 +176,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_attached_interfaces",
+          "expr": "lachesis_attached_interfaces",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -231,7 +231,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_neutron_sync_age_seconds",
+          "expr": "lachesis_neutron_sync_age_seconds",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -310,7 +310,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - cubecos_scraper_last_success_unix_seconds",
+          "expr": "time() - lachesis_scraper_last_success_unix_seconds",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -373,7 +373,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_bpf_map_current_entries{map=\"telemetry_map\"} / cubecos_bpf_map_max_entries{map=\"telemetry_map\"}",
+          "expr": "lachesis_bpf_map_current_entries{map=\"telemetry_map\"} / lachesis_bpf_map_max_entries{map=\"telemetry_map\"}",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -448,7 +448,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(cubecos_bytes_total{direction=\"tx\"}[1m]))",
+          "expr": "sum(rate(lachesis_bytes_total{direction=\"tx\"}[1m]))",
           "legendFormat": "sent",
           "datasource": {
             "type": "prometheus",
@@ -457,7 +457,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum(rate(cubecos_bytes_total{direction=\"rx\"}[1m]))",
+          "expr": "sum(rate(lachesis_bytes_total{direction=\"rx\"}[1m]))",
           "legendFormat": "received",
           "datasource": {
             "type": "prometheus",
@@ -509,7 +509,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(cubecos_packets_total{direction=\"tx\"}[1m]))",
+          "expr": "sum(rate(lachesis_packets_total{direction=\"tx\"}[1m]))",
           "legendFormat": "sent",
           "datasource": {
             "type": "prometheus",
@@ -518,7 +518,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum(rate(cubecos_packets_total{direction=\"rx\"}[1m]))",
+          "expr": "sum(rate(lachesis_packets_total{direction=\"rx\"}[1m]))",
           "legendFormat": "received",
           "datasource": {
             "type": "prometheus",
@@ -570,7 +570,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (zone) (rate(cubecos_bytes_total[1m]))",
+          "expr": "sum by (zone) (rate(lachesis_bytes_total[1m]))",
           "legendFormat": "{{zone}}",
           "datasource": {
             "type": "prometheus",
@@ -624,7 +624,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "topk(10, sum by (tenant_id) (rate(cubecos_bytes_total[1m])))",
+          "expr": "topk(10, sum by (tenant_id) (rate(lachesis_bytes_total[1m])))",
           "legendFormat": "{{tenant_id}}",
           "instant": true,
           "datasource": {
@@ -681,7 +681,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (zone, direction) (cubecos_bytes_total)",
+          "expr": "sum by (zone, direction) (lachesis_bytes_total)",
           "format": "table",
           "instant": true,
           "datasource": {
@@ -782,7 +782,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_bpf_map_current_entries / cubecos_bpf_map_max_entries",
+          "expr": "lachesis_bpf_map_current_entries / lachesis_bpf_map_max_entries",
           "legendFormat": "{{map}}",
           "datasource": {
             "type": "prometheus",
@@ -851,7 +851,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_bpf_map_current_entries",
+          "expr": "lachesis_bpf_map_current_entries",
           "legendFormat": "{{map}} current",
           "datasource": {
             "type": "prometheus",
@@ -860,7 +860,7 @@
         },
         {
           "refId": "B",
-          "expr": "cubecos_bpf_map_max_entries",
+          "expr": "lachesis_bpf_map_max_entries",
           "legendFormat": "{{map}} max",
           "datasource": {
             "type": "prometheus",
@@ -921,7 +921,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(cubecos_scraper_errors_total[5m])",
+          "expr": "rate(lachesis_scraper_errors_total[5m])",
           "legendFormat": "errors/s",
           "datasource": {
             "type": "prometheus",
@@ -969,7 +969,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - cubecos_scraper_last_success_unix_seconds",
+          "expr": "time() - lachesis_scraper_last_success_unix_seconds",
           "legendFormat": "lag",
           "datasource": {
             "type": "prometheus",
@@ -1036,7 +1036,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, rate(cubecos_collect_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(lachesis_collect_duration_seconds_bucket[5m]))",
           "legendFormat": "p50",
           "datasource": {
             "type": "prometheus",
@@ -1045,7 +1045,7 @@
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.99, rate(cubecos_collect_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, rate(lachesis_collect_duration_seconds_bucket[5m]))",
           "legendFormat": "p99",
           "datasource": {
             "type": "prometheus",
@@ -1106,7 +1106,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (endpoint, code) (rate(cubecos_neutron_api_errors_total[5m]))",
+          "expr": "sum by (endpoint, code) (rate(lachesis_neutron_api_errors_total[5m]))",
           "legendFormat": "{{endpoint}} {{code}}",
           "datasource": {
             "type": "prometheus",
@@ -1154,7 +1154,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_neutron_builder_step_duration_seconds_sum / cubecos_neutron_builder_step_duration_seconds_count",
+          "expr": "lachesis_neutron_builder_step_duration_seconds_sum / lachesis_neutron_builder_step_duration_seconds_count",
           "legendFormat": "{{step}}",
           "instant": true,
           "datasource": {
@@ -1211,7 +1211,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_neutron_unknown_device_owner_total or label_replace(0 * absent(cubecos_neutron_unknown_device_owner_total), \"owner\", \"none\", \"\", \"\")",
+          "expr": "lachesis_neutron_unknown_device_owner_total or label_replace(0 * absent(lachesis_neutron_unknown_device_owner_total), \"owner\", \"none\", \"\", \"\")",
           "instant": true,
           "format": "table",
           "datasource": {
@@ -1275,7 +1275,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.99, rate(cubecos_wal_snapshot_copy_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, rate(lachesis_wal_snapshot_copy_seconds_bucket[5m]))",
           "legendFormat": "copy (lock held)",
           "datasource": {
             "type": "prometheus",
@@ -1284,7 +1284,7 @@
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.99, rate(cubecos_wal_marshal_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, rate(lachesis_wal_marshal_seconds_bucket[5m]))",
           "legendFormat": "marshal",
           "datasource": {
             "type": "prometheus",
@@ -1293,7 +1293,7 @@
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, rate(cubecos_wal_flush_latency_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, rate(lachesis_wal_flush_latency_seconds_bucket[5m]))",
           "legendFormat": "write+fsync+rename",
           "datasource": {
             "type": "prometheus",
@@ -1361,7 +1361,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (stage) (increase(cubecos_wal_flush_failures_total[5m]))",
+          "expr": "sum by (stage) (increase(lachesis_wal_flush_failures_total[5m]))",
           "legendFormat": "flush fail: {{stage}}",
           "datasource": {
             "type": "prometheus",
@@ -1370,7 +1370,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (from) (increase(cubecos_wal_load_fallback_total[5m]))",
+          "expr": "sum by (from) (increase(lachesis_wal_load_fallback_total[5m]))",
           "legendFormat": "load fallback: {{from}}",
           "datasource": {
             "type": "prometheus",
@@ -1431,7 +1431,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_attached_interfaces",
+          "expr": "lachesis_attached_interfaces",
           "legendFormat": "attached",
           "datasource": {
             "type": "prometheus",
@@ -1479,7 +1479,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (iface_kind) (rate(cubecos_tc_attach_failures_total[5m]))",
+          "expr": "sum by (iface_kind) (rate(lachesis_tc_attach_failures_total[5m]))",
           "legendFormat": "{{iface_kind}}",
           "datasource": {
             "type": "prometheus",
@@ -1527,7 +1527,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_zombie_filters_cleaned_total",
+          "expr": "lachesis_zombie_filters_cleaned_total",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -1599,7 +1599,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_unresolved_buffer_depth",
+          "expr": "lachesis_unresolved_buffer_depth",
           "legendFormat": "depth",
           "datasource": {
             "type": "prometheus",
@@ -1672,7 +1672,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(cubecos_gc_evictions_total[5m])",
+          "expr": "rate(lachesis_gc_evictions_total[5m])",
           "legendFormat": "gc {{reason}}",
           "datasource": {
             "type": "prometheus",
@@ -1681,7 +1681,7 @@
         },
         {
           "refId": "B",
-          "expr": "rate(cubecos_unresolved_buffer_evictions_total[5m])",
+          "expr": "rate(lachesis_unresolved_buffer_evictions_total[5m])",
           "legendFormat": "buffer {{reason}}",
           "datasource": {
             "type": "prometheus",
@@ -1690,7 +1690,7 @@
         },
         {
           "refId": "C",
-          "expr": "rate(cubecos_gc_pressure_relief_runs_total[5m])",
+          "expr": "rate(lachesis_gc_pressure_relief_runs_total[5m])",
           "legendFormat": "pressure-relief runs",
           "datasource": {
             "type": "prometheus",
@@ -1746,7 +1746,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_lingering_ghosts_active",
+          "expr": "lachesis_lingering_ghosts_active",
           "legendFormat": "ghosts active",
           "datasource": {
             "type": "prometheus",
@@ -1755,7 +1755,7 @@
         },
         {
           "refId": "B",
-          "expr": "rate(cubecos_unresolved_resolved_total[5m])",
+          "expr": "rate(lachesis_unresolved_resolved_total[5m])",
           "legendFormat": "resolved/s",
           "datasource": {
             "type": "prometheus",
@@ -1824,7 +1824,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cubecos_kafka_lag_messages",
+          "expr": "lachesis_kafka_lag_messages",
           "legendFormat": "{{topic}}",
           "datasource": {
             "type": "prometheus",
@@ -1880,7 +1880,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(cubecos_kafka_consume_errors_total[5m])",
+          "expr": "rate(lachesis_kafka_consume_errors_total[5m])",
           "legendFormat": "{{topic}}",
           "datasource": {
             "type": "prometheus",
@@ -1936,7 +1936,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(cubecos_reconcile_runs_total[5m])",
+          "expr": "rate(lachesis_reconcile_runs_total[5m])",
           "legendFormat": "{{result}}",
           "datasource": {
             "type": "prometheus",
@@ -1979,7 +1979,7 @@
   "refresh": "10s",
   "schemaVersion": 39,
   "tags": [
-    "cubecos"
+    "lachesis"
   ],
   "templating": {
     "list": [
@@ -2001,7 +2001,7 @@
   },
   "timepicker": {},
   "title": "CubeCOS \u00b7 Network Telemetry",
-  "uid": "cubecos-telemetry",
+  "uid": "lachesis-telemetry",
   "version": 2,
   "weekStart": ""
 }
