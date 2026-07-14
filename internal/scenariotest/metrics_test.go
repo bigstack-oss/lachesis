@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-const sampleExposition = `# HELP cubecos_bytes_total Network bytes observed by the agent.
-# TYPE cubecos_bytes_total counter
-cubecos_bytes_total{tenant_id="u-T1",zone="same_tenant",direction="tx"} 1.048576e+06
-cubecos_bytes_total{tenant_id="u-T1",zone="same_tenant",direction="rx"} 524288
-# HELP cubecos_attached_interfaces Number of interfaces currently carrying telemetry TC programs.
-# TYPE cubecos_attached_interfaces gauge
-cubecos_attached_interfaces 3
-# HELP cubecos_tc_attach_failures_total TC clsact attach failures.
-# TYPE cubecos_tc_attach_failures_total counter
-cubecos_tc_attach_failures_total{iface_kind="tap"} 0
+const sampleExposition = `# HELP lachesis_bytes_total Network bytes observed by the agent.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{tenant_id="u-T1",zone="same_tenant",direction="tx"} 1.048576e+06
+lachesis_bytes_total{tenant_id="u-T1",zone="same_tenant",direction="rx"} 524288
+# HELP lachesis_attached_interfaces Number of interfaces currently carrying telemetry TC programs.
+# TYPE lachesis_attached_interfaces gauge
+lachesis_attached_interfaces 3
+# HELP lachesis_tc_attach_failures_total TC clsact attach failures.
+# TYPE lachesis_tc_attach_failures_total counter
+lachesis_tc_attach_failures_total{iface_kind="tap"} 0
 `
 
 func TestHTTPMetrics_Scrape(t *testing.T) {

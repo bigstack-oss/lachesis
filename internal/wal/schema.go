@@ -33,7 +33,7 @@ const (
 	QuarantineSuffix = ".quarantine"
 )
 
-// Stage labels for cubecos_wal_flush_failures_total{stage=...}. The
+// Stage labels for lachesis_wal_flush_failures_total{stage=...}. The
 // label value set is part of the package's wire contract — operators
 // query and dashboard against these strings — so they live here as
 // exported consts rather than open-coded at each call site.
@@ -46,7 +46,7 @@ const (
 	StageDirSync       = "dir_sync"
 )
 
-// Fallback labels for cubecos_wal_load_fallback_total{from=...}.
+// Fallback labels for lachesis_wal_load_fallback_total{from=...}.
 // Passed to [Metrics.RecordLoadFallback] from the boot loader.
 // LoadFromPrimary is not a fallback and has no label.
 const (

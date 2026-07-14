@@ -108,13 +108,13 @@ func TestAgent_ServesMetricsFromReader(t *testing.T) {
 
 	// Poll up to 1s for the first scrape to complete and surface in /metrics.
 	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
-		return strings.Contains(s, `cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 4242`)
+		return strings.Contains(s, `lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 4242`)
 	})
 
 	for _, want := range []string{
-		`cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 4242`,
-		`cubecos_packets_total{direction="rx",tenant_id="unknown",zone="external"} 7`,
-		`cubecos_state_flows 1`,
+		`lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 4242`,
+		`lachesis_packets_total{direction="rx",tenant_id="unknown",zone="external"} 7`,
+		`lachesis_state_flows 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q\n----\n%s", want, body)
@@ -139,10 +139,10 @@ func TestAgent_TelemetryMapFillGauge(t *testing.T) {
 	// The current-entries gauge follows the first successful drain;
 	// poll until it reflects the reader's single entry.
 	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
-		return strings.Contains(s, `cubecos_bpf_map_current_entries{map="telemetry_map"} 1`)
+		return strings.Contains(s, `lachesis_bpf_map_current_entries{map="telemetry_map"} 1`)
 	})
 
-	if want := `cubecos_bpf_map_max_entries{map="telemetry_map"} 65536`; !strings.Contains(body, want) {
+	if want := `lachesis_bpf_map_max_entries{map="telemetry_map"} 65536`; !strings.Contains(body, want) {
 		t.Errorf("body missing %q\n----\n%s", want, body)
 	}
 }
@@ -300,9 +300,9 @@ func TestAgent_SeedStateAppearsOnMetrics(t *testing.T) {
 	ag.SeedState(seeded)
 
 	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
-		return strings.Contains(s, `cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 7777`)
+		return strings.Contains(s, `lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 7777`)
 	})
-	if !strings.Contains(body, `cubecos_packets_total{direction="rx",tenant_id="unknown",zone="external"} 13`) {
+	if !strings.Contains(body, `lachesis_packets_total{direction="rx",tenant_id="unknown",zone="external"} 13`) {
 		t.Errorf("packets total missing or wrong; body:\n%s", body)
 	}
 }
@@ -373,15 +373,15 @@ func TestAgent_WALMetricsAppearOnMetricsEndpoint(t *testing.T) {
 	}
 
 	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
-		return strings.Contains(s, "cubecos_wal_marshal_seconds_count") &&
-			strings.Contains(s, "cubecos_wal_flush_latency_seconds_count")
+		return strings.Contains(s, "lachesis_wal_marshal_seconds_count") &&
+			strings.Contains(s, "lachesis_wal_flush_latency_seconds_count")
 	})
 
 	for _, want := range []string{
-		"cubecos_wal_snapshot_copy_seconds_count",
-		"cubecos_wal_marshal_seconds_count",
-		"cubecos_wal_flush_latency_seconds_count",
-		`cubecos_wal_load_fallback_total{from="empty"} 1`,
+		"lachesis_wal_snapshot_copy_seconds_count",
+		"lachesis_wal_marshal_seconds_count",
+		"lachesis_wal_flush_latency_seconds_count",
+		`lachesis_wal_load_fallback_total{from="empty"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/metrics missing %q\n----\n%s", want, body)

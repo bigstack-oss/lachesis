@@ -29,7 +29,7 @@ import (
 // end to end: load the real telemetry collection, attach it to a
 // host-side veth, run the agent in-process pointed at the same map,
 // generate a 1 MB TCP stream, then assert that /metrics surfaces a
-// non-zero cubecos_bytes_total.
+// non-zero lachesis_bytes_total.
 //
 // Topology mirrors TestE2E_SingleVM_NoopCounter; the difference is
 // the program loaded (telemetry, not noop) and the assertion target
@@ -123,7 +123,7 @@ func TestAgent_MetricsReflectBPFMapTraffic(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 
-	bytesTotalRe := regexp.MustCompile(`cubecos_bytes_total\{[^}]*\} (\d+)`)
+	bytesTotalRe := regexp.MustCompile(`lachesis_bytes_total\{[^}]*\} (\d+)`)
 	deadline := time.Now().Add(3 * time.Second)
 	var lastBody string
 	for time.Now().Before(deadline) {
@@ -144,5 +144,5 @@ func TestAgent_MetricsReflectBPFMapTraffic(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("no non-zero cubecos_bytes_total within 3s\nlast /metrics:\n%s", lastBody)
+	t.Fatalf("no non-zero lachesis_bytes_total within 3s\nlast /metrics:\n%s", lastBody)
 }

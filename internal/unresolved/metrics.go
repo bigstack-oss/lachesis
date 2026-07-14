@@ -5,9 +5,9 @@ import "github.com/prometheus/client_golang/prometheus"
 // Metrics holds the Prometheus instruments for the UnresolvedBuffer
 // (docs/DESIGN.md §11.4). The instruments are:
 //
-//   - cubecos_unresolved_buffer_depth              gauge
-//   - cubecos_unresolved_buffer_evictions_total{reason}  counter
-//   - cubecos_unresolved_resolved_total            counter
+//   - lachesis_unresolved_buffer_depth              gauge
+//   - lachesis_unresolved_buffer_evictions_total{reason}  counter
+//   - lachesis_unresolved_resolved_total            counter
 //
 // depth tracks live buffer occupancy (an SLO panic threshold sits near
 // the cap); evictions counts entries folded to "unknown", by reason;
@@ -21,20 +21,20 @@ type Metrics struct {
 }
 
 // NewMetrics constructs the bundle with both eviction reasons seeded at
-// zero so cubecos_unresolved_buffer_evictions_total{reason="lru"} and
+// zero so lachesis_unresolved_buffer_evictions_total{reason="lru"} and
 // {reason="expired"} both exist before either path first fires.
 func NewMetrics() *Metrics {
 	m := &Metrics{
 		depth: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "cubecos_unresolved_buffer_depth",
+			Name: "lachesis_unresolved_buffer_depth",
 			Help: "Distinct unknown-MAC flows currently held in the UnresolvedBuffer (capped; nearing the cap is an SLO panic threshold).",
 		}),
 		evictions: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "cubecos_unresolved_buffer_evictions_total",
+			Name: "lachesis_unresolved_buffer_evictions_total",
 			Help: "Buffer entries folded to the \"unknown\" tenant and dropped, by reason: lru = evicted to stay under the cap; expired = the late-binding TTL elapsed.",
 		}, []string{labelReason}),
 		resolved: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "cubecos_unresolved_resolved_total",
+			Name: "lachesis_unresolved_resolved_total",
 			Help: "Buffered flows whose MAC became known within the TTL and were attributed to the right tenant (late-binding success path; lands with the Kafka consumer).",
 		}),
 	}

@@ -11,7 +11,7 @@ import "github.com/prometheus/client_golang/prometheus"
 // The single instrument is cataloged in docs/DESIGN.md §11.4
 // (health metrics):
 //
-//   - cubecos_zombie_filters_cleaned_total  orphan TC filters
+//   - lachesis_zombie_filters_cleaned_total  orphan TC filters
 //     deleted at startup
 type Metrics struct {
 	cleaned prometheus.Counter
@@ -21,7 +21,7 @@ type Metrics struct {
 func NewMetrics() *Metrics {
 	return &Metrics{
 		cleaned: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "cubecos_zombie_filters_cleaned_total",
+			Name: "lachesis_zombie_filters_cleaned_total",
 			Help: "Orphan TC telemetry filters deleted at agent startup (left over from a previous crashed run).",
 		}),
 	}

@@ -150,7 +150,7 @@ enum stat_reason {
 
 /*
  * telemetry_stats: cumulative counters for the failure/skip paths above,
- * drained into cubecos_bpf_update_failures_total by the userspace
+ * drained into lachesis_bpf_update_failures_total by the userspace
  * scraper. PERCPU_ARRAY so an increment is a plain per-CPU store — no
  * atomics — and only the failure/skip paths touch it; the happy path
  * stays unchanged (Cilium pkg/maps metricsmap pattern).

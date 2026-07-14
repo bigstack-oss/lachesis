@@ -27,7 +27,7 @@ import (
 func writeAgentConfig(iface, httpAddr string) (string, error) {
 	cfg := config.Defaults()
 	cfg.HTTP.Listen = httpAddr
-	cfg.BPF.PinPath = "/sys/fs/bpf/cubecos-loadtest"
+	cfg.BPF.PinPath = "/sys/fs/bpf/lachesis-loadtest"
 	cfg.BPF.AttachInterfaces = []string{iface}
 	cfg.Scrape.Interval = time.Second
 	cfg.Logging.Level = "warn"
@@ -38,7 +38,7 @@ func writeAgentConfig(iface, httpAddr string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal agent config: %w", err)
 	}
-	dir, err := os.MkdirTemp("", "cubecos-loadtest-")
+	dir, err := os.MkdirTemp("", "lachesis-loadtest-")
 	if err != nil {
 		return "", err
 	}

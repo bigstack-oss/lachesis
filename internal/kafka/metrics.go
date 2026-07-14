@@ -5,8 +5,8 @@ import "github.com/prometheus/client_golang/prometheus"
 // Metrics holds the Kafka consumer's Prometheus instruments
 // (docs/DESIGN.md §11.4):
 //
-//   - cubecos_kafka_lag_messages{topic}          gauge
-//   - cubecos_kafka_consume_errors_total{topic}  counter
+//   - lachesis_kafka_lag_messages{topic}          gauge
+//   - lachesis_kafka_consume_errors_total{topic}  counter
 type Metrics struct {
 	lag           *prometheus.GaugeVec
 	consumeErrors *prometheus.CounterVec
@@ -18,11 +18,11 @@ type Metrics struct {
 func NewMetrics(topic string) *Metrics {
 	m := &Metrics{
 		lag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "cubecos_kafka_lag_messages",
+			Name: "lachesis_kafka_lag_messages",
 			Help: "Notification consumer lag (messages behind the topic head); sustained growth means the agent is falling behind live metadata updates and leaning on the periodic reconcile.",
 		}, []string{labelTopic}),
 		consumeErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "cubecos_kafka_consume_errors_total",
+			Name: "lachesis_kafka_consume_errors_total",
 			Help: "Failed reads from Kafka (broker unreachable, fetch errors); the consumer logs and retries with backoff.",
 		}, []string{labelTopic}),
 	}

@@ -12,7 +12,7 @@
 //   - environment variables (<prefix>_* — see load.go)
 //   - CLI flags
 //
-// The default env prefix is "CUBECOS"; callers can override via
+// The default env prefix is "LACHESIS"; callers can override via
 // [Options].EnvPrefix for forks or tests. The YAML file is the
 // only "moving"
 // source at runtime: SIGHUP triggers a re-read via [LoadYAML].

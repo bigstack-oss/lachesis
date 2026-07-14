@@ -19,9 +19,9 @@ import (
 //
 // The three instruments are:
 //
-//   - cubecos_bpf_map_max_entries{map}        gauge (static capacity)
-//   - cubecos_bpf_map_current_entries{map}    gauge (last-written count)
-//   - cubecos_bpf_update_failures_total{reason} counter (kernel telemetry_stats)
+//   - lachesis_bpf_map_max_entries{map}        gauge (static capacity)
+//   - lachesis_bpf_map_current_entries{map}    gauge (last-written count)
+//   - lachesis_bpf_update_failures_total{reason} counter (kernel telemetry_stats)
 type Metrics struct {
 	maxEntries     *prometheus.GaugeVec
 	currentEntries *prometheus.GaugeVec
@@ -36,11 +36,11 @@ type Metrics struct {
 func NewMetrics() *Metrics {
 	return &Metrics{
 		maxEntries: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "cubecos_bpf_map_max_entries",
+			Name: "lachesis_bpf_map_max_entries",
 			Help: "Compiled-in max_entries of each BPF map the agent populates.",
 		}, []string{labelMap}),
 		currentEntries: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "cubecos_bpf_map_current_entries",
+			Name: "lachesis_bpf_map_current_entries",
 			Help: "Userspace-tracked entry count of each BPF map after the most recent push.",
 		}, []string{labelMap}),
 		updateFailures: newStatsCollector(),
@@ -82,7 +82,7 @@ func (m *Metrics) SetUpdateFailures(c StatCounts) {
 	}
 }
 
-// statsCollector emits cubecos_bpf_update_failures_total{reason} from
+// statsCollector emits lachesis_bpf_update_failures_total{reason} from
 // the last-drained kernel telemetry_stats values. It is a small custom
 // Collector rather than a CounterVec because the kernel value is the
 // cumulative truth and counters cannot be set to an absolute value —
@@ -98,7 +98,7 @@ type statsCollector struct {
 func newStatsCollector() *statsCollector {
 	return &statsCollector{
 		desc: prometheus.NewDesc(
-			"cubecos_bpf_update_failures_total",
+			"lachesis_bpf_update_failures_total",
 			"Kernel-side cumulative count of telemetry_map inserts the kernel rejected (reason=update_failure; those flows' bytes are lost) and non-IP frames passed through uncounted (reason=skipped_ethertype), drained from the telemetry_stats BPF map each scrape.",
 			[]string{labelReason}, nil),
 	}

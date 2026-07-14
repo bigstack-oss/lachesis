@@ -157,8 +157,8 @@ func TestNeutronYAMLRoundTrip_PasswordIntact(t *testing.T) {
 
 func TestNeutronEnvAndFlagOverride(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("CUBECOS_NEUTRON_ENABLED", "true")
-	t.Setenv("CUBECOS_NEUTRON_CREDENTIALS_FILE", "/etc/admin-openrc.sh")
+	t.Setenv("LACHESIS_NEUTRON_ENABLED", "true")
+	t.Setenv("LACHESIS_NEUTRON_CREDENTIALS_FILE", "/etc/admin-openrc.sh")
 
 	cfg, err := config.Load(config.Options{}, nil)
 	if err != nil {

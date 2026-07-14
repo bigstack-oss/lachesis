@@ -85,7 +85,7 @@ CubeCOS is a multi-tenant OpenStack platform. Existing tools fail for billing-gr
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Layer 4 — Prometheus + WAL                                          │
-│   Custom Collector, GlobalState, /var/lib/cubecos/...json snapshot  │
+│   Custom Collector, GlobalState, /var/lib/lachesis/...json snapshot  │
 └────────────────────────────────▲────────────────────────────────────┘
                                  │  cumulative counters
 ┌────────────────────────────────┴────────────────────────────────────┐
@@ -178,7 +178,7 @@ VALUE: struct flow_metrics  (24 bytes, one slot per CPU)
 - **Per-pass cap: 1,000 entries** (default). Bounds the worst-case stall to ~50 ms (≈50 µs/entry × 1,000) regardless of how full the map is.
 - **Algorithm: single-pass scan with a bounded size-K heap** (K = the per-pass cap) to select the oldest-K by `last_seen_ns`. The heap is ordered *max*-by-`last_seen_ns`, so the newest of the K candidates retained so far sits at the root and is evicted in favour of an older flow as the scan proceeds. Cost is O(N log K) where N is the current entry count. For N=52k (80% fill), this is ~50 ms — included in the per-pass budget. A naïve full sort (O(N log N)) would be ~200 ms; avoid it.
 - Floor: the low watermark (default **75%**, not 70%). One pass evicts ~3,250 entries to reach the floor; the cap kicks in first, so the floor is reached over 3–4 successive scrapes — still well under a minute.
-- Each pass increments `cubecos_gc_pressure_relief_runs_total` and `cubecos_gc_evictions_total{reason="pressure_relief"}` (§11.4 health metrics).
+- Each pass increments `lachesis_gc_pressure_relief_runs_total` and `lachesis_gc_evictions_total{reason="pressure_relief"}` (§11.4 health metrics).
 - The two watermarks and the per-pass cap are operator-tunable via the `gc:` config section and **hot-reloadable on SIGHUP** — the reliever reads them through an atomic snapshot, so retuning needs no restart. The high watermark is validated `< 1.0`: at 1.0 the map fills and the kernel drops counters on its own, the exact byte loss this GC prevents. The defaults are the values quoted above.
 
 If the map sustains >80% fill across many scrapes despite the GC, the deployment has outgrown the configured `max_entries` and the operator must rebuild with a larger value — surfaced via the fill-ratio gauge before it becomes a billing problem.
@@ -329,7 +329,7 @@ UnresolvedBuffer                    late-binding for unknown MACs
   job (a later sprint); until then every unresolved flow ages out to
   "unknown" at the TTL.
 
-WAL                                 /var/lib/cubecos/network_agent_state.json (+ .bak)
+WAL                                 /var/lib/lachesis/network_agent_state.json (+ .bak)
   Atomic JSON snapshot of GlobalState (see B.11).
   Flush every 60s; previous snapshot retained as .bak for recovery from
   a bad write. Read on boot before any other operation.
@@ -1179,13 +1179,13 @@ At packet time (VM-A → 172.16.99.x):
 | 1 | [DPDK / userspace OVS datapath](#b10-dpdk--sr-iov--smart-nic) | TC hooks don't fire | Detect at boot; fall back to OVS sFlow for those VMs, or block at admission |
 | 2 | [SR-IOV passthrough](#b10-dpdk--sr-iov--smart-nic) | No tap interface exists | Same as DPDK — needs NIC-level telemetry |
 | 3 | Smart NIC offload (BlueField, ASAP²) | Datapath in HW, software taps bypassed | Same as SR-IOV |
-| 3a | Neutron trunk ports / VLAN-aware VMs | 802.1Q-tagged frames (`0x8100`/`0x88A8`) on the trunk parent tap fail `telemetry.c`'s ethertype gate and pass uncounted — subport traffic is invisible (not even ZONE_MISS). The loss is asymmetric: host→VM may still count where OVS leaves the tag in skb metadata (VLAN tag offload) and the linear data starts at the inner IP header, while VM→host carries the tag in-band and never counts — corrupting in/out ratio sanity checks. Meanwhile the metadata layer admits `trunk:*` subport MACs into `mac_tenant_map` — entries the data plane can never hit | Cold-start warn-log + `cubecos_neutron_trunk_subports` gauge whenever the snapshot contains trunk subports; the kernel-side skipped-ethertype counter (issue #39) makes the in-band loss visible under live traffic. Real support — a single 802.1Q parse — is deferred pending a billing decision on the flow-key shape (§13.2 #8) |
+| 3a | Neutron trunk ports / VLAN-aware VMs | 802.1Q-tagged frames (`0x8100`/`0x88A8`) on the trunk parent tap fail `telemetry.c`'s ethertype gate and pass uncounted — subport traffic is invisible (not even ZONE_MISS). The loss is asymmetric: host→VM may still count where OVS leaves the tag in skb metadata (VLAN tag offload) and the linear data starts at the inner IP header, while VM→host carries the tag in-band and never counts — corrupting in/out ratio sanity checks. Meanwhile the metadata layer admits `trunk:*` subport MACs into `mac_tenant_map` — entries the data plane can never hit | Cold-start warn-log + `lachesis_neutron_trunk_subports` gauge whenever the snapshot contains trunk subports; the kernel-side skipped-ethertype counter (issue #39) makes the in-band loss visible under live traffic. Real support — a single 802.1Q parse — is deferred pending a billing decision on the flow-key shape (§13.2 #8) |
 
 ### Tier 2 — Require explicit handling
 
 | # | Edge case | Failure | Fix |
 |---|---|---|---|
-| 4 | Map full (>65k flows) | `bpf_map_update_elem` returns `-E2BIG`; bytes lost | Pressure-relief GC at >80% fill; evict oldest by `last_seen_ns`, **flush to GlobalState first**. The loss is observable: the kernel counts every rejected insert into `cubecos_bpf_update_failures_total{reason="update_failure"}` (§11.4) |
+| 4 | Map full (>65k flows) | `bpf_map_update_elem` returns `-E2BIG`; bytes lost | Pressure-relief GC at >80% fill; evict oldest by `last_seen_ns`, **flush to GlobalState first**. The loss is observable: the kernel counts every rejected insert into `lachesis_bpf_update_failures_total{reason="update_failure"}` (§11.4) |
 | 5 | PERCPU first-packet TOCTOU | Two CPUs race on creation; one's BPF_ANY overwrites the other | At most 1 packet lost per new flow per race. Documented & accepted |
 | 6 | GSO/TSO/GRO offload | `skb->len` is the aggregated-skb byte count — correct payload, but per-segment L2/L3/L4 headers are counted once per superpacket rather than per wire segment, so bulk MTU-1500 TCP measures ≈4.35% under wire-equivalent (verified empirically on a single-node OVN deployment; provider-favorable to the customer). Both hooks count the same aggregated-skb basis — confirmed symmetric, no direction skew. Packet counts are superpacket counts, far under the wire segment count | Bill on bytes, not packets; the byte-basis contract is stated in §11.5 |
 | 7 | Boot ordering: TC attached before trie populated | First flows permanently keyed `dst_zone=MISS` | Enforce sequence with sync gates ([§9](#9-boot-sequence-order-matters)) |
@@ -1196,7 +1196,7 @@ At packet time (VM-A → 172.16.99.x):
 | # | Edge case | Failure | Fix |
 |---|---|---|---|
 | 9 | OS-level static route inside VM | Falls to EXTERNAL | Unsolvable; safe-billing fallback |
-| 10 | Port security disabled + MAC spoof | Classification trusts the L2 headers, so a port with `port_security_enabled=false` (common for NFV) breaks the trust model two ways: a VM can emit frames carrying *another* tenant's MAC — `mac_tenant_map[spoofed]` hits the wrong tenant and inflates that tenant's bill — and any VM can spray random peer MACs to mint flow keys in the shared per-node `telemetry_map` (max 65,536 entries), a noisy-neighbor pressure vector | Billing integrity assumes port security on (the Neutron default); ports with it disabled are **attributed-but-untrusted**. The minting attack is observable: the spray pressures the map toward full and the resulting rejected inserts land in `cubecos_bpf_update_failures_total{reason="update_failure"}` (§11.4) |
+| 10 | Port security disabled + MAC spoof | Classification trusts the L2 headers, so a port with `port_security_enabled=false` (common for NFV) breaks the trust model two ways: a VM can emit frames carrying *another* tenant's MAC — `mac_tenant_map[spoofed]` hits the wrong tenant and inflates that tenant's bill — and any VM can spray random peer MACs to mint flow keys in the shared per-node `telemetry_map` (max 65,536 entries), a noisy-neighbor pressure vector | Billing integrity assumes port security on (the Neutron default); ports with it disabled are **attributed-but-untrusted**. The minting attack is observable: the spray pressures the map toward full and the resulting rejected inserts land in `lachesis_bpf_update_failures_total{reason="update_failure"}` (§11.4) |
 | 11 | DVR with per-host router MACs (traditional Neutron only — n/a on OVN) | Each compute node's [DVR](#b8-openstack-networking-primer) router has a different MAC | Not encountered on OVN deployments (single MAC per logical router across chassis); if a traditional Neutron deployment is ever supported, reinstate the cold-start enumeration step — see §13.2 |
 | 12 | VM uses its own GRE/VXLAN/IPsec | We see outer headers; classification on tunnel endpoint | Document; treat as external |
 | 13 | IPv6 not in trie | All v6 → ZONE_MISS | Extend trie schema to 32-byte v6 keys (future work) |
@@ -1302,19 +1302,19 @@ post-`StateRestored` worker awaits that phase before its first action.
 
 **Neutron API unreachable at cold-start** (step 3 cannot complete):
 - Block with exponential backoff (start 1s, cap at 30s, indefinite retries).
-- State surfaced via `cubecos_neutron_sync_age_seconds=-1` (never synced) and `cubecos_neutron_api_errors_total{endpoint, code}`.
+- State surfaced via `lachesis_neutron_sync_age_seconds=-1` (never synced) and `lachesis_neutron_api_errors_total{endpoint, code}`.
 - **Do NOT proceed to step 4 (TC attach).** Without metadata, every packet classifies as `ZONE_MISS`, and once that miss is written into the kernel `flow_key` it is permanent (zone is in the key — see §3.1). Blocking at boot is the only correctness-safe policy.
 - An explicit `--unsafe-allow-degraded-boot` flag may be added later for operators who want fail-open behavior during planned Neutron upgrades; default is fail-closed.
 
 **Neutron API unreachable at runtime** (cold-start succeeded, periodic refresh fails):
 - Continue serving from the in-memory snapshot.
-- Each failed call increments `cubecos_neutron_api_errors_total{endpoint, code}` and ages `cubecos_neutron_sync_age_seconds`.
+- Each failed call increments `lachesis_neutron_api_errors_total{endpoint, code}` and ages `lachesis_neutron_sync_age_seconds`.
 - When Kafka is available each committed change kicks a reconcile within one pass; the 5-minute periodic reconcile is the safety net (see Kafka outage below). Both run on the one reconciler goroutine, so a kick and a timer tick never apply concurrently.
 
 **Kafka unreachable** (cold-start succeeded, then Kafka becomes unreachable):
 - No more kicks arrive, so the agent's metadata becomes increasingly stale: new VMs miss in `mac_tenant_map` → land in UnresolvedBuffer; deleted VMs over-stay their 60s ghost; route changes don't apply.
 - **The periodic 5-minute reconcile mitigates this.** It is the same pass a kick triggers — a full snapshot fetch (as in cold-start step 3) diffed against current state, applying only the delta (trie via insert-then-delete, mac_tenant_map via insert / MarkDelete). **Bounds metadata staleness to 5 minutes regardless of Kafka availability.**
-- `cubecos_kafka_lag_messages` and `cubecos_kafka_consume_errors_total` surface the outage; alerting threshold suggested: `lag > 1000` sustained.
+- `lachesis_kafka_lag_messages` and `lachesis_kafka_consume_errors_total` surface the outage; alerting threshold suggested: `lag > 1000` sustained.
 
 **Partial Neutron failures** (e.g., `GET /v2.0/ports` succeeds, `GET /v2.0/routers` returns 500):
 - **Cold-start is all-or-nothing.** If any required endpoint fails, the entire cold-start fails and the boot loop retries from the top. Starting with partial metadata reproduces the same permanent-miss problem as a full Neutron outage.
@@ -1383,7 +1383,7 @@ Worked examples at the default 50 MB budget:
 | 128 | 3,088 | 16,978 → 16,384 | ~51 MB |
 | 192 | 4,624 | 11,338 → 8,192 (lower clamp) | ~38 MB |
 
-**Sprint 1+ implementation note.** `max_entries` and the memory budget must be exposed as config flags (default budget 50 MB). Without this, deploying the agent on a 128-core host with `max_entries=65536` consumes ~200 MB of kernel RAM — 4× the documented budget. The `cubecos_bpf_map_max_entries` gauge (§11.4) surfaces the actual sized value per host.
+**Sprint 1+ implementation note.** `max_entries` and the memory budget must be exposed as config flags (default budget 50 MB). Without this, deploying the agent on a 128-core host with `max_entries=65536` consumes ~200 MB of kernel RAM — 4× the documented budget. The `lachesis_bpf_map_max_entries` gauge (§11.4) surfaces the actual sized value per host.
 
 **Total agent footprint (RSS)**: ~150–200 MB on a 32-core, 50-VM node. Most of it is the PERCPU map preallocation; well within budget for a daemon. On higher core counts, the budget keeps the kernel-map portion roughly flat at ~50 MB while `max_entries` shrinks proportionally.
 
@@ -1408,7 +1408,7 @@ Total: ~150 ns / packet. At 10 Gbps × 64-byte packets = ~14.88 Mpps × 150 ns =
 | 128-core, 10k flows | 30 MB | ~30 ms |
 | 128-core, 50k flows | 150 MB | ~100+ ms |
 
-  At high core counts the documented "5 ms" is no longer realistic; the scrape budget must account for the actual N_CPU. The `cubecos_collect_duration_seconds` histogram (§11.4) surfaces this per node.
+  At high core counts the documented "5 ms" is no longer realistic; the scrape budget must account for the actual N_CPU. The `lachesis_collect_duration_seconds` histogram (§11.4) surfaces this per node.
 
 - Map iteration during GC: same cost; runs in the same scrape goroutine (after BatchLookup).
 - **WAL flush** breaks into three phases, not just fsync:
@@ -1419,7 +1419,7 @@ Total: ~150 ns / packet. At 10 Gbps × 64-byte packets = ~14.88 Mpps × 150 ns =
 | Marshal Go struct → JSON | ~50–100 ms for 600 KB output | no lock |
 | Write + fsync + rename + rotate `.bak` | ~5–10 ms (varies wildly on slow disks) | no lock |
 
-  The original "5–10 ms" estimate referenced only the fsync — marshaling dominates. The critical section (lock-held) is just the copy phase, so a slow disk does NOT block the scraper. Per-phase metrics: `cubecos_wal_snapshot_copy_seconds`, `cubecos_wal_marshal_seconds`, `cubecos_wal_flush_latency_seconds` (the last covers write+fsync+rename only).
+  The original "5–10 ms" estimate referenced only the fsync — marshaling dominates. The critical section (lock-held) is just the copy phase, so a slow disk does NOT block the scraper. Per-phase metrics: `lachesis_wal_snapshot_copy_seconds`, `lachesis_wal_marshal_seconds`, `lachesis_wal_flush_latency_seconds` (the last covers write+fsync+rename only).
 
 ### Health metrics catalog
 
@@ -1433,10 +1433,10 @@ the design's existing fan-out (tenant, zone, direction). **Health metrics**
 
 | Metric | Type | Labels |
 |---|---|---|
-| `cubecos_bytes_total` | counter | `tenant_id, zone, direction` |
-| `cubecos_packets_total` | counter | `tenant_id, zone, direction` |
+| `lachesis_bytes_total` | counter | `tenant_id, zone, direction` |
+| `lachesis_packets_total` | counter | `tenant_id, zone, direction` |
 
-(Earlier drafts named these `cubecos_tenant_{bytes,packets}_total`; the
+(Earlier drafts named these `lachesis_tenant_{bytes,packets}_total`; the
 implemented, test-pinned names above are canonical — the `tenant_id` label
 already carries the tenant dimension.)
 
@@ -1467,44 +1467,44 @@ reintroduce hook-frame strings into the metric labels.
 
 | Metric | Type | Labels | Source |
 |---|---|---|---|
-| `cubecos_bpf_map_max_entries` | gauge | `map="telemetry_map\|subnet_zone_trie\|mac_tenant_map"` | seeded at startup from the compiled-in sizes; surfaces actual sizing per host (telemetry map scales by N_CPU per §11) |
-| `cubecos_bpf_map_current_entries` | gauge | same `map` label | userspace-tracked count: kernelwriter push for mac_tenant_map / subnet_zone_trie, scraper drain for telemetry_map. Fill ratio = `current / max` in PromQL (replaces the drafted `cubecos_bpf_map_fill_ratio`; exporting numerator and denominator keeps both visible) |
-| `cubecos_bpf_update_failures_total` | counter | `reason="update_failure\|skipped_ethertype"` | kernel `telemetry_stats` PERCPU_ARRAY, CPU-summed and drained by the scraper each tick; both reason series are zero-seeded at startup. `update_failure` = telemetry_map inserts the kernel rejected (map full — those flows' bytes are lost until GC frees space), `skipped_ethertype` = non-IP frames passed through uncounted (ARP/LLDP noise normally; a sustained rise flags a trunk/VLAN blind spot) |
-| `cubecos_state_flows` | gauge | — | distinct flow keys in GlobalState (Collector) |
-| `cubecos_state_settled_tuples` | gauge | — | distinct (tenant, zone, direction) buckets in the settled-bytes accumulator (§3.5) |
-| `cubecos_scraper_errors_total` | counter | — | failed BPF-map drain attempts (Collector, from scraper) |
-| `cubecos_scraper_last_success_unix_seconds` | gauge | — | most recent successful drain; 0 if never (Collector, from scraper) |
-| `cubecos_collect_duration_seconds` | histogram | — | one Collect pass: snapshot + aggregate + emit. Buckets 1ms..1s |
-| `cubecos_wal_snapshot_copy_seconds` | histogram | — | WAL writer, copy-under-lock phase (critical section) |
-| `cubecos_wal_marshal_seconds` | histogram | — | WAL writer, JSON marshal phase (no lock held) |
-| `cubecos_wal_flush_latency_seconds` | histogram | — | WAL writer, write+fsync+rename phase (no lock held). Buckets: 1ms..1s |
-| `cubecos_wal_flush_failures_total` | counter | `stage="write\|fsync\|rename_bak\|rename_current\|dir_sync"` | WAL writer |
-| `cubecos_wal_load_fallback_total` | counter | `from="bak\|empty"` | boot loader |
-| `cubecos_neutron_sync_age_seconds` | gauge | — | last successful cold-start or full reconcile; -1 = never synced |
-| `cubecos_neutron_api_errors_total` | counter | `endpoint, code` (HTTP status, or `network` for connection-level failures) | Neutron client |
-| `cubecos_neutron_unknown_device_owner_total` | counter | `owner` | port admissions outside the IsKnownVMOwner allowlist |
-| `cubecos_neutron_builder_step_duration_seconds` | histogram | `step` | BuildTrie per-step duration (§5.2 steps 1–5) |
-| `cubecos_neutron_anomalies` | gauge | `class="cycle\|ambiguity\|dangling_route\|zero_trie_tenant\|duplicate_router_mac"` | topology anomalies detected at the last cold-start or resync (`DetectAnomalies`; drives `/debug/anomalies`) |
-| `cubecos_neutron_trunk_subports` | gauge | — | trunk subport MACs admitted to `mac_tenant_map` at the last cold-start or resync; nonzero flags the §8 Tier 1 trunk blind spot (802.1Q-tagged subport traffic passes uncounted) |
-| `cubecos_zombie_filters_cleaned_total` | counter | — | startup Zombie Hunter |
-| `cubecos_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher |
-| `cubecos_attached_interfaces` | gauge | — | current Interface Registry size |
-| `cubecos_gc_evictions_total` | counter | `reason="ttl\|pressure_relief\|ghost_residual_flow"` | GC: lingering-ghost sweep (`ttl`, mac_tenant_map), scraper pressure-relief (`pressure_relief`, telemetry_map), and a swept MAC's residual telemetry_map flows removed so they are not re-billed as "unknown" (`ghost_residual_flow`, §3.3) |
-| `cubecos_gc_pressure_relief_runs_total` | counter | — | scraper pressure-relief pass (fill above the high watermark) |
-| `cubecos_gc_settled_flows_total` | counter | — | GlobalState flow rows the ghost sweep folded into the settled-bytes accumulator, keeping deleted VMs' bytes attributed to their tenant (§3.5) |
-| `cubecos_lingering_ghosts_active` | gauge | — | metadata entries inside the 60s ghost grace window; the Neutron reconcile's MarkDelete on a deleted port/subnet now exercises it (§5.7) |
-| `cubecos_unresolved_buffer_depth` | gauge | — | UnresolvedBuffer occupancy (panic threshold near the cap) |
-| `cubecos_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer entries folded to "unknown", by cause |
-| `cubecos_unresolved_resolved_total` | counter | — | late-binding successes: a buffered flow whose MAC became known (reconcile or Kafka) attributed to the right tenant with the §3.2 delta write-back |
-| `cubecos_reconcile_runs_total` | counter | `result="ok\|sync_error\|apply_error"` | periodic + Kafka-kicked Neutron reconcile passes by outcome; `apply_error` is the runtime kernelwriter-failure sink the revisit note below anticipated |
-| `cubecos_kafka_lag_messages` | gauge | `topic` | Kafka consumer lag behind the topic head; sustained growth = falling behind live updates |
-| `cubecos_kafka_consume_errors_total` | counter | `topic` | Kafka consumer read failures (broker unreachable, fetch errors) |
+| `lachesis_bpf_map_max_entries` | gauge | `map="telemetry_map\|subnet_zone_trie\|mac_tenant_map"` | seeded at startup from the compiled-in sizes; surfaces actual sizing per host (telemetry map scales by N_CPU per §11) |
+| `lachesis_bpf_map_current_entries` | gauge | same `map` label | userspace-tracked count: kernelwriter push for mac_tenant_map / subnet_zone_trie, scraper drain for telemetry_map. Fill ratio = `current / max` in PromQL (replaces the drafted `lachesis_bpf_map_fill_ratio`; exporting numerator and denominator keeps both visible) |
+| `lachesis_bpf_update_failures_total` | counter | `reason="update_failure\|skipped_ethertype"` | kernel `telemetry_stats` PERCPU_ARRAY, CPU-summed and drained by the scraper each tick; both reason series are zero-seeded at startup. `update_failure` = telemetry_map inserts the kernel rejected (map full — those flows' bytes are lost until GC frees space), `skipped_ethertype` = non-IP frames passed through uncounted (ARP/LLDP noise normally; a sustained rise flags a trunk/VLAN blind spot) |
+| `lachesis_state_flows` | gauge | — | distinct flow keys in GlobalState (Collector) |
+| `lachesis_state_settled_tuples` | gauge | — | distinct (tenant, zone, direction) buckets in the settled-bytes accumulator (§3.5) |
+| `lachesis_scraper_errors_total` | counter | — | failed BPF-map drain attempts (Collector, from scraper) |
+| `lachesis_scraper_last_success_unix_seconds` | gauge | — | most recent successful drain; 0 if never (Collector, from scraper) |
+| `lachesis_collect_duration_seconds` | histogram | — | one Collect pass: snapshot + aggregate + emit. Buckets 1ms..1s |
+| `lachesis_wal_snapshot_copy_seconds` | histogram | — | WAL writer, copy-under-lock phase (critical section) |
+| `lachesis_wal_marshal_seconds` | histogram | — | WAL writer, JSON marshal phase (no lock held) |
+| `lachesis_wal_flush_latency_seconds` | histogram | — | WAL writer, write+fsync+rename phase (no lock held). Buckets: 1ms..1s |
+| `lachesis_wal_flush_failures_total` | counter | `stage="write\|fsync\|rename_bak\|rename_current\|dir_sync"` | WAL writer |
+| `lachesis_wal_load_fallback_total` | counter | `from="bak\|empty"` | boot loader |
+| `lachesis_neutron_sync_age_seconds` | gauge | — | last successful cold-start or full reconcile; -1 = never synced |
+| `lachesis_neutron_api_errors_total` | counter | `endpoint, code` (HTTP status, or `network` for connection-level failures) | Neutron client |
+| `lachesis_neutron_unknown_device_owner_total` | counter | `owner` | port admissions outside the IsKnownVMOwner allowlist |
+| `lachesis_neutron_builder_step_duration_seconds` | histogram | `step` | BuildTrie per-step duration (§5.2 steps 1–5) |
+| `lachesis_neutron_anomalies` | gauge | `class="cycle\|ambiguity\|dangling_route\|zero_trie_tenant\|duplicate_router_mac"` | topology anomalies detected at the last cold-start or resync (`DetectAnomalies`; drives `/debug/anomalies`) |
+| `lachesis_neutron_trunk_subports` | gauge | — | trunk subport MACs admitted to `mac_tenant_map` at the last cold-start or resync; nonzero flags the §8 Tier 1 trunk blind spot (802.1Q-tagged subport traffic passes uncounted) |
+| `lachesis_zombie_filters_cleaned_total` | counter | — | startup Zombie Hunter |
+| `lachesis_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher |
+| `lachesis_attached_interfaces` | gauge | — | current Interface Registry size |
+| `lachesis_gc_evictions_total` | counter | `reason="ttl\|pressure_relief\|ghost_residual_flow"` | GC: lingering-ghost sweep (`ttl`, mac_tenant_map), scraper pressure-relief (`pressure_relief`, telemetry_map), and a swept MAC's residual telemetry_map flows removed so they are not re-billed as "unknown" (`ghost_residual_flow`, §3.3) |
+| `lachesis_gc_pressure_relief_runs_total` | counter | — | scraper pressure-relief pass (fill above the high watermark) |
+| `lachesis_gc_settled_flows_total` | counter | — | GlobalState flow rows the ghost sweep folded into the settled-bytes accumulator, keeping deleted VMs' bytes attributed to their tenant (§3.5) |
+| `lachesis_lingering_ghosts_active` | gauge | — | metadata entries inside the 60s ghost grace window; the Neutron reconcile's MarkDelete on a deleted port/subnet now exercises it (§5.7) |
+| `lachesis_unresolved_buffer_depth` | gauge | — | UnresolvedBuffer occupancy (panic threshold near the cap) |
+| `lachesis_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer entries folded to "unknown", by cause |
+| `lachesis_unresolved_resolved_total` | counter | — | late-binding successes: a buffered flow whose MAC became known (reconcile or Kafka) attributed to the right tenant with the §3.2 delta write-back |
+| `lachesis_reconcile_runs_total` | counter | `result="ok\|sync_error\|apply_error"` | periodic + Kafka-kicked Neutron reconcile passes by outcome; `apply_error` is the runtime kernelwriter-failure sink the revisit note below anticipated |
+| `lachesis_kafka_lag_messages` | gauge | `topic` | Kafka consumer lag behind the topic head; sustained growth = falling behind live updates |
+| `lachesis_kafka_consume_errors_total` | counter | `topic` | Kafka consumer read failures (broker unreachable, fetch errors) |
 
 #### Health — planned (subsystem not yet built; add with the subsystem)
 
 The Octavia LB attribution metrics (Sprint 8) land with that subsystem.
 
-A drafted generic `cubecos_internal_errors_total{subsystem}` sink was
+A drafted generic `lachesis_internal_errors_total{subsystem}` sink was
 dropped: every billing-path error site today lands in a dedicated counter
 (scraper errors, WAL flush-failure stages, WAL load fallback, Neutron API
 errors, TC attach failures), and kernelwriter failures are boot-fatal by
@@ -1518,12 +1518,12 @@ into the billing tier, whose cardinality is already bounded by the trie /
 MAC-pair model (§3.1).
 
 SLO targets (informational, refined post-MVP):
-- `cubecos_neutron_sync_age_seconds` < 120 (Kafka-driven freshness)
-- `cubecos_wal_flush_latency_seconds` p99 < 50 ms
-- `cubecos_unresolved_buffer_depth` < 1000 sustained (10k cap is a panic threshold)
-- `cubecos_bpf_map_current_entries{map="telemetry_map"} / cubecos_bpf_map_max_entries{map="telemetry_map"}` < 0.8 (above triggers pressure-relief GC)
-- `cubecos_bpf_update_failures_total{reason="update_failure"}` == 0 (any increase is billed bytes lost in the kernel; alert on `> 0` — a page once pressure-relief GC exists, since then it should never fire)
-- `cubecos:unbilled_bytes:ratio_rate5m` < 0.001 — the revenue-leak SLO; recording rule and structural contributors defined in §11.5 below
+- `lachesis_neutron_sync_age_seconds` < 120 (Kafka-driven freshness)
+- `lachesis_wal_flush_latency_seconds` p99 < 50 ms
+- `lachesis_unresolved_buffer_depth` < 1000 sustained (10k cap is a panic threshold)
+- `lachesis_bpf_map_current_entries{map="telemetry_map"} / lachesis_bpf_map_max_entries{map="telemetry_map"}` < 0.8 (above triggers pressure-relief GC)
+- `lachesis_bpf_update_failures_total{reason="update_failure"}` == 0 (any increase is billed bytes lost in the kernel; alert on `> 0` — a page once pressure-relief GC exists, since then it should never fire)
+- `lachesis:unbilled_bytes:ratio_rate5m` < 0.001 — the revenue-leak SLO; recording rule and structural contributors defined in §11.5 below
 
 ### Billing model & consumption contract
 
@@ -1531,9 +1531,9 @@ The measurement layers (§2–§6) produce billing-grade counters; this section 
 
 #### The emission invariant
 
-Every byte transfer the data plane can see appears in **exactly one `tx` series and one `rx` series**: counted once at the sender's tap as `direction="tx"` and once at the receiver's tap as `direction="rx"`, each keyed by `(tenant_id, zone, direction)` on `cubecos_bytes_total` / `cubecos_packets_total` (§11.4). The agent **never deduplicates** — both-sides emission is the contract, not an artifact (Scenario I; §8 Tier 4 #15). When only one endpoint sits behind a monitored tap (internet peers, DPDK/SR-IOV VMs), only that side's series exists.
+Every byte transfer the data plane can see appears in **exactly one `tx` series and one `rx` series**: counted once at the sender's tap as `direction="tx"` and once at the receiver's tap as `direction="rx"`, each keyed by `(tenant_id, zone, direction)` on `lachesis_bytes_total` / `lachesis_packets_total` (§11.4). The agent **never deduplicates** — both-sides emission is the contract, not an artifact (Scenario I; §8 Tier 4 #15). When only one endpoint sits behind a monitored tap (internet peers, DPDK/SR-IOV VMs), only that side's series exists.
 
-Byte basis: aggregated-skb L2 bytes. Per-segment headers are counted once per GSO/GRO superpacket, so bulk TCP measures ≈4–5% under wire-equivalent (verified empirically; ~0 on small-packet traffic — §8 Tier 2 #6), and `cubecos_packets_total` counts superpackets, not wire segments. Bill on bytes, never on packets.
+Byte basis: aggregated-skb L2 bytes. Per-segment headers are counted once per GSO/GRO superpacket, so bulk TCP measures ≈4–5% under wire-equivalent (verified empirically; ~0 on small-packet traffic — §8 Tier 2 #6), and `lachesis_packets_total` counts superpackets, not wire segments. Bill on bytes, never on packets.
 
 #### Per-zone charging postures
 
@@ -1562,14 +1562,14 @@ The zone vocabulary is the §11.4 label table. The guiding principle: **each sid
 The unbilled fraction — bytes in `zone="miss"` or `tenant_id="unknown"` — is the runtime verification of §8's static accuracy-ceiling claim (~99.9%):
 
 ```yaml
-- record: cubecos:unbilled_bytes:ratio_rate5m
+- record: lachesis:unbilled_bytes:ratio_rate5m
   expr: |
     sum(
-        rate(cubecos_bytes_total{zone="miss"}[5m])
-      or rate(cubecos_bytes_total{tenant_id="unknown"}[5m])
+        rate(lachesis_bytes_total{zone="miss"}[5m])
+      or rate(lachesis_bytes_total{tenant_id="unknown"}[5m])
     )
     /
-    sum(rate(cubecos_bytes_total[5m]))
+    sum(rate(lachesis_bytes_total[5m]))
 ```
 
 The `or` deduplicates series that are both `zone="miss"` and `tenant_id="unknown"`: both operands draw from the same series set, so label sets match exactly and each leaking series counts once.
@@ -1659,11 +1659,11 @@ Explicitly out of MVP scope. Documented so future contributors know it's open by
 | 1 | IPv6 zone resolution | All v6 traffic currently classifies as ZONE_MISS. Retrofit path: add a second LPM trie keyed `(tenant_id, u8[16])` alongside the existing v4 trie; branch in `lookup_zone()` on `eth_proto`. The 5-step cold-start algorithm (§5.2) is IP-version-agnostic — only insertion code changes. Estimated ~1 sprint, low risk |
 | 2 | Traditional Neutron (OVS-agent + L3-agent + qrouter namespaces, with or without DVR) | Tested OVN deployments (single-node and 3-node HA) run OpenStack Yoga with OVN ML2 — verified empirically. Traditional Neutron is therefore out of scope. If a future deployment requires it, the cold-start algorithm needs a "Step 6 — DVR per-host MAC enumeration" reinstated (using the `dvr-mac-addresses` Neutron extension); see git history of this file for the removed text. Estimated ~1 sprint to re-add |
 | 3 | Cross-goroutine boot sync barrier (`boot.Sequencer.Await` / `Fail`) | `Bootstrap` advances every phase straight-line in one goroutine and returns before `Run` spawns the consumer goroutines, so the boot ordering (Contract #4) holds structurally and `boot.Sequencer` is an in-`Bootstrap` order validator + phase logger. When the Kafka updater or GC advance / block on phases from their own goroutines, add channel-backed `Await(Phase)` / `Fail(err)` so consumers wait on a named phase instead of relying on straight-line execution. Deferred by design, not oversight. Estimated <1 sprint, low risk |
-| 4 | Static-route EXTERNAL-fallback counter (`cubecos_neutron_static_route_fallback_total{reason}`) | `resolveStaticRouteZone` (resolve.go) has six EXTERNAL fallback exits; three warn-log (cycle, MAX_HOPS, ambiguity), the others (anchor-subnet miss, port-at miss, unknown next-router device, unknown device-owner) return EXTERNAL silently. A per-`reason` counter would make the fallback rate visible on `/metrics`. Deferred until it can be validated against a real cluster's `/metrics` deltas — it touches billing-relevant route classification, so per the project's validate-before-billing-changes rule it should not ship on theory. Observability-only (counts existing EXTERNAL returns; changes no classification). Estimated <1 sprint, low risk |
-| 5 | Netlink attach-presence reconciler (level-triggered periodic resync) | A periodic sweep that lists interfaces matching the attach allowlist and re-attaches our TC filters where missing — the informer "periodic resync catches missed events" pattern. Safe by construction: `FilterReplace` is idempotent (the fixed `tcattach.FilterPriority` makes it so — at priority 0 the kernel would allocate a new chain per call and stack a duplicate filter), so the worst a bug does is re-attach something already attached. Covers NEWLINK events missed around the subscribe window (the netlink integration tests note this race), and the larger missed-event surface under churn: a NEWLINK dropped by netlink socket overflow during an event storm never reaches the subscriber at all. **Scheduled (no longer purely evidence-gated):** the original gate — watch `cubecos_tc_attach_failures_total` — is moot, because that counter is blind to the dominant risk. A dropped NEWLINK never calls `AttachLink`, so nothing increments; the failure counter only sees explicit attach errors, not the missed-event path. The real detector is therefore a *presence gauge* (allowlist-matching links present-but-unattached), landed first as its own slice, with the reconciler acting on it. Event storms (mass VM operations, HA failover rescheduling many ports) make the missed-event path realistic rather than hypothetical. Explicitly **not** a runtime zombie hunter — zombie *deletion* stays boot-only by design, because its safety depends on running before any attach (at that point every matching filter is an orphan by definition); a runtime deleter must distinguish live filters from orphans, and a bug there silently deletes live filters → billing undercount. The risk asymmetry rules it out. Estimated <1 sprint, low risk |
+| 4 | Static-route EXTERNAL-fallback counter (`lachesis_neutron_static_route_fallback_total{reason}`) | `resolveStaticRouteZone` (resolve.go) has six EXTERNAL fallback exits; three warn-log (cycle, MAX_HOPS, ambiguity), the others (anchor-subnet miss, port-at miss, unknown next-router device, unknown device-owner) return EXTERNAL silently. A per-`reason` counter would make the fallback rate visible on `/metrics`. Deferred until it can be validated against a real cluster's `/metrics` deltas — it touches billing-relevant route classification, so per the project's validate-before-billing-changes rule it should not ship on theory. Observability-only (counts existing EXTERNAL returns; changes no classification). Estimated <1 sprint, low risk |
+| 5 | Netlink attach-presence reconciler (level-triggered periodic resync) | A periodic sweep that lists interfaces matching the attach allowlist and re-attaches our TC filters where missing — the informer "periodic resync catches missed events" pattern. Safe by construction: `FilterReplace` is idempotent (the fixed `tcattach.FilterPriority` makes it so — at priority 0 the kernel would allocate a new chain per call and stack a duplicate filter), so the worst a bug does is re-attach something already attached. Covers NEWLINK events missed around the subscribe window (the netlink integration tests note this race), and the larger missed-event surface under churn: a NEWLINK dropped by netlink socket overflow during an event storm never reaches the subscriber at all. **Scheduled (no longer purely evidence-gated):** the original gate — watch `lachesis_tc_attach_failures_total` — is moot, because that counter is blind to the dominant risk. A dropped NEWLINK never calls `AttachLink`, so nothing increments; the failure counter only sees explicit attach errors, not the missed-event path. The real detector is therefore a *presence gauge* (allowlist-matching links present-but-unattached), landed first as its own slice, with the reconciler acting on it. Event storms (mass VM operations, HA failover rescheduling many ports) make the missed-event path realistic rather than hypothetical. Explicitly **not** a runtime zombie hunter — zombie *deletion* stays boot-only by design, because its safety depends on running before any attach (at that point every matching filter is an orphan by definition); a runtime deleter must distinguish live filters from orphans, and a bug there silently deletes live filters → billing undercount. The risk asymmetry rules it out. Estimated <1 sprint, low risk |
 | 6 | Workqueue-backed event handling for the netlink subscriber and Kafka updater | Reference: `k8s.io/client-go/util/workqueue` (dedup/coalescing + rate-limited retry with exponential backoff) — the standard informer → workqueue → reconciler triple. Earmarked for: (a) the netlink subscriber, if flapping interfaces produce event storms or transient attach failures need retry-with-backoff instead of a log line; (b) the Kafka metadata updater, to coalesce rapid per-port update bursts and retry failed kernel-map writes. Not applicable to boot — the boot sequence stays straight-line code plus ordering barriers (`boot.Sequencer`), matching how Kubernetes boots components (`WaitForCacheSync`, post-start hooks), with queues reserved for steady-state events. **Current direction:** the lighter, targeted measures land first — netlink transient-failure and missed-event recovery folds into the idempotent re-attach of #5 (the reconciler *is* the retry), and the Kafka side is handled by a debounce window that coalesces bursts (backlog item, gated on observed event volume) rather than a full queue. The workqueue stays the escalation if those prove insufficient — adopt then, not before |
 | 7 | Map pinning for zero-loss agent-crash recovery | §10's agent-crash path currently equals the hard-reboot path: nothing pins the maps (`config.BPFConfig.PinPath` exists but no caller pins), a restarted agent cannot reach the old unpinned maps, and the boot-time Zombie Hunter drops the orphan TC filters that were keeping them alive — so recovery is WAL-bounded at ≤60s. Pinning under `bpf.pin_path` and reusing the pinned maps on boot restores the designed zero-loss path. Touches boot ordering (zombie hunt vs. pinned-map reuse) and `ValidateMapSizes` against a pinned spec. Estimated <1 sprint, medium care: a stale pinned map with wrong sizing must refuse-to-reuse, not silently adopt |
-| 8 | Trunk port (VLAN-aware VM) support — single 802.1Q parse | When `h_proto` is `0x8100`/`0x88A8`, parse one VLAN level: `bpf_skb_pull_data` for the 4 extra tag bytes, re-read the data pointers, dispatch on the inner ethertype, and offset the IP header by 4; also handle the offloaded-tag direction (`skb->vlan_present`, where the tag lives in skb metadata and the linear data already starts at the inner header). Blocked on a billing decision: whether `flow_key.eth_proto` records the inner or outer proto (and whether counted bytes include the 4 tag bytes) must be settled **before** WAL entries bake the key shape. Until then trunk deployments are detection-only — cold-start warn-log, `cubecos_neutron_trunk_subports` gauge, and the kernel skipped-ethertype counter (issue #39); see §8 Tier 1 row 3a and issue #37. Estimated ~1 sprint |
+| 8 | Trunk port (VLAN-aware VM) support — single 802.1Q parse | When `h_proto` is `0x8100`/`0x88A8`, parse one VLAN level: `bpf_skb_pull_data` for the 4 extra tag bytes, re-read the data pointers, dispatch on the inner ethertype, and offset the IP header by 4; also handle the offloaded-tag direction (`skb->vlan_present`, where the tag lives in skb metadata and the linear data already starts at the inner header). Blocked on a billing decision: whether `flow_key.eth_proto` records the inner or outer proto (and whether counted bytes include the 4 tag bytes) must be settled **before** WAL entries bake the key shape. Until then trunk deployments are detection-only — cold-start warn-log, `lachesis_neutron_trunk_subports` gauge, and the kernel skipped-ethertype counter (issue #39); see §8 Tier 1 row 3a and issue #37. Estimated ~1 sprint |
 | 9 | Allowed-address-pairs MAC ingestion | `ListPorts` does not fetch a port's `allowed_address_pairs`, so a MAC a VM is *permitted* to source (a keepalived/VRRP virtual MAC, or an AAP entry with an explicit MAC) never enters `mac_tenant_map` and its bytes leak to `tenant_id="unknown"` (§8 Tier 3 row 14b; §11.5 revenue-leak SLO). Fix: add `allowed_address_pairs` to the port query and admit each pair's MAC against the owning port's tenant — userspace-then-kernel like any other insert (§3.4). The default keepalived case (real port MACs via GARP) already classifies, so this targets vMAC-mode and explicit-MAC AAP deployments. Estimated <1 sprint, low risk |
 
 ### 13.3 Construction Conventions

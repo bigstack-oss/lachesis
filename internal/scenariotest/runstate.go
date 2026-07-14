@@ -34,7 +34,7 @@ type RunState struct {
 	// attached before pushing traffic.
 	Attach AttachRecord `json:"attach"`
 
-	// Baseline is the pre-drive cubecos_bytes_total snapshot across
+	// Baseline is the pre-drive lachesis_bytes_total snapshot across
 	// all agents, captured by `drive` immediately before it pushes
 	// traffic; `assert` diffs against it.
 	Baseline []BytesSample `json:"baseline,omitempty"`

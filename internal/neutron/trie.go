@@ -50,7 +50,7 @@ import (
 // encountered (a trace attempted to revisit a router on its path).
 // These do not block boot — the resolver already fell back to
 // EXTERNAL for each — but [DetectAnomalies] surfaces them via the
-// /debug pages and the cubecos_neutron_anomalies gauge so an
+// /debug pages and the lachesis_neutron_anomalies gauge so an
 // operator can fix the underlying misconfiguration.
 //
 // # Step coverage
@@ -105,7 +105,7 @@ func BuildTrie(snap Snapshot) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
 
 // buildTrie is the implementation behind [BuildTrie], with the
 // per-step durations observed on m's
-// `cubecos_neutron_builder_step_duration_seconds` histogram (m may
+// `lachesis_neutron_builder_step_duration_seconds` histogram (m may
 // be nil — every [Metrics] helper no-ops on nil receivers). The body
 // is a literal transcription of the §5.2 step order; each step's
 // logic lives on its [trieBuilder] emit* method.

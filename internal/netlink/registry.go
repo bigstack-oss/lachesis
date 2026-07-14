@@ -56,7 +56,7 @@ func (r *Registry) Forget(iface string) {
 }
 
 // Len returns the current number of attached interfaces, suitable
-// for the cubecos_attached_interfaces gauge.
+// for the lachesis_attached_interfaces gauge.
 func (r *Registry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

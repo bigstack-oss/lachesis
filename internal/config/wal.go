@@ -20,7 +20,7 @@ type WALConfig struct {
 
 func walDefaults() WALConfig {
 	return WALConfig{
-		Path:          "/var/lib/cubecos/network_agent_state.json",
+		Path:          "/var/lib/lachesis/network_agent_state.json",
 		FlushInterval: 60 * time.Second,
 		Enabled:       true,
 	}

@@ -73,7 +73,7 @@ func seedSnapshots(t *testing.T, path string) {
 	}
 }
 
-// loadFallbackCount gathers cubecos_wal_load_fallback_total{from=...}
+// loadFallbackCount gathers lachesis_wal_load_fallback_total{from=...}
 // from the agent's WAL metrics bundle.
 func loadFallbackCount(t *testing.T, ag *agent.Agent, from string) float64 {
 	t.Helper()
@@ -86,7 +86,7 @@ func loadFallbackCount(t *testing.T, ag *agent.Agent, from string) float64 {
 		t.Fatalf("Gather: %v", err)
 	}
 	for _, fam := range mf {
-		if fam.GetName() != "cubecos_wal_load_fallback_total" {
+		if fam.GetName() != "lachesis_wal_load_fallback_total" {
 			continue
 		}
 		for _, metric := range fam.GetMetric() {

@@ -16,7 +16,7 @@ import (
 // Keystone (first call only; the client is cached so a transient
 // fetch failure does not re-auth), drain the five list endpoints,
 // build the trie, and detect anomalies. Per-endpoint failures are
-// recorded on cubecos_neutron_api_errors_total before returning.
+// recorded on lachesis_neutron_api_errors_total before returning.
 //
 // Sync retains nothing — the returned [SyncResult] becomes visible
 // to the read accessors only when the caller hands it to

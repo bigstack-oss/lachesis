@@ -35,7 +35,7 @@ func kafkaDefaults() KafkaConfig {
 	return KafkaConfig{
 		Enabled: false,
 		Topic:   "notifications.info",
-		GroupID: "cubecos-network-telemetry",
+		GroupID: "lachesis",
 	}
 }
 

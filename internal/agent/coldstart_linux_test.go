@@ -22,7 +22,7 @@ import (
 // blind-spot detection (docs/DESIGN.md §8 Tier 1): a snapshot
 // containing trunk subports admits their MACs (the metadata layer
 // accepts them) but emits exactly one summary warning and sets the
-// cubecos_neutron_trunk_subports gauge, while a trunk-free snapshot
+// lachesis_neutron_trunk_subports gauge, while a trunk-free snapshot
 // emits no warning and leaves the gauge at zero.
 func TestPopulateMetadataFromPorts_TrunkSubportWarning(t *testing.T) {
 	tests := []struct {
@@ -76,12 +76,12 @@ func TestPopulateMetadataFromPorts_TrunkSubportWarning(t *testing.T) {
 				}
 			}
 			want := fmt.Sprintf(`
-# HELP cubecos_neutron_trunk_subports Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).
-# TYPE cubecos_neutron_trunk_subports gauge
-cubecos_neutron_trunk_subports %d
+# HELP lachesis_neutron_trunk_subports Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).
+# TYPE lachesis_neutron_trunk_subports gauge
+lachesis_neutron_trunk_subports %d
 `, tc.wantGauge)
 			if err := testutil.GatherAndCompare(reg, strings.NewReader(want),
-				"cubecos_neutron_trunk_subports"); err != nil {
+				"lachesis_neutron_trunk_subports"); err != nil {
 				t.Errorf("metric mismatch:\n%v", err)
 			}
 		})

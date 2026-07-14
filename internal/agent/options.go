@@ -34,7 +34,7 @@ type Options struct {
 	Resolver metrics.TenantResolver
 	// Stats reads the kernel telemetry_stats counters once per
 	// scrape drain (see [telemetryFillReader]). nil disables the
-	// drain — the cubecos_bpf_update_failures_total series stay
+	// drain — the lachesis_bpf_update_failures_total series stay
 	// zero-seeded — which is the case on darwin and in unit tests;
 	// the Linux Bootstrap always wires it.
 	Stats *bpf.StatsReader

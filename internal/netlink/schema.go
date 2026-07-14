@@ -4,7 +4,7 @@
 
 package netlink
 
-// iface_kind label values for cubecos_tc_attach_failures_total: "tap"
+// iface_kind label values for lachesis_tc_attach_failures_total: "tap"
 // for prefix-matched links, "other" for explicit-allowlist entries.
 // [linuxSubscriber.kindFor] produces these; [NewMetrics] seeds both at
 // zero so the counter is visible before any failure occurs. The Help

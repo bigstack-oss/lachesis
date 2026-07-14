@@ -73,7 +73,7 @@ func TestClassifier_LateBindingResolvesToTenant(t *testing.T) {
 		t.Errorf("resolved total = %d bytes, want 1800 (full cumulative, no double-count)", got)
 	}
 	if n := testutil.ToFloat64(mx.resolved); n != 1 {
-		t.Errorf("cubecos_unresolved_resolved_total = %v, want 1", n)
+		t.Errorf("lachesis_unresolved_resolved_total = %v, want 1", n)
 	}
 	if len(ev.deleted) != 0 {
 		t.Errorf("resolve reset the kernel entry (%d deletes); a resolved flow must keep counting", len(ev.deleted))

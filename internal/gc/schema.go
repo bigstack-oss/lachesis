@@ -23,7 +23,7 @@ const component = "gc"
 const ghostSweepInterval = 60 * time.Second
 
 // labelReason is the Prometheus label key naming the eviction cause on
-// cubecos_gc_evictions_total.
+// lachesis_gc_evictions_total.
 const labelReason = "reason"
 
 // reason* are the values of the [labelReason] label. ttl is a

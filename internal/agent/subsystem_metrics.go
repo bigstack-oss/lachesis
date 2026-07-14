@@ -24,7 +24,7 @@ import (
 // subsystemMetrics bundles the per-subsystem Prometheus instrument
 // sets the agent registers alongside its custom Collector, plus the
 // netlink Interface Registry shared with the
-// cubecos_attached_interfaces gauge. The registry is owned by the
+// lachesis_attached_interfaces gauge. The registry is owned by the
 // netlink subscriber (when non-nil) but also read by the netlink
 // metrics for its current-size gauge.
 type subsystemMetrics struct {
@@ -75,7 +75,7 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics, kafkaTopic string) subsyste
 
 // telemetryFillReader decorates the scraper's [scraper.MapReader] so
 // every successful drain records the kernel telemetry_map entry count
-// into the cubecos_bpf_map_current_entries{map="telemetry_map"} gauge.
+// into the lachesis_bpf_map_current_entries{map="telemetry_map"} gauge.
 // The drained key set IS the kernel map's current population
 // (read-don't-clear; only GC evicts), so len(dst) after a full
 // BatchLookup is the fill numerator the pressure-relief threshold
@@ -84,7 +84,7 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics, kafkaTopic string) subsyste
 //
 // The same successful drain also reads the kernel telemetry_stats
 // counters (when stats is wired) into
-// cubecos_bpf_update_failures_total{reason}, keeping the loss counters
+// lachesis_bpf_update_failures_total{reason}, keeping the loss counters
 // on the same cadence as the fill gauge they explain.
 type telemetryFillReader struct {
 	inner scraper.MapReader
@@ -106,7 +106,7 @@ func (r telemetryFillReader) BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) er
 			// Never fail the tick — the billing drain above already
 			// succeeded. Logged (not silent) and retried next tick;
 			// the exported counters just stay one interval stale.
-			slog.Warn("telemetry_stats drain failed; cubecos_bpf_update_failures_total is stale",
+			slog.Warn("telemetry_stats drain failed; lachesis_bpf_update_failures_total is stale",
 				"component", componentBPF, "err", err)
 			return nil
 		}

@@ -54,21 +54,21 @@ func TestCollect_EmitsCumulativeBytesAndPackets(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE cubecos_bytes_total counter
-cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 1000
-# HELP cubecos_packets_total Network packets observed by the agent, cumulative since first sight.
-# TYPE cubecos_packets_total counter
-cubecos_packets_total{direction="rx",tenant_id="unknown",zone="external"} 10
+# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 1000
+# HELP lachesis_packets_total Network packets observed by the agent, cumulative since first sight.
+# TYPE lachesis_packets_total counter
+lachesis_packets_total{direction="rx",tenant_id="unknown",zone="external"} 10
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"cubecos_bytes_total", "cubecos_packets_total"); err != nil {
+		"lachesis_bytes_total", "lachesis_packets_total"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
 
 // TestCollect_DurationHistogramObservesEachPass pins the
-// cubecos_collect_duration_seconds exposure. The histogram's sum is
+// lachesis_collect_duration_seconds exposure. The histogram's sum is
 // wall-clock so GatherAndCompare can't pin exact values; sample
 // count per Gather is deterministic (one observation per Collect
 // pass, emitted within the same pass).
@@ -84,7 +84,7 @@ func TestCollect_DurationHistogramObservesEachPass(t *testing.T) {
 		}
 		found := false
 		for _, fam := range mf {
-			if fam.GetName() != "cubecos_collect_duration_seconds" {
+			if fam.GetName() != "lachesis_collect_duration_seconds" {
 				continue
 			}
 			found = true
@@ -93,7 +93,7 @@ func TestCollect_DurationHistogramObservesEachPass(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("gather %d: cubecos_collect_duration_seconds not exposed", gathers)
+			t.Fatalf("gather %d: lachesis_collect_duration_seconds not exposed", gathers)
 		}
 	}
 }
@@ -113,7 +113,7 @@ func TestCollect_TenantResolverApplied(t *testing.T) {
 	}
 	found := false
 	for _, fam := range mf {
-		if fam.GetName() != "cubecos_bytes_total" {
+		if fam.GetName() != "lachesis_bytes_total" {
 			continue
 		}
 		for _, m := range fam.GetMetric() {
@@ -163,7 +163,7 @@ func TestCollect_LabelsCoverAllZonesAndDirections(t *testing.T) {
 
 	seen := map[string]bool{}
 	for _, fam := range mf {
-		if fam.GetName() != "cubecos_bytes_total" {
+		if fam.GetName() != "lachesis_bytes_total" {
 			continue
 		}
 		for _, m := range fam.GetMetric() {
@@ -202,7 +202,7 @@ func TestCollect_UnknownZoneFallsBackToNumeric(t *testing.T) {
 	}
 	want := false
 	for _, fam := range mf {
-		if fam.GetName() != "cubecos_bytes_total" {
+		if fam.GetName() != "lachesis_bytes_total" {
 			continue
 		}
 		for _, m := range fam.GetMetric() {
@@ -235,18 +235,18 @@ func TestCollect_AggregatesFlowsSharingLabels(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE cubecos_bytes_total counter
-cubecos_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 500
-# HELP cubecos_packets_total Network packets observed by the agent, cumulative since first sight.
-# TYPE cubecos_packets_total counter
-cubecos_packets_total{direction="rx",tenant_id="unknown",zone="external"} 5
-# HELP cubecos_state_flows Distinct flow keys currently tracked in GlobalState.
-# TYPE cubecos_state_flows gauge
-cubecos_state_flows 5
+# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 500
+# HELP lachesis_packets_total Network packets observed by the agent, cumulative since first sight.
+# TYPE lachesis_packets_total counter
+lachesis_packets_total{direction="rx",tenant_id="unknown",zone="external"} 5
+# HELP lachesis_state_flows Distinct flow keys currently tracked in GlobalState.
+# TYPE lachesis_state_flows gauge
+lachesis_state_flows 5
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"cubecos_bytes_total", "cubecos_packets_total", "cubecos_state_flows"); err != nil {
+		"lachesis_bytes_total", "lachesis_packets_total", "lachesis_state_flows"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
@@ -273,12 +273,12 @@ func TestCollect_SeriesMonotonicAcrossGhostSweep(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE cubecos_bytes_total counter
-cubecos_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
+# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"cubecos_bytes_total"); err != nil {
+		"lachesis_bytes_total"); err != nil {
 		t.Errorf("before sweep: %v", err)
 	}
 
@@ -296,18 +296,18 @@ cubecos_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
 	// settled bucket carries it. No live flows remain, and nothing
 	// re-bucketed to "unknown".
 	expected = `
-# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE cubecos_bytes_total counter
-cubecos_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
-# HELP cubecos_state_flows Distinct flow keys currently tracked in GlobalState.
-# TYPE cubecos_state_flows gauge
-cubecos_state_flows 0
-# HELP cubecos_state_settled_tuples Distinct (tenant, zone, direction) buckets in the settled-bytes accumulator — flows folded out when their tenant binding was about to disappear (docs/DESIGN.md §3.5).
-# TYPE cubecos_state_settled_tuples gauge
-cubecos_state_settled_tuples 1
+# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
+# HELP lachesis_state_flows Distinct flow keys currently tracked in GlobalState.
+# TYPE lachesis_state_flows gauge
+lachesis_state_flows 0
+# HELP lachesis_state_settled_tuples Distinct (tenant, zone, direction) buckets in the settled-bytes accumulator — flows folded out when their tenant binding was about to disappear (docs/DESIGN.md §3.5).
+# TYPE lachesis_state_settled_tuples gauge
+lachesis_state_settled_tuples 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"cubecos_bytes_total", "cubecos_state_flows", "cubecos_state_settled_tuples"); err != nil {
+		"lachesis_bytes_total", "lachesis_state_flows", "lachesis_state_settled_tuples"); err != nil {
 		t.Errorf("after sweep: %v", err)
 	}
 }
@@ -347,13 +347,13 @@ func TestCollect_MACReuseDoesNotInheritOrReplay(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE cubecos_bytes_total counter
-cubecos_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
-cubecos_bytes_total{direction="tx",tenant_id="tenant-b",zone="same_tenant"} 300
+# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
+lachesis_bytes_total{direction="tx",tenant_id="tenant-b",zone="same_tenant"} 300
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"cubecos_bytes_total"); err != nil {
+		"lachesis_bytes_total"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
@@ -375,15 +375,15 @@ func TestCollect_SettledAndLiveSumPerTuple(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP cubecos_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE cubecos_bytes_total counter
-cubecos_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 500
-# HELP cubecos_packets_total Network packets observed by the agent, cumulative since first sight.
-# TYPE cubecos_packets_total counter
-cubecos_packets_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 5
+# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 500
+# HELP lachesis_packets_total Network packets observed by the agent, cumulative since first sight.
+# TYPE lachesis_packets_total counter
+lachesis_packets_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 5
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"cubecos_bytes_total", "cubecos_packets_total"); err != nil {
+		"lachesis_bytes_total", "lachesis_packets_total"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
@@ -398,20 +398,20 @@ func TestCollect_HealthMetrics(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP cubecos_scraper_errors_total Cumulative count of failed BPF-map drain attempts since agent start.
-# TYPE cubecos_scraper_errors_total counter
-cubecos_scraper_errors_total 7
-# HELP cubecos_scraper_last_success_unix_seconds Unix timestamp of the most recent successful BPF-map drain; 0 if never.
-# TYPE cubecos_scraper_last_success_unix_seconds gauge
-cubecos_scraper_last_success_unix_seconds 1.7e+09
-# HELP cubecos_state_flows Distinct flow keys currently tracked in GlobalState.
-# TYPE cubecos_state_flows gauge
-cubecos_state_flows 1
+# HELP lachesis_scraper_errors_total Cumulative count of failed BPF-map drain attempts since agent start.
+# TYPE lachesis_scraper_errors_total counter
+lachesis_scraper_errors_total 7
+# HELP lachesis_scraper_last_success_unix_seconds Unix timestamp of the most recent successful BPF-map drain; 0 if never.
+# TYPE lachesis_scraper_last_success_unix_seconds gauge
+lachesis_scraper_last_success_unix_seconds 1.7e+09
+# HELP lachesis_state_flows Distinct flow keys currently tracked in GlobalState.
+# TYPE lachesis_state_flows gauge
+lachesis_state_flows 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"cubecos_scraper_errors_total",
-		"cubecos_scraper_last_success_unix_seconds",
-		"cubecos_state_flows",
+		"lachesis_scraper_errors_total",
+		"lachesis_scraper_last_success_unix_seconds",
+		"lachesis_state_flows",
 	); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}

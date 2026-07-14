@@ -18,12 +18,12 @@ import (
 //
 // The instruments:
 //
-//   - cubecos_neutron_sync_age_seconds                          gauge (sync recency)
-//   - cubecos_neutron_api_errors_total{endpoint, code}          counter
-//   - cubecos_neutron_unknown_device_owner_total{owner}         counter
-//   - cubecos_neutron_builder_step_duration_seconds{step}       histogram
-//   - cubecos_neutron_anomalies{class}                          gauge (topology health)
-//   - cubecos_neutron_trunk_subports                            gauge (data-plane blind spot)
+//   - lachesis_neutron_sync_age_seconds                          gauge (sync recency)
+//   - lachesis_neutron_api_errors_total{endpoint, code}          counter
+//   - lachesis_neutron_unknown_device_owner_total{owner}         counter
+//   - lachesis_neutron_builder_step_duration_seconds{step}       histogram
+//   - lachesis_neutron_anomalies{class}                          gauge (topology health)
+//   - lachesis_neutron_trunk_subports                            gauge (data-plane blind spot)
 type Metrics struct {
 	syncAge       prometheus.GaugeFunc
 	apiErrors     *prometheus.CounterVec
@@ -36,7 +36,7 @@ type Metrics struct {
 // NewMetrics constructs the bundle. `lastSync` returns the most
 // recent successful cold-start / reconcile time. A zero time.Time
 // (never synced) is reported as `-1` — operators filter
-// `cubecos_neutron_sync_age_seconds < 0` to surface
+// `lachesis_neutron_sync_age_seconds < 0` to surface
 // never-yet-synced agents.
 //
 // Each Endpoint* child of the api_errors counter is seeded at zero
@@ -49,29 +49,29 @@ type Metrics struct {
 func NewMetrics(lastSync func() time.Time) *Metrics {
 	m := &Metrics{
 		apiErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "cubecos_neutron_api_errors_total",
+			Name: "lachesis_neutron_api_errors_total",
 			Help: "Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).",
 		}, []string{"endpoint", "code"}),
 		unknownOwners: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "cubecos_neutron_unknown_device_owner_total",
+			Name: "lachesis_neutron_unknown_device_owner_total",
 			Help: "Count of port admissions to mac_tenant_map under device_owner values outside the IsKnownVMOwner allowlist.",
 		}, []string{"owner"}),
 		builderStep: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "cubecos_neutron_builder_step_duration_seconds",
+			Name:    "lachesis_neutron_builder_step_duration_seconds",
 			Help:    "BuildTrie per-step duration (DESIGN §5.2 steps 1-5), in seconds.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"step"}),
 		anomalies: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "cubecos_neutron_anomalies",
+			Name: "lachesis_neutron_anomalies",
 			Help: "Count of topology anomalies by class detected at the last Neutron cold-start or resync.",
 		}, []string{"class"}),
 		trunkSubports: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "cubecos_neutron_trunk_subports",
+			Name: "lachesis_neutron_trunk_subports",
 			Help: "Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).",
 		}),
 	}
 	m.syncAge = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-		Name: "cubecos_neutron_sync_age_seconds",
+		Name: "lachesis_neutron_sync_age_seconds",
 		Help: "Seconds since the last successful Neutron cold-start or reconcile; -1 means never synced.",
 	}, func() float64 {
 		t := lastSync()

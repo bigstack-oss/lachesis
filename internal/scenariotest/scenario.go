@@ -178,6 +178,6 @@ type Expect struct {
 	Direction string
 
 	// MinBytes is the lower bound on the delta of
-	// cubecos_bytes_total for this tuple over the drive window.
+	// lachesis_bytes_total for this tuple over the drive window.
 	MinBytes int64
 }

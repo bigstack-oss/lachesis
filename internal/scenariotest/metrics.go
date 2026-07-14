@@ -15,18 +15,18 @@ import (
 // internal/netlink/metrics.go); kept as local constants so this tool
 // does not import internal/bpf and its generated kernel bindings.
 const (
-	metricBytesTotal         = "cubecos_bytes_total"
-	metricAttachedInterfaces = "cubecos_attached_interfaces"
-	metricAttachFailures     = "cubecos_tc_attach_failures_total"
+	metricBytesTotal         = "lachesis_bytes_total"
+	metricAttachedInterfaces = "lachesis_attached_interfaces"
+	metricAttachFailures     = "lachesis_tc_attach_failures_total"
 	// metricSettledFlows counts GlobalState rows the agent's ghost sweep
 	// folded into the settled-bytes accumulator (DESIGN §3.5). The
 	// mac-reuse scenario polls it to know the sweep has processed a
 	// deleted VM. Absent on pre-fold agents — the scenario checks
 	// presence and refuses to run rather than hanging on the poll.
-	metricSettledFlows = "cubecos_gc_settled_flows_total"
+	metricSettledFlows = "lachesis_gc_settled_flows_total"
 )
 
-// BytesSample is one cubecos_bytes_total series: the {tenant_id, zone,
+// BytesSample is one lachesis_bytes_total series: the {tenant_id, zone,
 // direction} label tuple and its cumulative value. JSON-tagged
 // because drive persists the pre-traffic snapshot into the run-state
 // file for assert to diff against.
@@ -155,7 +155,7 @@ func familySum(fams map[string]*dto.MetricFamily, name string) float64 {
 	return total
 }
 
-// bytesSamples extracts every cubecos_bytes_total series with its
+// bytesSamples extracts every lachesis_bytes_total series with its
 // {tenant_id, zone, direction} labels.
 func bytesSamples(fams map[string]*dto.MetricFamily) []BytesSample {
 	fam, ok := fams[metricBytesTotal]
@@ -181,7 +181,7 @@ func bytesSamples(fams map[string]*dto.MetricFamily) []BytesSample {
 }
 
 // sampleValue returns whichever typed value a metric carries. The
-// agent emits cubecos_bytes_total as a counter and the attach metrics
+// agent emits lachesis_bytes_total as a counter and the attach metrics
 // as gauge/counter; reading all three shapes keeps this robust to the
 // exact type.
 func sampleValue(m *dto.Metric) float64 {

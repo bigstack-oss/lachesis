@@ -13,7 +13,7 @@ package config
 const Version = "1"
 
 // DefaultEnvPrefix is used when [Options.EnvPrefix] is empty.
-const DefaultEnvPrefix = "CUBECOS"
+const DefaultEnvPrefix = "LACHESIS"
 
 // redactedSecret is what secret fields serialize as in JSON
 // ([NeutronConfig.MarshalJSON]), keeping credentials off the
