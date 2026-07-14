@@ -1,0 +1,43 @@
+name: DCO
+
+# Verifies every non-merge commit in a pull request carries a
+# `Signed-off-by:` trailer, per the Developer Certificate of Origin
+# (https://developercertificate.org/). Sign off with `git commit -s`.
+# See CONTRIBUTING.md.
+
+on:
+  pull_request:
+    branches: [ develop ]
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: Check sign-off
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
+
+      - name: Verify Signed-off-by on every commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for sha in $(git rev-list --no-merges "$BASE_SHA".."$HEAD_SHA"); do
+            if ! git show -s --format='%B' "$sha" | grep -qiE '^Signed-off-by: .+ <.+@.+>'; then
+              author="$(git show -s --format='%an <%ae>' "$sha")"
+              echo "::error::commit $sha ($author) is missing a Signed-off-by line"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "DCO check failed — sign off your commits with 'git commit -s' (see CONTRIBUTING.md)."
+            exit 1
+          fi
+          echo "All commits are signed off."
