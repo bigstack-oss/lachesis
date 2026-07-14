@@ -24,7 +24,7 @@ import (
 
 	kafkago "github.com/segmentio/kafka-go"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
+	"github.com/bigstack-oss/lachesis/internal/boot"
 )
 
 // Trigger is the reconcile kick the consumer fires on a Neutron change.

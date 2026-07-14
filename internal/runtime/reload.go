@@ -29,8 +29,8 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
+	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/logging"
 )
 
 // PressureTunable receives hot-reloaded pressure-relief parameters. The

@@ -14,7 +14,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 // BuildTrie runs the cold-start 5-step algorithm of

@@ -33,10 +33,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/boot"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/state"
 )
 
 // MapGauge refreshes the kernel mac_tenant_map current-entry gauge after

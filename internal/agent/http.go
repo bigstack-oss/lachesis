@@ -12,8 +12,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/debug"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
+	"github.com/bigstack-oss/lachesis/internal/debug"
+	"github.com/bigstack-oss/lachesis/internal/runtime"
 )
 
 // openHTTP wires the agent's HTTP surface: the Prometheus registry,

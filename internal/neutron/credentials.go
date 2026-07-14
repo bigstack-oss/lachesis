@@ -5,8 +5,8 @@
 package neutron
 
 import (
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/osclient"
+	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/osclient"
 )
 
 // Credentials is the resolved set of Keystone v3 password-auth

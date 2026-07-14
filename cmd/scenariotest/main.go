@@ -29,8 +29,8 @@ import (
 	"os/signal"
 	"text/tabwriter"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/cmd/scenariotest/scenarios"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/cmd/scenariotest/scenarios"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
 const usage = `scenariotest — describe a topology, realize it on a live cluster, assert /metrics deltas.

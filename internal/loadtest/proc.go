@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
+	"github.com/bigstack-oss/lachesis/internal/metrics"
 )
 
 // procSample is one point-in-time observation of an agent process's

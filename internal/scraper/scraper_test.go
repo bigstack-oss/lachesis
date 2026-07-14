@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/scraper"
+	"github.com/bigstack-oss/lachesis/internal/state"
 )
 
 // fakeReader is the unit-test MapReader. It returns whatever its

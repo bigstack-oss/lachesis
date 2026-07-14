@@ -1,6 +1,6 @@
 package metadata
 
-import "github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+import "github.com/bigstack-oss/lachesis/internal/bpf"
 
 // Resolver implements `metrics.TenantResolver` against a
 // [*ShardedMetadataMap]. It picks the VM-side MAC out of a

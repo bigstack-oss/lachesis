@@ -44,8 +44,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/state"
 )
 
 // FlowEvictor deletes a flow entry from the kernel telemetry_map — the

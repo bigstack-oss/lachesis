@@ -8,7 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/config"
 )
 
 func TestNeutronValidate_DisabledIsAlwaysOK(t *testing.T) {

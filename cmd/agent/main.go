@@ -19,7 +19,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/agent"
+	"github.com/bigstack-oss/lachesis/internal/agent"
 )
 
 func main() {

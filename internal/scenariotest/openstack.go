@@ -23,7 +23,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/ports"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/subnets"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/osclient"
+	"github.com/bigstack-oss/lachesis/internal/osclient"
 )
 
 // OpenStack is the gophercloud-backed [Cloud]. It holds admin-scoped

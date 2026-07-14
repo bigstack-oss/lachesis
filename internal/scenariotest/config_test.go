@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/osclient"
+	"github.com/bigstack-oss/lachesis/internal/osclient"
 )
 
 // TestLoadConfig_RejectsUnknownKeys pins the strict decoder: a typo'd

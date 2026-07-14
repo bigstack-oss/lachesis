@@ -10,7 +10,7 @@ package neutron
 import (
 	"net/netip"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 // Snapshot is the four Neutron resource lists the agent consumes

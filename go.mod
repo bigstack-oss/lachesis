@@ -1,4 +1,4 @@
-module github.com/bigstack-oss/cube-cos-network-telemetry
+module github.com/bigstack-oss/lachesis
 
 go 1.25.3
 

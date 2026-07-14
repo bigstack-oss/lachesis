@@ -12,8 +12,8 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
+	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/wal"
 )
 
 // WALMetrics returns the WAL instrument bundle the agent registered

@@ -6,7 +6,7 @@
 
 package state
 
-import "github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+import "github.com/bigstack-oss/lachesis/internal/bpf"
 
 // Counter holds the per-flow cumulative state plus the last raw
 // kernel reading needed for delta math. Mutated in place by

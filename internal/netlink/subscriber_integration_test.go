@@ -12,11 +12,11 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	vnl "github.com/vishvananda/netlink"
 
-	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit/fixtures"
-	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
+	cnetlink "github.com/bigstack-oss/lachesis/internal/netlink"
+	"github.com/bigstack-oss/lachesis/internal/tcattach"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit/fixtures"
+	tns "github.com/bigstack-oss/lachesis/internal/testenv/netns"
 )
 
 // TestSubscriber_AttachesNewTap verifies the production guarantee:

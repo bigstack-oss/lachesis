@@ -13,7 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/config"
 )
 
 // writeAgentConfig writes a YAML config that points the agent's netlink

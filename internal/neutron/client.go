@@ -7,7 +7,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/osclient"
+	"github.com/bigstack-oss/lachesis/internal/osclient"
 )
 
 // Client is the agent's Neutron API handle. Internally it wraps two

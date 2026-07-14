@@ -8,7 +8,7 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 // batchSize is the maximum number of keys requested per BPF_MAP_LOOKUP_BATCH

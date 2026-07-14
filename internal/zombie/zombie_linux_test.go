@@ -7,7 +7,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
+	"github.com/bigstack-oss/lachesis/internal/tcattach"
 )
 
 func TestIsTelemetryOrphan(t *testing.T) {

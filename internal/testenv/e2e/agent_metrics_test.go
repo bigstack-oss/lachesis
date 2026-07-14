@@ -17,12 +17,12 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/vishvananda/netlink"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/agent"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
-	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/traffic"
+	"github.com/bigstack-oss/lachesis/internal/agent"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/logging"
+	tns "github.com/bigstack-oss/lachesis/internal/testenv/netns"
+	"github.com/bigstack-oss/lachesis/internal/testenv/traffic"
 )
 
 // TestAgent_MetricsReflectBPFMapTraffic exercises the L3↔L4 spine

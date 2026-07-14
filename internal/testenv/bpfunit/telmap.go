@@ -6,7 +6,7 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 // MACBytes converts the low 48 bits of v into a 6-byte array in big-endian

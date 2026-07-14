@@ -10,7 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/osclient"
+	"github.com/bigstack-oss/lachesis/internal/osclient"
 )
 
 // Config is the on-disk YAML scenariotest consumes. Mirrors the

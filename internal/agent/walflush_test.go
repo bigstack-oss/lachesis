@@ -18,12 +18,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/agent"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
+	"github.com/bigstack-oss/lachesis/internal/agent"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/logging"
+	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/wal"
 )
 
 // newIdleAgent constructs an agent without starting Run — the WAL

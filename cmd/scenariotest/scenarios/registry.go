@@ -12,7 +12,7 @@ package scenarios
 import (
 	"fmt"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
 // All returns every registered scenario, freshly constructed each

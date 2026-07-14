@@ -10,10 +10,10 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/vishvananda/netlink"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
-	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/traffic"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit"
+	tns "github.com/bigstack-oss/lachesis/internal/testenv/netns"
+	"github.com/bigstack-oss/lachesis/internal/testenv/traffic"
 )
 
 // TestE2E_HybridZone_SameTenantNoTrie verifies the MAC-first hybrid path:

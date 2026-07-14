@@ -10,10 +10,10 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit/fixtures"
-	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
+	"github.com/bigstack-oss/lachesis/internal/tcattach"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit/fixtures"
+	tns "github.com/bigstack-oss/lachesis/internal/testenv/netns"
 )
 
 // TestAttachTelemetry_ReattachDoesNotStackFilters proves the

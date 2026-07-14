@@ -9,16 +9,16 @@ package agent
 import (
 	"log/slog"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/kafka"
-	cnetlink "github.com/bigstack-oss/cube-cos-network-telemetry/internal/netlink"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/reconcile"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/unresolved"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/wal"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/gc"
+	"github.com/bigstack-oss/lachesis/internal/kafka"
+	cnetlink "github.com/bigstack-oss/lachesis/internal/netlink"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/reconcile"
+	"github.com/bigstack-oss/lachesis/internal/scraper"
+	"github.com/bigstack-oss/lachesis/internal/unresolved"
+	"github.com/bigstack-oss/lachesis/internal/wal"
+	"github.com/bigstack-oss/lachesis/internal/zombie"
 )
 
 // subsystemMetrics bundles the per-subsystem Prometheus instrument

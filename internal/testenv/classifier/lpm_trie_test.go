@@ -18,8 +18,8 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit"
 )
 
 const trieTenantID uint32 = 7 // arbitrary; matches the value we write into mac_tenant_map below

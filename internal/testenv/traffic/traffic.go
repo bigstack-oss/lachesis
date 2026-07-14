@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
+	tns "github.com/bigstack-oss/lachesis/internal/testenv/netns"
 )
 
 // SendTCPStream opens a TCP connection from inside src to dstIP:dstPort and

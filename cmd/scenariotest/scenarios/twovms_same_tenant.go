@@ -1,8 +1,8 @@
 package scenarios
 
 import (
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scenariotest"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/scenario"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 // twoVMsSameTenant is the baseline that closes the scenariotest loop

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/config"
 )
 
 func TestBPFValidate(t *testing.T) {

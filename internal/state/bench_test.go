@@ -3,8 +3,8 @@ package state_test
 import (
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/state"
 )
 
 // BenchmarkHotpath_ApplyDelta measures the steady-state delta-math

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/runtime"
+	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/logging"
+	"github.com/bigstack-oss/lachesis/internal/runtime"
 )
 
 func TestReload_AppliesHotField(t *testing.T) {
