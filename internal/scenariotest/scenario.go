@@ -65,6 +65,20 @@ type Scenario struct {
 	// testing only ever lower-bounds; declaring upper bounds is
 	// hostile to background tenant traffic.
 	Expect []Expect
+
+	// Deferred lists DSL VM ids that `up` declares but does NOT boot:
+	// no port, no server, no FIP, no attach-gate slot. A later
+	// [BootVMStep] realizes them mid-run — e.g. the mac-reuse scenario
+	// boots a VM only after another VM's MAC has been swept. Ids here
+	// must not appear in Flows that run before their BootVMStep.
+	Deferred []string
+
+	// Steps optionally scripts what `run` does between up and down.
+	// Empty keeps the classic linear loop — drive every Flow, assert
+	// every Expect — so the plain zone scenarios need not declare
+	// anything. A non-empty list replaces that loop entirely; see
+	// [Step] for the vocabulary.
+	Steps []Step
 }
 
 // FIPSpec pins how a VM's floating IP is allocated, overriding the

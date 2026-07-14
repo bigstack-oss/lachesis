@@ -25,6 +25,7 @@ func All() []*scenariotest.Scenario {
 		vmToInternet(),
 		crossTenantShared(),
 		crossTenantRouted(),
+		macReuse(),
 	}
 }
 

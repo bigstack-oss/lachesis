@@ -1,6 +1,10 @@
 package scenarios
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scenariotest"
+)
 
 var validZones = map[string]bool{
 	"same_tenant": true, "other_tenant": true, "external": true,
@@ -9,8 +13,10 @@ var validZones = map[string]bool{
 
 // TestAll_BuildAndInvariants exercises every registered scenario: the
 // DSL builder must produce a snapshot without panicking, names must be
-// unique, and every Expect must name a valid zone and a tx/rx
-// direction (the real metric vocabulary).
+// unique, and every expectation — top-level or embedded in an
+// AssertStep — must name a valid zone and a tx/rx direction (the real
+// metric vocabulary). A scenario declares either the classic
+// Flows+Expect pair or a step script that drives and asserts.
 func TestAll_BuildAndInvariants(t *testing.T) {
 	seen := map[string]bool{}
 	for _, s := range All() {
@@ -29,13 +35,23 @@ func TestAll_BuildAndInvariants(t *testing.T) {
 		if len(snap.Networks) == 0 {
 			t.Errorf("%s: topology has no networks", s.Name)
 		}
-		if len(s.Flows) == 0 {
-			t.Errorf("%s: no flows declared", s.Name)
+
+		flows, expects := s.Flows, s.Expect
+		for _, st := range s.Steps {
+			switch st := st.(type) {
+			case scenariotest.DriveStep:
+				flows = append(flows, st.Flows...)
+			case scenariotest.AssertStep:
+				expects = append(expects, st.Expect...)
+			}
 		}
-		if len(s.Expect) == 0 {
-			t.Errorf("%s: no expectations declared", s.Name)
+		if len(flows) == 0 {
+			t.Errorf("%s: no flows declared (top-level or in steps)", s.Name)
 		}
-		for _, e := range s.Expect {
+		if len(expects) == 0 {
+			t.Errorf("%s: no expectations declared (top-level or in steps)", s.Name)
+		}
+		for _, e := range expects {
 			if !validZones[e.Zone] {
 				t.Errorf("%s: invalid zone %q", s.Name, e.Zone)
 			}

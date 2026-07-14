@@ -18,6 +18,12 @@ const (
 	metricBytesTotal         = "cubecos_bytes_total"
 	metricAttachedInterfaces = "cubecos_attached_interfaces"
 	metricAttachFailures     = "cubecos_tc_attach_failures_total"
+	// metricSettledFlows counts GlobalState rows the agent's ghost sweep
+	// folded into the settled-bytes accumulator (DESIGN §3.5). The
+	// mac-reuse scenario polls it to know the sweep has processed a
+	// deleted VM. Absent on pre-fold agents — the scenario checks
+	// presence and refuses to run rather than hanging on the poll.
+	metricSettledFlows = "cubecos_gc_settled_flows_total"
 )
 
 // BytesSample is one cubecos_bytes_total series: the {tenant_id, zone,
@@ -39,6 +45,7 @@ type ScrapeResult struct {
 	Present            map[string]bool
 	AttachedInterfaces float64
 	AttachFailures     float64
+	SettledFlows       float64
 	Bytes              []BytesSample
 }
 
@@ -48,6 +55,7 @@ type ScrapeResult struct {
 type MetricsSnapshot struct {
 	AttachedInterfaces float64
 	AttachFailures     float64
+	SettledFlows       float64
 	Bytes              []BytesSample
 }
 
@@ -80,12 +88,13 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 		return ScrapeResult{}, err
 	}
 	r := ScrapeResult{Present: map[string]bool{}}
-	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures} {
+	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures, metricSettledFlows} {
 		_, ok := fams[n]
 		r.Present[n] = ok
 	}
 	r.AttachedInterfaces = familySum(fams, metricAttachedInterfaces)
 	r.AttachFailures = familySum(fams, metricAttachFailures)
+	r.SettledFlows = familySum(fams, metricSettledFlows)
 	r.Bytes = bytesSamples(fams)
 	return r, nil
 }
@@ -101,6 +110,7 @@ func sampleAcross(ctx context.Context, src MetricsSource, urls []string) (Metric
 		}
 		snap.AttachedInterfaces += r.AttachedInterfaces
 		snap.AttachFailures += r.AttachFailures
+		snap.SettledFlows += r.SettledFlows
 		snap.Bytes = append(snap.Bytes, r.Bytes...)
 	}
 	return snap, nil

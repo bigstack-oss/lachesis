@@ -55,6 +55,10 @@ type Cloud interface {
 	CreateRouter(ctx context.Context, projectID string, spec RouterSpec) (id string, err error)
 	// CreatePort creates an unbound Neutron port with one fixed IP.
 	CreatePort(ctx context.Context, projectID string, spec PortSpec) (id string, err error)
+	// PortMAC returns a port's MAC address (admin view). The mac-reuse
+	// scenario reads a VM's Neutron-assigned MAC before deleting it, so
+	// the reborn port can pin the same address.
+	PortMAC(ctx context.Context, portID string) (mac string, err error)
 	// AddRouterInterface attaches a subnet (Neutron picks the gateway
 	// IP) or an explicit port (for a non-gateway interface IP, e.g. a
 	// transit subnet) to a router. Exactly one of subnetID/portID is
@@ -132,12 +136,16 @@ type RouterSpec struct {
 
 // PortSpec describes a single-fixed-IP Neutron port. SecGroupID is
 // optional; empty leaves the port in the network's default group.
+// MACAddress is optional; empty lets Neutron assign one (the normal
+// case — only the mac-reuse scenario pins it, and Neutron rejects a
+// MAC already in use on the same network).
 type PortSpec struct {
 	Name       string
 	NetworkID  string
 	SubnetID   string
 	FixedIP    string
 	SecGroupID string
+	MACAddress string
 }
 
 // ServerSpec describes a Nova boot on a pre-created port.

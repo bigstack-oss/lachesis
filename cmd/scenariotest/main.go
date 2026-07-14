@@ -46,7 +46,10 @@ Subcommands:
   assert    <name>      Evaluate MinBytes expectations against /metrics deltas; write the report.
   down      <name>      Tear down everything in the run-state (idempotent; projects and
                         report/run-state files are never touched).
-  run       <name>      preflight → up → drive → assert → down, one command. -keep skips down.
+  run       <name>      preflight → up → the scenario's steps → down, one command. -keep skips down.
+                        Plain scenarios run drive → assert; step-scripted scenarios (e.g. mac-reuse)
+                        run their declared step list — deleting VMs mid-run, awaiting the agent's
+                        ghost sweep, booting a deferred VM with a captured MAC, and so on.
 
 Common flags:
   -config <path>        Config file path. Required for everything except list.
@@ -100,16 +103,33 @@ func runList(out io.Writer, args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tFLOWS\tEXPECT\tPLACEMENT\tDESC")
+	fmt.Fprintln(tw, "NAME\tFLOWS\tEXPECT\tSTEPS\tPLACEMENT\tDESC")
 	for _, s := range all {
 		placement := "(scheduler)"
 		if len(s.Placement) > 0 {
 			placement = fmt.Sprintf("%d pinned", len(s.Placement))
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%s\t%s\n", s.Name, len(s.Flows), len(s.Expect), placement, s.Desc)
+		flows, expects := countDeclared(s)
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\t%s\n", s.Name, flows, expects, len(s.Steps), placement, s.Desc)
 	}
 	tw.Flush()
 	return 0
+}
+
+// countDeclared totals a scenario's flows and expectations wherever
+// they are declared — top-level for plain scenarios, inside Drive and
+// Assert steps for scripted ones.
+func countDeclared(s *scenariotest.Scenario) (flows, expects int) {
+	flows, expects = len(s.Flows), len(s.Expect)
+	for _, st := range s.Steps {
+		switch st := st.(type) {
+		case scenariotest.DriveStep:
+			flows += len(st.Flows)
+		case scenariotest.AssertStep:
+			expects += len(st.Expect)
+		}
+	}
+	return flows, expects
 }
 
 func runPreflight(args []string) int {
