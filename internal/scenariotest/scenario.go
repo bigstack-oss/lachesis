@@ -12,7 +12,7 @@
 package scenariotest
 
 import (
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/scenario"
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 // Scenario is one named, end-to-end-runnable description: topology

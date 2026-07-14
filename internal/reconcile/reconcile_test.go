@@ -10,10 +10,10 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/boot"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
 
 // fakeMap is a kernelwriter.MapUpdateDeleter that counts operations and,

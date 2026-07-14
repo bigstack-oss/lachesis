@@ -1,8 +1,8 @@
 package scenarios
 
 import (
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scenariotest"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/scenario"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 // crossTenantRouted exercises the other_tenant zone. T1 and T2 each

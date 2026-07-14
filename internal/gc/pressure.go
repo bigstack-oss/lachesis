@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 // FlowEvictor deletes a flow entry from the kernel telemetry_map. Like

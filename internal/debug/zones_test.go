@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
 
 func zonesServer(entries []neutron.TrieEntry, snap *neutron.Snapshot) *Server {

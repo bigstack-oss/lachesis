@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/perfbench"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit/fixtures"
+	"github.com/bigstack-oss/lachesis/internal/perfbench"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit/fixtures"
 )
 
 func main() {

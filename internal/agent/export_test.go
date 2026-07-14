@@ -4,10 +4,10 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/gc"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/boot"
+	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/gc"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
 )
 
 // CloseListenerForTest closes the agent's HTTP listener out from under

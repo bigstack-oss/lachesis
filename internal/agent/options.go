@@ -8,13 +8,13 @@ package agent
 import (
 	"errors"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/boot"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scraper"
+	"github.com/bigstack-oss/lachesis/internal/boot"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/logging"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/metrics"
+	"github.com/bigstack-oss/lachesis/internal/scraper"
 )
 
 // Options bundles the inputs to [New]. ConfigPath is the YAML file

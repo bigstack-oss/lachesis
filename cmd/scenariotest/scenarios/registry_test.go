@@ -3,7 +3,7 @@ package scenarios
 import (
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
 var validZones = map[string]bool{

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 func countTenant(entries []TrieEntry, tenant string) int {

@@ -33,7 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/config"
 )
 
 // Neutron carries the full Neutron subsystem state for one agent

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
 
 var indexTemplate = parsePage("index.html")

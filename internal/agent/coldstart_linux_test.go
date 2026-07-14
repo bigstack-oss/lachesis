@@ -12,10 +12,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/logging"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/logging"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
 
 // TestPopulateMetadataFromPorts_TrunkSubportWarning pins the trunk

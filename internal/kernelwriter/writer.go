@@ -29,9 +29,9 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
 
 // MapUpdater is the subset of [*ebpf.Map] the writers depend on.

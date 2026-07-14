@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metrics"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/metrics"
+	"github.com/bigstack-oss/lachesis/internal/state"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )

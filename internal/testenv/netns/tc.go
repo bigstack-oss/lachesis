@@ -6,7 +6,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
+	"github.com/bigstack-oss/lachesis/internal/tcattach"
 )
 
 // TCDirection mirrors [tcattach.Direction] so existing tests can

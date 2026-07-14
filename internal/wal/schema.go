@@ -8,7 +8,7 @@
 
 package wal
 
-import "github.com/bigstack-oss/cube-cos-network-telemetry/internal/state"
+import "github.com/bigstack-oss/lachesis/internal/state"
 
 // SchemaVersion is the on-disk envelope version. Bumped only on a
 // change to the wire types below; each bump needs a migration step (or

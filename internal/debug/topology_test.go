@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
 
 func topologyServer(snap *neutron.Snapshot) *Server {

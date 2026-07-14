@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
+	tns "github.com/bigstack-oss/lachesis/internal/testenv/netns"
 )
 
 // driveLoad runs cfg.Workers concurrent TCP workers for cfg.Duration

@@ -9,7 +9,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
+	"github.com/bigstack-oss/lachesis/internal/tcattach"
 )
 
 // Hunt enumerates every TC filter the kernel knows about and

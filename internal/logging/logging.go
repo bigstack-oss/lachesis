@@ -15,7 +15,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/config"
 )
 
 // Handle is the runtime state of the agent's logging configuration.

@@ -9,11 +9,11 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/vishvananda/netlink"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/tcattach"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit/fixtures"
-	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/zombie"
+	"github.com/bigstack-oss/lachesis/internal/tcattach"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit/fixtures"
+	tns "github.com/bigstack-oss/lachesis/internal/testenv/netns"
+	"github.com/bigstack-oss/lachesis/internal/zombie"
 )
 
 // TestHunt_DeletesOrphanFilters proves the production guarantee:

@@ -5,7 +5,7 @@
 
 package metrics
 
-import "github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+import "github.com/bigstack-oss/lachesis/internal/bpf"
 
 // MetricBytesTotal is the fully-qualified name of the cumulative bytes
 // counter emitted by [Collector]. It is the one metric name consumed by a

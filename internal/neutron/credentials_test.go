@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/config"
 )
 
 // The openrc parser itself is tested in internal/osclient; the tests

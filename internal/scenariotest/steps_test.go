@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/scenario"
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 // macReuseScenario mirrors the registered mac-reuse scenario: a

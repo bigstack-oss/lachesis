@@ -26,8 +26,8 @@ import (
 	"net/http/pprof"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
 
 //go:embed templates/*.html

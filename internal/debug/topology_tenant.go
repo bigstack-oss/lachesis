@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
 
 var topologyTenantTemplate = parsePage("topology_tenant.html")

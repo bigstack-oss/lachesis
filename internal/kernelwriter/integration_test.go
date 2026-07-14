@@ -13,11 +13,11 @@ import (
 
 	"github.com/cilium/ebpf/rlimit"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/kernelwriter"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/metadata"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/kernelwriter"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit"
 )
 
 const (

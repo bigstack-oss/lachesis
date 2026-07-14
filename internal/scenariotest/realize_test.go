@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/scenario"
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 // fakeEnv is shared mutable state between the fake Cloud and fake

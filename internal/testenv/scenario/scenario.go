@@ -24,7 +24,7 @@ package scenario
 import (
 	"fmt"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
 
 // Builder accumulates Neutron resources and emits a [neutron.Snapshot].

@@ -13,8 +13,8 @@ import (
 
 	"github.com/cilium/ebpf/rlimit"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit"
 )
 
 // Locally-administered MACs, distinct from the other classifier tests.

@@ -12,7 +12,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/loadtest"
+	"github.com/bigstack-oss/lachesis/internal/loadtest"
 )
 
 func main() {

@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"net/netip"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 // resolveIndex bundles the Neutron snapshot in lookup-optimised

@@ -17,8 +17,8 @@ import (
 
 	"github.com/cilium/ebpf/rlimit"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/bpfunit/fixtures"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit"
+	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit/fixtures"
 )
 
 // Run lifts the memlock rlimit, loads the noop fixture, and runs

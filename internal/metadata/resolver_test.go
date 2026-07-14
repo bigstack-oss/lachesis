@@ -3,7 +3,7 @@ package metadata
 import (
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 // macA / macB are locally-administered MACs (low bit of the first

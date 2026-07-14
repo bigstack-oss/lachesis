@@ -8,8 +8,8 @@ import (
 
 	"github.com/vishvananda/netlink"
 
-	tns "github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/netns"
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/testenv/traffic"
+	tns "github.com/bigstack-oss/lachesis/internal/testenv/netns"
+	"github.com/bigstack-oss/lachesis/internal/testenv/traffic"
 )
 
 func TestSendTCPStream(t *testing.T) {

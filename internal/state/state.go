@@ -43,7 +43,7 @@ package state
 import (
 	"sync"
 
-	"github.com/bigstack-oss/cube-cos-network-telemetry/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 // GlobalState is the agent's authoritative flow-keyed counter store,
