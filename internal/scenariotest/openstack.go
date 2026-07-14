@@ -347,9 +347,10 @@ func (o *OpenStack) CreatePort(ctx context.Context, projectID string, spec PortS
 		return "", err
 	}
 	opts := ports.CreateOpts{
-		NetworkID: spec.NetworkID,
-		Name:      spec.Name,
-		FixedIPs:  []ports.IP{{SubnetID: spec.SubnetID, IPAddress: spec.FixedIP}},
+		NetworkID:  spec.NetworkID,
+		Name:       spec.Name,
+		FixedIPs:   []ports.IP{{SubnetID: spec.SubnetID, IPAddress: spec.FixedIP}},
+		MACAddress: spec.MACAddress,
 	}
 	if spec.SecGroupID != "" {
 		sg := []string{spec.SecGroupID}
@@ -360,6 +361,15 @@ func (o *OpenStack) CreatePort(ctx context.Context, projectID string, spec PortS
 		return "", fmt.Errorf("openstack: create port %q: %w", spec.Name, err)
 	}
 	return p.ID, nil
+}
+
+// PortMAC reads a port's MAC address through the admin network client.
+func (o *OpenStack) PortMAC(ctx context.Context, portID string) (string, error) {
+	p, err := ports.Get(ctx, o.network, portID).Extract()
+	if err != nil {
+		return "", fmt.Errorf("openstack: get port %s: %w", portID, err)
+	}
+	return p.MACAddress, nil
 }
 
 func (o *OpenStack) AddRouterInterface(ctx context.Context, projectID, routerID, subnetID, portID string) error {

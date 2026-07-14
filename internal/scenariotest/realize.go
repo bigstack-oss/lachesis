@@ -322,8 +322,19 @@ func (r *realizer) routerInterfaces(snap neutron.Snapshot) error {
 }
 
 func (r *realizer) vmPorts(snap neutron.Snapshot) error {
+	deferred := make(map[string]bool, len(r.opts.Scenario.Deferred))
+	for _, id := range r.opts.Scenario.Deferred {
+		deferred[id] = true
+	}
 	for _, p := range snap.Ports {
 		if !strings.HasPrefix(p.DeviceOwner, "compute:") {
+			continue
+		}
+		// Deferred VMs are declared but not realized: no port, no
+		// server, no FIP, no attach-gate slot. A [BootVMStep] creates
+		// them mid-script.
+		if deferred[p.ID] {
+			r.logf("vm %s deferred (booted by a later step)", p.ID)
 			continue
 		}
 		proj, err := r.projectID(p.ProjectID)

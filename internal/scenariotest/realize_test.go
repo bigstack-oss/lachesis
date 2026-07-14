@@ -53,6 +53,11 @@ type fakeCloud struct {
 	routerExt     map[string]string          // router id → ext network id
 	routerSubnets map[string]map[string]bool // router id → attached subnet ids
 
+	// MAC model: every port gets a MAC (explicit from the spec, or a
+	// synthetic assignment), unique per network like real Neutron.
+	portMAC map[string]string // port id → mac
+	portNet map[string]string // port id → network id
+
 	// teardown model: residualPorts seeds platform-created ports
 	// (cube:mgr) per network id; deletions and detaches append to
 	// downOps in call order ("fip:<id>", "server:<id>", …).
@@ -74,6 +79,7 @@ func newFakeCloud(env *fakeEnv) *fakeCloud {
 		preProjects: map[string]string{}, findErrs: map[string]error{},
 		portSubnet: map[string]string{}, routerExt: map[string]string{},
 		routerSubnets: map[string]map[string]bool{},
+		portMAC:       map[string]string{}, portNet: map[string]string{},
 		residualPorts: map[string][]string{}, deleted: map[string]bool{},
 	}
 }
@@ -124,11 +130,36 @@ func (c *fakeCloud) CreateRouter(_ context.Context, _ string, spec RouterSpec) (
 	c.routerSubnets[id] = map[string]bool{}
 	return id, nil
 }
+
+// CreatePort models Neutron's per-network MAC uniqueness: an explicit
+// MACAddress already used by a live port on the same network is
+// rejected (MacAddressInUse), otherwise a synthetic MAC is assigned.
 func (c *fakeCloud) CreatePort(_ context.Context, _ string, spec PortSpec) (string, error) {
+	if spec.MACAddress != "" {
+		for pid, mac := range c.portMAC {
+			if mac == spec.MACAddress && c.portNet[pid] == spec.NetworkID && !c.deleted["port:"+pid] {
+				return "", fmt.Errorf("fake neutron: mac %s already in use on network %s", spec.MACAddress, spec.NetworkID)
+			}
+		}
+	}
 	c.ports = append(c.ports, spec)
 	id := c.id("port")
 	c.portSubnet[id] = spec.SubnetID
+	c.portNet[id] = spec.NetworkID
+	if spec.MACAddress != "" {
+		c.portMAC[id] = spec.MACAddress
+	} else {
+		c.portMAC[id] = fmt.Sprintf("fa:16:3e:00:00:%02x", c.seq)
+	}
 	return id, nil
+}
+
+func (c *fakeCloud) PortMAC(_ context.Context, portID string) (string, error) {
+	mac, ok := c.portMAC[portID]
+	if !ok {
+		return "", fmt.Errorf("fake neutron: no port %s", portID)
+	}
+	return mac, nil
 }
 func (c *fakeCloud) AddRouterInterface(_ context.Context, _, routerID, subnetID, portID string) error {
 	c.ifaces = append(c.ifaces, ifaceRec{routerID, subnetID, portID})
