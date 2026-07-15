@@ -135,7 +135,7 @@ func TestDrive_ExternalTargetUsesPing(t *testing.T) {
 	}
 	found := false
 	for _, c := range exec.calls {
-		if strings.Contains(c.command, "ping -c 1024 -s 1024 8.8.8.8") {
+		if strings.Contains(c.command, "ping -c 18 -s 60000 8.8.8.8") {
 			found = true
 			if c.addr != "203.0.113.10" {
 				t.Errorf("ping run on %s, want source FIP", c.addr)
