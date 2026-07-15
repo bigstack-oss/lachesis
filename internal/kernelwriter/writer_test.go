@@ -76,7 +76,7 @@ func (f *fakeMap) Delete(k any) error {
 	if err, ok := f.failDeleteAt[f.deleteCalls]; ok {
 		return err
 	}
-	var key any = k
+	key := k
 	if kk, ok := k.(*bpf.LpmKey); ok {
 		key = *kk
 	}

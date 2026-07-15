@@ -87,7 +87,7 @@ func (c *Consumer) Run(ctx context.Context) {
 			return
 		}
 	}
-	defer c.reader.Close()
+	defer func() { _ = c.reader.Close() }()
 	for {
 		msg, err := c.reader.ReadMessage(ctx)
 		if err != nil {

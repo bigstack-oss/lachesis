@@ -64,3 +64,24 @@ jobs:
       - run: task setup
       - run: task generate UID=0 GID=0
       - run: ./scripts/bench-gate.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # golangci-lint typechecks the tree, which compiles internal/bpf and
+      # needs the bpf2go-generated types.
+      - run: task setup
+      - run: task generate UID=0 GID=0
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          args: --build-tags=integration

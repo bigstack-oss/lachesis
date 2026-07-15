@@ -1,0 +1,48 @@
+version: "2"
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  settings:
+    staticcheck:
+      checks:
+        # golangci-lint's documented default set (all minus the ST style
+        # checks below), plus -QF1001: De Morgan rewrites would churn
+        # deliberately-readable !(a && b && …) ordering asserts.
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        - -QF1001
+    errcheck:
+      # Conventionally-unchecked returns. Billing-path error discipline
+      # (Collect, delta math, WAL) is enforced by dedicated error counters
+      # at every error site (docs/DESIGN.md §11), not by errcheck.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net.Conn).Close
+        - (net.Listener).Close
+        - (*github.com/bigstack-oss/lachesis/internal/testenv/bpfunit.Driver).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*text/tabwriter.Writer).Flush
+        - (net/http.ResponseWriter).Write
+  exclusions:
+    rules:
+      # Test-harness plumbing (netns/veth setup, traffic drivers) and
+      # integration-test teardown: cleanup errors are deliberately ignored.
+      - path: internal/testenv/
+        linters:
+          - errcheck
+      - path: _integration_test\.go$
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
