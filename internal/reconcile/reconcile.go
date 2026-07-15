@@ -49,12 +49,13 @@ type MapGauge interface {
 
 // FlowSettler folds userspace flow rows into the settled-bytes
 // accumulator (docs/DESIGN.md §3.5). The MAC reconcile calls it just
-// before re-pointing a live MAC at a different tenant, so the bytes
-// accumulated under the old tenant settle there instead of re-binding
-// wholesale to the new tenant at the next scrape. Consumer-defined
-// seam; the agent wires its *state.GlobalState.
+// before re-pointing a live MAC at a different attribution (tenant or
+// external network), so the bytes accumulated under the old attribution
+// settle there instead of re-binding wholesale to the new one at the
+// next scrape. Consumer-defined seam; the agent wires its
+// *state.GlobalState.
 type FlowSettler interface {
-	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (string, bool)) int
+	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int
 }
 
 // MetadataSource is the subset of [neutron.Neutron] the reconcile loop
@@ -196,7 +197,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 	if !ok {
 		return
 	}
-	mac := r.reconcileMACs(result.Snapshot.Ports, now)
+	mac := r.reconcileMACs(&result.Snapshot, now)
 
 	r.src.Commit(result, now)
 	r.mx.RecordRun(resultOK)

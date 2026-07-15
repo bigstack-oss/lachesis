@@ -21,7 +21,12 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 //   - v2: adds the settled section (docs/DESIGN.md §3.5). Purely
 //     additive — a v1 file is a valid v2 file with no settled buckets,
 //     so Load reads both without migration.
-const SchemaVersion uint = 2
+//   - v3: adds external_network to settled buckets (docs/DESIGN.md
+//     §11.5). Purely additive — a v2 settled entry decodes with the
+//     field absent, which Load maps to the metadata.NoExternalNetwork
+//     sentinel; a pre-external-network bucket IS a "none" bucket, so no
+//     migration is needed.
+const SchemaVersion uint = 3
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
 // previous snapshot. TempSuffix is the in-progress write target.
@@ -91,13 +96,16 @@ type snapshotWire struct {
 // settledWire mirrors state.SettledRecord on the wire. The tenant is
 // the Keystone project UUID string — the only tenant identifier stable
 // across boots (see the state.Record invariant note); zone and
-// direction reuse the flow-key enum encodings.
+// direction reuse the flow-key enum encodings. ExternalNetwork is the
+// already-gated label (v3+); omitempty keeps v2-era buckets and "none"
+// buckets byte-compatible, and Load maps absence back to the sentinel.
 type settledWire struct {
-	TenantID  string `json:"tenant_id"`
-	Zone      uint8  `json:"zone"`
-	Direction uint8  `json:"direction"`
-	Bytes     uint64 `json:"bytes,string"`
-	Packets   uint64 `json:"packets,string"`
+	TenantID        string `json:"tenant_id"`
+	ExternalNetwork string `json:"external_network,omitempty"`
+	Zone            uint8  `json:"zone"`
+	Direction       uint8  `json:"direction"`
+	Bytes           uint64 `json:"bytes,string"`
+	Packets         uint64 `json:"packets,string"`
 }
 
 // entryWire mirrors state.Record on the wire. u64 fields use the

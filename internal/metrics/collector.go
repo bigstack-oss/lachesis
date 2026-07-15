@@ -41,12 +41,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// TenantResolver maps a [bpf.FlowKey] to its tenant_id label.
-// Implementations must be safe for concurrent use. The agent wires
-// [UnknownTenant] until a Neutron-backed resolver consulting the
-// kernel `mac_tenant_map` is available.
+// TenantResolver maps a [bpf.FlowKey] to its full label attribution —
+// tenant_id, server_id, and the zone-gated external_network label — in
+// one lookup ([metadata.Attribution]). Implementations must be safe for
+// concurrent use and must not allocate: Resolve runs per live row inside
+// Collect. The agent wires [metadata.Resolver]; [UnknownTenant] is the
+// unwired fallback.
 type TenantResolver interface {
-	ResolveTenant(key bpf.FlowKey) string
+	Resolve(key bpf.FlowKey) metadata.Attribution
 }
 
 // ScraperStats is the read-only subset of [scraper.Scraper] that
@@ -68,6 +70,7 @@ type Collector struct {
 
 	bytesDesc        *prometheus.Desc
 	packetsDesc      *prometheus.Desc
+	serverBytesDesc  *prometheus.Desc
 	flowsDesc        *prometheus.Desc
 	settledDesc      *prometheus.Desc
 	scrapeErrorsDesc *prometheus.Desc
@@ -90,10 +93,13 @@ type Collector struct {
 	// combined snapshot walk is zero-alloc in steady state.
 	emitBuf    []state.Entry
 	settledBuf []state.SettledRecord
-	// aggBuf groups per-flow entries by (tenant, zone, direction)
-	// before emission. Reused across Collect calls; clear(aggBuf)
-	// resets without releasing the bucket allocations.
-	aggBuf map[aggKey]aggValue
+	// aggBuf groups per-flow entries by (tenant, external_network,
+	// zone, direction) before emission; serverAggBuf groups LIVE rows
+	// by the same tuple plus server_id for the mortal per-server
+	// family. Both reused across Collect calls; clear() resets without
+	// releasing the bucket allocations.
+	aggBuf       map[aggKey]aggValue
+	serverAggBuf map[serverAggKey]aggValue
 }
 
 // New constructs a Collector. A nil resolver falls back to
@@ -105,19 +111,25 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		resolver = UnknownTenant{}
 	}
 	return &Collector{
-		state:    st,
-		scraper:  sc,
-		resolver: resolver,
-		aggBuf:   make(map[aggKey]aggValue),
+		state:        st,
+		scraper:      sc,
+		resolver:     resolver,
+		aggBuf:       make(map[aggKey]aggValue),
+		serverAggBuf: make(map[serverAggKey]aggValue),
 		bytesDesc: prometheus.NewDesc(
 			MetricBytesTotal,
 			"Network bytes observed by the agent, cumulative since first sight.",
-			[]string{"tenant_id", "zone", "direction"}, nil,
+			[]string{"tenant_id", "zone", "external_network", "direction"}, nil,
 		),
 		packetsDesc: prometheus.NewDesc(
 			"lachesis_packets_total",
 			"Network packets observed by the agent, cumulative since first sight.",
-			[]string{"tenant_id", "zone", "direction"}, nil,
+			[]string{"tenant_id", "zone", "external_network", "direction"}, nil,
+		),
+		serverBytesDesc: prometheus.NewDesc(
+			MetricServerBytesTotal,
+			"Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/DESIGN.md §11.5).",
+			[]string{"server_id", "tenant_id", "zone", "external_network", "direction"}, nil,
 		),
 		flowsDesc: prometheus.NewDesc(
 			"lachesis_state_flows",
@@ -126,7 +138,7 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		),
 		settledDesc: prometheus.NewDesc(
 			"lachesis_state_settled_tuples",
-			"Distinct (tenant, zone, direction) buckets in the settled-bytes accumulator — flows folded out when their tenant binding was about to disappear (docs/DESIGN.md §3.5).",
+			"Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/DESIGN.md §3.5).",
 			nil, nil,
 		),
 		scrapeErrorsDesc: prometheus.NewDesc(
@@ -151,6 +163,7 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.bytesDesc
 	ch <- c.packetsDesc
+	ch <- c.serverBytesDesc
 	ch <- c.flowsDesc
 	ch <- c.settledDesc
 	ch <- c.scrapeErrorsDesc
@@ -178,9 +191,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 
 	c.emitBuf, c.settledBuf = c.state.SnapshotWithSettled(c.emitBuf[:0], c.settledBuf[:0])
 	clear(c.aggBuf)
+	clear(c.serverAggBuf)
 	for i := range c.settledBuf {
 		s := &c.settledBuf[i]
-		k := aggKey{tenant: s.Key.Tenant, zone: s.Key.Zone, dir: s.Key.Dir}
+		k := aggKey{tenant: s.Key.Tenant, ext: s.Key.ExtNet, zone: s.Key.Zone, dir: s.Key.Dir}
 		v := c.aggBuf[k]
 		v.bytes += s.Bytes
 		v.packets += s.Packets
@@ -188,8 +202,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 	for i := range c.emitBuf {
 		e := &c.emitBuf[i]
+		a := c.resolver.Resolve(e.Key)
 		k := aggKey{
-			tenant: c.resolver.ResolveTenant(e.Key),
+			tenant: a.Tenant,
+			ext:    a.ExternalNetwork,
 			zone:   e.Key.DstZone,
 			dir:    e.Key.Direction,
 		}
@@ -197,6 +213,19 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		v.bytes += e.Total.Bytes
 		v.packets += e.Total.Packets
 		c.aggBuf[k] = v
+		// The mortal per-server family aggregates LIVE rows only —
+		// settled buckets have deliberately dropped the server
+		// dimension (docs/DESIGN.md §11.5) — and only rows whose MAC
+		// resolves to a server: unattributable traffic has no
+		// server_id by definition.
+		if a.ServerID != "" {
+			sk := serverAggKey{server: a.ServerID, tenant: a.Tenant, ext: a.ExternalNetwork,
+				zone: e.Key.DstZone, dir: e.Key.Direction}
+			sv := c.serverAggBuf[sk]
+			sv.bytes += e.Total.Bytes
+			sv.packets += e.Total.Packets
+			c.serverAggBuf[sk] = sv
+		}
 	}
 	for k, v := range c.aggBuf {
 		// ZoneCode.String / Direction.String return constant strings
@@ -205,11 +234,17 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		dir := k.dir.String()
 		ch <- prometheus.MustNewConstMetric(
 			c.bytesDesc, prometheus.CounterValue, float64(v.bytes),
-			k.tenant, zone, dir,
+			k.tenant, zone, k.ext, dir,
 		)
 		ch <- prometheus.MustNewConstMetric(
 			c.packetsDesc, prometheus.CounterValue, float64(v.packets),
-			k.tenant, zone, dir,
+			k.tenant, zone, k.ext, dir,
+		)
+	}
+	for k, v := range c.serverAggBuf {
+		ch <- prometheus.MustNewConstMetric(
+			c.serverBytesDesc, prometheus.CounterValue, float64(v.bytes),
+			k.server, k.tenant, k.zone.String(), k.ext, k.dir.String(),
 		)
 	}
 
@@ -231,12 +266,18 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 }
 
 // UnknownTenant is the stub TenantResolver wired before the
-// Neutron-backed `mac_tenant_map` reader is available. It returns
-// [metadata.UnknownTenantID] for every key — the same label a
-// [metadata.Resolver] emits on a lookup miss, so Prometheus `rate()`
-// queries spanning the cold-start transition see one continuous
-// series.
+// Neutron-backed `mac_tenant_map` reader is available. It returns the
+// [metadata.UnknownTenantID] / [metadata.NoExternalNetwork] sentinels
+// for every key — the same labels a [metadata.Resolver] emits on a
+// lookup miss, so Prometheus `rate()` queries spanning the cold-start
+// transition see one continuous series. No ServerID: unresolved flows
+// never enter the per-server family.
 type UnknownTenant struct{}
 
-// ResolveTenant implements [TenantResolver].
-func (UnknownTenant) ResolveTenant(bpf.FlowKey) string { return metadata.UnknownTenantID }
+// Resolve implements [TenantResolver].
+func (UnknownTenant) Resolve(bpf.FlowKey) metadata.Attribution {
+	return metadata.Attribution{
+		Tenant:          metadata.UnknownTenantID,
+		ExternalNetwork: metadata.NoExternalNetwork,
+	}
+}

@@ -14,7 +14,7 @@ import (
 
 // Sync runs one full list-and-rebuild pass: authenticate against
 // Keystone (first call only; the client is cached so a transient
-// fetch failure does not re-auth), drain the five list endpoints,
+// fetch failure does not re-auth), drain the six list endpoints,
 // build the trie, and detect anomalies. Per-endpoint failures are
 // recorded on lachesis_neutron_api_errors_total before returning.
 //
@@ -73,6 +73,10 @@ func (n *Neutron) fetchAll(ctx context.Context) (Snapshot, error) {
 	if s.Routers, err = n.client.ListRouters(ctx); err != nil {
 		n.metrics.RecordAPIError(endpointRouters, err)
 		return s, fmt.Errorf("list routers: %w", err)
+	}
+	if s.FloatingIPs, err = n.client.ListFloatingIPs(ctx); err != nil {
+		n.metrics.RecordAPIError(endpointFloatingIPs, err)
+		return s, fmt.Errorf("list floatingips: %w", err)
 	}
 	if s.Projects, err = n.client.ListProjects(ctx); err != nil {
 		n.metrics.RecordAPIError(endpointProjects, err)

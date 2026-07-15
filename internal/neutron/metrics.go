@@ -80,7 +80,7 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 		}
 		return time.Since(t).Seconds()
 	})
-	for _, ep := range []string{endpointKeystone, endpointNetworks, endpointSubnets, endpointPorts, endpointRouters, endpointProjects} {
+	for _, ep := range []string{endpointKeystone, endpointNetworks, endpointSubnets, endpointPorts, endpointRouters, endpointProjects, endpointFloatingIPs} {
 		m.apiErrors.WithLabelValues(ep, codeNetwork).Add(0)
 	}
 	for _, c := range []string{anomalyClassCycle, anomalyClassAmbiguity, anomalyClassDanglingRoute,

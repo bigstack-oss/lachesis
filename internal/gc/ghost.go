@@ -76,7 +76,7 @@ type MacFlowEvictor interface {
 // The agent wires *state.GlobalState; tests may wire it too (it is
 // cheap to construct) or leave it nil to skip settling.
 type FlowSettler interface {
-	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (string, bool)) int
+	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int
 }
 
 // GhostSweeper periodically drops metadata entries whose 60s grace
@@ -260,27 +260,32 @@ func (g *GhostSweeper) evictResidualFlows(swept map[uint64]struct{}) int {
 }
 
 // settleSwept folds the swept MACs' GlobalState flow rows into the
-// settled-bytes accumulator, attributing each row to the tenant its MAC
-// still resolves to — the metadata entries are deleted only in the next
-// phase, so the binding is intact here. Rows fold with
-// [state.SettleEvict]: their kernel counters were removed in phase 2,
-// so the rows are dead and deleting them is what stops GlobalState (and
-// the WAL) growing with every VM that ever lived (docs/DESIGN.md §3.5).
-// Returns the number of rows folded. No-op when no settler is wired or
-// nothing was swept.
+// settled-bytes accumulator, attributing each row to the tenant and
+// external network its MAC still resolves to — the metadata entries are
+// deleted only in the next phase, so the binding is intact here. Rows
+// fold with [state.SettleEvict]: their kernel counters were removed in
+// phase 2, so the rows are dead and deleting them is what stops
+// GlobalState (and the WAL) growing with every VM that ever lived
+// (docs/DESIGN.md §3.5). The per-row external_network label goes
+// through the same zone gate the Collector applies, so each fold lands
+// in exactly the series its live flow occupied. Returns the number of
+// rows folded. No-op when no settler is wired or nothing was swept.
 func (g *GhostSweeper) settleSwept(swept map[uint64]struct{}) int {
 	if g.settler == nil || len(swept) == 0 {
 		return 0
 	}
-	tenants := make(map[uint64]string, len(swept))
+	metas := make(map[uint64]*metadata.TenantMeta, len(swept))
 	for mac := range swept {
 		if meta, ok := g.meta.Lookup(mac); ok {
-			tenants[mac] = meta.ProjectID
+			metas[mac] = meta
 		}
 	}
-	return g.settler.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, bool) {
-		tenant, ok := tenants[metadata.VMMAC(k)]
-		return tenant, ok
+	return g.settler.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+		meta, ok := metas[metadata.VMMAC(k)]
+		if !ok {
+			return "", "", false
+		}
+		return meta.ProjectID, metadata.ExternalNetworkLabel(meta.ExternalNetwork, k.DstZone), true
 	})
 }
 

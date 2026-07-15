@@ -15,10 +15,30 @@ import "github.com/bigstack-oss/lachesis/internal/bpf"
 // inline in their NewMetrics, each pinned by a GatherAndCompare test.
 const MetricBytesTotal = "lachesis_bytes_total"
 
+// MetricServerBytesTotal is the per-server billing-export family
+// (docs/DESIGN.md §11.5). Unlike the tenant family it is MORTAL: a
+// series ends when its VM's attribution dies (ghost sweep) — there is no
+// per-server settled accumulator, deliberately. Consumers do period
+// subtraction over range queries, never increase()/rate() for money.
+const MetricServerBytesTotal = "lachesis_server_bytes_total"
+
 // aggKey is the granularity at which Collect aggregates per-flow
-// state for Prometheus emission. tenant is the resolver output.
+// state for tenant-family emission. tenant and ext are resolver
+// outputs; ext is the zone-gated external_network label.
 type aggKey struct {
 	tenant string
+	ext    string
+	zone   bpf.ZoneCode
+	dir    bpf.Direction
+}
+
+// serverAggKey is the per-server family's aggregation granularity —
+// aggKey plus the server identity. Live rows only; rows without a
+// resolved server never enter this aggregation.
+type serverAggKey struct {
+	server string
+	tenant string
+	ext    string
 	zone   bpf.ZoneCode
 	dir    bpf.Direction
 }

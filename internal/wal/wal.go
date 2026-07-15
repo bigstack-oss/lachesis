@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/state"
 )
 
@@ -90,11 +91,12 @@ func Save(path, agentBuild string, records []state.Record, settled []state.Settl
 		snap.Settled = make([]settledWire, len(settled))
 		for i, s := range settled {
 			snap.Settled[i] = settledWire{
-				TenantID:  s.Key.Tenant,
-				Zone:      uint8(s.Key.Zone),
-				Direction: uint8(s.Key.Dir),
-				Bytes:     s.Bytes,
-				Packets:   s.Packets,
+				TenantID:        s.Key.Tenant,
+				ExternalNetwork: s.Key.ExtNet,
+				Zone:            uint8(s.Key.Zone),
+				Direction:       uint8(s.Key.Dir),
+				Bytes:           s.Bytes,
+				Packets:         s.Packets,
 			}
 		}
 	}
@@ -335,9 +337,17 @@ func fromSettled(snap snapshotWire) []state.SettledRecord {
 	}
 	out := make([]state.SettledRecord, len(snap.Settled))
 	for i, s := range snap.Settled {
+		// v2 snapshots predate the external_network dimension; an
+		// absent field decodes as "" and means exactly "no external
+		// network" — the sentinel bucket (schema.go v3 note).
+		ext := s.ExternalNetwork
+		if ext == "" {
+			ext = metadata.NoExternalNetwork
+		}
 		out[i] = state.SettledRecord{
 			Key: state.SettledKey{
 				Tenant: s.TenantID,
+				ExtNet: ext,
 				Zone:   bpf.ZoneCode(s.Zone),
 				Dir:    bpf.Direction(s.Direction),
 			},

@@ -543,11 +543,11 @@ func u64Decimal(n uint64) string {
 func sampleSettled() []state.SettledRecord {
 	return []state.SettledRecord{
 		{
-			Key:   state.SettledKey{Tenant: "d1a509ba00000000000000000000aaaa", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
+			Key:   state.SettledKey{Tenant: "d1a509ba00000000000000000000aaaa", ExtNet: "public-1", Zone: bpf.ZoneExternal, Dir: bpf.DirectionIngress},
 			Bytes: 5_360_000, Packets: 3_600,
 		},
 		{
-			Key:   state.SettledKey{Tenant: "d1a509ba00000000000000000000aaaa", Zone: bpf.ZoneInfra, Dir: bpf.DirectionEgress},
+			Key:   state.SettledKey{Tenant: "d1a509ba00000000000000000000aaaa", ExtNet: "none", Zone: bpf.ZoneInfra, Dir: bpf.DirectionEgress},
 			Bytes: 7_408, Packets: 12,
 		},
 	}
@@ -609,5 +609,38 @@ func TestLoad_V1SnapshotAccepted(t *testing.T) {
 	}
 	if res.Settled != nil {
 		t.Errorf("Settled = %+v, want nil for a v1 snapshot", res.Settled)
+	}
+}
+
+// TestLoad_V2SettledMapsAbsentExternalNetworkToNone: a v2 snapshot's
+// settled entries predate the external_network dimension; Load maps the
+// absent field to the "none" sentinel (schema v3 note) — a
+// pre-external-network bucket IS a "none" bucket.
+func TestLoad_V2SettledMapsAbsentExternalNetworkToNone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	v2 := `{
+  "schema_version": 2,
+  "agent_build": "pre-extnet",
+  "written_at_ns": "1",
+  "global_state": [],
+  "settled": [
+    {"tenant_id": "t-legacy", "zone": 1, "direction": 0, "bytes": "77", "packets": "3"}
+  ]
+}`
+	if err := os.WriteFile(path, []byte(v2), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.Settled) != 1 {
+		t.Fatalf("Settled len = %d, want 1", len(res.Settled))
+	}
+	if got := res.Settled[0].Key.ExtNet; got != "none" {
+		t.Errorf("legacy settled ExtNet = %q, want \"none\"", got)
+	}
+	if res.Settled[0].Bytes != 77 || res.Settled[0].Packets != 3 {
+		t.Errorf("legacy settled totals = %+v, want 77/3", res.Settled[0])
 	}
 }

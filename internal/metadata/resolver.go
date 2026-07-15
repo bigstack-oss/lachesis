@@ -10,8 +10,10 @@ import "github.com/bigstack-oss/lachesis/internal/bpf"
 //   - INGRESS (VM sending):  vm_mac = key.SrcMac
 //   - EGRESS  (VM receiving): vm_mac = key.DstMac
 //
-// On lookup miss it returns [UnknownTenantID]; on hit, the entry's
-// `ProjectID`. Safe for concurrent use (read-only).
+// On lookup miss it returns the [UnknownTenantID] / [NoExternalNetwork]
+// sentinels; on hit, the entry's attribution fields with the
+// external-network zone gate applied. Safe for concurrent use
+// (read-only).
 type Resolver struct {
 	m *ShardedMetadataMap
 }
@@ -25,7 +27,7 @@ func NewResolver(m *ShardedMetadataMap) *Resolver {
 // the directional swap (CLAUDE.md "Critical Invariants" and
 // bpf/telemetry.c `handle_packet`): on INGRESS the VM is the source, on
 // EGRESS the destination. It is the single source of the swap rule —
-// both [Resolver.ResolveTenant] and the UnresolvedBuffer classifier
+// both [Resolver.Resolve] and the UnresolvedBuffer classifier
 // key off it, so the "which MAC is the VM" decision lives in exactly
 // one place.
 func VMMAC(key bpf.FlowKey) uint64 {
@@ -35,11 +37,33 @@ func VMMAC(key bpf.FlowKey) uint64 {
 	return bpf.MACKey(key.DstMac)
 }
 
-// ResolveTenant satisfies the `metrics.TenantResolver` interface.
-func (r *Resolver) ResolveTenant(key bpf.FlowKey) string {
+// Resolve satisfies the `metrics.TenantResolver` interface: one shard
+// lookup yielding the tenant label, the per-server identity, and the
+// zone-gated external-network label for key.
+func (r *Resolver) Resolve(key bpf.FlowKey) Attribution {
 	meta, ok := r.m.Lookup(VMMAC(key))
 	if !ok {
-		return UnknownTenantID
+		return Attribution{Tenant: UnknownTenantID, ExternalNetwork: NoExternalNetwork}
 	}
-	return meta.ProjectID
+	return Attribution{
+		Tenant:          meta.ProjectID,
+		ServerID:        meta.ServerID,
+		ExternalNetwork: ExternalNetworkLabel(meta.ExternalNetwork, key.DstZone),
+	}
+}
+
+// ExternalNetworkLabel applies the zone gate that keeps the
+// external_network label meaningful and low-cardinality: only
+// EXTERNAL-zone series carry a real network label; everything else —
+// other zones, and external flows of a VM with no resolved external
+// path — gets the [NoExternalNetwork] sentinel. Single source of the
+// gate: the Collector's live aggregation, the ghost sweep's settle
+// fold, and the reconciler's attribution-change fold all label through
+// here, so a flow's settled bytes land in exactly the bucket its live
+// series occupied.
+func ExternalNetworkLabel(extNet string, zone bpf.ZoneCode) string {
+	if zone != bpf.ZoneExternal || extNet == "" {
+		return NoExternalNetwork
+	}
+	return extNet
 }

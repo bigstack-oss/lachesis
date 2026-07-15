@@ -77,6 +77,17 @@ type FixedIP struct {
 	IPAddress string
 }
 
+// FloatingIP is the agent's view of a Neutron floating IP: which port
+// it is bound to (empty when unassociated) and which external network
+// it draws from. Consumed by [ExternalNetworkByPort] to give a
+// FIP-holding VM its external_network attribution; unbound FIPs are
+// carried but ignored there.
+type FloatingIP struct {
+	ID                string
+	PortID            string
+	FloatingNetworkID string
+}
+
 // Project is the agent's view of a Keystone project. Carried in
 // [Snapshot.Projects] so the /debug pages can show human-readable
 // names alongside the UUIDs the Neutron resources reference.

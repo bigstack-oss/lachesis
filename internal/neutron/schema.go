@@ -27,6 +27,11 @@ type Snapshot struct {
 	Subnets  []Subnet
 	Ports    []Port
 	Routers  []Router
+	// FloatingIPs carries every FIP the agent's project can see.
+	// Fetched for external-network attribution ([ExternalNetworkByPort]):
+	// a FIP bound to a VM port pins that VM's egress to the FIP's
+	// network, taking precedence over the router-gateway path.
+	FloatingIPs []FloatingIP
 	// Projects is the Keystone project list. Carried alongside the
 	// Neutron resources because Neutron returns project_id as a bare
 	// UUID; consumers that need a human-readable label (the /debug
@@ -147,12 +152,13 @@ const componentNeutron = "neutron"
 // seeds each at zero (with the codeNetwork code class) so the
 // counter is visible before any error occurs.
 const (
-	endpointKeystone = "keystone"
-	endpointNetworks = "networks"
-	endpointSubnets  = "subnets"
-	endpointPorts    = "ports"
-	endpointRouters  = "routers"
-	endpointProjects = "projects"
+	endpointKeystone    = "keystone"
+	endpointNetworks    = "networks"
+	endpointSubnets     = "subnets"
+	endpointPorts       = "ports"
+	endpointRouters     = "routers"
+	endpointProjects    = "projects"
+	endpointFloatingIPs = "floatingips"
 )
 
 // anomalyClass* are the `class` label values for the

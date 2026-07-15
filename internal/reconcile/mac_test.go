@@ -60,12 +60,12 @@ func TestDesiredMACs_AdmitsOnlyVMPorts(t *testing.T) {
 		{MACAddress: "aa:bb:cc:00:00:04", ProjectID: "", DeviceOwner: "compute:nova"},                   // no project
 		{MACAddress: "not-a-mac", ProjectID: "proj-e", DeviceOwner: "compute:nova"},                     // bad MAC
 	}
-	got := desiredMACs(ports)
+	got := desiredMACs(&neutron.Snapshot{Ports: ports})
 	if len(got) != 1 {
 		t.Fatalf("desiredMACs admitted %d, want 1: %v", len(got), got)
 	}
-	if got[mac(t, "aa:bb:cc:00:00:01")] != "proj-a" {
-		t.Errorf("admitted VM port maps to %q, want proj-a", got[mac(t, "aa:bb:cc:00:00:01")])
+	if got[mac(t, "aa:bb:cc:00:00:01")].ProjectID != "proj-a" {
+		t.Errorf("admitted VM port maps to %+v, want proj-a", got[mac(t, "aa:bb:cc:00:00:01")])
 	}
 }
 
@@ -83,10 +83,10 @@ func TestReconcileMACs_LearnsNewGhostsGone(t *testing.T) {
 	r := newMacReconciler(meta, mw)
 	now := time.Unix(2000, 0)
 
-	d := r.reconcileMACs([]neutron.Port{
+	d := r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{
 		vmPort("aa:00:00:00:00:01", "proj-keep"), // unchanged
 		vmPort("aa:00:00:00:00:03", "proj-new"),  // new
-	}, now)
+	}}, now)
 
 	if d != (macDelta{Inserted: 1, Ghosted: 1}) {
 		t.Fatalf("macDelta = %+v, want {Inserted:1 Ghosted:1}", d)
@@ -129,10 +129,10 @@ func TestReconcileMACs_ChangedAndResurrected(t *testing.T) {
 	mw := &fakeMacWriter{}
 	r := newMacReconciler(meta, mw)
 
-	d := r.reconcileMACs([]neutron.Port{
+	d := r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{
 		vmPort("bb:00:00:00:00:01", "new"),    // tenant reassigned
 		vmPort("bb:00:00:00:00:02", "proj-z"), // ghost resurrected
-	}, time.Unix(2000, 0))
+	}}, time.Unix(2000, 0))
 
 	if d != (macDelta{Changed: 2}) {
 		t.Fatalf("macDelta = %+v, want {Changed:2}", d)
@@ -166,10 +166,10 @@ func TestReconcileMACs_TenantChangeIsPointerReplace(t *testing.T) {
 	captured, _ := meta.Lookup(m1) // a scrape holding the pointer
 
 	r := newMacReconciler(meta, &fakeMacWriter{})
-	r.reconcileMACs([]neutron.Port{
+	r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{
 		vmPort("dd:00:00:00:00:01", "new"), // m1 reassigned
 		vmPort("dd:00:00:00:00:02", "old"), // m2 unchanged
-	}, time.Unix(2000, 0))
+	}}, time.Unix(2000, 0))
 
 	if captured.ProjectID != "old" {
 		t.Fatalf("reconcile mutated a shared TenantMeta in place: ProjectID=%q (Contract #3 violated)", captured.ProjectID)
@@ -215,13 +215,13 @@ func TestReconcileMACs_TenantChangeSettlesOldTenant(t *testing.T) {
 		Interner:  metadata.NewTenantInterner(),
 		Metrics:   NewMetrics(),
 	})
-	d := r.reconcileMACs([]neutron.Port{vmPort(macStr, "proj-new")}, time.Unix(2000, 0))
+	d := r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{vmPort(macStr, "proj-new")}}, time.Unix(2000, 0))
 	if d != (macDelta{Changed: 1}) {
 		t.Fatalf("macDelta = %+v, want {Changed:1}", d)
 	}
 
 	flows, settled := st.SnapshotWithSettled(nil, nil)
-	wantKey := state.SettledKey{Tenant: "proj-old", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}
+	wantKey := state.SettledKey{Tenant: "proj-old", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}
 	if len(settled) != 1 || settled[0].Key != wantKey || settled[0].Bytes != 100 {
 		t.Fatalf("settled = %+v, want 100 bytes under %+v", settled, wantKey)
 	}
@@ -268,7 +268,7 @@ func TestReconcileMACs_ResurrectedSameTenantDoesNotSettle(t *testing.T) {
 		Interner:  metadata.NewTenantInterner(),
 		Metrics:   NewMetrics(),
 	})
-	r.reconcileMACs([]neutron.Port{vmPort(macStr, "proj-z")}, time.Unix(2000, 0))
+	r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{vmPort(macStr, "proj-z")}}, time.Unix(2000, 0))
 
 	flows, settled := st.SnapshotWithSettled(nil, nil)
 	if len(settled) != 0 {
@@ -323,7 +323,69 @@ func TestReconcileOnce_RefreshesMapGauges(t *testing.T) {
 // nothing rather than panicking.
 func TestReconcileMACs_NilSkips(t *testing.T) {
 	r := New(Options{Interner: metadata.NewTenantInterner(), Metrics: NewMetrics()})
-	if d := r.reconcileMACs([]neutron.Port{vmPort("cc:00:00:00:00:01", "p")}, time.Unix(2000, 0)); d != (macDelta{}) {
+	if d := r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{vmPort("cc:00:00:00:00:01", "p")}}, time.Unix(2000, 0)); d != (macDelta{}) {
 		t.Errorf("nil MAC reconcile returned %+v, want zero", d)
+	}
+}
+
+// TestReconcileMACs_ExternalNetworkChangeSettlesOldAttribution: an
+// attribution change that is NOT a tenant change — the VM's external
+// network moved (FIP re-homed, router re-gatewayed) — must fold exactly
+// like a tenant change, under the OLD attribution with the zone gate
+// applied per row: the external-zone rows settle under the old network
+// label, the non-external rows under "none". Without the fold the
+// external series would teleport its cumulative to the new label.
+func TestReconcileMACs_ExternalNetworkChangeSettlesOldAttribution(t *testing.T) {
+	meta := metadata.New()
+	macStr := "cc:00:00:00:00:03"
+	m := mac(t, macStr)
+	meta.Insert(m, &metadata.TenantMeta{ProjectID: "proj-a", ServerID: "srv-1", ExternalNetwork: "public-1"})
+
+	var vmMAC [6]uint8
+	hw, _ := net.ParseMAC(macStr)
+	copy(vmMAC[:], hw)
+	extKey := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 1},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	sameKey := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 2},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+
+	st := state.New()
+	st.ApplyDelta(extKey, bpf.FlowMetrics{Bytes: 700, Packets: 7, LastSeenNs: 1})
+	st.ApplyDelta(sameKey, bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 2})
+
+	r := New(Options{
+		Meta:      meta,
+		MacWriter: &fakeMacWriter{},
+		Settler:   st,
+		Interner:  metadata.NewTenantInterner(),
+		Metrics:   NewMetrics(),
+	})
+	// Same tenant, same server — only the external network moved. The
+	// snapshot resolves the port to public-2 via its new FIP.
+	snap := neutron.Snapshot{
+		Networks:    []neutron.Network{{ID: "net-pub2", Name: "public-2", IsExternal: true}},
+		Ports:       []neutron.Port{{MACAddress: macStr, ProjectID: "proj-a", DeviceOwner: "compute:nova", DeviceID: "srv-1", ID: "port-1"}},
+		FloatingIPs: []neutron.FloatingIP{{ID: "fip", PortID: "port-1", FloatingNetworkID: "net-pub2"}},
+	}
+	d := r.reconcileMACs(&snap, time.Unix(2000, 0))
+	if d != (macDelta{Changed: 1}) {
+		t.Fatalf("macDelta = %+v, want {Changed:1}", d)
+	}
+
+	if cur, _ := meta.Lookup(m); cur.ExternalNetwork != "public-2" {
+		t.Errorf("metadata ExternalNetwork = %q, want public-2", cur.ExternalNetwork)
+	}
+	_, settled := st.SnapshotWithSettled(nil, nil)
+	got := map[state.SettledKey]uint64{}
+	for _, s := range settled {
+		got[s.Key] = s.Bytes
+	}
+	wantExt := state.SettledKey{Tenant: "proj-a", ExtNet: "public-1", Zone: bpf.ZoneExternal, Dir: bpf.DirectionIngress}
+	wantSame := state.SettledKey{Tenant: "proj-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}
+	if got[wantExt] != 700 {
+		t.Errorf("external-zone fold = %d under %+v, want 700 (old label)", got[wantExt], wantExt)
+	}
+	if got[wantSame] != 300 {
+		t.Errorf("same-tenant fold = %d under %+v, want 300 (none)", got[wantSame], wantSame)
 	}
 }

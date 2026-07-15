@@ -60,7 +60,7 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	if err != nil {
 		return err
 	}
-	stats := populateMetadataFromPorts(ag.meta, result.Snapshot.Ports, ag.mx.neutron)
+	stats := populateMetadataFromPorts(ag.meta, &result.Snapshot, ag.mx.neutron)
 	nMac, nTrie, err := pushToKernel(ag, coll, result.Entries)
 	if err != nil {
 		return err
@@ -84,18 +84,21 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	return nil
 }
 
-// populateMetadataFromPorts walks ports, applies the IsVMPort
-// blacklist, parses MACs, and inserts (mac → *TenantMeta) into the
-// userspace shard map. Logs every port admitted with an unknown
-// device_owner (the IsKnownVMOwner allowlist miss) so operators
-// notice when a vendor / plugin string slipped past the broad
-// blacklist, and emits one summary warning when the snapshot
+// populateMetadataFromPorts walks the snapshot's ports, applies the
+// IsVMPort blacklist, parses MACs, and inserts (mac → *TenantMeta) into
+// the userspace shard map — each entry carrying the port's full
+// attribution (project, server_id, external_network) for the metric
+// labels and per-server export (docs/DESIGN.md §11.5). Logs every port
+// admitted with an unknown device_owner (the IsKnownVMOwner allowlist
+// miss) so operators notice when a vendor / plugin string slipped past
+// the broad blacklist, and emits one summary warning when the snapshot
 // contains trunk subports — their MACs admit here but the data plane
 // passes 802.1Q-tagged frames uncounted (docs/DESIGN.md §8 Tier 1).
-func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, ports []neutron.Port, mx *neutron.Metrics) populateStats {
+func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, snap *neutron.Snapshot, mx *neutron.Metrics) populateStats {
 	var s populateStats
 	trunkSubports := 0
-	for _, p := range ports {
+	extByPort := neutron.ExternalNetworkByPort(snap)
+	for _, p := range snap.Ports {
 		if !neutron.IsVMPort(p.DeviceOwner) || p.ProjectID == "" || p.MACAddress == "" {
 			continue
 		}
@@ -121,7 +124,11 @@ func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, ports []neutro
 		}
 		var key [6]uint8
 		copy(key[:], hw)
-		meta.Insert(bpf.MACKey(key), &metadata.TenantMeta{ProjectID: p.ProjectID})
+		meta.Insert(bpf.MACKey(key), &metadata.TenantMeta{
+			ProjectID:       p.ProjectID,
+			ServerID:        p.DeviceID,
+			ExternalNetwork: extByPort[p.ID],
+		})
 		s.inserted++
 	}
 	if trunkSubports > 0 {

@@ -20,6 +20,18 @@ type TenantMeta struct {
 	// "8e1b...c4f2"). It is emitted as the `tenant_id` Prometheus
 	// label and is the user-visible billing identity.
 	ProjectID string
+	// ServerID is the Neutron port's device_id — the Nova instance
+	// UUID for VM ports. Emitted as the `server_id` label on the
+	// per-server metric family (docs/DESIGN.md §11.5); empty when the
+	// port carries no device binding.
+	ServerID string
+	// ExternalNetwork is the human-facing label of the external
+	// network this VM's egress leaves through — its floating IP's
+	// network, or its router's external gateway network (network name,
+	// falling back to ID when the name is empty). Empty when the VM has
+	// no external path. Only EXTERNAL-zone series carry it; see
+	// [ExternalNetworkLabel] for the zone gate every emitter applies.
+	ExternalNetwork string
 	// IsAmphora marks an Octavia load-balancer Amphora port. The
 	// per-packet hot path branches on this flag to attribute LB
 	// traffic to the load-balancer owner rather than the admin
@@ -64,3 +76,22 @@ const (
 	TenantIDUnset   uint32 = 0
 	UnknownTenantID        = "unknown"
 )
+
+// NoExternalNetwork is the `external_network` label sentinel for series
+// that have no external network: every non-EXTERNAL zone, and
+// EXTERNAL-zone traffic from a VM with no resolved external path.
+// Prometheus requires a consistent label set per metric, so the label is
+// always present and this is its "absent" value. Single source of truth
+// for the same reason as [UnknownTenantID]: it lives here (not metrics)
+// because metadata must not import metrics (L2 → L4).
+const NoExternalNetwork = "none"
+
+// Attribution is everything the metrics Collector resolves per flow at
+// scrape time: the tenant label, the per-server export identity, and the
+// zone-gated external-network label. Returned by value — the Collector
+// calls this on every live row inside Collect, so it must not allocate.
+type Attribution struct {
+	Tenant          string
+	ServerID        string
+	ExternalNetwork string
+}
