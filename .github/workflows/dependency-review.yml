@@ -18,4 +18,7 @@ jobs:
           comment-summary-in-pr: on-failure
           fail-on-severity: moderate
           deny-licenses: GPL-1.0-or-later, LGPL-2.0-or-later
+          # setup-task is GPL-3.0 but is a CI-only tool — never linked into
+          # or distributed with the Apache-2.0 product.
+          allow-dependencies-licenses: pkg:githubactions/arduino/setup-task
           retry-on-snapshot-warnings: true
