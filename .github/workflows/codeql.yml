@@ -22,13 +22,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@a8d1ac45b9a34d11fe398d5503176af0d06b303e # v3.29.5
         with:
           languages: go
-          # Analyze the Go source directly — the agent's build needs eBPF
-          # codegen (`task generate`) that CodeQL's autobuild can't run.
-          build-mode: none
+          # CodeQL's Go analysis has no `none` build mode, and autobuild
+          # can't run the eBPF codegen — build manually, same as ci.yml.
+          build-mode: manual
+
+      - name: Build (eBPF codegen + go build)
+        run: |
+          task setup
+          task generate UID=0 GID=0
+          go build ./internal/... ./cmd/...
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@a8d1ac45b9a34d11fe398d5503176af0d06b303e # v3.29.5
