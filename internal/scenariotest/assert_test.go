@@ -206,3 +206,101 @@ func mustLoadReport(t *testing.T, path string) AssertReport {
 	}
 	return r
 }
+
+// extAssertState is assertState plus external-labeled baseline series
+// and a per-server baseline for the created vm-a.
+func extAssertState() *RunState {
+	rs := assertState()
+	rs.Baseline = []BytesSample{
+		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1000},
+		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "none", Direction: "tx", Value: 500},
+	}
+	rs.BaselineServers = []ServerSample{
+		{ServerID: "srv-a", TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 800},
+	}
+	rs.Servers = []ResourceRef{{DSLID: "vm-a", ID: "srv-a", ProjectID: "uuid-t1"}}
+	return rs
+}
+
+// TestAssert_ExternalNetworkFilter: an expectation pinning
+// ExternalNetwork must count only that label's series — growth on the
+// "none" bucket cannot satisfy it — and the DSL marker id ("net-ext")
+// resolves to the config's provider network name ("ext"), mirroring
+// realize's binding.
+func TestAssert_ExternalNetworkFilter(t *testing.T) {
+	sc := sameTenantScenario()
+	sc.Expect = []Expect{
+		{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext"},
+	}
+	// Only the "none" bucket grew: the pinned expectation must FAIL.
+	m := driveMetrics{attached: 7, bytes: []BytesSample{
+		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1000},
+		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "none", Direction: "tx", Value: 500 + 2<<20},
+	}}
+	rep, _, err := runAssertFixture(t, sc, extAssertState(), m, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Assert: %v", err)
+	}
+	if rep.OK {
+		t.Fatal("growth on external_network=none must not satisfy an ext-pinned expectation")
+	}
+	if rep.Rows[0].ExternalNetwork != "ext" {
+		t.Errorf("DSL marker not resolved: row ext = %q, want %q", rep.Rows[0].ExternalNetwork, "ext")
+	}
+
+	// Now the pinned bucket grows: PASS.
+	m = driveMetrics{attached: 7, bytes: []BytesSample{
+		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1000 + 2<<20},
+		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "none", Direction: "tx", Value: 500},
+	}}
+	rep, _, err = runAssertFixture(t, sc, extAssertState(), m, time.Second)
+	if err != nil {
+		t.Fatalf("Assert: %v", err)
+	}
+	if !rep.OK || rep.Rows[0].Delta != float64(2<<20) {
+		t.Errorf("ext-pinned expectation should pass on its own bucket: %+v", rep.Rows[0])
+	}
+}
+
+// TestAssert_VMTargetsServerFamily: an expectation with a VM target
+// lower-bounds lachesis_server_bytes_total for the run's created
+// server, resolved from the run-state.
+func TestAssert_VMTargetsServerFamily(t *testing.T) {
+	sc := sameTenantScenario()
+	sc.Expect = []Expect{
+		{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext", VM: "vm-a"},
+	}
+	m := driveMetrics{attached: 7,
+		bytes: []BytesSample{
+			{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1000 + 2<<20},
+		},
+		servers: []ServerSample{
+			{ServerID: "srv-a", TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 800 + 2<<20},
+			{ServerID: "srv-other", TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 9e9},
+		}}
+	rep, _, err := runAssertFixture(t, sc, extAssertState(), m, time.Second)
+	if err != nil {
+		t.Fatalf("Assert: %v", err)
+	}
+	row := rep.Rows[0]
+	if !rep.OK || row.ServerID != "srv-a" || row.Delta != float64(2<<20) {
+		t.Errorf("VM-targeted row wrong (must diff srv-a only, ignoring srv-other): %+v", row)
+	}
+}
+
+// TestAssert_VMExpectRefusesPreFamilyAgent: a VM-targeted expectation
+// against an agent exposing no per-server family is an evaluation
+// error — not a silent zero-delta failure.
+func TestAssert_VMExpectRefusesPreFamilyAgent(t *testing.T) {
+	sc := sameTenantScenario()
+	sc.Expect = []Expect{
+		{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1, VM: "vm-a"},
+	}
+	m := driveMetrics{attached: 7, bytes: []BytesSample{
+		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1e9},
+	}}
+	_, _, err := runAssertFixture(t, sc, extAssertState(), m, 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "per-server") {
+		t.Fatalf("want per-server-family refusal error, got %v", err)
+	}
+}

@@ -177,7 +177,23 @@ type Expect struct {
 	// the host-frame ingress/egress.
 	Direction string
 
+	// ExternalNetwork optionally narrows the assertion to series
+	// carrying this `external_network` label. Empty matches any
+	// (summing across, the pre-label behavior — existing scenarios
+	// unchanged). A DSL external-network marker id (e.g. "net-ext")
+	// resolves to the provider network the config bound it to, the
+	// same way TenantID resolves to a project UUID; any other value
+	// (including the "none" sentinel) matches literally.
+	ExternalNetwork string
+
+	// VM optionally retargets the assertion at the per-server family
+	// `lachesis_server_bytes_total` for this DSL VM's created server
+	// (resolved to its Nova UUID via the run-state) instead of the
+	// tenant family. Combines with ExternalNetwork.
+	VM string
+
 	// MinBytes is the lower bound on the delta of
-	// lachesis_bytes_total for this tuple over the drive window.
+	// lachesis_bytes_total (or lachesis_server_bytes_total when VM is
+	// set) for this tuple over the drive window.
 	MinBytes int64
 }

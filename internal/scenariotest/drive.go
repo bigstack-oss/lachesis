@@ -120,10 +120,11 @@ func (d *driver) captureBaseline() error {
 		return fmt.Errorf("baseline scrape: %w", err)
 	}
 	d.opts.State.Baseline = snap.Bytes
+	d.opts.State.BaselineServers = snap.Servers
 	if err := d.opts.State.Save(d.opts.StatePath); err != nil {
 		return err
 	}
-	d.logf("baseline captured: %d series", len(snap.Bytes))
+	d.logf("baseline captured: %d series (%d per-server)", len(snap.Bytes), len(snap.Servers))
 	return nil
 }
 
