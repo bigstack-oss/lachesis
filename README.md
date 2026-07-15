@@ -3,7 +3,7 @@
   <h2 align="left">📊 Lachesis</h2>
 </div>
 
-[![License][License-Image]][License-Url] [![made-with-Go][Go-Made-Image]][Go-Made-Url] [![Go Report Card][Go-Report-Image]][Go-Report-Url] [![CI][CI-Image]][CI-Url] [![GitHub issues][Github-Issue-Image]][Github-Issue-Url] [![GitHub last commit][GitHub-Last-Commit-Image]][GitHub-Last-Commit-Url]
+[![License][License-Image]][License-Url] [![made-with-Go][Go-Made-Image]][Go-Made-Url] [![Go Report Card][Go-Report-Image]][Go-Report-Url] [![CI][CI-Image]][CI-Url] [![CodeQL][CodeQL-Image]][CodeQL-Url] [![OpenSSF Scorecard][Scorecard-Image]][Scorecard-Url] [![GitHub issues][Github-Issue-Image]][Github-Issue-Url] [![GitHub last commit][GitHub-Last-Commit-Image]][GitHub-Last-Commit-Url]
 
 ⛩️ [Architecture] | 🛠️ [Operating] | 🧪 [Test strategy] | 👷 [Contributing]
 
@@ -78,6 +78,10 @@ limitations under the License.
 [Go-Report-Image]: https://goreportcard.com/badge/github.com/bigstack-oss/lachesis
 [CI-Url]: https://github.com/bigstack-oss/lachesis/actions/workflows/ci.yml
 [CI-Image]: https://github.com/bigstack-oss/lachesis/actions/workflows/ci.yml/badge.svg?branch=develop
+[CodeQL-Url]: https://github.com/bigstack-oss/lachesis/actions/workflows/codeql.yml
+[CodeQL-Image]: https://github.com/bigstack-oss/lachesis/actions/workflows/codeql.yml/badge.svg?branch=develop
+[Scorecard-Url]: https://scorecard.dev/viewer/?uri=github.com/bigstack-oss/lachesis
+[Scorecard-Image]: https://api.scorecard.dev/projects/github.com/bigstack-oss/lachesis/badge
 [Github-Issue-Url]: https://github.com/bigstack-oss/lachesis/issues
 [Github-Issue-Image]: https://img.shields.io/github/issues/bigstack-oss/lachesis?color=brightgreen
 [GitHub-Last-Commit-Url]: https://github.com/bigstack-oss/lachesis/commits/develop

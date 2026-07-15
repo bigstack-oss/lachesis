@@ -1,0 +1,21 @@
+name: 'Dependency review'
+on:
+  pull_request:
+    branches: [ "develop" ]
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Checkout repository'
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+      - name: 'Dependency Review'
+        uses: actions/dependency-review-action@56339e523c0409420f6c2c9a2f4292bbb3c07dd3 # v4.8.0
+        with:
+          comment-summary-in-pr: on-failure
+          fail-on-severity: moderate
+          deny-licenses: GPL-1.0-or-later, LGPL-2.0-or-later
+          retry-on-snapshot-warnings: true

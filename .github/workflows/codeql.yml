@@ -1,0 +1,36 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [ develop ]
+  pull_request:
+    branches: [ develop ]
+  schedule:
+    - cron: '31 5 * * 1' # weekly, Monday 05:31 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (Go)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@a8d1ac45b9a34d11fe398d5503176af0d06b303e # v3.29.5
+        with:
+          languages: go
+          # Analyze the Go source directly — the agent's build needs eBPF
+          # codegen (`task generate`) that CodeQL's autobuild can't run.
+          build-mode: none
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@a8d1ac45b9a34d11fe398d5503176af0d06b303e # v3.29.5
+        with:
+          category: "/language:go"
