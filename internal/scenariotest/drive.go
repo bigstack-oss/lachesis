@@ -42,8 +42,13 @@ const (
 	flowBasePort = 15000
 	// pingPayloadBytes is the ICMP payload size for external-target
 	// flows. The byte math treats headers as free margin, so MinBytes
-	// stays a safe lower bound.
-	pingPayloadBytes = 1024
+	// stays a safe lower bound. Sized so a MiB-scale budget fits the
+	// SSH exec timeout: busybox ping has no sub-second interval flag,
+	// so the packet count is the duration in seconds — 60 KB payloads
+	// (kernel-fragmented on the wire; every fragment's bytes still
+	// count at the tap) push 1 MiB in ~18 packets instead of the 1024
+	// one-per-second packets that killed the exec budget.
+	pingPayloadBytes = 60000
 )
 
 // Drive pushes every declared flow across the realized topology: it
