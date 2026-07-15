@@ -4,14 +4,14 @@ Thanks for your interest in contributing to Lachesis. To create an open space fo
 
 ## Contents
 
-- [Contributing to Lachesis](#contributing-to-cubecos)
+- [Contributing to Lachesis](#contributing-to-lachesis)
   - [Contents](#contents)
   - [Code of conduct](#code-of-conduct)
   - [Prerequisites](#prerequisites)
     - [Create a GitHub account](#create-a-github-account)
     - [Setup Git Commit Signing](#setup-git-commit-signing)
   - [How to contribute](#how-to-contribute)
-  - [Developer Origin Certificate (DCO)](#developer-origin-certificate-dco)
+  - [Developer Certificate of Origin (DCO)](#developer-certificate-of-origin-dco)
 
 ## Code of conduct
 
@@ -40,9 +40,9 @@ We welcome contributions in the form of:
 
 Please **do not** report any **security** issues in the issue tracker or a pull request. Please refer to our [security](/SECURITY.md) page on how to report and reach us.
 
-## Developer Origin Certificate (DCO)
+## Developer Certificate of Origin (DCO)
 
-All Bigstack co., ltd open source projects adopt the [Developer Origin Certificate v1.1](https://developercertificate.org/) to ensure contributions are properly authorized and compliant with open-source standards.
+All Bigstack co., ltd open source projects adopt the [Developer Certificate of Origin v1.1](https://developercertificate.org/) to ensure contributions are properly authorized and compliant with open-source standards.
 
 Git commit sign-off is a declaration by you that you adhere to the Developer Certificate of Origin (DCO), adding a `Signed-off-by:` line in the commit message to confirm you authored or have permission to contribute the changes. The DCO is easily done with the `--signoff (-s)` in Git. For example,
 
