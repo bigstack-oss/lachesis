@@ -1,6 +1,5 @@
 version: 2
-updates: 
-      
+updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -10,12 +9,12 @@ updates:
     groups:
       minor-and-patch:
         applies-to: version-updates
-        update-types: 
+        update-types:
           - "minor"
           - "patch"
       sec-minor-and-patch:
         applies-to: security-updates
-        update-types: 
+        update-types:
           - "minor"
           - "patch"
     ignore:
@@ -32,12 +31,12 @@ updates:
     groups:
       minor-and-patch:
         applies-to: version-updates
-        update-types: 
+        update-types:
           - "minor"
           - "patch"
       sec-minor-and-patch:
         applies-to: security-updates
-        update-types: 
+        update-types:
           - "minor"
           - "patch"
     ignore:
