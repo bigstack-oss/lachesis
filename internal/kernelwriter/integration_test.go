@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	macVMA  uint64 = 0x02_00_00_00_AA_01 // VM in projA
-	macVMB  uint64 = 0x02_00_00_00_AA_02 // VM in projA (same tenant)
-	macVMC  uint64 = 0x02_00_00_00_BB_01 // VM in projB
-	macRtr  uint64 = 0x02_00_00_00_FF_01 // router peer — never written to mac_tenant_map
-	projA          = "proj-A-uuid"
-	projB          = "proj-B-uuid"
+	macVMA uint64 = 0x02_00_00_00_AA_01 // VM in projA
+	macVMB uint64 = 0x02_00_00_00_AA_02 // VM in projA (same tenant)
+	macVMC uint64 = 0x02_00_00_00_BB_01 // VM in projB
+	macRtr uint64 = 0x02_00_00_00_FF_01 // router peer — never written to mac_tenant_map
+	projA         = "proj-A-uuid"
+	projB         = "proj-B-uuid"
 )
 
 func TestKernelWriter_RoundTrip(t *testing.T) {

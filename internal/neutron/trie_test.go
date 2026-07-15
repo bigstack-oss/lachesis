@@ -48,11 +48,11 @@ func TestBuildTrie_Step1Catchall(t *testing.T) {
 		Routers:  []Router{{ID: "r1", ProjectID: "t-from-router"}},
 	})
 	want := mustPrefix(t, "0.0.0.0/0")
-	if !slices.Contains(got,TrieEntry{"", want, bpf.ZoneExternal}) {
+	if !slices.Contains(got, TrieEntry{"", want, bpf.ZoneExternal}) {
 		t.Errorf("global catchall row missing")
 	}
 	for _, tenant := range []string{"t-from-net", "t-from-port", "t-from-router"} {
-		if slices.Contains(got,TrieEntry{tenant, want, bpf.ZoneExternal}) {
+		if slices.Contains(got, TrieEntry{tenant, want, bpf.ZoneExternal}) {
 			t.Errorf("per-tenant catchall row leaked for %q (dedup regression)", tenant)
 		}
 	}
@@ -66,7 +66,7 @@ func TestBuildTrie_Step2OwnedSubnets(t *testing.T) {
 		Networks: []Network{{ID: "n1", ProjectID: "T1", Shared: false}},
 		Subnets:  []Subnet{{ID: "s1", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.0.0/24", IPVersion: 4}},
 	})
-	if !slices.Contains(got,TrieEntry{"T1", mustPrefix(t, "10.0.0.0/24"), bpf.ZoneSameTenant}) {
+	if !slices.Contains(got, TrieEntry{"T1", mustPrefix(t, "10.0.0.0/24"), bpf.ZoneSameTenant}) {
 		t.Fatalf("missing SAME_TENANT row\n%+v", got)
 	}
 }
@@ -89,18 +89,18 @@ func TestBuildTrie_SharedNetworkEmitsShared(t *testing.T) {
 		},
 	})
 	shared := mustPrefix(t, "192.168.0.0/24")
-	if !slices.Contains(got,TrieEntry{"", shared, bpf.ZoneShared}) {
+	if !slices.Contains(got, TrieEntry{"", shared, bpf.ZoneShared}) {
 		t.Errorf("global SHARED row missing for %v", shared)
 	}
 	for _, tenant := range []string{"T1", "T2"} {
-		if slices.Contains(got,TrieEntry{tenant, shared, bpf.ZoneShared}) {
+		if slices.Contains(got, TrieEntry{tenant, shared, bpf.ZoneShared}) {
 			t.Errorf("per-tenant SHARED row leaked for %q (dedup regression)", tenant)
 		}
 		// SAME/OTHER guesses on shared CIDRs were never allowed.
-		if slices.Contains(got,TrieEntry{tenant, shared, bpf.ZoneSameTenant}) {
+		if slices.Contains(got, TrieEntry{tenant, shared, bpf.ZoneSameTenant}) {
 			t.Errorf("shared subnet emitted as SAME_TENANT under %q", tenant)
 		}
-		if slices.Contains(got,TrieEntry{tenant, shared, bpf.ZoneOtherTenant}) {
+		if slices.Contains(got, TrieEntry{tenant, shared, bpf.ZoneOtherTenant}) {
 			t.Errorf("shared subnet emitted as OTHER_TENANT under %q", tenant)
 		}
 	}
@@ -177,12 +177,12 @@ func TestBuildTrie_Step4InfraPorts(t *testing.T) {
 	})
 	for _, infraIP := range []string{"10.0.0.1", "192.0.2.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"} {
 		want := TrieEntry{"", netip.MustParsePrefix(infraIP + "/32"), bpf.ZoneInfra}
-		if !slices.Contains(got,want) {
+		if !slices.Contains(got, want) {
 			t.Errorf("missing global INFRA row for %s\nentries: %+v", infraIP, got)
 		}
 	}
 	for _, notInfra := range []string{"10.0.0.42", "10.0.0.99", "10.0.0.100", "203.0.113.7"} {
-		if slices.Contains(got,TrieEntry{"", netip.MustParsePrefix(notInfra + "/32"), bpf.ZoneInfra}) {
+		if slices.Contains(got, TrieEntry{"", netip.MustParsePrefix(notInfra + "/32"), bpf.ZoneInfra}) {
 			t.Errorf("non-infra IP %s leaked into INFRA", notInfra)
 		}
 	}
@@ -193,10 +193,10 @@ func TestBuildTrie_Step4GatewayIPAndMetadata(t *testing.T) {
 		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
 		Subnets:  []Subnet{{ID: "s1", NetworkID: "n1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4}},
 	})
-	if !slices.Contains(got,TrieEntry{"", netip.MustParsePrefix("10.0.0.1/32"), bpf.ZoneInfra}) {
+	if !slices.Contains(got, TrieEntry{"", netip.MustParsePrefix("10.0.0.1/32"), bpf.ZoneInfra}) {
 		t.Errorf("global gateway IP /32 missing as INFRA")
 	}
-	if !slices.Contains(got,TrieEntry{"", netip.MustParsePrefix("169.254.169.254/32"), bpf.ZoneInfra}) {
+	if !slices.Contains(got, TrieEntry{"", netip.MustParsePrefix("169.254.169.254/32"), bpf.ZoneInfra}) {
 		t.Errorf("global Nova metadata IP missing as INFRA")
 	}
 }
@@ -285,7 +285,7 @@ func TestBuildTrie_SkipsIPv6(t *testing.T) {
 		}
 	}
 	// Sanity: the IPv4 sibling should still be present.
-	if !slices.Contains(got,TrieEntry{"T1", mustPrefix(t, "10.0.0.0/24"), bpf.ZoneSameTenant}) {
+	if !slices.Contains(got, TrieEntry{"T1", mustPrefix(t, "10.0.0.0/24"), bpf.ZoneSameTenant}) {
 		t.Errorf("IPv4 subnet missing")
 	}
 }
@@ -298,7 +298,7 @@ func TestBuildTrie_MalformedCIDRSkipped(t *testing.T) {
 			{ID: "s-good", NetworkID: "n1", ProjectID: "T1", CIDR: "10.0.0.0/24", IPVersion: 4},
 		},
 	})
-	if !slices.Contains(got,TrieEntry{"T1", mustPrefix(t, "10.0.0.0/24"), bpf.ZoneSameTenant}) {
+	if !slices.Contains(got, TrieEntry{"T1", mustPrefix(t, "10.0.0.0/24"), bpf.ZoneSameTenant}) {
 		t.Fatalf("good CIDR should still be present after a sibling parse failure")
 	}
 }
