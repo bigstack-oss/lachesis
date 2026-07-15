@@ -15,23 +15,24 @@ on:
   pull_request_target:
     types: [labeled]
 
-permissions:
-  contents: write
-  pull-requests: write
-  # `gh pr checks --watch --required` walks the head commit's
-  # statusCheckRollup (checks/statuses scopes) and then drills into
-  # each check's checkSuite.workflowRun (actions scope) to surface
-  # the run URL. Missing any of the three returns "Resource not
-  # accessible by integration" even though the workflow can write
-  # to PRs.
-  checks: read
-  statuses: read
-  actions: read
+permissions: {}
 
 jobs:
   merge:
     if: github.event.label.name == 'done'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      # `gh pr checks --watch --required` walks the head commit's
+      # statusCheckRollup (checks/statuses scopes) and then drills into
+      # each check's checkSuite.workflowRun (actions scope) to surface
+      # the run URL. Missing any of the three returns "Resource not
+      # accessible by integration" even though the workflow can write
+      # to PRs.
+      checks: read
+      statuses: read
+      actions: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR_NUMBER: ${{ github.event.pull_request.number }}

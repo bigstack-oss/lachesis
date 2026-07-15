@@ -29,5 +29,5 @@ require (
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/vishvananda/netns v0.0.5
 	go.uber.org/goleak v1.3.0
-	golang.org/x/sys v0.42.0
+	golang.org/x/sys v0.44.0
 )
