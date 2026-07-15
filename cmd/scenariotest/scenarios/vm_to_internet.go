@@ -34,6 +34,16 @@ func vmToInternet() *scenariotest.Scenario {
 		},
 		Expect: []scenariotest.Expect{
 			{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20},
+			// The same egress must carry the provider network's
+			// external_network label ("net-ext" resolves to the bound
+			// provider network, like TenantID → UUID) — pinning the
+			// zone-gated label live (DESIGN §11.4)...
+			{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
+				ExternalNetwork: "net-ext"},
+			// ...and the mortal per-server family must attribute it to
+			// the driving VM's Nova UUID on the same tuple (DESIGN §11.5).
+			{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
+				ExternalNetwork: "net-ext", VM: "vm-a"},
 		},
 	}
 }

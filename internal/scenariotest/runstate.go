@@ -36,8 +36,12 @@ type RunState struct {
 
 	// Baseline is the pre-drive lachesis_bytes_total snapshot across
 	// all agents, captured by `drive` immediately before it pushes
-	// traffic; `assert` diffs against it.
-	Baseline []BytesSample `json:"baseline,omitempty"`
+	// traffic; `assert` diffs against it. BaselineServers is the
+	// per-server family's counterpart, consumed only by expectations
+	// with a VM target (absent in old run-states and against agents
+	// predating the family).
+	Baseline        []BytesSample  `json:"baseline,omitempty"`
+	BaselineServers []ServerSample `json:"baseline_servers,omitempty"`
 
 	// TornDown marks a successful `down`: every recorded resource is
 	// gone (projects excepted, by policy). The file itself is kept —

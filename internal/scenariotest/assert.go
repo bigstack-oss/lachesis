@@ -57,18 +57,23 @@ type AssertReport struct {
 
 // AssertRow is one expectation's evaluation. Tenant carries the DSL
 // name; TenantID the resolved Keystone project UUID actually matched
-// against the `tenant_id` label.
+// against the `tenant_id` label. ExternalNetwork and VM/ServerID are
+// set only on expectations that declared them (ExternalNetwork already
+// resolved to the label value matched).
 type AssertRow struct {
-	Tenant    string  `json:"tenant"`
-	TenantID  string  `json:"tenant_id"`
-	Zone      string  `json:"zone"`
-	Direction string  `json:"direction"`
-	Baseline  float64 `json:"baseline"`
-	Current   float64 `json:"current"`
-	Delta     float64 `json:"delta"`
-	MinBytes  int64   `json:"min_bytes"`
-	Pass      bool    `json:"pass"`
-	Note      string  `json:"note,omitempty"`
+	Tenant          string  `json:"tenant"`
+	TenantID        string  `json:"tenant_id"`
+	Zone            string  `json:"zone"`
+	ExternalNetwork string  `json:"external_network,omitempty"`
+	VM              string  `json:"vm,omitempty"`
+	ServerID        string  `json:"server_id,omitempty"`
+	Direction       string  `json:"direction"`
+	Baseline        float64 `json:"baseline"`
+	Current         float64 `json:"current"`
+	Delta           float64 `json:"delta"`
+	MinBytes        int64   `json:"min_bytes"`
+	Pass            bool    `json:"pass"`
+	Note            string  `json:"note,omitempty"`
 }
 
 // Assert evaluates every declared expectation as a MinBytes lower
@@ -86,7 +91,11 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 	if len(rs.Baseline) == 0 {
 		return AssertReport{}, fmt.Errorf("assert: run-state has no baseline — run drive first")
 	}
-	base := sumByTuple(rs.Baseline)
+	base := baselines{
+		tuples:  sumByTuple(rs.Baseline),
+		ext:     sumByExtTuple(rs.Baseline),
+		servers: sumByServerTuple(rs.BaselineServers),
+	}
 
 	timeout := opts.SettleTimeout
 	if timeout <= 0 {
@@ -100,7 +109,12 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 		if err != nil {
 			return AssertReport{}, fmt.Errorf("assert: scrape: %w", err)
 		}
-		report, err = evaluate(opts.Scenario, rs, base, sumByTuple(snap.Bytes))
+		cur := baselines{
+			tuples:  sumByTuple(snap.Bytes),
+			ext:     sumByExtTuple(snap.Bytes),
+			servers: sumByServerTuple(snap.Servers),
+		}
+		report, err = evaluate(opts.Scenario, opts.Config, rs, base, cur, len(snap.Servers) > 0)
 		if err != nil {
 			return AssertReport{}, err
 		}
@@ -134,21 +148,54 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 	return report, nil
 }
 
-// evaluate builds one report from a pair of tuple-summed snapshots.
-func evaluate(sc *Scenario, rs *RunState, base, cur map[tuple]float64) (AssertReport, error) {
+// baselines carries the three aggregations one snapshot supports: the
+// coarse {tenant, zone, direction} sums (the pre-label behavior, used
+// by expectations with no ExternalNetwork/VM and by the step
+// executor), the external_network-refined sums, and the per-server
+// family's sums.
+type baselines struct {
+	tuples  map[tuple]float64
+	ext     map[extTuple]float64
+	servers map[serverTuple]float64
+}
+
+// evaluate builds one report from a pair of aggregated snapshots.
+// haveServers reports whether the live scrape exposed the per-server
+// family at all — an expectation with a VM target against an agent
+// predating it is an evaluation error, not a silent zero-delta fail.
+func evaluate(sc *Scenario, cfg Config, rs *RunState, base, cur baselines, haveServers bool) (AssertReport, error) {
 	report := AssertReport{Scenario: rs.Scenario, RunID: rs.RunID, OK: true}
 	for _, e := range sc.Expect {
 		ref, ok := rs.Projects[e.TenantID]
 		if !ok {
 			return AssertReport{}, fmt.Errorf("assert: expectation references tenant %q but run-state has no such project", e.TenantID)
 		}
-		k := tuple{ref.ID, e.Zone, e.Direction}
+		ext := resolveExternalNetwork(sc, cfg, e.ExternalNetwork)
 		row := AssertRow{
 			Tenant: e.TenantID, TenantID: ref.ID,
-			Zone: e.Zone, Direction: e.Direction,
-			Baseline: base[k], Current: cur[k],
-			Delta: cur[k] - base[k], MinBytes: e.MinBytes,
+			Zone: e.Zone, ExternalNetwork: ext, Direction: e.Direction,
+			MinBytes: e.MinBytes,
 		}
+		switch {
+		case e.VM != "":
+			if !haveServers {
+				return AssertReport{}, fmt.Errorf("assert: expectation targets VM %q but the agent exposes no %s (predates the per-server family?)", e.VM, metricServerBytesTotal)
+			}
+			serverID, ok := serverIDFor(rs, e.VM)
+			if !ok {
+				return AssertReport{}, fmt.Errorf("assert: expectation references VM %q but run-state has no such server", e.VM)
+			}
+			row.VM, row.ServerID = e.VM, serverID
+			row.Baseline = sumServer(base.servers, serverID, e.Zone, ext, e.Direction)
+			row.Current = sumServer(cur.servers, serverID, e.Zone, ext, e.Direction)
+		case ext != "":
+			k := extTuple{ref.ID, e.Zone, ext, e.Direction}
+			row.Baseline, row.Current = base.ext[k], cur.ext[k]
+		default:
+			k := tuple{ref.ID, e.Zone, e.Direction}
+			row.Baseline, row.Current = base.tuples[k], cur.tuples[k]
+		}
+		row.Delta = row.Current - row.Baseline
 		row.Pass = row.Delta >= float64(e.MinBytes)
 		if row.Delta < 0 {
 			row.Note = noteBaselineInvalidated
@@ -161,8 +208,42 @@ func evaluate(sc *Scenario, rs *RunState, base, cur map[tuple]float64) (AssertRe
 	return report, nil
 }
 
-// tuple keys the {tenant_id, zone, direction} label set.
+// resolveExternalNetwork maps an expectation's ExternalNetwork to the
+// label value to match: empty stays empty (no filter); a DSL
+// external-network marker id resolves to the provider network the
+// config binds it to (the same indirection realize applies); anything
+// else — including the "none" sentinel — is literal.
+func resolveExternalNetwork(sc *Scenario, cfg Config, name string) string {
+	if name == "" || sc.Builder == nil {
+		return name
+	}
+	for _, n := range sc.Builder.Build().Networks {
+		if n.IsExternal && n.ID == name {
+			return cfg.Prerequisites.ExternalNetworkName
+		}
+	}
+	return name
+}
+
+// serverIDFor resolves a DSL VM id to the Nova server UUID the run
+// created for it.
+func serverIDFor(rs *RunState, vm string) (string, bool) {
+	for _, s := range rs.Servers {
+		if s.DSLID == vm {
+			return s.ID, true
+		}
+	}
+	return "", false
+}
+
+// tuple keys the {tenant_id, zone, direction} label set; extTuple and
+// serverTuple refine it for expectations that pin the external_network
+// label or a specific server.
 type tuple struct{ tenant, zone, direction string }
+
+type extTuple struct{ tenant, zone, ext, direction string }
+
+type serverTuple struct{ server, zone, ext, direction string }
 
 // sumByTuple aggregates samples per label tuple. Summing (not
 // last-wins) matters on multi-node clusters, where every agent
@@ -173,6 +254,41 @@ func sumByTuple(samples []BytesSample) map[tuple]float64 {
 		m[tuple{s.TenantID, s.Zone, s.Direction}] += s.Value
 	}
 	return m
+}
+
+// sumByExtTuple is sumByTuple refined by the external_network label.
+func sumByExtTuple(samples []BytesSample) map[extTuple]float64 {
+	m := make(map[extTuple]float64, len(samples))
+	for _, s := range samples {
+		m[extTuple{s.TenantID, s.Zone, s.ExternalNetwork, s.Direction}] += s.Value
+	}
+	return m
+}
+
+// sumByServerTuple aggregates the per-server family. A live-migrated
+// server appears on several agents; summing per server is the
+// consumption rule (DESIGN §11.5).
+func sumByServerTuple(samples []ServerSample) map[serverTuple]float64 {
+	m := make(map[serverTuple]float64, len(samples))
+	for _, s := range samples {
+		m[serverTuple{s.ServerID, s.Zone, s.ExternalNetwork, s.Direction}] += s.Value
+	}
+	return m
+}
+
+// sumServer totals a server's series for (zone, direction), across all
+// external networks when ext is empty.
+func sumServer(m map[serverTuple]float64, server, zone, ext, direction string) float64 {
+	if ext != "" {
+		return m[serverTuple{server, zone, ext, direction}]
+	}
+	var total float64
+	for k, v := range m {
+		if k.server == server && k.zone == zone && k.direction == direction {
+			total += v
+		}
+	}
+	return total
 }
 
 func passCount(r AssertReport) int {
@@ -224,7 +340,7 @@ func (r AssertReport) Emit(w io.Writer, format string) error {
 	case "human", "":
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		fmt.Fprintf(tw, "ASSERT %s (run %s)\n", r.Scenario, r.RunID)
-		fmt.Fprintln(tw, "TENANT\tZONE\tDIR\tBASELINE\tCURRENT\tDELTA\tMIN\tRESULT")
+		fmt.Fprintln(tw, "TENANT\tZONE\tEXT\tVM\tDIR\tBASELINE\tCURRENT\tDELTA\tMIN\tRESULT")
 		for _, row := range r.Rows {
 			result := "pass"
 			if !row.Pass {
@@ -233,8 +349,15 @@ func (r AssertReport) Emit(w io.Writer, format string) error {
 			if row.Note != "" {
 				result += " (" + row.Note + ")"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%.0f\t%.0f\t%.0f\t%d\t%s\n",
-				row.Tenant, row.Zone, row.Direction, row.Baseline, row.Current, row.Delta, row.MinBytes, result)
+			ext, vm := row.ExternalNetwork, row.VM
+			if ext == "" {
+				ext = "-"
+			}
+			if vm == "" {
+				vm = "-"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%.0f\t%.0f\t%.0f\t%d\t%s\n",
+				row.Tenant, row.Zone, ext, vm, row.Direction, row.Baseline, row.Current, row.Delta, row.MinBytes, result)
 		}
 		tw.Flush()
 		verdict := "PASS"

@@ -44,6 +44,7 @@ type driveMetrics struct {
 	attached float64
 	failures float64
 	bytes    []BytesSample
+	servers  []ServerSample
 }
 
 func (m driveMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
@@ -52,6 +53,7 @@ func (m driveMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 		AttachedInterfaces: m.attached,
 		AttachFailures:     m.failures,
 		Bytes:              m.bytes,
+		Servers:            m.servers,
 	}, nil
 }
 

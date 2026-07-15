@@ -24,17 +24,38 @@ const (
 	// deleted VM. Absent on pre-fold agents — the scenario checks
 	// presence and refuses to run rather than hanging on the poll.
 	metricSettledFlows = "lachesis_gc_settled_flows_total"
+	// metricServerBytesTotal is the mortal per-server billing family
+	// (DESIGN §11.5). Absent on agents predating the per-server export;
+	// only expectations with a VM target need it, and assert refuses
+	// those against agents that don't expose it.
+	metricServerBytesTotal = "lachesis_server_bytes_total"
 )
 
 // BytesSample is one lachesis_bytes_total series: the {tenant_id, zone,
-// direction} label tuple and its cumulative value. JSON-tagged
-// because drive persists the pre-traffic snapshot into the run-state
-// file for assert to diff against.
+// external_network, direction} label tuple and its cumulative value.
+// JSON-tagged because drive persists the pre-traffic snapshot into the
+// run-state file for assert to diff against. ExternalNetwork is empty
+// on samples parsed from pre-label agents and on old run-states — both
+// aggregate identically to "any".
 type BytesSample struct {
-	TenantID  string  `json:"tenant_id"`
-	Zone      string  `json:"zone"`
-	Direction string  `json:"direction"`
-	Value     float64 `json:"value"`
+	TenantID        string  `json:"tenant_id"`
+	Zone            string  `json:"zone"`
+	ExternalNetwork string  `json:"external_network,omitempty"`
+	Direction       string  `json:"direction"`
+	Value           float64 `json:"value"`
+}
+
+// ServerSample is one lachesis_server_bytes_total series — the mortal
+// per-server billing family (DESIGN §11.5). Captured alongside
+// BytesSample so Expect entries with a VM target can lower-bound a
+// specific server's delta.
+type ServerSample struct {
+	ServerID        string  `json:"server_id"`
+	TenantID        string  `json:"tenant_id"`
+	Zone            string  `json:"zone"`
+	ExternalNetwork string  `json:"external_network,omitempty"`
+	Direction       string  `json:"direction"`
+	Value           float64 `json:"value"`
 }
 
 // ScrapeResult is one agent's /metrics scrape: which of the metrics
@@ -47,6 +68,7 @@ type ScrapeResult struct {
 	AttachFailures     float64
 	SettledFlows       float64
 	Bytes              []BytesSample
+	Servers            []ServerSample
 }
 
 // MetricsSnapshot aggregates one scrape across all configured agents:
@@ -57,6 +79,7 @@ type MetricsSnapshot struct {
 	AttachFailures     float64
 	SettledFlows       float64
 	Bytes              []BytesSample
+	Servers            []ServerSample
 }
 
 // MetricsSource scrapes and parses one agent's /metrics. preflight and
@@ -96,6 +119,7 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	r.AttachFailures = familySum(fams, metricAttachFailures)
 	r.SettledFlows = familySum(fams, metricSettledFlows)
 	r.Bytes = bytesSamples(fams)
+	r.Servers = serverSamples(fams)
 	return r, nil
 }
 
@@ -112,6 +136,7 @@ func sampleAcross(ctx context.Context, src MetricsSource, urls []string) (Metric
 		snap.AttachFailures += r.AttachFailures
 		snap.SettledFlows += r.SettledFlows
 		snap.Bytes = append(snap.Bytes, r.Bytes...)
+		snap.Servers = append(snap.Servers, r.Servers...)
 	}
 	return snap, nil
 }
@@ -156,7 +181,7 @@ func familySum(fams map[string]*dto.MetricFamily, name string) float64 {
 }
 
 // bytesSamples extracts every lachesis_bytes_total series with its
-// {tenant_id, zone, direction} labels.
+// {tenant_id, zone, external_network, direction} labels.
 func bytesSamples(fams map[string]*dto.MetricFamily) []BytesSample {
 	fam, ok := fams[metricBytesTotal]
 	if !ok {
@@ -171,6 +196,37 @@ func bytesSamples(fams map[string]*dto.MetricFamily) []BytesSample {
 				s.TenantID = lp.GetValue()
 			case "zone":
 				s.Zone = lp.GetValue()
+			case "external_network":
+				s.ExternalNetwork = lp.GetValue()
+			case "direction":
+				s.Direction = lp.GetValue()
+			}
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// serverSamples extracts every lachesis_server_bytes_total series.
+// Returns nil against agents predating the per-server family.
+func serverSamples(fams map[string]*dto.MetricFamily) []ServerSample {
+	fam, ok := fams[metricServerBytesTotal]
+	if !ok {
+		return nil
+	}
+	out := make([]ServerSample, 0, len(fam.GetMetric()))
+	for _, m := range fam.GetMetric() {
+		s := ServerSample{Value: sampleValue(m)}
+		for _, lp := range m.GetLabel() {
+			switch lp.GetName() {
+			case "server_id":
+				s.ServerID = lp.GetValue()
+			case "tenant_id":
+				s.TenantID = lp.GetValue()
+			case "zone":
+				s.Zone = lp.GetValue()
+			case "external_network":
+				s.ExternalNetwork = lp.GetValue()
 			case "direction":
 				s.Direction = lp.GetValue()
 			}
