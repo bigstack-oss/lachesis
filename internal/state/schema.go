@@ -51,13 +51,17 @@ type Record struct {
 }
 
 // SettledKey identifies one settled-accumulator bucket. It is exactly
-// the metric label tuple the Collector emits — the resolved tenant plus
-// the flow key's zone and direction — because settling happens at the
-// moment the finer flow-level identity (the MAC pair) stops being
-// resolvable: the bytes are re-homed at the granularity that must stay
-// monotonic.
+// the metric label tuple the Collector emits — the resolved tenant, the
+// zone-gated external-network label, plus the flow key's zone and
+// direction — because settling happens at the moment the finer
+// flow-level identity (the MAC pair) stops being resolvable: the bytes
+// are re-homed at the granularity that must stay monotonic. ExtNet is
+// always the already-gated label (a network name, or the
+// metadata.NoExternalNetwork sentinel) so a settled bucket lands in
+// exactly the series its live flows occupied.
 type SettledKey struct {
 	Tenant string
+	ExtNet string
 	Zone   bpf.ZoneCode
 	Dir    bpf.Direction
 }

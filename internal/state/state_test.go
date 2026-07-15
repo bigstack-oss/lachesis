@@ -315,9 +315,10 @@ func TestAdd_DoesNotPrimeDeltaBaseline(t *testing.T) {
 	}
 }
 
-// settleAll resolves every key to one tenant — the common test fold.
-func settleAll(tenant string) func(bpf.FlowKey) (string, bool) {
-	return func(bpf.FlowKey) (string, bool) { return tenant, true }
+// settleAll resolves every key to one tenant with the "none"
+// external-network sentinel — the common test fold.
+func settleAll(tenant string) func(bpf.FlowKey) (string, string, bool) {
+	return func(bpf.FlowKey) (string, string, bool) { return tenant, "none", true }
 }
 
 // TestSettle_EvictMovesTotalsAndDeletesRows: the ghost-sweep fold.
@@ -329,11 +330,11 @@ func TestSettle_EvictMovesTotalsAndDeletesRows(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 2, LastSeenNs: 1})
 	g.ApplyDelta(keyB(), bpf.FlowMetrics{Bytes: 50, Packets: 1, LastSeenNs: 2})
 
-	folded := g.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, bool) {
+	folded := g.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
 		if k == keyA() {
-			return "tenant-a", true
+			return "tenant-a", "none", true
 		}
-		return "", false
+		return "", "", false
 	})
 	if folded != 1 {
 		t.Fatalf("Settle folded %d rows, want 1", folded)
@@ -342,7 +343,7 @@ func TestSettle_EvictMovesTotalsAndDeletesRows(t *testing.T) {
 	if len(flows) != 1 || flows[0].Key != keyB() || flows[0].Total.Bytes != 50 {
 		t.Errorf("flows = %+v, want only keyB with 50 bytes", flows)
 	}
-	want := state.SettledKey{Tenant: "tenant-a", Zone: keyA().DstZone, Dir: keyA().Direction}
+	want := state.SettledKey{Tenant: "tenant-a", ExtNet: "none", Zone: keyA().DstZone, Dir: keyA().Direction}
 	if len(settled) != 1 || settled[0].Key != want || settled[0].Bytes != 100 || settled[0].Packets != 2 {
 		t.Errorf("settled = %+v, want 100 bytes / 2 packets under %+v", settled, want)
 	}
@@ -408,5 +409,29 @@ func TestSettledWALRoundTrip(t *testing.T) {
 	_, got := fresh.SnapshotWithSettled(nil, nil)
 	if got[0] != settled[0] {
 		t.Errorf("restored settled = %+v, want %+v", got[0], settled[0])
+	}
+}
+
+// TestSettle_DistinctExternalNetworksSeparateBuckets: the same tenant's
+// folds land in per-external_network buckets, mirroring the label tuple
+// the Collector emits — folding an EXTERNAL flow must not contaminate
+// the "none" bucket (and vice versa).
+func TestSettle_DistinctExternalNetworksSeparateBuckets(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 1})
+	g.Settle(state.SettleEvict, func(bpf.FlowKey) (string, string, bool) { return "t1", "public-1", true })
+	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 40, Packets: 1, LastSeenNs: 2})
+	g.Settle(state.SettleEvict, func(bpf.FlowKey) (string, string, bool) { return "t1", "none", true })
+
+	_, settled := g.SnapshotWithSettled(nil, nil)
+	if len(settled) != 2 {
+		t.Fatalf("settled = %+v, want 2 buckets (public-1, none)", settled)
+	}
+	got := map[string]uint64{}
+	for _, s := range settled {
+		got[s.Key.ExtNet] = s.Bytes
+	}
+	if got["public-1"] != 100 || got["none"] != 40 {
+		t.Errorf("bucket split = %v, want public-1:100 none:40", got)
 	}
 }

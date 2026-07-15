@@ -6,6 +6,7 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/projects"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/external"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/routers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/ports"
@@ -127,6 +128,30 @@ func (c *Client) ListRouters(ctx context.Context) ([]Router, error) {
 			Name:              r.Name,
 			ExternalNetworkID: r.GatewayInfo.NetworkID,
 			Routes:            routes,
+		}
+	}
+	return out, nil
+}
+
+// ListFloatingIPs returns every Neutron floating IP the agent's
+// project can see, carrying the port binding and source external
+// network needed by [ExternalNetworkByPort]. See [ListNetworks] for
+// pagination semantics.
+func (c *Client) ListFloatingIPs(ctx context.Context) ([]FloatingIP, error) {
+	pages, err := floatingips.List(c.network, floatingips.ListOpts{}).AllPages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("neutron: list floatingips: %w", err)
+	}
+	gcs, err := floatingips.ExtractFloatingIPs(pages)
+	if err != nil {
+		return nil, fmt.Errorf("neutron: extract floatingips: %w", err)
+	}
+	out := make([]FloatingIP, len(gcs))
+	for i, f := range gcs {
+		out[i] = FloatingIP{
+			ID:                f.ID,
+			PortID:            f.PortID,
+			FloatingNetworkID: f.FloatingNetworkID,
 		}
 	}
 	return out, nil

@@ -108,12 +108,12 @@ func TestAgent_ServesMetricsFromReader(t *testing.T) {
 
 	// Poll up to 1s for the first scrape to complete and surface in /metrics.
 	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
-		return strings.Contains(s, `lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 4242`)
+		return strings.Contains(s, `lachesis_bytes_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 4242`)
 	})
 
 	for _, want := range []string{
-		`lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 4242`,
-		`lachesis_packets_total{direction="rx",tenant_id="unknown",zone="external"} 7`,
+		`lachesis_bytes_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 4242`,
+		`lachesis_packets_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 7`,
 		`lachesis_state_flows 1`,
 	} {
 		if !strings.Contains(body, want) {
@@ -300,9 +300,9 @@ func TestAgent_SeedStateAppearsOnMetrics(t *testing.T) {
 	ag.SeedState(seeded)
 
 	body := mustGetMetrics(t, ag.Addr(), time.Second, func(s string) bool {
-		return strings.Contains(s, `lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 7777`)
+		return strings.Contains(s, `lachesis_bytes_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 7777`)
 	})
-	if !strings.Contains(body, `lachesis_packets_total{direction="rx",tenant_id="unknown",zone="external"} 13`) {
+	if !strings.Contains(body, `lachesis_packets_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 13`) {
 		t.Errorf("packets total missing or wrong; body:\n%s", body)
 	}
 }

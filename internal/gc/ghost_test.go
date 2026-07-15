@@ -183,8 +183,8 @@ func TestSweep_SettlesFlowsToTenantBeforeUserspaceDelete(t *testing.T) {
 		t.Fatalf("flows after sweep = %+v, want only the live VM's row", flows)
 	}
 	want := map[state.SettledKey]uint64{
-		{Tenant: "tenant-a", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}: 100,
-		{Tenant: "tenant-a", Zone: bpf.ZoneInfra, Dir: bpf.DirectionEgress}:       50,
+		{Tenant: "tenant-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}: 100,
+		{Tenant: "tenant-a", ExtNet: "none", Zone: bpf.ZoneInfra, Dir: bpf.DirectionEgress}:       50,
 	}
 	if len(settled) != len(want) {
 		t.Fatalf("settled buckets = %+v, want %d buckets", settled, len(want))

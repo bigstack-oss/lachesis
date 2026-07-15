@@ -29,10 +29,13 @@ type stubScraper struct {
 func (s stubScraper) ErrorCount() uint64     { return s.errors }
 func (s stubScraper) LastSuccessUnix() int64 { return s.lastOK }
 
-// staticTenant resolves every key to a fixed tenant id.
+// staticTenant resolves every key to a fixed tenant id with the
+// "none" external-network sentinel and no server.
 type staticTenant string
 
-func (s staticTenant) ResolveTenant(bpf.FlowKey) string { return string(s) }
+func (s staticTenant) Resolve(bpf.FlowKey) metadata.Attribution {
+	return metadata.Attribution{Tenant: string(s), ExternalNetwork: metadata.NoExternalNetwork}
+}
 
 func keyWith(dir bpf.Direction, zone bpf.ZoneCode) bpf.FlowKey {
 	return bpf.FlowKey{
@@ -56,10 +59,10 @@ func TestCollect_EmitsCumulativeBytesAndPackets(t *testing.T) {
 	expected := `
 # HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
 # TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 1000
+lachesis_bytes_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 1000
 # HELP lachesis_packets_total Network packets observed by the agent, cumulative since first sight.
 # TYPE lachesis_packets_total counter
-lachesis_packets_total{direction="rx",tenant_id="unknown",zone="external"} 10
+lachesis_packets_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 10
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"lachesis_bytes_total", "lachesis_packets_total"); err != nil {
@@ -237,10 +240,10 @@ func TestCollect_AggregatesFlowsSharingLabels(t *testing.T) {
 	expected := `
 # HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
 # TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="rx",tenant_id="unknown",zone="external"} 500
+lachesis_bytes_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 500
 # HELP lachesis_packets_total Network packets observed by the agent, cumulative since first sight.
 # TYPE lachesis_packets_total counter
-lachesis_packets_total{direction="rx",tenant_id="unknown",zone="external"} 5
+lachesis_packets_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 5
 # HELP lachesis_state_flows Distinct flow keys currently tracked in GlobalState.
 # TYPE lachesis_state_flows gauge
 lachesis_state_flows 5
@@ -275,7 +278,7 @@ func TestCollect_SeriesMonotonicAcrossGhostSweep(t *testing.T) {
 	expected := `
 # HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
 # TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
+lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 1000
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"lachesis_bytes_total"); err != nil {
@@ -284,11 +287,11 @@ lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 100
 
 	// The ghost sweep: fold the dead MAC's rows to its tenant, then
 	// delete the metadata (the exact order internal/gc performs).
-	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, bool) {
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
 		if metadata.VMMAC(k) != macKey {
-			return "", false
+			return "", "", false
 		}
-		return "tenant-a", true
+		return "tenant-a", "none", true
 	})
 	meta.Delete(macKey)
 
@@ -298,11 +301,11 @@ lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 100
 	expected = `
 # HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
 # TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
+lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 1000
 # HELP lachesis_state_flows Distinct flow keys currently tracked in GlobalState.
 # TYPE lachesis_state_flows gauge
 lachesis_state_flows 0
-# HELP lachesis_state_settled_tuples Distinct (tenant, zone, direction) buckets in the settled-bytes accumulator — flows folded out when their tenant binding was about to disappear (docs/DESIGN.md §3.5).
+# HELP lachesis_state_settled_tuples Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/DESIGN.md §3.5).
 # TYPE lachesis_state_settled_tuples gauge
 lachesis_state_settled_tuples 1
 `
@@ -332,11 +335,11 @@ func TestCollect_MACReuseDoesNotInheritOrReplay(t *testing.T) {
 	// MAC is reborn on tenant B's port: metadata re-learned, and the
 	// reborn flow's kernel counter restarts from zero — its next drain
 	// reads a fresh cumulative (300), unrelated to A's 1000.
-	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, bool) {
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
 		if metadata.VMMAC(k) != macKey {
-			return "", false
+			return "", "", false
 		}
-		return "tenant-a", true
+		return "tenant-a", "none", true
 	})
 	meta.Delete(macKey)
 	meta.Insert(macKey, &metadata.TenantMeta{ProjectID: "tenant-b"})
@@ -349,8 +352,8 @@ func TestCollect_MACReuseDoesNotInheritOrReplay(t *testing.T) {
 	expected := `
 # HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
 # TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 1000
-lachesis_bytes_total{direction="tx",tenant_id="tenant-b",zone="same_tenant"} 300
+lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 1000
+lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-b",zone="same_tenant"} 300
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"lachesis_bytes_total"); err != nil {
@@ -364,7 +367,7 @@ lachesis_bytes_total{direction="tx",tenant_id="tenant-b",zone="same_tenant"} 300
 func TestCollect_SettledAndLiveSumPerTuple(t *testing.T) {
 	st := state.New()
 	st.RestoreSettled([]state.SettledRecord{{
-		Key:   state.SettledKey{Tenant: "tenant-a", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
+		Key:   state.SettledKey{Tenant: "tenant-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
 		Bytes: 400, Packets: 4,
 	}})
 	st.ApplyDelta(keyWith(bpf.DirectionIngress, bpf.ZoneSameTenant),
@@ -377,10 +380,10 @@ func TestCollect_SettledAndLiveSumPerTuple(t *testing.T) {
 	expected := `
 # HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
 # TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 500
+lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 500
 # HELP lachesis_packets_total Network packets observed by the agent, cumulative since first sight.
 # TYPE lachesis_packets_total counter
-lachesis_packets_total{direction="tx",tenant_id="tenant-a",zone="same_tenant"} 5
+lachesis_packets_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 5
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"lachesis_bytes_total", "lachesis_packets_total"); err != nil {
@@ -414,5 +417,138 @@ lachesis_state_flows 1
 		"lachesis_state_flows",
 	); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
+	}
+}
+
+// TestCollect_ExternalNetworkLabelRouting: a VM with a resolved
+// external network carries its label ONLY on external-zone series;
+// its other zones stay on the "none" sentinel — the cardinality gate
+// the label contract promises (docs/DESIGN.md §11.4).
+func TestCollect_ExternalNetworkLabelRouting(t *testing.T) {
+	meta := metadata.New()
+	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
+		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+	})
+
+	st := state.New()
+	ext := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 1},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	same := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 2},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+	st.ApplyDelta(ext, bpf.FlowMetrics{Bytes: 700, Packets: 7, LastSeenNs: 1})
+	st.ApplyDelta(same, bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 2})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 700
+lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 300
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"lachesis_bytes_total"); err != nil {
+		t.Errorf("GatherAndCompare: %v", err)
+	}
+}
+
+// TestCollect_ServerFamilyEmitsLiveRowsOnly pins the per-server family
+// (docs/DESIGN.md §11.5): live rows of a resolved server emit under the
+// full 5-label tuple; rows whose MAC doesn't resolve to a server (an
+// unknown MAC here) never enter the family; and settled buckets don't
+// either — the family is live-only by construction.
+func TestCollect_ServerFamilyEmitsLiveRowsOnly(t *testing.T) {
+	meta := metadata.New()
+	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
+		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+	})
+
+	st := state.New()
+	// A settled bucket from some prior fold: tenant family carries it,
+	// server family must not.
+	st.RestoreSettled([]state.SettledRecord{{
+		Key:   state.SettledKey{Tenant: "tenant-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
+		Bytes: 400, Packets: 4,
+	}})
+	ext := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 1},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	st.ApplyDelta(ext, bpf.FlowMetrics{Bytes: 700, Packets: 7, LastSeenNs: 1})
+	// A flow whose MAC is not in the metadata map: no server_id.
+	unknown := bpf.FlowKey{SrcMac: [6]uint8{0xbb, 0, 0, 0, 0, 9}, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 3},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	st.ApplyDelta(unknown, bpf.FlowMetrics{Bytes: 55, Packets: 1, LastSeenNs: 2})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/DESIGN.md §11.5).
+# TYPE lachesis_server_bytes_total counter
+lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"lachesis_server_bytes_total"); err != nil {
+		t.Errorf("GatherAndCompare: %v", err)
+	}
+}
+
+// TestCollect_ServerFamilyMortalAcrossSweep: the ghost sweep ends a
+// server's series — the fold moves its bytes into the tenant family's
+// settled bucket (which stays monotonic) and the server family stops
+// emitting it entirely. This IS the mortal-series contract.
+func TestCollect_ServerFamilyMortalAcrossSweep(t *testing.T) {
+	meta := metadata.New()
+	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	macKey := bpf.MACKey(vmMAC)
+	meta.Insert(macKey, &metadata.TenantMeta{
+		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+	})
+
+	st := state.New()
+	key := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 1000, Packets: 10, LastSeenNs: 1})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	// Alive: both families expose the bytes.
+	expected := `
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/DESIGN.md §11.5).
+# TYPE lachesis_server_bytes_total counter
+lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 1000
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"lachesis_server_bytes_total"); err != nil {
+		t.Errorf("before sweep: %v", err)
+	}
+
+	// Ghost sweep: fold under the dying attribution (zone-gated
+	// external_network), evict the rows, delete the metadata.
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+		if metadata.VMMAC(k) != macKey {
+			return "", "", false
+		}
+		return "tenant-a", metadata.ExternalNetworkLabel("public-1", k.DstZone), true
+	})
+	meta.Delete(macKey)
+
+	// Dead: the server family is empty (series ended — mortal), while
+	// the tenant family still exposes the full cumulative on the SAME
+	// label tuple it always had.
+	expected = `
+# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 1000
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"lachesis_bytes_total", "lachesis_server_bytes_total"); err != nil {
+		t.Errorf("after sweep: %v", err)
 	}
 }

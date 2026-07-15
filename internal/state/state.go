@@ -171,31 +171,37 @@ func AddDelta(total, lastRaw *uint64, current uint64) {
 	*lastRaw = current
 }
 
-// Settle folds every flow row that resolve maps to a tenant into the
-// settled accumulator, under one write-lock critical section: for each
-// row where resolve(key) returns (tenant, true), Total's bytes and
-// packets are added to the (tenant, key.DstZone, key.Direction) settled
-// bucket, and the row is then evicted or rebased per mode (see
-// [SettleMode]). Rows where resolve returns false are untouched.
-// Returns the number of rows folded.
+// Settle folds every flow row that resolve maps to an attribution into
+// the settled accumulator, under one write-lock critical section: for
+// each row where resolve(key) returns (tenant, extNet, true), Total's
+// bytes and packets are added to the (tenant, extNet, key.DstZone,
+// key.Direction) settled bucket, and the row is then evicted or rebased
+// per mode (see [SettleMode]). Rows where resolve returns false are
+// untouched. Returns the number of rows folded.
+//
+// extNet must be the already-gated external_network label for that row
+// (metadata.ExternalNetworkLabel over the dying attribution and the
+// row's zone) so the fold lands in exactly the series the live flow
+// occupied.
 //
 // Settle is how a flow's bytes survive the death of their attribution:
-// callers invoke it at the last moment the tenant is still knowable —
-// the ghost sweep just before it deletes a dead MAC's metadata, the
-// reconciler just before it re-points a live MAC at a new tenant. The
-// exposed per-tenant aggregate is unchanged by the fold (value moves
-// between the two maps inside one critical section), which is exactly
-// the §13.1 Contract 7 monotonicity guarantee.
-func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant string, ok bool)) int {
+// callers invoke it at the last moment the attribution is still
+// knowable — the ghost sweep just before it deletes a dead MAC's
+// metadata, the reconciler just before it re-points a live MAC at a new
+// tenant or external network. The exposed per-tenant aggregate is
+// unchanged by the fold (value moves between the two maps inside one
+// critical section), which is exactly the §13.1 Contract 7 monotonicity
+// guarantee.
+func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	folded := 0
 	for k, c := range g.counts {
-		tenant, ok := resolve(k)
+		tenant, extNet, ok := resolve(k)
 		if !ok {
 			continue
 		}
-		sk := SettledKey{Tenant: tenant, Zone: k.DstZone, Dir: k.Direction}
+		sk := SettledKey{Tenant: tenant, ExtNet: extNet, Zone: k.DstZone, Dir: k.Direction}
 		t := g.settled[sk]
 		if t == nil {
 			t = &settledTotal{}

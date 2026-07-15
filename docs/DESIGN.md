@@ -1424,20 +1424,22 @@ Total: ~150 ns / packet. At 10 Gbps × 64-byte packets = ~14.88 Mpps × 150 ns =
 ### Health metrics catalog
 
 Two tiers of metrics. **Billing metrics** (the thing we exist to produce) are
-emitted by the custom `prometheus.Collector` from `GlobalState` — labels match
-the design's existing fan-out (tenant, zone, direction). **Health metrics**
+emitted by the custom `prometheus.Collector` from `GlobalState` — the tenant
+families fan out by (tenant, zone, external_network, direction), the mortal
+per-server family adds `server_id` (§11.5). **Health metrics**
 (operator-facing instrumentation) are bounded-cardinality; an operator running
 `promql` against one node should see <100 series total.
 
 #### Billing (cumulative counters; emitted from GlobalState)
 
-| Metric | Type | Labels |
-|---|---|---|
-| `lachesis_bytes_total` | counter | `tenant_id, zone, direction` |
-| `lachesis_packets_total` | counter | `tenant_id, zone, direction` |
+| Metric | Type | Labels | Series lifecycle |
+|---|---|---|---|
+| `lachesis_bytes_total` | counter | `tenant_id, zone, external_network, direction` | immortal (live + settled; §3.5) |
+| `lachesis_packets_total` | counter | `tenant_id, zone, external_network, direction` | immortal (live + settled; §3.5) |
+| `lachesis_server_bytes_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **mortal** — live rows only, ends at ghost sweep (§11.5) |
 
-(Earlier drafts named these `lachesis_tenant_{bytes,packets}_total`; the
-implemented, test-pinned names above are canonical — the `tenant_id` label
+(Earlier drafts named the tenant pair `lachesis_tenant_{bytes,packets}_total`;
+the implemented, test-pinned names above are canonical — the `tenant_id` label
 already carries the tenant dimension.)
 
 **Billing label vocabulary.** These value sets are an API contract —
@@ -1448,7 +1450,18 @@ breaking change once consumers exist.
 |---|---|---|
 | `tenant_id` | Neutron project UUID, or `unknown` | The tenant the flow's VM belongs to (resolved via `mac_tenant_map`); `unknown` when the VM MAC is not (yet) in the metadata map |
 | `zone` | `external`, `same_tenant`, `other_tenant`, `infra`, `miss`, `shared` | The remote endpoint's zone relative to the VM's tenant (§4); the canonical strings from `bpf.ZoneCode.String()` |
+| `external_network` | external-network name (ID when nameless), or `none` | The network the VM's egress leaves through — its FIP's network, else its router's `external_gateway_info` network. Carried **only** on `zone="external"` series; every other zone (and external traffic of a VM with no resolved external path) emits the `none` sentinel, keeping cardinality at (#external networks + 1). The gate is `metadata.ExternalNetworkLabel`, applied identically at scrape-time aggregation and settle folds |
+| `server_id` | Nova instance UUID (Neutron port `device_id`) | Per-server family only. Never `unknown` — flows whose MAC doesn't resolve to a server are absent from the family by construction |
 | `direction` | `tx`, `rx` | `tx` = the VM is sending; `rx` = the VM is receiving |
+
+**Attribution changes settle first.** Any change to a live MAC's
+attribution tuple (tenant, external network, server binding) folds the
+MAC's accumulated rows into the settled buckets under the OLD attribution
+(SettleRebase) before the new binding takes effect — one mechanism covers
+tenant reassignment (§3.5), FIP/gateway re-homing (the external_network
+label would otherwise teleport its cumulative between series), and server
+re-binding (the per-server born-series rule would otherwise re-bill the
+old server's history to the new one).
 
 **Why `tx`/`rx`, not the TC hook names.** The TC hooks attach to the
 **tap interface (host side)** of each vNIC, so the raw hook names are

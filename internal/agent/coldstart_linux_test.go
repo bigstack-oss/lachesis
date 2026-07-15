@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/config"
 	"github.com/bigstack-oss/lachesis/internal/logging"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
@@ -57,7 +58,7 @@ func TestPopulateMetadataFromPorts_TrunkSubportWarning(t *testing.T) {
 			}
 			mx := neutron.NewMetrics(func() time.Time { return time.Time{} })
 
-			s := populateMetadataFromPorts(metadata.New(), tc.ports, mx)
+			s := populateMetadataFromPorts(metadata.New(), &neutron.Snapshot{Ports: tc.ports}, mx)
 
 			// Trunk subports still admit — the warning flags the
 			// data-plane blind spot, it does not reject the MACs.
@@ -85,5 +86,40 @@ lachesis_neutron_trunk_subports %d
 				t.Errorf("metric mismatch:\n%v", err)
 			}
 		})
+	}
+}
+
+// TestPopulateMetadataFromPorts_CarriesAttribution: cold-start inserts
+// carry the full attribution — server_id from the port's device_id and
+// the external network resolved from the snapshot's FIPs (docs/DESIGN.md
+// §11.5) — so the very first scrape after boot labels correctly.
+func TestPopulateMetadataFromPorts_CarriesAttribution(t *testing.T) {
+	var buf bytes.Buffer
+	if _, err := logging.Init(config.LoggingConfig{Level: "info", Format: "json"}, &buf); err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	mx := neutron.NewMetrics(func() time.Time { return time.Time{} })
+	meta := metadata.New()
+
+	snap := neutron.Snapshot{
+		Networks: []neutron.Network{{ID: "net-pub", Name: "public-1", IsExternal: true}},
+		Ports: []neutron.Port{{
+			ID: "p1", DeviceOwner: "compute:nova", ProjectID: "t1",
+			MACAddress: "fa:16:3e:00:00:01", DeviceID: "srv-1",
+		}},
+		FloatingIPs: []neutron.FloatingIP{{ID: "f1", PortID: "p1", FloatingNetworkID: "net-pub"}},
+	}
+	if s := populateMetadataFromPorts(meta, &snap, mx); s.inserted != 1 {
+		t.Fatalf("inserted = %d, want 1", s.inserted)
+	}
+
+	hw := [6]uint8{0xfa, 0x16, 0x3e, 0, 0, 0x01}
+	got, ok := meta.Lookup(bpf.MACKey(hw))
+	if !ok {
+		t.Fatal("inserted MAC not found")
+	}
+	want := metadata.TenantMeta{ProjectID: "t1", ServerID: "srv-1", ExternalNetwork: "public-1"}
+	if *got != want {
+		t.Errorf("TenantMeta = %+v, want %+v", *got, want)
 	}
 }
