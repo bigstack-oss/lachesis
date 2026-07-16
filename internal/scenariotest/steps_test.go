@@ -76,7 +76,6 @@ func (e *streamExec) Run(ctx context.Context, addr, command string) (string, err
 // re-buckets tenant A's bytes to "unknown", and the reborn MAC hands
 // tenant A's history to tenant B.
 type stepMetrics struct {
-	instantMACs
 	env   *fakeEnv
 	cloud *fakeCloud
 	exec  *streamExec
