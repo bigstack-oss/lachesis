@@ -3,11 +3,13 @@ package reconcile
 import (
 	"net"
 	"testing"
+	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // routerSnap declares one gatewayed router (rtr-1, interface MAC
@@ -56,6 +58,8 @@ func TestReconcileRouterMACs_GatewayChangeSettlesOldLabel(t *testing.T) {
 	st.ApplyDelta(extFlowKey(t, vmMAC, rtrMAC), bpf.FlowMetrics{Bytes: 700, Packets: 7, LastSeenNs: 1})
 
 	r := New(Options{
+		Tunables: tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+
 		Meta: meta, Routers: routers, Settler: st,
 		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(),
 	})
@@ -89,6 +93,8 @@ func TestReconcileRouterMACs_NoChangeNoFold(t *testing.T) {
 	st.ApplyDelta(extFlowKey(t, vmMAC, rtrMAC), bpf.FlowMetrics{Bytes: 700, Packets: 7, LastSeenNs: 1})
 
 	r := New(Options{
+		Tunables: tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+
 		Meta: meta, Routers: routers, Settler: st,
 		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(),
 	})
@@ -114,6 +120,8 @@ func TestReconcileRouterMACs_RemovalFoldsAndForgets(t *testing.T) {
 	st.ApplyDelta(extFlowKey(t, vmMAC, rtrMAC), bpf.FlowMetrics{Bytes: 500, Packets: 5, LastSeenNs: 1})
 
 	r := New(Options{
+		Tunables: tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+
 		Meta: meta, Routers: routers, Settler: st,
 		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(),
 	})
@@ -147,6 +155,8 @@ func TestReconcileRouterMACs_NonExternalAndForeignRowsUntouched(t *testing.T) {
 	st.ApplyDelta(extFlowKey(t, vmMAC, otherMAC), bpf.FlowMetrics{Bytes: 200, Packets: 2, LastSeenNs: 2})
 
 	r := New(Options{
+		Tunables: tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+
 		Meta: meta, Routers: routers, Settler: st,
 		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(),
 	})

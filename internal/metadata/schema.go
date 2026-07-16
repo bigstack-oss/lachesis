@@ -37,20 +37,13 @@ type TenantMeta struct {
 	// traffic to the load-balancer owner rather than the admin
 	// project that owns the Amphora itself (docs/DESIGN.md §7).
 	IsAmphora bool
-	// DeleteAt is zero for live entries. The 60 s Lingering Ghost
-	// (docs/DESIGN.md §3.3) sets it to `now+60s` on a Neutron
-	// `port.deleted` / `subnet.deleted` event; the GC drops the
-	// entry once `DeleteAt < now`.
+	// DeleteAt is zero for live entries. The Lingering Ghost window
+	// (docs/DESIGN.md §3.3) sets it on a Neutron `port.deleted` /
+	// `subnet.deleted` event: MarkDelete callers use now + the live
+	// `gc.ghost_grace` tunable (default 60s — internal/tunables), and
+	// the GC drops the entry once `DeleteAt < now`.
 	DeleteAt time.Time
 }
-
-// GhostGrace is the lingering-ghost window (docs/DESIGN.md §3.3):
-// [ShardedMetadataMap.MarkDelete] callers set DeleteAt = now + GhostGrace,
-// and the GC sweeps the entry once it elapses. The single source of truth
-// for the value every MarkDelete caller uses (the Neutron reconcile and,
-// later, the Kafka consumer); the effective grace is GhostGrace plus up to
-// one GC sweep interval.
-const GhostGrace = 60 * time.Second
 
 // numShards is the fixed shard count. Must be a power of two so the
 // `mac & (numShards-1)` index is a single AND.

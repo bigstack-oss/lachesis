@@ -50,6 +50,7 @@ func newMacReconciler(meta *metadata.ShardedMetadataMap, mw MacWriter) *Reconcil
 		MacWriter: mw,
 		Interner:  metadata.NewTenantInterner(),
 		Metrics:   NewMetrics(),
+		Tunables:  tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
 	})
 }
 
@@ -105,8 +106,8 @@ func TestReconcileMACs_LearnsNewGhostsGone(t *testing.T) {
 	if !ok || cur.DeleteAt.IsZero() {
 		t.Error("gone MAC should be ghosted (present with DeleteAt set), not deleted")
 	}
-	if !cur.DeleteAt.Equal(now.Add(metadata.GhostGrace)) {
-		t.Errorf("ghost DeleteAt = %v, want now+GhostGrace", cur.DeleteAt)
+	if !cur.DeleteAt.Equal(now.Add(60 * time.Second)) {
+		t.Errorf("ghost DeleteAt = %v, want now+the store's 60s grace", cur.DeleteAt)
 	}
 	if _, ok := mw.updates[gone]; ok {
 		t.Error("gone MAC must not be written to the kernel (ghost = userspace-only)")
@@ -210,6 +211,8 @@ func TestReconcileMACs_TenantChangeSettlesOldTenant(t *testing.T) {
 	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 100, Packets: 4, LastSeenNs: 1})
 
 	r := New(Options{
+		Tunables: tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+
 		Meta:      meta,
 		MacWriter: &fakeMacWriter{},
 		Settler:   st,
@@ -263,6 +266,8 @@ func TestReconcileMACs_ResurrectedSameTenantDoesNotSettle(t *testing.T) {
 		bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 1})
 
 	r := New(Options{
+		Tunables: tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+
 		Meta:      meta,
 		MacWriter: &fakeMacWriter{},
 		Settler:   st,
@@ -305,6 +310,8 @@ func TestReconcileOnce_RefreshesMapGauges(t *testing.T) {
 	}}
 	fg := &fakeGauge{}
 	r := New(Options{
+		Tunables: tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+
 		Source: src, Trie: &fakeMap{}, Meta: meta, MacWriter: &fakeMacWriter{},
 		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(), BPFGauge: fg,
 	})
@@ -323,7 +330,9 @@ func TestReconcileOnce_RefreshesMapGauges(t *testing.T) {
 // reconciler with no metadata map / kernel writer (trie-only tests) does
 // nothing rather than panicking.
 func TestReconcileMACs_NilSkips(t *testing.T) {
-	r := New(Options{Interner: metadata.NewTenantInterner(), Metrics: NewMetrics()})
+	r := New(Options{
+		Tunables: tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics()})
 	if d := r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{vmPort("cc:00:00:00:00:01", "p")}}, time.Unix(2000, 0)); d != (macDelta{}) {
 		t.Errorf("nil MAC reconcile returned %+v, want zero", d)
 	}
@@ -355,6 +364,8 @@ func TestReconcileMACs_ExternalNetworkChangeSettlesOldAttribution(t *testing.T) 
 	st.ApplyDelta(sameKey, bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 2})
 
 	r := New(Options{
+		Tunables: tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+
 		Meta:      meta,
 		MacWriter: &fakeMacWriter{},
 		Settler:   st,

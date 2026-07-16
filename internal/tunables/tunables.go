@@ -14,6 +14,14 @@
 // thresholds — values whose change needs no resource re-binding.
 // What never belongs here: listen addresses, file paths, credentials,
 // BPF map sizes, or anything that is a DESIGN §13.1 contract.
+//
+// The Store is a REQUIRED dependency of every consumer — never nil, no
+// per-package fallback values (the Archaius/dynamic-property rule:
+// the handle always exists). Defaults live in exactly one place
+// (config.Defaults), hotness is declared in exactly one place
+// (config.Config.Tunables), and the developer rule is one sentence:
+// wiring config arrives via constructor Options and is read once;
+// operational knobs are read from this store at the use site.
 package tunables
 
 import (

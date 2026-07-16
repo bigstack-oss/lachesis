@@ -6,21 +6,11 @@
 
 package gc
 
-import "time"
-
 // component is the value of the "component" slog attribute for logs
 // originating in this package. The GC owns both the lingering-ghost
 // sweep and (via the scraper) pressure-relief eviction, so both tag
 // "gc" regardless of which goroutine emits them.
 const component = "gc"
-
-// ghostSweepInterval is the cadence of the lingering-ghost sweep. It
-// matches the 60 s grace window (docs/DESIGN.md §3.3): an entry marked
-// for deletion is swept on the first tick after its DeleteAt elapses,
-// so the effective grace is between 60 s and 120 s. A fixed constant,
-// not config — the value is load-bearing against the FIN/RST tail that
-// the grace window exists to catch, not an operator-tunable knob.
-const ghostSweepInterval = 60 * time.Second
 
 // labelReason is the Prometheus label key naming the eviction cause on
 // lachesis_gc_evictions_total.

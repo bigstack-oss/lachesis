@@ -93,7 +93,6 @@ type GhostSweeper struct {
 	mapGauge    MapGauge
 	seq         *boot.Sequencer
 	mx          *Metrics
-	interval    time.Duration
 }
 
 // Options bundles the inputs to [New]. Meta, Evictor, and Metrics are
@@ -101,7 +100,7 @@ type GhostSweeper struct {
 // used by tests without a kernel telemetry_map); Settler is optional
 // (nil skips the settled-bytes fold — pre-fold unit tests); Seq is
 // optional (nil skips the boot barrier — used by sweep-only unit
-// tests); Interval defaults to the 60s sweep cadence when zero.
+// tests); the sweep cadence is the live gc.ghost_sweep_interval tunable.
 type Options struct {
 	Meta        *metadata.ShardedMetadataMap
 	Evictor     MacEvictor
@@ -115,24 +114,20 @@ type Options struct {
 	// the series the Collector was emitting. Optional (nil = per-VM
 	// fallback only — pre-per-flow unit tests).
 	Routers *metadata.RouterMACs
-	// Tunables, when wired, supplies the live sweep cadence
-	// (hot-reload; applies at the next tick). nil freezes Interval.
+	// Tunables supplies the live sweep cadence (hot-reload; applies at
+	// the next tick). REQUIRED — operational knobs have exactly one
+	// source; unit tests construct a store with the values they
+	// exercise.
 	Tunables *tunables.Store
 	// MapGauge refreshes the mac_tenant_map fill gauge after a sweep.
 	// Optional (nil skips); the agent wires its bpf metrics bundle.
 	MapGauge MapGauge
 	Seq      *boot.Sequencer
 	Metrics  *Metrics
-	Interval time.Duration
 }
 
-// New constructs a GhostSweeper from opts, applying the default sweep
-// interval when Interval is zero.
+// New constructs a GhostSweeper from opts.
 func New(opts Options) *GhostSweeper {
-	interval := opts.Interval
-	if interval == 0 {
-		interval = ghostSweepInterval
-	}
 	return &GhostSweeper{
 		meta:        opts.Meta,
 		evictor:     opts.Evictor,
@@ -143,7 +138,6 @@ func New(opts Options) *GhostSweeper {
 		mapGauge:    opts.MapGauge,
 		seq:         opts.Seq,
 		mx:          opts.Metrics,
-		interval:    interval,
 	}
 }
 
@@ -161,7 +155,7 @@ func (g *GhostSweeper) Run(ctx context.Context) {
 			return
 		}
 	}
-	cur := g.intervalNow()
+	cur := g.tun.Get().GhostSweepInterval
 	t := time.NewTicker(cur)
 	defer t.Stop()
 	for {
@@ -170,21 +164,12 @@ func (g *GhostSweeper) Run(ctx context.Context) {
 			return
 		case now := <-t.C:
 			g.sweep(now)
-			if next := g.intervalNow(); next != cur {
+			if next := g.tun.Get().GhostSweepInterval; next != cur {
 				t.Reset(next)
 				cur = next
 			}
 		}
 	}
-}
-
-// intervalNow returns the live sweep cadence: the tunables value when
-// wired, else the constructed interval.
-func (g *GhostSweeper) intervalNow() time.Duration {
-	if g.tun != nil {
-		return g.tun.Get().GhostSweepInterval
-	}
-	return g.interval
 }
 
 // sweep removes the ghosts whose grace has elapsed as of now. It is pure

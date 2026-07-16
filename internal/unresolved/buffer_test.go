@@ -61,7 +61,7 @@ func unknownTotal(t *testing.T, st *state.GlobalState, zone bpf.ZoneCode, dir bp
 }
 
 func newBuf(st *state.GlobalState, ev FlowEvictor, clk *fakeClock) *Buffer {
-	return NewBuffer(Options{State: st, Evictor: ev, Metrics: NewMetrics(), TTL: time.Minute, Now: clk.now})
+	return NewBuffer(Options{State: st, Evictor: ev, Metrics: NewMetrics(), Tunables: tunables.New(tunables.Values{UnresolvedCap: 10_000, UnresolvedTTL: time.Minute}), Now: clk.now})
 }
 
 func TestBuffer_FoldsFullCumulativeOnExpiryAndResetsKernel(t *testing.T) {
@@ -116,7 +116,7 @@ func TestBuffer_LRUEvictsOldestAndFolds(t *testing.T) {
 	st := state.New()
 	ev := &recordingEvictor{}
 	clk := &fakeClock{t: time.Unix(1000, 0)}
-	b := NewBuffer(Options{State: st, Evictor: ev, Metrics: NewMetrics(), Cap: 2, TTL: time.Hour, Now: clk.now})
+	b := NewBuffer(Options{State: st, Evictor: ev, Metrics: NewMetrics(), Tunables: tunables.New(tunables.Values{UnresolvedCap: 2, UnresolvedTTL: time.Hour}), Now: clk.now})
 
 	k1 := flowKey(1, bpf.ZoneExternal, bpf.DirectionEgress)
 	k2 := flowKey(2, bpf.ZoneExternal, bpf.DirectionEgress)
@@ -166,17 +166,17 @@ func TestBuffer_HoldsAtCapUnder100kUnknownFlows(t *testing.T) {
 	st := state.New()
 	ev := &recordingEvictor{}
 	clk := &fakeClock{t: time.Unix(1000, 0)}
-	b := NewBuffer(Options{State: st, Evictor: ev, Metrics: NewMetrics(), Cap: defaultCap, TTL: time.Hour, Now: clk.now})
+	b := NewBuffer(Options{State: st, Evictor: ev, Metrics: NewMetrics(), Tunables: tunables.New(tunables.Values{UnresolvedCap: 10_000, UnresolvedTTL: time.Hour}), Now: clk.now})
 
 	for i := uint32(0); i < 100_000; i++ {
 		b.Capture(flowKey(i, bpf.ZoneExternal, bpf.DirectionEgress), bpf.FlowMetrics{Bytes: 1, Packets: 1})
 	}
-	if b.Len() != defaultCap {
-		t.Errorf("buffer len = %d, want it held at the cap %d (no OOM)", b.Len(), defaultCap)
+	if b.Len() != 10_000 {
+		t.Errorf("buffer len = %d, want it held at the cap %d (no OOM)", b.Len(), 10_000)
 	}
 	// The 90k LRU-evicted flows were folded to "unknown", not dropped.
-	if got := unknownTotal(t, st, bpf.ZoneExternal, bpf.DirectionEgress).Bytes; got != 100_000-defaultCap {
-		t.Errorf("folded unknown bytes = %d, want %d (every evicted flow's byte)", got, 100_000-defaultCap)
+	if got := unknownTotal(t, st, bpf.ZoneExternal, bpf.DirectionEgress).Bytes; got != 100_000-10_000 {
+		t.Errorf("folded unknown bytes = %d, want %d (every evicted flow's byte)", got, 100_000-10_000)
 	}
 }
 
@@ -204,7 +204,7 @@ func TestBuffer_DepthGaugeTracksOccupancy(t *testing.T) {
 	ev := &recordingEvictor{}
 	clk := &fakeClock{t: time.Unix(1000, 0)}
 	mx := NewMetrics()
-	b := NewBuffer(Options{State: st, Evictor: ev, Metrics: mx, TTL: time.Minute, Now: clk.now})
+	b := NewBuffer(Options{State: st, Evictor: ev, Metrics: mx, Tunables: tunables.New(tunables.Values{UnresolvedCap: 10_000, UnresolvedTTL: time.Minute}), Now: clk.now})
 
 	b.Capture(flowKey(1, bpf.ZoneExternal, bpf.DirectionEgress), bpf.FlowMetrics{Bytes: 1})
 	b.Capture(flowKey(2, bpf.ZoneExternal, bpf.DirectionEgress), bpf.FlowMetrics{Bytes: 1})
