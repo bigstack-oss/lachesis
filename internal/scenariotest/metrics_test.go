@@ -17,6 +17,13 @@ lachesis_attached_interfaces 3
 # HELP lachesis_tc_attach_failures_total TC clsact attach failures.
 # TYPE lachesis_tc_attach_failures_total counter
 lachesis_tc_attach_failures_total{iface_kind="tap"} 0
+# HELP lachesis_server_bytes_total Per-server network bytes.
+# TYPE lachesis_server_bytes_total counter
+lachesis_server_bytes_total{server_id="srv-1",tenant_id="u-T1",zone="external",external_network="pub",direction="tx"} 4096
+# HELP lachesis_neutron_anomalies Count of topology anomalies by class.
+# TYPE lachesis_neutron_anomalies gauge
+lachesis_neutron_anomalies{class="cycle"} 4
+lachesis_neutron_anomalies{class="multi_external_path"} 2
 `
 
 func TestHTTPMetrics_Scrape(t *testing.T) {
@@ -29,7 +36,8 @@ func TestHTTPMetrics_Scrape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scrape: %v", err)
 	}
-	for _, m := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures} {
+	for _, m := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures,
+		metricServerBytesTotal, metricNeutronAnomalies} {
 		if !res.Present[m] {
 			t.Errorf("metric %s reported absent", m)
 		}
@@ -48,6 +56,20 @@ func TestHTTPMetrics_Scrape(t *testing.T) {
 	rx := findBytes(res.Bytes, "u-T1", "same_tenant", "rx")
 	if rx == nil || rx.Value != 524288 {
 		t.Errorf("rx sample = %+v, want value 524288", rx)
+	}
+
+	// The per-server family parses with all five labels...
+	if len(res.Servers) != 1 {
+		t.Fatalf("Servers = %+v, want 1 sample", res.Servers)
+	}
+	want := ServerSample{ServerID: "srv-1", TenantID: "u-T1", Zone: "external",
+		ExternalNetwork: "pub", Direction: "tx", Value: 4096}
+	if res.Servers[0] != want {
+		t.Errorf("server sample = %+v, want %+v", res.Servers[0], want)
+	}
+	// ...and the anomalies gauge breaks out by class.
+	if res.Anomalies["cycle"] != 4 || res.Anomalies["multi_external_path"] != 2 {
+		t.Errorf("anomalies = %v, want cycle:4 multi_external_path:2", res.Anomalies)
 	}
 }
 

@@ -110,12 +110,17 @@ type Cloud interface {
 	DeleteNetwork(ctx context.Context, projectID, id string) error
 }
 
-// NetworkSpec describes a Neutron network to create. External
-// networks are never created — they resolve to the provider external
-// network — so this spec carries only Shared.
+// NetworkSpec describes a Neutron network to create. External DSL
+// markers normally resolve to the provider external network instead of
+// being created; the exception is [Scenario.CreateExternalNets], whose
+// networks are created with `router:external=true` (External here) —
+// segmentless, so they allocate FIPs and take router gateways but
+// carry no wire traffic, which is exactly what an attribution scenario
+// needs.
 type NetworkSpec struct {
-	Name   string
-	Shared bool
+	Name     string
+	Shared   bool
+	External bool
 }
 
 // SubnetSpec describes an IPv4 subnet. GatewayIP is passed verbatim

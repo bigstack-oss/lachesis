@@ -16,6 +16,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/roles"
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/tokens"
 	"github.com/gophercloud/gophercloud/v2/openstack/image/v2/images"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/external"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/routers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/security/groups"
@@ -295,7 +296,14 @@ func (o *OpenStack) CreateNetwork(ctx context.Context, projectID string, spec Ne
 		shared := true
 		opts.Shared = &shared
 	}
-	n, err := networks.Create(ctx, sc.network, opts).Extract()
+	var createOpts networks.CreateOptsBuilder = opts
+	if spec.External {
+		// router:external needs the admin role, which scopedFor's
+		// client holds on every scenario project.
+		isExternal := true
+		createOpts = external.CreateOptsExt{CreateOptsBuilder: opts, External: &isExternal}
+	}
+	n, err := networks.Create(ctx, sc.network, createOpts).Extract()
 	if err != nil {
 		return "", fmt.Errorf("openstack: create network %q: %w", spec.Name, err)
 	}

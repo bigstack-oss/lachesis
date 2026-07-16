@@ -514,6 +514,150 @@ func (s BootVMStep) attachGate(ctx context.Context, env *StepEnv, baseline Metri
 	}
 }
 
+// AssociateFIPStep allocates one extra floating IP for a live VM from
+// a specific DSL external network (created or provider-bound) and
+// binds it to the VM's port — the second-external-path move of the
+// multi-external-path scenario. The FIP is recorded in the run-state
+// (down deletes it like any other) tagged with the DSL network id so
+// a later [DeleteFIPStep] can target exactly it.
+type AssociateFIPStep struct {
+	VM      string
+	Network string
+}
+
+func (AssociateFIPStep) Kind() string { return "associate-fip" }
+
+func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
+	snap := env.Scenario.Builder.Build()
+	var project, ip string
+	for _, p := range snap.Ports {
+		if p.ID == s.VM && len(p.FixedIPs) > 0 {
+			project, ip = p.ProjectID, p.FixedIPs[0].IPAddress
+			break
+		}
+	}
+	if project == "" {
+		return fmt.Errorf("scenario declares no VM %q", s.VM)
+	}
+	proj, err := env.project(project)
+	if err != nil {
+		return err
+	}
+	portID := liveID(env.State.Ports, s.VM)
+	netID := liveID(env.State.Networks, s.Network)
+	if portID == "" || netID == "" {
+		return fmt.Errorf("run-state has no live ids for %s/%s", s.VM, s.Network)
+	}
+	fipID, addr, err := env.Cloud.CreateFIP(ctx, proj.ID, FIPCreateSpec{
+		ExternalNetworkID: netID,
+		PortID:            portID,
+		FixedIP:           ip,
+	})
+	if err != nil {
+		return err
+	}
+	env.State.FIPs = append(env.State.FIPs, FIPRef{
+		VMID: s.VM, ID: fipID, Address: addr, ProjectID: proj.ID, Network: s.Network,
+	})
+	if err := env.State.Save(env.StatePath); err != nil {
+		return err
+	}
+	env.logf("associate-fip: %s ← %s (%s)", s.VM, addr, s.Network)
+	return nil
+}
+
+// DeleteFIPStep removes the floating IP(s) a prior [AssociateFIPStep]
+// bound to VM from the named DSL network. Provider-net FIPs (Network
+// "" in the run-state — the SSH path) are never touched.
+type DeleteFIPStep struct {
+	VM      string
+	Network string
+}
+
+func (DeleteFIPStep) Kind() string { return "delete-fip" }
+
+func (s DeleteFIPStep) Run(ctx context.Context, env *StepEnv) error {
+	deleted := 0
+	for _, f := range env.State.FIPs {
+		if f.VMID != s.VM || f.Network != s.Network || f.Network == "" {
+			continue
+		}
+		if err := env.Cloud.DeleteFIP(ctx, f.ProjectID, f.ID); err != nil {
+			return err
+		}
+		deleted++
+		env.logf("delete-fip: %s (%s) gone", f.Address, s.Network)
+	}
+	if deleted == 0 {
+		return fmt.Errorf("run-state has no FIP for VM %q from network %q", s.VM, s.Network)
+	}
+	return nil
+}
+
+const (
+	// DefaultAnomalyTimeout bounds [AssertAnomalyStep]'s poll. The
+	// gauge updates when a reconcile pass commits — Kafka-kicked
+	// within seconds of the triggering resource event, with the
+	// 5-minute periodic pass as the no-Kafka ceiling.
+	DefaultAnomalyTimeout = 8 * time.Minute
+	// anomalyPollInterval is the pause between AssertAnomalyStep
+	// scrapes.
+	anomalyPollInterval = 5 * time.Second
+)
+
+// AssertAnomalyStep polls the agents' summed
+// lachesis_neutron_anomalies{class=Class} until Min ≤ value ≤ Max
+// (both inclusive) or Timeout (default [DefaultAnomalyTimeout])
+// fires, then records one report row either way. Polling — rather
+// than a one-shot read — because the gauge only updates when a
+// reconcile pass commits the topology change the step just made.
+type AssertAnomalyStep struct {
+	Class   string
+	Min     int64
+	Max     int64
+	Timeout time.Duration
+	Note    string
+}
+
+func (AssertAnomalyStep) Kind() string { return "assert-anomaly" }
+
+func (AssertAnomalyStep) requiredMetrics() []string { return []string{metricNeutronAnomalies} }
+
+func (s AssertAnomalyStep) Run(ctx context.Context, env *StepEnv) error {
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultAnomalyTimeout
+	}
+	env.logf("assert-anomaly: %s in [%d, %d] (timeout %s)", s.Class, s.Min, s.Max, timeout)
+	deadline := time.Now().Add(timeout)
+	var last float64
+	for {
+		snap, err := env.scrape(ctx)
+		if err != nil {
+			return err
+		}
+		last = snap.Anomalies[s.Class]
+		if last >= float64(s.Min) && last <= float64(s.Max) {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(anomalyPollInterval):
+		}
+	}
+	env.addRow(AssertRow{
+		Tenant: "anomaly", Zone: s.Class, Direction: "-",
+		Current: last, Delta: last, MinBytes: s.Min,
+		Pass: last >= float64(s.Min) && last <= float64(s.Max),
+		Note: s.Note,
+	})
+	return nil
+}
+
 // SleepStep pauses the script — the timing primitive for scenarios
 // that must outwait an external cadence no metric signals (agent
 // restart windows, scrape-interval boundaries).

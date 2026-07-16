@@ -309,3 +309,171 @@ func TestSteps_DefaultScriptIsDriveAssert(t *testing.T) {
 		t.Errorf("default step 1 = %T, want AssertStep", steps[1])
 	}
 }
+
+// extPathScenario mirrors the registered multi-external-path scenario:
+// a created second external network, a second router for FIP
+// reachability, and the associate → assert-anomaly → drive →
+// delete-fip script.
+func extPathScenario() *Scenario {
+	b := scenario.New()
+	b.Network("net-T1", "T1").
+		Subnet("sub-T1", "10.0.11.0/24", "10.0.11.1").
+		VM("vm-a", "T1", "10.0.11.5")
+	b.ExternalNetwork("net-ext", "admin")
+	b.ExternalNetwork("net-ext2", "T1").
+		Subnet("sub-ext2", "172.24.99.0/24", "172.24.99.1")
+	b.Router("r-T1", "T1").Attach("sub-T1", "10.0.11.1").ExternalGateway("net-ext")
+	b.Router("r-ext2", "T1").Attach("sub-T1", "10.0.11.254").ExternalGateway("net-ext2")
+
+	return &Scenario{
+		Name:               "multi-external-path",
+		Builder:            b,
+		CreateExternalNets: []string{"net-ext2"},
+		Steps: []Step{
+			AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0, Timeout: time.Second,
+				Note: "single external path — no anomaly"},
+			AssociateFIPStep{VM: "vm-a", Network: "net-ext2"},
+			AssertAnomalyStep{Class: "multi_external_path", Min: 1, Max: 1, Timeout: time.Second,
+				Note: "second FIP surfaces the ambiguity"},
+			CaptureStep{},
+			DriveStep{Flows: []Flow{{From: "vm-a", To: ExternalTarget("8.8.8.8"), Bytes: 1 << 20, Proto: TCP}}},
+			AssertStep{Note: "billing under the deterministic pick", Expect: []Expect{
+				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext"},
+				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext", VM: "vm-a"},
+			}},
+			DeleteFIPStep{VM: "vm-a", Network: "net-ext2"},
+			AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0, Timeout: time.Second,
+				Note: "ambiguity clears after FIP removal"},
+			MonotoneStep{Tenant: "T1", Note: "series stable through FIP churn"},
+		},
+	}
+}
+
+// extExec counts external ping pushes the way streamExec counts TCP
+// streams.
+type extExec struct {
+	fakeExec
+	pings int
+}
+
+func (e *extExec) Run(ctx context.Context, addr, command string) (string, error) {
+	if strings.Contains(command, "ping -c") {
+		e.pings++
+	}
+	return e.fakeExec.Run(ctx, addr, command)
+}
+
+// extPathMetrics scripts the agent's visible behavior for the
+// multi-external-path scenario: the anomaly gauge follows whether an
+// extra (non-provider) FIP is live in the fake cloud, external-zone
+// counters follow the ping drive under the deterministic pick, and the
+// per-server family mirrors the tenant family for the one VM.
+type extPathMetrics struct {
+	env   *fakeEnv
+	cloud *fakeCloud
+	exec  *extExec
+}
+
+func (m *extPathMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+	extraFIP := 0.0
+	for i, spec := range m.cloud.fips {
+		if spec.ExternalNetworkID != m.cloud.extNetID && !m.cloud.deleted["fip:"+m.cloud.fipIDs[i]] {
+			extraFIP = 1
+		}
+	}
+	var ext float64
+	if m.exec.pings >= 1 {
+		ext = drivenBytes
+	}
+	var serverID string
+	if len(m.cloud.serverIDs) > 0 {
+		serverID = m.cloud.serverIDs[0]
+	}
+	return ScrapeResult{
+		Present: map[string]bool{
+			metricBytesTotal:         true,
+			metricAttachedInterfaces: true,
+			metricAttachFailures:     true,
+			metricNeutronAnomalies:   true,
+		},
+		AttachedInterfaces: m.env.baseAttached + float64(m.env.booted),
+		Anomalies:          map[string]float64{"multi_external_path": extraFIP},
+		Bytes: []BytesSample{
+			{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: ext},
+		},
+		Servers: []ServerSample{
+			{ServerID: serverID, TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: ext},
+		},
+	}, nil
+}
+
+func TestSteps_MultiExternalPathFullLoop(t *testing.T) {
+	env := &fakeEnv{baseAttached: 5}
+	cloud := newFakeCloud(env)
+	cloud.preProjects["scenariotest-T1"] = "uuid-t1"
+	exec := &extExec{}
+	mm := &extPathMetrics{env: env, cloud: cloud, exec: exec}
+
+	statePath := t.TempDir() + "/state.json"
+	rep, err := Run(context.Background(), RunOptions{
+		Config:     testConfig(),
+		Scenario:   extPathScenario(),
+		RunID:      "run1",
+		StatePath:  statePath,
+		ReportPath: DefaultReportPath(statePath),
+		Cloud:      cloud,
+		Metrics:    mm,
+		Exec:       exec,
+		Log:        io.Discard,
+		SinkDelay:  -1,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !rep.OK {
+		t.Fatalf("report should pass: %+v", rep)
+	}
+
+	// The second external network was CREATED as router:external —
+	// not bound to the provider net — and its FIP subnet realized.
+	extCreated := false
+	for _, n := range cloud.nets {
+		if n.External {
+			extCreated = true
+		}
+	}
+	if !extCreated {
+		t.Error("net-ext2 was not created as an external network")
+	}
+
+	// Exactly one extra FIP (beyond vm-a's provider SSH FIP) was
+	// allocated from the created network, and deleted mid-run.
+	if len(cloud.fips) != 2 {
+		t.Fatalf("fips created = %d, want 2 (SSH + extra)", len(cloud.fips))
+	}
+	extraIdx := -1
+	for i, spec := range cloud.fips {
+		if spec.ExternalNetworkID != cloud.extNetID {
+			extraIdx = i
+		}
+	}
+	if extraIdx < 0 {
+		t.Fatal("no FIP drawn from the created external network")
+	}
+	if !cloud.deleted["fip:"+cloud.fipIDs[extraIdx]] {
+		t.Error("the extra FIP was not deleted by DeleteFIPStep")
+	}
+
+	// Every phase's rows are in the report.
+	notes := map[string]int{}
+	for _, row := range rep.Rows {
+		notes[row.Note]++
+	}
+	for _, want := range []string{"single external path — no anomaly", "second FIP surfaces the ambiguity",
+		"billing under the deterministic pick", "ambiguity clears after FIP removal",
+		"series stable through FIP churn"} {
+		if notes[want] == 0 {
+			t.Errorf("report has no %q rows: %v", want, notes)
+		}
+	}
+}

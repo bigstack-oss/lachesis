@@ -77,11 +77,15 @@ type ResourceRef struct {
 }
 
 // FIPRef records one allocated floating IP and the VM it fronts.
+// Network is the DSL id of the external network the FIP was drawn
+// from when a step allocated it explicitly ([AssociateFIPStep]);
+// empty for the provider-net FIPs realize creates for SSH.
 type FIPRef struct {
 	VMID      string `json:"vm_id"`
 	ID        string `json:"id"`
 	Address   string `json:"address"`
 	ProjectID string `json:"project_id"`
+	Network   string `json:"network,omitempty"`
 }
 
 // NewRunState returns an empty run-state for a scenario run.
