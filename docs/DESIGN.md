@@ -216,7 +216,9 @@ with the same byte pattern regardless of host endianness.
 
 VALUE: u8  zone code  (one of ZONE_EXTERNAL, ZONE_SAME_TENANT,
                       ZONE_OTHER_TENANT, ZONE_INFRA, ZONE_MISS,
-                      ZONE_SHARED — see §5.2 for emission rules)
+                      ZONE_SHARED — see §5.2 for emission rules.
+                      ZONE_MULTICAST is set by the kernel from the
+                      destination MAC, not written to this trie.)
 
 Insertion examples:
   Catchall for tenant 1001:
@@ -649,11 +651,11 @@ For each tenant T (run once at cold start, then incrementally on Kafka events):
     entry) but is NOT used by `mac_tenant_map` population (§3.1).
 
     DHCP nit: the gateway_ip/32 → INFRA rule only catches the DHCP server's
-    side of the exchange. The broadcast DISCOVER/REQUEST half — destined for
-    255.255.255.255 — matches no per-tenant trie row and bills EXTERNAL
-    (the §8 Tier 3 broadcast/multicast row; covered by that row's optional
-    global-INFRA-prefix fix if ever taken), while the unicast response half
-    bills INFRA. Trivial volume; document-accepted.
+    side of the exchange. The broadcast DISCOVER/REQUEST half — a broadcast
+    destination MAC — classifies `multicast` (the §8 Tier 3 broadcast/multicast
+    row; never billed, kernel-classified from the destination MAC before the
+    trie is consulted), while the unicast response half bills INFRA. Trivial
+    volume; document-accepted.
 
   Step 5 — Static routes (extraroutes) on T's routers   [the hard part]
     for each router R where R.tenant_id == T:
@@ -1206,7 +1208,7 @@ At packet time (VM-A → 172.16.99.x):
 | 14a | OVN-synthesized DHCP `server_mac` not visible in Neutron port API (verified empirically) | DHCP responses to VMs have a `peer_mac` that misses `mac_tenant_map` | LPM trie carries the classification via `gateway_ip/32 → INFRA` (§5.2 Step 4). Visible as a small fraction of packets classified via the LPM-only path instead of the hybrid path; functionally correct |
 | 14b | Allowed-address-pairs / VRRP virtual MAC | A keepalived pair in vMAC mode (`00:00:5e:00:01:xx`) or an allowed-address-pair configured with an explicit MAC sources frames from a MAC that is not a Neutron port MAC → `mac_tenant_map` miss → bytes land in `tenant_id="unknown"`, `zone="miss"` (unbillable). Default keepalived (GARP over the real port MACs) classifies correctly | Already counted as a structural revenue-leak contributor (§11.5 revenue-leak SLO). Deferred fix: fetch `allowed_address_pairs` in `ListPorts` and admit those MACs into `mac_tenant_map` (§13.2 #9) |
 | 14c | VM→FIP hairpin | Same-cloud (even same-hypervisor, same-subnet) traffic addressed via a peer's floating IP bills `external` on *both* taps — OVN hairpin-SNATs the source to the client's own FIP, so each side sees an external-net address | Deliberate, not a misclassification to fix: documented as the chosen posture in §11.5 (public-cloud norm; tenants avoid it by addressing fixed IPs). Verified empirically on a single-node OVN deployment |
-| 14d | Broadcast / multicast destinations | `255.255.255.255` (the DHCP DISCOVER/REQUEST half) and `224.0.0.0/4` (IGMP / mDNS / VRRP advertisement chatter) match no per-tenant trie row → sentinel catchall → `external` | Document-accepted (trivial volume). Optional one-line fix if it ever matters: add global INFRA trie rows for both prefixes |
+| 14d | Broadcast / multicast destinations | Any frame with a group destination MAC (`255.255.255.255` DHCP broadcast, `224.0.0.0/4` / `ff00::/8` mDNS / SSDP / IGMP / VRRP chatter) is classified `multicast` by the kernel — a dedicated never-billed zone — from the destination MAC's I/G bit, before the trie is consulted | **Resolved (lachesis#150).** Was `external` (sent) / `miss` (received on provider taps, the revenue-leak-SLO inflater). Now counted-but-never-billed in `zone="multicast"` and excluded from the SLO numerator; see §11.5 |
 
 ### Tier 4 — Subtle correctness
 
@@ -1217,7 +1219,7 @@ At packet time (VM-A → 172.16.99.x):
 | 17 | Conntrack miss on Segment 1 zone classification | The optional `bpf_skb_ct_lookup` at the Amphora's tap may miss (first SYN, TTL expiry, UDP >30s idle, lookup at the wrong tap). Segment 1 zone falls back to EXTERNAL | Attribution to LB owner is unaffected — it comes from the Amphora MAC flag, not conntrack. See §6 |
 | 18 | u64 wraparound | At 10 Gbps continuous, ~467 years to overflow (2⁶⁴ / 1.25 GB/s ≈ 1.5×10¹⁰ seconds). The guard is one comparison, so add it anyway | — |
 | 19 | Crashed agent leaves orphan TC filters | Stale filters double-count if agent restarts | Either zombie hunter at startup, or accept until reboot |
-| 20 | Multicast / broadcast | One sent packet, many receivers → ingress sum doubles (this row is the *counting* angle; the *zone* angle — these destinations missing the trie → EXTERNAL — is Tier 3 row 14d) | Filter or accept as <0.1% noise |
+| 20 | Multicast / broadcast | One sent packet, many receivers → ingress sum doubles (this row is the *counting* angle; the *zone* angle is Tier 3 row 14d — these frames now classify `multicast`, never billed) | Accept as <0.1% noise; the never-billed `multicast` zone means the double-count carries no billing consequence |
 | 21 | VM-appliance forwarding double-billing | Traffic via a compute:nova nexthop is billed at the originating VM's tap (at the appliance's tenant zone) AND again at the appliance's tap for the forwarded egress — same bytes, different MAC pairs, different flows | Documented; billing aggregation must dedup forwarding chains. Scenario L. |
 
 ### Honest accuracy ceiling
@@ -1451,7 +1453,7 @@ breaking change once consumers exist.
 | Label | Value set | Meaning |
 |---|---|---|
 | `tenant_id` | Neutron project UUID, or `unknown` | The tenant the flow's VM belongs to (resolved via `mac_tenant_map`); `unknown` when the VM MAC is not (yet) in the metadata map |
-| `zone` | `external`, `same_tenant`, `other_tenant`, `infra`, `miss`, `shared` | The remote endpoint's zone relative to the VM's tenant (§4); the canonical strings from `bpf.ZoneCode.String()` |
+| `zone` | `external`, `same_tenant`, `other_tenant`, `infra`, `miss`, `shared`, `multicast` | The remote endpoint's zone relative to the VM's tenant (§4); the canonical strings from `bpf.ZoneCode.String()`. `multicast` is assigned by the kernel to any frame with a group destination MAC (platform-L2 chatter) — counted but never billed |
 | `external_network` | external-network name (ID when nameless), or `none` | The network the flow's external traffic leaves through, resolved **per flow**: the peer router-interface MAC's gateway network when known (§11.5 attribution rules), else the VM's attribution (FIP network / gateway-IP rule). Carried **only** on `zone="external"` series; every other zone (and external traffic with no resolvable path) emits the `none` sentinel, keeping cardinality at (#external networks + 1). The single labeling source is `metadata.FlowExternalLabel`, applied identically at scrape-time aggregation and every settle fold |
 | `server_id` | Nova instance UUID (Neutron port `device_id`) | Per-server family only. Never `unknown` — flows whose MAC doesn't resolve to a server are absent from the family by construction |
 | `direction` | `tx`, `rx` | `tx` = the VM is sending; `rx` = the VM is receiving |
@@ -1596,7 +1598,8 @@ The zone vocabulary is the §11.4 label table. The guiding principle: **each sid
 | `external` | **Per-direction rates** — `tx` at the egress rate (data leaving toward the internet), `rx` at the ingress rate | The universal cloud convention of asymmetric internet pricing |
 | `infra` | **$0 today** | Covers DHCP/metadata chatter and Octavia Segment 2 plumbing (§6) alike. Future fork: if LB-processed-byte billing is ever wanted, either split the zone (the kernel's Amphora branch already distinguishes Segment 2, so an `infra_lb` zone is cheap) or source LB usage from the Octavia API. Until that product decision, `infra` stays uniformly free |
 | `shared` | **Own line item at an intermediate internal rate** | Owner-vs-other inside a shared CIDR is intentionally indistinguishable on the L3 path — §5.2 Step 3 explains why guessing either mis-bills. Price between `same_tenant` and `other_tenant` instead of guessing |
-| `miss` — and any `tenant_id="unknown"` | **Never billed; alert-only** | Unattributable bytes must not become invoices. Tracked by the revenue-leak SLO below |
+| `multicast` | **Never billed; not alerted** | Frames with a group destination MAC (mDNS/SSDP/DHCP-broadcast — the physical L2's background chatter, plus any VM-originated multicast tx). Never tenant traffic under any posture. Counted and exposed for transparency but excluded from the revenue-leak SLO numerator so a constant platform-chatter floor can't pin the ratio (§8 Tier 3 rows 14d/20) |
+| `miss` — and any `tenant_id="unknown"` (excluding `zone="multicast"`) | **Never billed; alert-only** | Unattributable bytes must not become invoices. Tracked by the revenue-leak SLO below; `multicast` is carved out because it is expected platform chatter, not an attribution failure |
 
 **FIP hairpin is EXTERNAL on both sides — deliberately.** When a VM reaches a same-tenant peer via the peer's floating IP, both taps classify EXTERNAL: the client's tap sees the remote FIP, and OVN hairpin-SNATs the source to the client's *own* FIP, so the server's tap also sees an external-net address (verified empirically — same tenant, same subnet, same hypervisor). The traffic never leaves the host, yet bills at external rates in both directions. This matches public-cloud norms (AWS bills public-IP hairpins as public traffic); tenants avoid the charge by addressing fixed IPs.
 
@@ -1616,19 +1619,21 @@ The unbilled fraction — bytes in `zone="miss"` or `tenant_id="unknown"` — is
   expr: |
     sum(
         rate(lachesis_bytes_total{zone="miss"}[5m])
-      or rate(lachesis_bytes_total{tenant_id="unknown"}[5m])
+      or rate(lachesis_bytes_total{tenant_id="unknown",zone!="multicast"}[5m])
     )
     /
     sum(rate(lachesis_bytes_total[5m]))
 ```
 
-The `or` deduplicates series that are both `zone="miss"` and `tenant_id="unknown"`: both operands draw from the same series set, so label sets match exactly and each leaking series counts once.
+The `or` deduplicates series that are both `zone="miss"` and `tenant_id="unknown"`: both operands draw from the same series set, so label sets match exactly and each leaking series counts once. The `zone!="multicast"` guard on the second operand is load-bearing: received platform multicast resolves to `tenant_id="unknown"` (its group destination MAC is the VM-side MAC on the egress hook, so it misses `mac_tenant_map`), so without the guard the never-billed multicast zone would re-enter the numerator through the `unknown` clause and defeat the carve-out. The `miss` operand needs no guard — a multicast frame is classified `multicast`, never `miss`. The denominator is deliberately left as all observed bytes: multicast stays visible as a share of total, it just isn't counted as leaking.
 
 **Target: < 0.001 (0.1%)**; alert above it. Structural contributors to expect:
 
-- **IPv6** — all of it classifies `zone="miss"` until §13.2 #1 lands; deployments with real v6 traffic will sit above the target until then.
+- **IPv6** — all *unicast* v6 classifies `zone="miss"` until §13.2 #1 lands (v6 multicast, e.g. mDNS `33:33:*`, is caught by the multicast zone); deployments with real v6 unicast traffic will sit above the target until then.
 - **Allowed-address-pairs / VRRP virtual MACs** — a vMAC sourced by a keepalived pair is not a Neutron port MAC, misses `mac_tenant_map`, and emits `tenant_id="unknown"`.
 - **Transient cold-start / late-Kafka windows** (§8 Tier 3 #14) — self-healing via the UnresolvedBuffer; visible as short spikes, not steady-state leak.
+
+Platform-L2 multicast (mDNS/SSDP on provider-attached taps) *was* the dominant structural contributor — a constant tens-of-KB/s numerator that pinned the ratio near 1% on quiet clusters — until it moved to the dedicated `multicast` zone and out of this numerator (§8 Tier 3 rows 14d/20).
 
 ### Scalability ceiling
 

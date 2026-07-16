@@ -178,7 +178,7 @@ type Expect struct {
 
 	// Zone is the zone-label string as it appears in /metrics:
 	// one of "same_tenant", "external", "other_tenant", "shared",
-	// "infra", "miss".
+	// "infra", "miss", "multicast".
 	Zone string
 
 	// Direction is the metric's `direction` label value: "tx" (the

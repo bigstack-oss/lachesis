@@ -17,6 +17,7 @@ func TestZoneCode_String(t *testing.T) {
 		{ZoneInfra, "infra"},
 		{ZoneMiss, "miss"},
 		{ZoneShared, "shared"},
+		{ZoneMulticast, "multicast"},
 	}
 	for _, tc := range cases {
 		if got := tc.code.String(); got != tc.want {
@@ -44,6 +45,7 @@ func TestZoneCode_WireValuesPinned(t *testing.T) {
 		{ZoneInfra, 3},
 		{ZoneMiss, 4},
 		{ZoneShared, 5},
+		{ZoneMulticast, 6},
 	}
 	for _, tc := range cases {
 		if uint8(tc.code) != tc.want {

@@ -413,7 +413,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Traffic rate split by destination class: external (internet), same_tenant, other_tenant, infra (DHCP/metadata/LB plumbing), shared, and miss (unclassifiable). Each zone bills at a different rate.",
+      "description": "Traffic rate split by destination class: external (internet), same_tenant, other_tenant, infra (DHCP/metadata/LB plumbing), shared, miss (unclassifiable), and multicast (platform-L2 chatter — counted but never billed). Each zone bills at a different rate.",
       "gridPos": {
         "x": 12,
         "y": 10,
