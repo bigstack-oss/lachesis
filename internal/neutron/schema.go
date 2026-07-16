@@ -132,6 +132,20 @@ type DuplicateRouterMAC struct {
 	RouterIDs []string
 }
 
+// MultiExternalPathHit records a VM port with more than one external
+// path — several FIPs on different external networks, or FIP +
+// gateway routers disagreeing. [ExternalNetworkByPort] attributes the
+// port to ONE deterministically-picked network (its egress could
+// really use any of them), so per-network external billing for this
+// VM is approximate until the known limitation is lifted.
+type MultiExternalPathHit struct {
+	PortID     string
+	ServerID   string
+	ProjectID  string
+	Candidates []string // sorted distinct external-network labels
+	Picked     string   // the label ExternalNetworkByPort attributes
+}
+
 // ResourceMatch is the result of looking up an IP or MAC against
 // the Neutron snapshot. Any field may be nil — see [LookupResource]
 // and [LookupPortByMAC] for which combinations are produced.
@@ -172,6 +186,7 @@ const (
 	anomalyClassDanglingRoute      = "dangling_route"
 	anomalyClassZeroTrieTenant     = "zero_trie_tenant"
 	anomalyClassDuplicateRouterMAC = "duplicate_router_mac"
+	anomalyClassMultiExternalPath  = "multi_external_path"
 )
 
 // codeNetwork is the `code` label class for connection-level

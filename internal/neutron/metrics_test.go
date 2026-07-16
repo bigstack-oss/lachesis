@@ -149,6 +149,7 @@ lachesis_neutron_anomalies{class="ambiguity"} 0
 lachesis_neutron_anomalies{class="cycle"} 1
 lachesis_neutron_anomalies{class="dangling_route"} 0
 lachesis_neutron_anomalies{class="duplicate_router_mac"} 0
+lachesis_neutron_anomalies{class="multi_external_path"} 0
 lachesis_neutron_anomalies{class="zero_trie_tenant"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),

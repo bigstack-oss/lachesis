@@ -46,7 +46,9 @@ type fakeCloud struct {
 	routes          []routeRec
 	ports           []PortSpec
 	servers         []ServerSpec
+	serverIDs       []string
 	fips            []FIPCreateSpec
+	fipIDs          []string
 
 	// reachability model (live IDs)
 	portSubnet    map[string]string          // port id → subnet id
@@ -176,7 +178,9 @@ func (c *fakeCloud) SetRouterRoutes(_ context.Context, _, routerID string, route
 func (c *fakeCloud) CreateServer(_ context.Context, _ string, spec ServerSpec) (string, error) {
 	c.servers = append(c.servers, spec)
 	c.env.booted++
-	return c.id("srv"), nil
+	id := c.id("srv")
+	c.serverIDs = append(c.serverIDs, id)
+	return id, nil
 }
 func (c *fakeCloud) WaitServerActive(context.Context, string, string) error { return nil }
 
@@ -196,7 +200,9 @@ func (c *fakeCloud) CreateFIP(_ context.Context, _ string, spec FIPCreateSpec) (
 		return "", "", fmt.Errorf("fake neutron: external network %s is not reachable from subnet %s (no gatewayed router)", spec.ExternalNetworkID, subnet)
 	}
 	c.fips = append(c.fips, spec)
-	return c.id("fip"), fmt.Sprintf("203.0.113.%d", len(c.fips)), nil
+	id := c.id("fip")
+	c.fipIDs = append(c.fipIDs, id)
+	return id, fmt.Sprintf("203.0.113.%d", len(c.fips)), nil
 }
 
 // --- teardown fakes: record in order, idempotent like the real

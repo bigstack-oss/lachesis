@@ -66,6 +66,16 @@ type Scenario struct {
 	// hostile to background tenant traffic.
 	Expect []Expect
 
+	// CreateExternalNets lists external-network DSL ids realize must
+	// CREATE (with `router:external=true`, no provider segment)
+	// instead of binding to the config's provider network — the
+	// default for every other external marker. A created external
+	// network allocates FIPs and takes router gateways but carries no
+	// wire traffic; the multi-external-path scenario uses one as the
+	// VM's second external path. Its subnets ARE created (unlike
+	// provider-bound markers, whose subnets belong to the platform).
+	CreateExternalNets []string
+
 	// Deferred lists DSL VM ids that `up` declares but does NOT boot:
 	// no port, no server, no FIP, no attach-gate slot. A later
 	// [BootVMStep] realizes them mid-run — e.g. the mac-reuse scenario

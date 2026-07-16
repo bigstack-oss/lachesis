@@ -38,6 +38,14 @@ type Anomalies struct {
 	// router interface has a unique MAC; duplicates indicate DVR
 	// (not supported), a snapshot defect, or a Neutron schema drift.
 	DuplicateRouterMACs []DuplicateRouterMAC
+	// MultiExternalPaths lists VM ports whose external-network
+	// attribution was ambiguous (several FIPs / gateway routers on
+	// different external networks). Their external_network label and
+	// per-server export dimension are the deterministic pick, not
+	// necessarily where every byte really egressed — per-network
+	// external billing for these VMs is approximate (the documented
+	// first-cut limitation of docs/DESIGN.md §11.5 attribution).
+	MultiExternalPaths []MultiExternalPathHit
 }
 
 // Total returns the combined count across all anomaly classes.
@@ -45,14 +53,15 @@ type Anomalies struct {
 // header before drilling into per-class detail.
 func (a Anomalies) Total() int {
 	return len(a.Cycles) + len(a.Ambiguities) + len(a.DanglingRoutes) +
-		len(a.ZeroTrieTenants) + len(a.DuplicateRouterMACs)
+		len(a.ZeroTrieTenants) + len(a.DuplicateRouterMACs) +
+		len(a.MultiExternalPaths)
 }
 
 // DetectAnomalies aggregates the cycle + ambiguity hits BuildTrie
-// already produced and adds three more post-pass checks: dangling
-// extraroutes, tenants with zero trie rows, and duplicate
-// router_interface MACs. Pure function over its inputs — no I/O,
-// no goroutines.
+// already produced and adds four more post-pass checks: dangling
+// extraroutes, tenants with zero trie rows, duplicate
+// router_interface MACs, and VM ports with ambiguous external-network
+// attribution. Pure function over its inputs — no I/O, no goroutines.
 //
 // cycles and ambiguities may be nil (no hits during BuildTrie); the
 // returned [Anomalies] mirrors that with nil/empty slices in the
@@ -64,6 +73,7 @@ func DetectAnomalies(snap Snapshot, trie []TrieEntry, cycles []CycleHit, ambigui
 		DanglingRoutes:      detectDanglingRoutes(snap),
 		ZeroTrieTenants:     detectZeroTrieTenants(snap, trie),
 		DuplicateRouterMACs: detectDuplicateRouterMACs(snap),
+		MultiExternalPaths:  detectMultiExternalPaths(snap),
 	}
 }
 

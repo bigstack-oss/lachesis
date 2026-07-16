@@ -84,7 +84,7 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 		m.apiErrors.WithLabelValues(ep, codeNetwork).Add(0)
 	}
 	for _, c := range []string{anomalyClassCycle, anomalyClassAmbiguity, anomalyClassDanglingRoute,
-		anomalyClassZeroTrieTenant, anomalyClassDuplicateRouterMAC} {
+		anomalyClassZeroTrieTenant, anomalyClassDuplicateRouterMAC, anomalyClassMultiExternalPath} {
 		m.anomalies.WithLabelValues(c).Set(0)
 	}
 	return m
@@ -155,6 +155,7 @@ func (m *Metrics) SetAnomalies(a Anomalies) {
 	m.anomalies.WithLabelValues(anomalyClassDanglingRoute).Set(float64(len(a.DanglingRoutes)))
 	m.anomalies.WithLabelValues(anomalyClassZeroTrieTenant).Set(float64(len(a.ZeroTrieTenants)))
 	m.anomalies.WithLabelValues(anomalyClassDuplicateRouterMAC).Set(float64(len(a.DuplicateRouterMACs)))
+	m.anomalies.WithLabelValues(anomalyClassMultiExternalPath).Set(float64(len(a.MultiExternalPaths)))
 }
 
 // errCodeLabel maps an error to a stable label value. gophercloud's

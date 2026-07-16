@@ -83,16 +83,17 @@ type anomalyCounts struct {
 	DuplicateRouterMACs int `json:"duplicate_router_macs"`
 }
 
-// anomaliesModel is the /debug/anomalies view: the five anomaly
+// anomaliesModel is the /debug/anomalies view: the six anomaly
 // classes flattened to display rows, with project names resolved
 // where the snapshot knows them.
 type anomaliesModel struct {
-	Total               int            `json:"total"`
-	Cycles              []cycleRow     `json:"cycles"`
-	Ambiguities         []ambiguityRow `json:"ambiguities"`
-	DanglingRoutes      []danglingRow  `json:"dangling_routes"`
-	ZeroTrieTenants     []zeroTrieRow  `json:"zero_trie_tenants"`
-	DuplicateRouterMACs []dupMACRow    `json:"duplicate_router_macs"`
+	Total               int                    `json:"total"`
+	Cycles              []cycleRow             `json:"cycles"`
+	Ambiguities         []ambiguityRow         `json:"ambiguities"`
+	DanglingRoutes      []danglingRow          `json:"dangling_routes"`
+	ZeroTrieTenants     []zeroTrieRow          `json:"zero_trie_tenants"`
+	DuplicateRouterMACs []dupMACRow            `json:"duplicate_router_macs"`
+	MultiExternalPaths  []multiExternalPathRow `json:"multi_external_paths"`
 }
 
 type cycleRow struct {
@@ -138,6 +139,18 @@ type dupMACRow struct {
 	// HTML table; the JSON consumer uses the raw slices.
 	PortsDisplay   string `json:"-"`
 	RoutersDisplay string `json:"-"`
+}
+
+type multiExternalPathRow struct {
+	PortID     string   `json:"port_id"`
+	ServerID   string   `json:"server_id,omitempty"`
+	ProjectID  string   `json:"project_id"`
+	TenantName string   `json:"tenant_name,omitempty"`
+	Candidates []string `json:"candidates"`
+	Picked     string   `json:"picked"`
+	// CandidatesDisplay pre-joins Candidates for the HTML table; the
+	// JSON consumer uses the raw slice.
+	CandidatesDisplay string `json:"-"`
 }
 
 // lookupResult is the /debug/lookup JSON envelope, also rendered

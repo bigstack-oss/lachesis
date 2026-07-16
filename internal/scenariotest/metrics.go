@@ -29,6 +29,10 @@ const (
 	// only expectations with a VM target need it, and assert refuses
 	// those against agents that don't expose it.
 	metricServerBytesTotal = "lachesis_server_bytes_total"
+	// metricNeutronAnomalies is the per-class topology-anomaly gauge.
+	// [AssertAnomalyStep] polls it; the class vocabulary is the agent's
+	// (cycle, ambiguity, …, multi_external_path).
+	metricNeutronAnomalies = "lachesis_neutron_anomalies"
 )
 
 // BytesSample is one lachesis_bytes_total series: the {tenant_id, zone,
@@ -69,6 +73,9 @@ type ScrapeResult struct {
 	SettledFlows       float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
+	// Anomalies is lachesis_neutron_anomalies broken out by its
+	// `class` label.
+	Anomalies map[string]float64
 }
 
 // MetricsSnapshot aggregates one scrape across all configured agents:
@@ -80,6 +87,8 @@ type MetricsSnapshot struct {
 	SettledFlows       float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
+	// Anomalies sums each anomaly class across all agents.
+	Anomalies map[string]float64
 }
 
 // MetricsSource scrapes and parses one agent's /metrics. preflight and
@@ -111,7 +120,8 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 		return ScrapeResult{}, err
 	}
 	r := ScrapeResult{Present: map[string]bool{}}
-	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures, metricSettledFlows} {
+	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures,
+		metricSettledFlows, metricServerBytesTotal, metricNeutronAnomalies} {
 		_, ok := fams[n]
 		r.Present[n] = ok
 	}
@@ -120,6 +130,7 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	r.SettledFlows = familySum(fams, metricSettledFlows)
 	r.Bytes = bytesSamples(fams)
 	r.Servers = serverSamples(fams)
+	r.Anomalies = anomalySamples(fams)
 	return r, nil
 }
 
@@ -137,6 +148,12 @@ func sampleAcross(ctx context.Context, src MetricsSource, urls []string) (Metric
 		snap.SettledFlows += r.SettledFlows
 		snap.Bytes = append(snap.Bytes, r.Bytes...)
 		snap.Servers = append(snap.Servers, r.Servers...)
+		for class, v := range r.Anomalies {
+			if snap.Anomalies == nil {
+				snap.Anomalies = map[string]float64{}
+			}
+			snap.Anomalies[class] += v
+		}
 	}
 	return snap, nil
 }
@@ -232,6 +249,24 @@ func serverSamples(fams map[string]*dto.MetricFamily) []ServerSample {
 			}
 		}
 		out = append(out, s)
+	}
+	return out
+}
+
+// anomalySamples extracts lachesis_neutron_anomalies by its class
+// label. nil when the family is absent (pre-anomaly-gauge agents).
+func anomalySamples(fams map[string]*dto.MetricFamily) map[string]float64 {
+	fam, ok := fams[metricNeutronAnomalies]
+	if !ok {
+		return nil
+	}
+	out := make(map[string]float64, len(fam.GetMetric()))
+	for _, m := range fam.GetMetric() {
+		for _, lp := range m.GetLabel() {
+			if lp.GetName() == "class" {
+				out[lp.GetValue()] += sampleValue(m)
+			}
+		}
 	}
 	return out
 }

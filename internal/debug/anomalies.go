@@ -18,7 +18,7 @@ func (s *Server) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 	render(w, r, anomaliesTemplate, model)
 }
 
-// buildAnomaliesModel flattens the five anomaly classes to display
+// buildAnomaliesModel flattens the six anomaly classes to display
 // rows, resolving tenant UUIDs to Keystone names where the snapshot
 // knows them. nil anomalies (never synced) renders all-empty.
 func buildAnomaliesModel(a *neutron.Anomalies, snap *neutron.Snapshot) anomaliesModel {
@@ -71,6 +71,17 @@ func buildAnomaliesModel(a *neutron.Anomalies, snap *neutron.Snapshot) anomalies
 			RouterIDs:      h.RouterIDs,
 			PortsDisplay:   strings.Join(h.PortIDs, ", "),
 			RoutersDisplay: strings.Join(h.RouterIDs, ", "),
+		})
+	}
+	for _, h := range a.MultiExternalPaths {
+		m.MultiExternalPaths = append(m.MultiExternalPaths, multiExternalPathRow{
+			PortID:            h.PortID,
+			ServerID:          h.ServerID,
+			ProjectID:         h.ProjectID,
+			TenantName:        projectName(snap, h.ProjectID),
+			Candidates:        h.Candidates,
+			Picked:            h.Picked,
+			CandidatesDisplay: strings.Join(h.Candidates, ", "),
 		})
 	}
 	return m

@@ -111,5 +111,29 @@
 </table>
 {{ else }}<p class="empty">none</p>{{ end }}
 
+<h3>Multi-external-path VMs ({{ len .MultiExternalPaths }})</h3>
+{{ if .MultiExternalPaths }}
+<p class="help">
+  VM ports with more than one external path (several FIPs / gateway routers on
+  different external networks). Their external_network label is the
+  deterministically picked candidate, so per-network external billing for
+  these VMs is approximate — the documented first-cut limitation.
+</p>
+<table>
+<thead><tr><th>Port</th><th>Server</th><th>Tenant</th><th>Candidates</th><th>Picked</th></tr></thead>
+<tbody>
+{{- range .MultiExternalPaths }}
+<tr>
+  <td class="uuid">{{ .PortID }}</td>
+  <td class="uuid">{{ .ServerID }}</td>
+  <td class="uuid">{{ if .TenantName }}{{ .TenantName }} ({{ .ProjectID }}){{ else }}{{ .ProjectID }}{{ end }}</td>
+  <td>{{ .CandidatesDisplay }}</td>
+  <td>{{ .Picked }}</td>
+</tr>
+{{- end }}
+</tbody>
+</table>
+{{ else }}<p class="empty">none</p>{{ end }}
+
 </body>
 </html>

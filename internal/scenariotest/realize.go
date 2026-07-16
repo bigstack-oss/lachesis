@@ -158,10 +158,18 @@ func (r *realizer) resolvePrereqs() error {
 }
 
 func (r *realizer) networks(snap neutron.Snapshot) error {
+	created := make(map[string]bool, len(r.opts.Scenario.CreateExternalNets))
+	for _, id := range r.opts.Scenario.CreateExternalNets {
+		created[id] = true
+	}
 	for _, n := range snap.Networks {
-		// External networks are never created — the router gateways to
-		// the real provider external network, and so do the VMs' FIPs.
-		if n.IsExternal {
+		// External networks are normally never created — the router
+		// gateways to the real provider external network, and so do
+		// the VMs' FIPs. [Scenario.CreateExternalNets] opts a marker
+		// out: it is created as a segmentless `router:external`
+		// network (FIP-allocatable, no wire traffic) and its subnets
+		// realize like any tenant subnet.
+		if n.IsExternal && !created[n.ID] {
 			r.netLive[n.ID] = r.extNetID
 			r.netExternal[n.ID] = true
 			continue
@@ -171,7 +179,7 @@ func (r *realizer) networks(snap neutron.Snapshot) error {
 			return err
 		}
 		name := Mangle(r.prefix(), r.opts.RunID, n.ID)
-		id, err := r.opts.Cloud.CreateNetwork(r.ctx, proj, NetworkSpec{Name: name, Shared: n.Shared})
+		id, err := r.opts.Cloud.CreateNetwork(r.ctx, proj, NetworkSpec{Name: name, Shared: n.Shared, External: n.IsExternal})
 		if err != nil {
 			return err
 		}
