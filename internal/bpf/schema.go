@@ -49,7 +49,7 @@ type ZoneCode = telemetryZoneCode
 // and [DirectionEgress] for the set of valid values.
 type Direction = telemetryTcDirection
 
-// ZoneExternal through ZoneShared are the zone codes stored in
+// ZoneExternal through ZoneMulticast are the zone codes stored in
 // [FlowKey.DstZone]. The values are stable across releases: they are
 // persisted to the WAL and read back on restart.
 //
@@ -59,6 +59,12 @@ type Direction = telemetryTcDirection
 // cold-start builder emits a distinct ZoneShared row; the billing
 // engine treats it as its own category. See docs/DESIGN.md §5.2
 // Step 3.
+//
+// ZoneMulticast is assigned by the kernel classifier to any frame
+// whose destination MAC has the multicast/broadcast bit set (platform-
+// L2 chatter: mDNS, SSDP, DHCP broadcast). It is counted for
+// transparency but never billed, and is excluded from the revenue-leak
+// SLO — see docs/DESIGN.md §11.5.
 const (
 	ZoneExternal    = telemetryZoneCodeZONE_EXTERNAL
 	ZoneSameTenant  = telemetryZoneCodeZONE_SAME_TENANT
@@ -66,6 +72,7 @@ const (
 	ZoneInfra       = telemetryZoneCodeZONE_INFRA
 	ZoneMiss        = telemetryZoneCodeZONE_MISS
 	ZoneShared      = telemetryZoneCodeZONE_SHARED
+	ZoneMulticast   = telemetryZoneCodeZONE_MULTICAST
 )
 
 // String returns the canonical name of the zone code — "external",
@@ -90,6 +97,8 @@ func (z ZoneCode) String() string {
 		return "miss"
 	case ZoneShared:
 		return "shared"
+	case ZoneMulticast:
+		return "multicast"
 	}
 	return strconv.FormatUint(uint64(z), 10)
 }

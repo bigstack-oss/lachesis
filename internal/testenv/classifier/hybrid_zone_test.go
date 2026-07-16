@@ -25,6 +25,11 @@ const (
 	macVMC       uint64 = 0x02_00_00_00_00_03 // tenant B
 	macRouter    uint64 = 0x02_00_00_00_FF_01 // not in mac_tenant_map
 	macUnknownVM uint64 = 0x02_00_00_00_FF_02 // not in mac_tenant_map
+	macPhysical  uint64 = 0x02_00_00_00_AA_01 // stands in for a physical DC device; not in mac_tenant_map
+
+	// Group-destination MACs (I/G bit set) → ZONE_MULTICAST.
+	macMcast uint64 = 0x01_00_5E_7F_FF_FA // IPv4 local-scope multicast (SSDP-style)
+	macBcast uint64 = 0xFF_FF_FF_FF_FF_FF // L2 broadcast (DHCP DISCOVER/REQUEST)
 )
 
 const (
@@ -112,6 +117,33 @@ func TestHybridZoneLookup(t *testing.T) {
 			src:  macUnknownVM, dst: macVMA,
 			srcIP: net.IPv4(10, 0, 0, 99), dstIP: net.IPv4(10, 0, 0, 1),
 			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMiss,
+		},
+
+		// — Group-destination MAC → MULTICAST (lachesis#150). Checked on
+		//   the wire dst MAC before the trie, so a group frame never
+		//   lands in MISS/EXTERNAL regardless of direction or IP family. —
+		{
+			// The revenue-leak-SLO bug: platform mDNS/SSDP received on a
+			// provider-attached tap. On the egress hook the VM-side MAC is
+			// the group dst, so pre-fix it missed mac_tenant_map → MISS.
+			name: "egress received platform multicast → MULTICAST",
+			src:  macPhysical, dst: macMcast,
+			srcIP: net.IPv4(10, 0, 0, 50), dstIP: net.IPv4(239, 255, 255, 250),
+			prog: bpf.ProgramEgress, wantDir: bpf.DirectionEgress, wantZone: bpf.ZoneMulticast,
+		},
+		{
+			// VM-originated multicast tx: known VM source, group dst.
+			// Pre-fix fell through the trie to the EXTERNAL catchall.
+			name: "ingress VM-sent multicast → MULTICAST",
+			src:  macVMA, dst: macMcast,
+			srcIP: net.IPv4(10, 0, 0, 1), dstIP: net.IPv4(239, 255, 255, 250),
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMulticast,
+		},
+		{
+			name: "ingress broadcast (DHCP discover) → MULTICAST",
+			src:  macVMA, dst: macBcast,
+			srcIP: net.IPv4(0, 0, 0, 0), dstIP: net.IPv4(255, 255, 255, 255),
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMulticast,
 		},
 	}
 

@@ -38,6 +38,14 @@ enum zone_code {
 				 * cannot resolve per-VM ownership inside the
 				 * shared CIDR. Emitted by trie Step 3.
 				 */
+	ZONE_MULTICAST    = 6,	/* destination MAC has the multicast/broadcast
+				 * bit set (platform-L2 chatter: mDNS, SSDP,
+				 * DHCP broadcast, ...). Never resolves to a
+				 * tenant MAC, so it is classified here rather
+				 * than left to fall into MISS/EXTERNAL. Kept
+				 * counted for transparency but never billed;
+				 * excluded from the revenue-leak SLO.
+				 */
 } __attribute__((packed));
 
 /*
@@ -288,7 +296,24 @@ static __always_inline int handle_packet(struct __sk_buff *skb,
 	key.eth_proto = proto;
 	key.direction = direction;
 
-	if (proto == ETH_P_IP) {
+	/*
+	 * Multicast/broadcast destination: the low bit of the first octet
+	 * is the IEEE 802 I/G bit. Frames addressed to a group MAC (IPv6
+	 * mDNS 33:33:*, IPv4 SSDP/link-local 01:00:5e:*, DHCP broadcast
+	 * ff:ff:*, ...) can never resolve to a tenant in mac_tenant_map, so
+	 * classify them into the dedicated never-billed multicast zone
+	 * rather than letting a received frame fall to MISS (numerator of
+	 * the revenue-leak SLO) or a VM-sent frame fall through the trie to
+	 * the EXTERNAL catchall. Checked on the destination MAC (already
+	 * copied into key.dst_mac above), so it covers both received group
+	 * traffic (egress hook) and VM-originated multicast tx (ingress
+	 * hook), for both IPv4 and IPv6. Gated behind the ethertype check
+	 * above so non-IP frames (ARP, ...) stay skipped-uncounted as
+	 * before. See lachesis#150.
+	 */
+	if (key.dst_mac[0] & 0x01) {
+		key.dst_zone = ZONE_MULTICAST;
+	} else if (proto == ETH_P_IP) {
 		struct iphdr *iph = (void *)(eth + 1);
 		if ((void *)(iph + 1) > data_end)
 			return TC_ACT_OK;

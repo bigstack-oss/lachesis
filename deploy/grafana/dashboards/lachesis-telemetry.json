@@ -449,7 +449,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Share of observed bytes that cannot be attributed to any tenant (miss zone or unknown tenant) \u2014 the fraction of traffic billing cannot invoice. Target: below 0.1%. Known inflater until the multicast zone lands: platform-L2 multicast (mDNS/SSDP) arriving on provider-attached taps counts here.",
+      "description": "Share of observed bytes that cannot be attributed to any tenant (miss zone or unknown tenant) \u2014 the fraction of traffic billing cannot invoice. Target: below 0.1%. Platform-L2 multicast (mDNS/SSDP on provider-attached taps) is classified into the never-billed multicast zone and excluded from this numerator; it still appears in the denominator and in the Zone breakdown.",
       "gridPos": {
         "x": 0,
         "y": 6,
@@ -459,7 +459,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",zone=\"miss\"}[5m]) or rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=\"unknown\"}[5m])) / sum(rate(lachesis_bytes_total{instance=~\"$node\"}[5m]))",
+          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",zone=\"miss\"}[5m]) or rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=\"unknown\",zone!=\"multicast\"}[5m])) / sum(rate(lachesis_bytes_total{instance=~\"$node\"}[5m]))",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -510,13 +510,13 @@
     },
     {
       "id": 112,
-      "title": "Unattributed traffic (miss zone / unknown tenant)",
+      "title": "Unattributed traffic (miss / unknown) + multicast (never billed)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "The two unbillable streams behind the ratio: bytes whose destination could not be classified (miss) and bytes whose VM MAC is not known to the metadata layer (unknown). Persistent flow here means lost revenue or platform chatter \u2014 drill down at /debug/anomalies and /debug/lookup.",
+      "description": "The unbillable streams behind the ratio: bytes whose destination could not be classified (miss) and bytes whose VM MAC is not known to the metadata layer (unknown, excluding multicast). Persistent flow in these two means lost revenue \u2014 drill down at /debug/anomalies and /debug/lookup. The multicast series is platform-L2 chatter (mDNS/SSDP): counted, never billed, and deliberately excluded from the SLO numerator.",
       "gridPos": {
         "x": 6,
         "y": 6,
@@ -535,8 +535,17 @@
         },
         {
           "refId": "B",
-          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=\"unknown\"}[1m]))",
+          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=\"unknown\",zone!=\"multicast\"}[1m]))",
           "legendFormat": "tenant=unknown",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",zone=\"multicast\"}[1m]))",
+          "legendFormat": "zone=multicast (never billed)",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
