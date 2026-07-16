@@ -426,7 +426,6 @@ func (e *extExec) Run(ctx context.Context, addr, command string) (string, error)
 // counters follow the ping drive under the deterministic pick, and the
 // per-server family mirrors the tenant family for the one VM.
 type extPathMetrics struct {
-	instantMACs
 	env   *fakeEnv
 	cloud *fakeCloud
 	exec  *extExec
