@@ -304,3 +304,28 @@ func TestAssert_VMExpectRefusesPreFamilyAgent(t *testing.T) {
 		t.Fatalf("want per-server-family refusal error, got %v", err)
 	}
 }
+
+// TestResolveExternalNetwork pins the three resolution tiers: a
+// CreateExternalNets marker resolves to its run-mangled created name
+// (the label the agent really emits — NOT the provider network), a
+// provider-bound external marker resolves to the config's provider
+// network, and everything else (empty, "none", literals) passes
+// through.
+func TestResolveExternalNetwork(t *testing.T) {
+	sc := extPathScenario() // declares net-ext (provider) + net-ext2 (created)
+	cfg := testConfig()
+	rs := NewRunState("run1", sc.Name, cfg.Naming.Prefix)
+
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"none", "none"},
+		{"net-ext", "ext"}, // provider-bound marker
+		{"net-ext2", "scenariotest-run1-net-ext2"}, // created marker → mangled name
+		{"public-9", "public-9"},                   // literal, not a marker
+	}
+	for _, tc := range cases {
+		if got := resolveExternalNetwork(sc, cfg, rs, tc.in); got != tc.want {
+			t.Errorf("resolveExternalNetwork(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

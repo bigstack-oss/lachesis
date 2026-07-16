@@ -133,11 +133,14 @@ type DuplicateRouterMAC struct {
 }
 
 // MultiExternalPathHit records a VM port with more than one external
-// path — several FIPs on different external networks, or FIP +
-// gateway routers disagreeing. [ExternalNetworkByPort] attributes the
-// port to ONE deterministically-picked network (its egress could
-// really use any of them), so per-network external billing for this
-// VM is approximate until the known limitation is lifted.
+// path within one attribution tier: several FIPs on different external
+// networks, or (FIP-less) several gateway routers on different external
+// networks. A FIP whose network differs from the router gateway is NOT
+// a hit — the FIP tier wins outright (OVN NATs external traffic through
+// the FIP), so that shape is unambiguous. [ExternalNetworkByPort]
+// attributes a hit to ONE deterministically-picked network (its egress
+// could really use any of them), so per-network external billing for
+// this VM is approximate until the known limitation is lifted.
 type MultiExternalPathHit struct {
 	PortID     string
 	ServerID   string

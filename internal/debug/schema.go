@@ -71,7 +71,7 @@ type indexCounts struct {
 	TrieRows int `json:"trie_rows"`
 }
 
-// anomalyCounts mirrors the five [neutron.Anomalies] classes as
+// anomalyCounts mirrors the six [neutron.Anomalies] classes as
 // counts. Field order matches the lachesis_neutron_anomalies class
 // label set.
 type anomalyCounts struct {
@@ -81,6 +81,7 @@ type anomalyCounts struct {
 	DanglingRoutes      int `json:"dangling_routes"`
 	ZeroTrieTenants     int `json:"zero_trie_tenants"`
 	DuplicateRouterMACs int `json:"duplicate_router_macs"`
+	MultiExternalPaths  int `json:"multi_external_paths"`
 }
 
 // anomaliesModel is the /debug/anomalies view: the six anomaly

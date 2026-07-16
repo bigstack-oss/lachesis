@@ -443,7 +443,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Internet-bound upload split per external network \u2014 the dimension external traffic is rated on (different networks can charge differently). \"none\" collects external-zone traffic of VMs with no resolved external path.",
+      "description": "Internet-bound upload split per external network \u2014 the dimension external traffic is rated on (different networks can charge differently). \"none\" collects external-zone traffic of VMs with no resolved external path. This row is pinned to zone=external; the Zone filter does not apply here.",
       "gridPos": {
         "x": 0,
         "y": 20,
@@ -453,7 +453,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (external_network) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",zone=\"external\",direction=\"tx\"}[1m]))",
+          "expr": "sum by (external_network) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"tx\"}[1m]))",
           "legendFormat": "{{external_network}}",
           "datasource": {
             "type": "prometheus",
@@ -495,7 +495,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Internet-originated download split per external network \u2014 the ingress-rate counterpart of the egress panel.",
+      "description": "Internet-originated download split per external network \u2014 the ingress-rate counterpart of the egress panel. Pinned to zone=external like the egress panel; the Zone filter does not apply here.",
       "gridPos": {
         "x": 12,
         "y": 20,
@@ -505,7 +505,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (external_network) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",zone=\"external\",direction=\"rx\"}[1m]))",
+          "expr": "sum by (external_network) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"rx\"}[1m]))",
           "legendFormat": "{{external_network}}",
           "datasource": {
             "type": "prometheus",
@@ -626,7 +626,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Per-server traffic rate for the servers selected in the Server filter \u2014 the drill-down after the top-talkers table points somewhere interesting.",
+      "description": "Per-server traffic rate for the servers selected in the Server filter \u2014 the drill-down after the top-talkers table points somewhere interesting. Note the Server dropdown only lists servers with series in the picked time range \u2014 a deleted server ages out of the list as its mortal series ends; widen the range to find it.",
       "gridPos": {
         "x": 12,
         "y": 30,

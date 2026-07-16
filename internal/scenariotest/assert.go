@@ -170,7 +170,7 @@ func evaluate(sc *Scenario, cfg Config, rs *RunState, base, cur baselines, haveS
 		if !ok {
 			return AssertReport{}, fmt.Errorf("assert: expectation references tenant %q but run-state has no such project", e.TenantID)
 		}
-		ext := resolveExternalNetwork(sc, cfg, e.ExternalNetwork)
+		ext := resolveExternalNetwork(sc, cfg, rs, e.ExternalNetwork)
 		row := AssertRow{
 			Tenant: e.TenantID, TenantID: ref.ID,
 			Zone: e.Zone, ExternalNetwork: ext, Direction: e.Direction,
@@ -209,13 +209,20 @@ func evaluate(sc *Scenario, cfg Config, rs *RunState, base, cur baselines, haveS
 }
 
 // resolveExternalNetwork maps an expectation's ExternalNetwork to the
-// label value to match: empty stays empty (no filter); a DSL
-// external-network marker id resolves to the provider network the
-// config binds it to (the same indirection realize applies); anything
-// else — including the "none" sentinel — is literal.
-func resolveExternalNetwork(sc *Scenario, cfg Config, name string) string {
+// label value to match — the same indirection realize applies: empty
+// stays empty (no filter); a marker in [Scenario.CreateExternalNets]
+// resolves to its run-mangled created name (the network Name the agent
+// labels by); any other DSL external-network marker id resolves to the
+// provider network the config binds it to; anything else — including
+// the "none" sentinel — is literal.
+func resolveExternalNetwork(sc *Scenario, cfg Config, rs *RunState, name string) string {
 	if name == "" || sc.Builder == nil {
 		return name
+	}
+	for _, created := range sc.CreateExternalNets {
+		if created == name {
+			return Mangle(cfg.Naming.Prefix, rs.RunID, name)
+		}
 	}
 	for _, n := range sc.Builder.Build().Networks {
 		if n.IsExternal && n.ID == name {

@@ -464,6 +464,21 @@ func TestSteps_MultiExternalPathFullLoop(t *testing.T) {
 		t.Error("the extra FIP was not deleted by DeleteFIPStep")
 	}
 
+	// The deleted FIP is gone from the persisted run-state too — down
+	// must not re-delete it; the provider SSH FIP ref stays.
+	rs, err := LoadRunState(statePath)
+	if err != nil {
+		t.Fatalf("LoadRunState: %v", err)
+	}
+	for _, f := range rs.FIPs {
+		if f.Network == "net-ext2" {
+			t.Errorf("deleted FIP still in run-state: %+v", f)
+		}
+	}
+	if len(rs.FIPs) != 1 {
+		t.Errorf("run-state FIPs = %+v, want only the provider SSH FIP", rs.FIPs)
+	}
+
 	// Every phase's rows are in the report.
 	notes := map[string]int{}
 	for _, row := range rep.Rows {

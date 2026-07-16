@@ -97,8 +97,10 @@ type snapshotWire struct {
 // the Keystone project UUID string — the only tenant identifier stable
 // across boots (see the state.Record invariant note); zone and
 // direction reuse the flow-key enum encodings. ExternalNetwork is the
-// already-gated label (v3+); omitempty keeps v2-era buckets and "none"
-// buckets byte-compatible, and Load maps absence back to the sentinel.
+// already-gated label (v3+) — always "none" or a network name, never
+// "", so Save writes it on every bucket; omitempty matters only on
+// decode, where a v2-era entry's absent field reads as "" and Load
+// maps it to the sentinel.
 type settledWire struct {
 	TenantID        string `json:"tenant_id"`
 	ExternalNetwork string `json:"external_network,omitempty"`

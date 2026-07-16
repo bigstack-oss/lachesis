@@ -70,6 +70,7 @@ func buildIndexModel(snap *neutron.Snapshot, trie []neutron.TrieEntry,
 			DanglingRoutes:      len(anomalies.DanglingRoutes),
 			ZeroTrieTenants:     len(anomalies.ZeroTrieTenants),
 			DuplicateRouterMACs: len(anomalies.DuplicateRouterMACs),
+			MultiExternalPaths:  len(anomalies.MultiExternalPaths),
 		}
 	}
 	return m
