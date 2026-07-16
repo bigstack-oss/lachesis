@@ -87,6 +87,7 @@ type GhostSweeper struct {
 	evictor     MacEvictor
 	flowEvictor MacFlowEvictor
 	settler     FlowSettler
+	routers     *metadata.RouterMACs
 	mapGauge    MapGauge
 	seq         *boot.Sequencer
 	mx          *Metrics
@@ -107,6 +108,11 @@ type Options struct {
 	// accumulator before their metadata (the tenant binding) is
 	// deleted. The agent wires its *state.GlobalState.
 	Settler FlowSettler
+	// Routers resolves each folded row's per-flow external_network
+	// label ([metadata.FlowExternalLabel]) so the fold lands in exactly
+	// the series the Collector was emitting. Optional (nil = per-VM
+	// fallback only — pre-per-flow unit tests).
+	Routers *metadata.RouterMACs
 	// MapGauge refreshes the mac_tenant_map fill gauge after a sweep.
 	// Optional (nil skips); the agent wires its bpf metrics bundle.
 	MapGauge MapGauge
@@ -127,6 +133,7 @@ func New(opts Options) *GhostSweeper {
 		evictor:     opts.Evictor,
 		flowEvictor: opts.FlowEvictor,
 		settler:     opts.Settler,
+		routers:     opts.Routers,
 		mapGauge:    opts.MapGauge,
 		seq:         opts.Seq,
 		mx:          opts.Metrics,
@@ -266,9 +273,11 @@ func (g *GhostSweeper) evictResidualFlows(swept map[uint64]struct{}) int {
 // fold with [state.SettleEvict]: their kernel counters were removed in
 // phase 2, so the rows are dead and deleting them is what stops
 // GlobalState (and the WAL) growing with every VM that ever lived
-// (docs/DESIGN.md §3.5). The per-row external_network label goes
-// through the same zone gate the Collector applies, so each fold lands
-// in exactly the series its live flow occupied. Returns the number of
+// (docs/DESIGN.md §3.5). The per-row external_network label resolves
+// per flow exactly as the Collector does ([metadata.FlowExternalLabel]:
+// peer router-interface MAC first, per-VM fallback behind the zone
+// gate), so each fold lands in exactly the series its live flow
+// occupied. Returns the number of
 // rows folded. No-op when no settler is wired or nothing was swept.
 func (g *GhostSweeper) settleSwept(swept map[uint64]struct{}) int {
 	if g.settler == nil || len(swept) == 0 {
@@ -285,7 +294,7 @@ func (g *GhostSweeper) settleSwept(swept map[uint64]struct{}) int {
 		if !ok {
 			return "", "", false
 		}
-		return meta.ProjectID, metadata.ExternalNetworkLabel(meta.ExternalNetwork, k.DstZone), true
+		return meta.ProjectID, metadata.FlowExternalLabel(g.routers, meta.ExternalNetwork, k), true
 	})
 }
 

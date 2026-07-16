@@ -353,3 +353,37 @@ func TestRun_ReturnsWhenBootAbortsBeforePhase(t *testing.T) {
 		t.Fatal("Run did not return after the boot aborted")
 	}
 }
+
+// TestSweep_SettlesUnderPerFlowRouterLabel: a swept VM's external rows
+// fold under the label the Collector was EMITTING — the per-flow
+// router attribution, not the per-VM fallback. Without this the fold
+// re-homes bytes into a different series and breaks its monotonicity.
+func TestSweep_SettlesUnderPerFlowRouterLabel(t *testing.T) {
+	meta := metadata.New()
+	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	rtr := [6]uint8{0xfa, 0x16, 0x3e, 0, 0, 0x10}
+	macKey := bpf.MACKey(vmMAC)
+	meta.Insert(macKey, &metadata.TenantMeta{ProjectID: "tenant-a", ExternalNetwork: "public-2"})
+	now := time.Now()
+	meta.MarkDelete(macKey, now.Add(-time.Second))
+
+	routers := metadata.NewRouterMACs()
+	routers.Replace(map[uint64]string{bpf.MACKey(rtr): "public-1"})
+
+	st := state.New()
+	key := bpf.FlowKey{SrcMac: vmMAC, DstMac: rtr, EthProto: 0x0800,
+		Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 900, Packets: 9, LastSeenNs: 1})
+
+	g := New(Options{
+		Meta: meta, Evictor: &recordingEvictor{meta: meta}, Settler: st, Routers: routers,
+		Metrics: NewMetrics(), Interval: time.Hour,
+	})
+	g.sweep(now)
+
+	_, settled := st.SnapshotWithSettled(nil, nil)
+	want := state.SettledKey{Tenant: "tenant-a", ExtNet: "public-1", Zone: bpf.ZoneExternal, Dir: bpf.DirectionIngress}
+	if len(settled) != 1 || settled[0].Key != want || settled[0].Bytes != 900 {
+		t.Fatalf("settled = %+v, want 900 bytes under the ROUTER label %+v (not the per-VM public-2)", settled, want)
+	}
+}

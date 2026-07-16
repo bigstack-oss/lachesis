@@ -16,7 +16,7 @@ var (
 )
 
 func TestResolveTenant_Miss(t *testing.T) {
-	r := NewResolver(New())
+	r := NewResolver(New(), nil)
 	key := bpf.FlowKey{SrcMac: macA, DstMac: macB, Direction: bpf.DirectionIngress}
 	if got := r.Resolve(key).Tenant; got != "unknown" {
 		t.Fatalf("ResolveTenant on empty map = %q, want %q", got, "unknown")
@@ -28,7 +28,7 @@ func TestResolveTenant_IngressUsesSrcMac(t *testing.T) {
 	// Only the SrcMac is in the map; DstMac is the peer (a remote
 	// VM whose tenant the Collector doesn't ask about).
 	m.Insert(bpf.MACKey(macA), &TenantMeta{ProjectID: "proj-VM-A"})
-	r := NewResolver(m)
+	r := NewResolver(m, nil)
 
 	key := bpf.FlowKey{SrcMac: macA, DstMac: macB, Direction: bpf.DirectionIngress}
 	if got := r.Resolve(key).Tenant; got != "proj-VM-A" {
@@ -39,7 +39,7 @@ func TestResolveTenant_IngressUsesSrcMac(t *testing.T) {
 func TestResolveTenant_EgressUsesDstMac(t *testing.T) {
 	m := New()
 	m.Insert(bpf.MACKey(macB), &TenantMeta{ProjectID: "proj-VM-B"})
-	r := NewResolver(m)
+	r := NewResolver(m, nil)
 
 	key := bpf.FlowKey{SrcMac: macA, DstMac: macB, Direction: bpf.DirectionEgress}
 	if got := r.Resolve(key).Tenant; got != "proj-VM-B" {
@@ -54,7 +54,7 @@ func TestResolveTenant_EgressUsesDstMac(t *testing.T) {
 func TestResolveTenant_IngressIgnoresDstMac(t *testing.T) {
 	m := New()
 	m.Insert(bpf.MACKey(macB), &TenantMeta{ProjectID: "proj-VM-B"})
-	r := NewResolver(m)
+	r := NewResolver(m, nil)
 
 	key := bpf.FlowKey{SrcMac: macA, DstMac: macB, Direction: bpf.DirectionIngress}
 	if got := r.Resolve(key).Tenant; got != "unknown" {
@@ -67,7 +67,7 @@ func TestResolveTenant_IngressIgnoresDstMac(t *testing.T) {
 func TestResolveTenant_EgressIgnoresSrcMac(t *testing.T) {
 	m := New()
 	m.Insert(bpf.MACKey(macA), &TenantMeta{ProjectID: "proj-VM-A"})
-	r := NewResolver(m)
+	r := NewResolver(m, nil)
 
 	key := bpf.FlowKey{SrcMac: macA, DstMac: macB, Direction: bpf.DirectionEgress}
 	if got := r.Resolve(key).Tenant; got != "unknown" {
@@ -79,7 +79,7 @@ func TestResolveTenant_HitAfterInsertOverwrite(t *testing.T) {
 	m := New()
 	m.Insert(bpf.MACKey(macA), &TenantMeta{ProjectID: "proj-old"})
 	m.Insert(bpf.MACKey(macA), &TenantMeta{ProjectID: "proj-new"})
-	r := NewResolver(m)
+	r := NewResolver(m, nil)
 
 	key := bpf.FlowKey{SrcMac: macA, Direction: bpf.DirectionIngress}
 	if got := r.Resolve(key).Tenant; got != "proj-new" {
@@ -98,7 +98,7 @@ func TestResolve_AttributionFields(t *testing.T) {
 		ProjectID: "proj-A", ServerID: "srv-1", ExternalNetwork: "public-1",
 	})
 	m.Insert(bpf.MACKey(macB), &TenantMeta{ProjectID: "proj-B"})
-	r := NewResolver(m)
+	r := NewResolver(m, nil)
 
 	cases := []struct {
 		name string

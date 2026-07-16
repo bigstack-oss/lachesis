@@ -112,6 +112,10 @@ type Agent struct {
 	// a future change, from Kafka events. The metrics Collector's
 	// Resolver reads it on every emission.
 	meta *metadata.ShardedMetadataMap
+	// routers is the router-interface-MAC → external-network store the
+	// Resolver reads per flow; cold start seeds it, the reconciler
+	// swaps it per pass (docs/DESIGN.md §11.5).
+	routers *metadata.RouterMACs
 	// interner assigns the u32 tenant_id values the kernel maps
 	// key on. Lives on Agent because both the cold-start writer
 	// and the incremental Kafka updater share it.
@@ -150,6 +154,7 @@ func New(opts Options) (*Agent, error) {
 
 	st := state.New()
 	meta := metadata.New()
+	routers := metadata.NewRouterMACs()
 	n, err := neutron.New(opts.Config.Neutron)
 	if err != nil {
 		return nil, fmt.Errorf("agent: neutron credentials: %w", err)
@@ -159,6 +164,7 @@ func New(opts Options) (*Agent, error) {
 		cfg:      opts.Config,
 		state:    st,
 		meta:     meta,
+		routers:  routers,
 		neutron:  n,
 		interner: metadata.NewTenantInterner(),
 		seq:      opts.sequencerOrDefault(),
@@ -168,7 +174,7 @@ func New(opts Options) (*Agent, error) {
 	a.scraper = scraper.New(
 		telemetryFillReader{inner: opts.Reader, stats: opts.Stats, mx: a.mx.bpf},
 		st, opts.Config.Scrape.Interval)
-	a.collector = metrics.New(st, a.scraper, opts.resolverOrDefault(meta))
+	a.collector = metrics.New(st, a.scraper, opts.resolverOrDefault(meta, routers))
 
 	if err := a.openHTTP(opts); err != nil {
 		return nil, err

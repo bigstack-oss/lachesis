@@ -79,6 +79,7 @@ type Reconciler struct {
 	trie      kernelwriter.MapUpdateDeleter
 	meta      *metadata.ShardedMetadataMap
 	macWriter MacWriter
+	routers   *metadata.RouterMACs
 	settler   FlowSettler
 	interner  *metadata.TenantInterner
 	seq       *boot.Sequencer
@@ -110,6 +111,11 @@ type Options struct {
 	Interner *metadata.TenantInterner
 	Seq      *boot.Sequencer
 	Metrics  *Metrics
+	// Routers is the router-interface-MAC → external-network map the
+	// pass rebuilds and swaps (per-flow external attribution,
+	// docs/DESIGN.md §11.5). Optional (nil skips — trie-only unit
+	// tests); the agent wires the store its Resolver reads.
+	Routers *metadata.RouterMACs
 	// BPFGauge refreshes the kernel map-fill gauges after each pass.
 	// Optional (nil skips); the agent wires its bpf metrics bundle.
 	BPFGauge MapGauge
@@ -128,6 +134,7 @@ func New(opts Options) *Reconciler {
 		trie:      opts.Trie,
 		meta:      opts.Meta,
 		macWriter: opts.MacWriter,
+		routers:   opts.Routers,
 		settler:   opts.Settler,
 		interner:  opts.Interner,
 		seq:       opts.Seq,
@@ -198,6 +205,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 		return
 	}
 	mac := r.reconcileMACs(&result.Snapshot, now)
+	r.reconcileRouterMACs(&result.Snapshot)
 
 	r.src.Commit(result, now)
 	r.mx.RecordRun(resultOK)

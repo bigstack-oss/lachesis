@@ -61,6 +61,9 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 		return err
 	}
 	stats := populateMetadataFromPorts(ag.meta, &result.Snapshot, ag.mx.neutron)
+	// Seed the per-flow router map in the same before-any-packet step:
+	// the Resolver reads it from the first scrape (docs/DESIGN.md §11.5).
+	ag.routers.Replace(neutron.RouterExtMACs(&result.Snapshot))
 	nMac, nTrie, err := pushToKernel(ag, coll, result.Entries)
 	if err != nil {
 		return err
