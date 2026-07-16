@@ -2025,6 +2025,199 @@
         }
       },
       "description": "Periodic + Kafka-kicked Neutron reconcile passes by outcome: ok = applied & committed; sync_error = Neutron fetch failed; apply_error = a kernel write failed and state was not committed (retried next pass)."
+    },
+    {
+      "id": 110,
+      "title": "Billing integrity",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 93,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 111,
+      "title": "Unbilled ratio (revenue-leak SLO, 5m)",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Share of observed bytes that cannot be attributed to any tenant (miss zone or unknown tenant) \u2014 the fraction of traffic billing cannot invoice. Target: below 0.1%. Known inflater until the multicast zone lands: platform-L2 multicast (mDNS/SSDP) arriving on provider-attached taps counts here.",
+      "gridPos": {
+        "x": 0,
+        "y": 94,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",zone=\"miss\"}[5m]) or rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=\"unknown\"}[5m])) / sum(rate(lachesis_bytes_total{instance=~\"$node\"}[5m]))",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.001
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      }
+    },
+    {
+      "id": 112,
+      "title": "Unattributed traffic (miss zone / unknown tenant)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The two unbillable streams behind the ratio: bytes whose destination could not be classified (miss) and bytes whose VM MAC is not known to the metadata layer (unknown). Persistent flow here means lost revenue or platform chatter \u2014 drill down at /debug/anomalies and /debug/lookup.",
+      "gridPos": {
+        "x": 6,
+        "y": 94,
+        "w": 9,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",zone=\"miss\"}[1m]))",
+          "legendFormat": "zone=miss",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=\"unknown\"}[1m]))",
+          "legendFormat": "tenant=unknown",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": true
+          },
+          "unit": "binBps"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      }
+    },
+    {
+      "id": 113,
+      "title": "Settled folds (attribution deaths)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "How often flow records are folded into the per-tenant settled totals \u2014 this happens when a VM is deleted or its attribution changes. A burst here is normal after teardown waves; it also means per-server series just ended on this node.",
+      "gridPos": {
+        "x": 15,
+        "y": 94,
+        "w": 9,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (instance) (rate(lachesis_gc_settled_flows_total{instance=~\"$node\"}[5m]))",
+          "legendFormat": "{{instance}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": true
+          },
+          "unit": "ops"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      }
     }
   ],
   "refresh": "10s",
@@ -2079,7 +2272,7 @@
     "to": "now"
   },
   "timepicker": {},
-  "title": "CubeCOS \u00b7 Network Telemetry",
+  "title": "CubeCOS \u00b7 Telemetry Agent",
   "uid": "lachesis-telemetry",
   "version": 2,
   "weekStart": ""
