@@ -73,3 +73,26 @@ Dashboards are provisioned at startup via
 `/var/lib/grafana/dashboards`. UI edits are kept (`allowUiUpdates:
 true`) — export and commit them when you want a change to survive a
 restart.
+
+## Multi-agent clusters (node identity)
+
+Every compute node runs its own agent, and both dashboards are
+multi-agent aware through the `$node` template variable, which is the
+Prometheus `instance` label of the `lachesis-agent` job. On a real
+cluster, give the platform Prometheus one target per compute node —
+the instance label is the node identity the dashboards group and
+filter by:
+
+```yaml
+  - job_name: "lachesis-agent"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["cc1:9090", "cc2:9090", "cc3:9090"]
+```
+
+Leave `$node` at **All** for the global view; pick nodes for a
+per-agent view. Sums over the tenant family aggregate correctly across
+nodes (each transfer is one `tx` at the sender's tap and one `rx` at
+the receiver's, possibly on different instances — DESIGN §11.5); the
+per-server drill-down on `CubeCOS · Traffic` sums a server's series
+across instances, which is exactly the live-migration consumption rule.
