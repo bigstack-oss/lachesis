@@ -589,6 +589,109 @@ func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	return nil
 }
 
+// AddRouteStep adds an in-guest static route on a VM (`sudo ip route
+// add CIDR via Via`) — how a scenario steers traffic through a
+// specific router when the VM's default route points elsewhere (the
+// second-router drive of the multi-external-path scenario). The
+// platform cannot see in-guest routes, which is exactly the point:
+// the per-flow router-MAC attribution must still label the traffic by
+// the router that carried it. Assumes the VM is SSH-reachable (a
+// prior DriveStep's readiness gate, in practice).
+type AddRouteStep struct {
+	VM   string
+	CIDR string
+	Via  string
+}
+
+func (AddRouteStep) Kind() string { return "add-route" }
+
+func (s AddRouteStep) Run(ctx context.Context, env *StepEnv) error {
+	fip := ""
+	for _, f := range env.State.FIPs {
+		if f.VMID == s.VM && f.Network == "" { // the provider SSH FIP
+			fip = f.Address
+		}
+	}
+	if fip == "" {
+		return fmt.Errorf("run-state has no SSH FIP for VM %q", s.VM)
+	}
+	// Absolute path: cirros sudo's PATH lacks /sbin ("sudo: ip: command
+	// not found"); the busybox `route` spelling is the fallback for
+	// images without iproute2 at that path.
+	cmd := fmt.Sprintf("sudo /sbin/ip route add %s via %s 2>/dev/null || sudo route add -net %s gw %s",
+		s.CIDR, s.Via, s.CIDR, s.Via)
+	if out, err := env.Exec.Run(ctx, fip, cmd); err != nil {
+		return fmt.Errorf("add-route %s via %s on %s: %w (output: %s)", s.CIDR, s.Via, s.VM, err, out)
+	}
+	env.logf("add-route: %s via %s on %s", s.CIDR, s.Via, s.VM)
+	return nil
+}
+
+// AssertFlowPeerStep proves WHICH interface carried driven bytes: it
+// resolves the named router's interface port on the given attach IP
+// (declared by the DSL, MAC recorded in the run-state), queries every
+// agent's /debug/flows for rows carrying that MAC, and asserts the
+// summed bytes in Zone meet MinBytes. This is the flow-granular gate
+// that a label assertion alone cannot provide — the external_network
+// label of a fallback-tier flow equals the default route's label, so
+// only the peer MAC on the flow key distinguishes "rode the intended
+// router" from "accidentally rode the default route".
+type AssertFlowPeerStep struct {
+	Router   string // DSL router id
+	Via      string // the Attach IP naming which interface of the router
+	Zone     string
+	MinBytes int64
+	Note     string
+}
+
+func (AssertFlowPeerStep) Kind() string { return "assert-flow-peer" }
+
+func (s AssertFlowPeerStep) Run(ctx context.Context, env *StepEnv) error {
+	// The DSL declares the interface port; the run-state ref carries
+	// the Neutron-assigned MAC realize recorded.
+	snap := env.Scenario.Builder.Build()
+	dslPort := ""
+	for _, p := range snap.Ports {
+		if p.DeviceOwner == "network:router_interface" && p.DeviceID == s.Router &&
+			len(p.FixedIPs) > 0 && p.FixedIPs[0].IPAddress == s.Via {
+			dslPort = p.ID
+		}
+	}
+	if dslPort == "" {
+		return fmt.Errorf("scenario declares no %s interface at %s", s.Router, s.Via)
+	}
+	mac := ""
+	for _, ref := range env.State.Ports {
+		if ref.DSLID == dslPort {
+			mac = ref.MAC
+		}
+	}
+	if mac == "" {
+		return fmt.Errorf("run-state has no MAC for %s (port %s)", s.Router, dslPort)
+	}
+
+	var total float64
+	for _, u := range agentURLs(env.Config) {
+		rows, err := env.Metrics.LookupFlows(ctx, u, mac)
+		if err != nil {
+			return fmt.Errorf("assert-flow-peer: %w", err)
+		}
+		for _, r := range rows {
+			if r.Zone == s.Zone {
+				total += r.Bytes
+			}
+		}
+	}
+	env.addRow(AssertRow{
+		Tenant: "flow-peer", Zone: s.Zone, Direction: "-",
+		Current: total, Delta: total, MinBytes: s.MinBytes,
+		Pass: total >= float64(s.MinBytes),
+		Note: s.Note,
+	})
+	env.logf("assert-flow-peer: %s@%s (%s) %s bytes=%.0f min=%d", s.Router, s.Via, mac, s.Zone, total, s.MinBytes)
+	return nil
+}
+
 // DeleteFIPStep removes the floating IP(s) a prior [AssociateFIPStep]
 // bound to VM from the named DSL network. Provider-net FIPs (Network
 // "" in the run-state — the SSH path) are never touched.

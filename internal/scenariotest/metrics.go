@@ -113,6 +113,20 @@ type MACLookup struct {
 type MetricsSource interface {
 	Scrape(ctx context.Context, url string) (ScrapeResult, error)
 	LookupMAC(ctx context.Context, url, mac string) (MACLookup, error)
+	// LookupFlows returns the agent's live flow rows carrying mac on
+	// either side (/debug/flows) — the flow-granular evidence behind
+	// [AssertFlowPeerStep]: which peer actually carried driven bytes.
+	LookupFlows(ctx context.Context, url, mac string) ([]FlowRow, error)
+}
+
+// FlowRow is one live GlobalState row as /debug/flows reports it.
+type FlowRow struct {
+	SrcMAC    string  `json:"src_mac"`
+	DstMAC    string  `json:"dst_mac"`
+	Direction string  `json:"direction"`
+	Zone      string  `json:"zone"`
+	Bytes     float64 `json:"bytes"`
+	Packets   float64 `json:"packets"`
 }
 
 // HTTPMetrics is the live [MetricsSource]: it GETs each /metrics URL
@@ -187,6 +201,35 @@ func (h *HTTPMetrics) LookupMAC(ctx context.Context, metricsURL, mac string) (MA
 		return MACLookup{}, nil
 	}
 	return MACLookup{Found: body.MAC.Found, TenantID: body.MAC.TenantID}, nil
+}
+
+// LookupFlows implements the flow-query half of [MetricsSource]
+// against /debug/flows, derived from the metrics URL like [LookupMAC].
+func (h *HTTPMetrics) LookupFlows(ctx context.Context, metricsURL, mac string) ([]FlowRow, error) {
+	base, ok := strings.CutSuffix(metricsURL, "/metrics")
+	if !ok {
+		return nil, fmt.Errorf("flows: metrics URL %q does not end in /metrics — cannot derive /debug/flows (check cluster.agents[].metrics_url)", metricsURL)
+	}
+	u := base + "/debug/flows?mac=" + url.QueryEscape(mac)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("flows: build request %s: %w", u, err)
+	}
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("flows: get %s: %w", u, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("flows: get %s: status %d", u, resp.StatusCode)
+	}
+	var body struct {
+		Rows []FlowRow `json:"rows"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("flows: decode %s: %w", u, err)
+	}
+	return body.Rows, nil
 }
 
 // sampleAcross scrapes every agent URL and aggregates the health

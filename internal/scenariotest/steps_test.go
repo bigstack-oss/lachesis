@@ -91,11 +91,19 @@ type stepMetrics struct {
 // exercises the MAC-learn gate's stale-tenant rule (lachesis#153).
 func (m *stepMetrics) LookupMAC(_ context.Context, _, mac string) (MACLookup, error) {
 	for pid, pmac := range m.cloud.portMAC {
-		if pmac == mac && !m.cloud.deleted["port:"+pid] {
+		// Router-interface ports never resolve — mirroring the real
+		// mac_tenant_map, which holds VM ports only. The MAC-learn
+		// gate must not wait on them (lachesis#146 regression).
+		if pmac == mac && !m.cloud.deleted["port:"+pid] && !strings.Contains(m.cloud.portName[pid], "p-rif-") {
 			return MACLookup{Found: true, TenantID: m.cloud.portProject[pid]}, nil
 		}
 	}
 	return MACLookup{}, nil
+}
+
+// LookupFlows: mac-reuse's script never asserts flow peers.
+func (m *stepMetrics) LookupFlows(context.Context, string, string) ([]FlowRow, error) {
+	return nil, nil
 }
 
 const drivenBytes = float64(2 << 20)
@@ -344,6 +352,7 @@ func extPathScenario() *Scenario {
 		Subnet("sub-ext2", "172.24.99.0/24", "172.24.99.1")
 	b.Router("r-T1", "T1").Attach("sub-T1", "10.0.11.1").ExternalGateway("net-ext")
 	b.Router("r-ext2", "T1").Attach("sub-T1", "10.0.11.254").ExternalGateway("net-ext2")
+	b.Router("r-nogw", "T1").Attach("sub-T1", "10.0.11.253")
 
 	return &Scenario{
 		Name:               "multi-external-path",
@@ -357,10 +366,28 @@ func extPathScenario() *Scenario {
 				Note: "second FIP surfaces the ambiguity"},
 			CaptureStep{},
 			DriveStep{Flows: []Flow{{From: "vm-a", To: ExternalTarget("8.8.8.8"), Bytes: 1 << 20, Proto: TCP}}},
-			AssertStep{Note: "billing under the deterministic pick", Expect: []Expect{
+			AssertStep{Note: "default route bills under the carrying network", Expect: []Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext"},
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext", VM: "vm-a"},
 			}},
+			AddRouteStep{VM: "vm-a", CIDR: "8.8.9.0/24", Via: "10.0.11.254"},
+			CaptureStep{},
+			DriveStep{Flows: []Flow{{From: "vm-a", To: ExternalTarget("8.8.9.9"), Bytes: 1 << 20, Proto: TCP}}},
+			AssertStep{Note: "second-router flow bills under ITS carrying network", Expect: []Expect{
+				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext2"},
+				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext2", VM: "vm-a"},
+			}},
+			AssertFlowPeerStep{Router: "r-ext2", Via: "10.0.11.254", Zone: "external",
+				MinBytes: 1 << 20, Note: "steered bytes observed on r-ext2's interface"},
+			AddRouteStep{VM: "vm-a", CIDR: "8.8.10.0/24", Via: "10.0.11.253"},
+			CaptureStep{},
+			DriveStep{Flows: []Flow{{From: "vm-a", To: ExternalTarget("8.8.10.9"), Bytes: 1 << 20, Proto: TCP}}},
+			AssertStep{Note: "gateway-less router falls back to the per-VM attribution", Expect: []Expect{
+				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext"},
+				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext", VM: "vm-a"},
+			}},
+			AssertFlowPeerStep{Router: "r-nogw", Via: "10.0.11.253", Zone: "external",
+				MinBytes: 1 << 20, Note: "fallback bytes observed on the gateway-less interface"},
 			DeleteFIPStep{VM: "vm-a", Network: "net-ext2"},
 			AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0, Timeout: time.Second,
 				Note: "ambiguity clears after FIP removal"},
@@ -373,12 +400,22 @@ func extPathScenario() *Scenario {
 // streams.
 type extExec struct {
 	fakeExec
-	pings int
+	pings  int
+	pings2 int // pings at the second-router prefix (8.8.9.x)
+	pings3 int // pings at the gateway-less-router prefix (8.8.10.x)
+	routes int // in-guest route adds
 }
 
 func (e *extExec) Run(ctx context.Context, addr, command string) (string, error) {
-	if strings.Contains(command, "ping -c") {
+	switch {
+	case strings.Contains(command, "ping -c") && strings.Contains(command, "8.8.9."):
+		e.pings2++
+	case strings.Contains(command, "ping -c") && strings.Contains(command, "8.8.10."):
+		e.pings3++
+	case strings.Contains(command, "ping -c"):
 		e.pings++
+	case strings.Contains(command, "ip route add"):
+		e.routes++
 	}
 	return e.fakeExec.Run(ctx, addr, command)
 }
@@ -395,6 +432,37 @@ type extPathMetrics struct {
 	exec  *extExec
 }
 
+// LookupMAC mirrors the real mac_tenant_map: VM ports resolve,
+// router-interface ports never do — so a MAC-learn gate wrongly
+// waiting on a rif ref times out the loop test in seconds.
+func (m *extPathMetrics) LookupMAC(_ context.Context, _, mac string) (MACLookup, error) {
+	for pid, pmac := range m.cloud.portMAC {
+		if pmac == mac && !m.cloud.deleted["port:"+pid] && !strings.Contains(m.cloud.portName[pid], "p-rif-") {
+			return MACLookup{Found: true, TenantID: m.cloud.portProject[pid]}, nil
+		}
+	}
+	return MACLookup{}, nil
+}
+
+// LookupFlows answers the flow-peer gates: a queried MAC belonging to
+// a router's interface port reports the driven bytes once the drive
+// that rides that router has run.
+func (m *extPathMetrics) LookupFlows(_ context.Context, _, mac string) ([]FlowRow, error) {
+	for pid, pmac := range m.cloud.portMAC {
+		if pmac != mac {
+			continue
+		}
+		name := m.cloud.portName[pid]
+		switch {
+		case strings.Contains(name, "r-ext2") && m.exec.pings2 >= 1:
+			return []FlowRow{{DstMAC: mac, Zone: "external", Direction: "tx", Bytes: drivenBytes}}, nil
+		case strings.Contains(name, "r-nogw") && m.exec.pings3 >= 1:
+			return []FlowRow{{DstMAC: mac, Zone: "external", Direction: "tx", Bytes: drivenBytes}}, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *extPathMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	extraFIP := 0.0
 	for i, spec := range m.cloud.fips {
@@ -402,14 +470,24 @@ func (m *extPathMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 			extraFIP = 1
 		}
 	}
-	var ext float64
+	var ext, ext2 float64
 	if m.exec.pings >= 1 {
 		ext = drivenBytes
+	}
+	if m.exec.pings3 >= 1 {
+		ext += drivenBytes // fallback tier lands on the provider label
+	}
+	if m.exec.pings2 >= 1 {
+		ext2 = drivenBytes
 	}
 	var serverID string
 	if len(m.cloud.serverIDs) > 0 {
 		serverID = m.cloud.serverIDs[0]
 	}
+	// The created network's agent-emitted label is its run-mangled
+	// Neutron name — what the per-flow router-MAC attribution resolves
+	// for flows riding r-ext2.
+	created := Mangle("scenariotest", "run1", "net-ext2")
 	return ScrapeResult{
 		Present: map[string]bool{
 			metricBytesTotal:         true,
@@ -421,9 +499,11 @@ func (m *extPathMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 		Anomalies:          map[string]float64{"multi_external_path": extraFIP},
 		Bytes: []BytesSample{
 			{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: ext},
+			{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: created, Direction: "tx", Value: ext2},
 		},
 		Servers: []ServerSample{
 			{ServerID: serverID, TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: ext},
+			{ServerID: serverID, TenantID: "uuid-t1", Zone: "external", ExternalNetwork: created, Direction: "tx", Value: ext2},
 		},
 	}, nil
 }
@@ -484,6 +564,12 @@ func TestSteps_MultiExternalPathFullLoop(t *testing.T) {
 	if !cloud.deleted["fip:"+cloud.fipIDs[extraIdx]] {
 		t.Error("the extra FIP was not deleted by DeleteFIPStep")
 	}
+	if exec.routes != 2 {
+		t.Errorf("in-guest route adds = %d, want 2 (second router + gateway-less)", exec.routes)
+	}
+	if exec.pings2 != 1 || exec.pings3 != 1 {
+		t.Errorf("router-steered ping drives = %d/%d, want 1/1", exec.pings2, exec.pings3)
+	}
 
 	// The deleted FIP is gone from the persisted run-state too — down
 	// must not re-delete it; the provider SSH FIP ref stays.
@@ -506,8 +592,11 @@ func TestSteps_MultiExternalPathFullLoop(t *testing.T) {
 		notes[row.Note]++
 	}
 	for _, want := range []string{"single external path — no anomaly", "second FIP surfaces the ambiguity",
-		"billing under the deterministic pick", "ambiguity clears after FIP removal",
-		"series stable through FIP churn"} {
+		"default route bills under the carrying network", "second-router flow bills under ITS carrying network",
+		"gateway-less router falls back to the per-VM attribution",
+		"steered bytes observed on r-ext2's interface",
+		"fallback bytes observed on the gateway-less interface",
+		"ambiguity clears after FIP removal", "series stable through FIP churn"} {
 		if notes[want] == 0 {
 			t.Errorf("report has no %q rows: %v", want, notes)
 		}

@@ -58,6 +58,7 @@ type fakeCloud struct {
 	// MAC model: every port gets a MAC (explicit from the spec, or a
 	// synthetic assignment), unique per network like real Neutron.
 	portMAC     map[string]string // port id → mac
+	portName    map[string]string // port id → spec name
 	portProject map[string]string // port id → project
 	portNet     map[string]string // port id → network id
 
@@ -83,6 +84,7 @@ func newFakeCloud(env *fakeEnv) *fakeCloud {
 		portSubnet: map[string]string{}, routerExt: map[string]string{},
 		routerSubnets: map[string]map[string]bool{},
 		portMAC:       map[string]string{}, portNet: map[string]string{},
+		portName:      map[string]string{},
 		portProject:   map[string]string{},
 		residualPorts: map[string][]string{}, deleted: map[string]bool{},
 	}
@@ -151,6 +153,7 @@ func (c *fakeCloud) CreatePort(_ context.Context, proj string, spec PortSpec) (s
 	c.portSubnet[id] = spec.SubnetID
 	c.portNet[id] = spec.NetworkID
 	c.portProject[id] = proj
+	c.portName[id] = spec.Name
 	if spec.MACAddress != "" {
 		c.portMAC[id] = spec.MACAddress
 	} else {

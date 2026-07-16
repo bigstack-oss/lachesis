@@ -142,7 +142,10 @@ func (d *driver) recheckAttach() error {
 func (d *driver) waitMACsLearned() error {
 	var want []ResourceRef
 	for _, p := range d.opts.State.Ports {
-		if p.MAC != "" {
+		// Router-interface MACs are deliberately never in
+		// mac_tenant_map — gating on them would wait forever. Their
+		// MACs are recorded for [AssertFlowPeerStep], not for us.
+		if p.MAC != "" && !p.RouterInterface {
 			want = append(want, p)
 		}
 	}
