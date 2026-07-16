@@ -7,7 +7,10 @@ package neutron
 
 import (
 	"log/slog"
+	"net"
 	"sort"
+
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
 // ExternalNetworkByPort maps each VM port ID to the label of the
@@ -192,5 +195,51 @@ func dedupe(in []string) []string {
 		out = append(out, s)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// RouterExtMACs maps each router-interface port's MAC (as a
+// [bpf.MACKey] u64) to the label of the external network its router
+// gateways to — the per-flow attribution source for routed external
+// traffic (docs/DESIGN.md §11.5): a routed external flow's peer MAC is
+// a router interface's MAC, unique per logical router interface on OVN
+// (the duplicate_router_mac anomaly asserts exactly this), so the map
+// identifies which exit network actually carried each flow. Interfaces
+// of routers with no external gateway are absent — their flows fall
+// back to the per-VM attribution. Ports with unparseable MACs are
+// skipped silently (mirroring the VM-port admission gate; a malformed
+// port must not log every pass).
+func RouterExtMACs(snap *Snapshot) map[uint64]string {
+	netLabel := make(map[string]string, len(snap.Networks))
+	for _, n := range snap.Networks {
+		if n.Name != "" {
+			netLabel[n.ID] = n.Name
+		} else {
+			netLabel[n.ID] = n.ID
+		}
+	}
+	routerExt := make(map[string]string, len(snap.Routers))
+	for _, r := range snap.Routers {
+		if r.ExternalNetworkID != "" {
+			routerExt[r.ID] = netLabel[r.ExternalNetworkID]
+		}
+	}
+	out := make(map[uint64]string)
+	for _, p := range snap.Ports {
+		if p.DeviceOwner != DeviceOwnerRouterInterface {
+			continue
+		}
+		ext, ok := routerExt[p.DeviceID]
+		if !ok {
+			continue
+		}
+		hw, err := net.ParseMAC(p.MACAddress)
+		if err != nil || len(hw) != 6 {
+			continue
+		}
+		var key [6]uint8
+		copy(key[:], hw)
+		out[bpf.MACKey(key)] = ext
+	}
 	return out
 }

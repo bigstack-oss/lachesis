@@ -1,6 +1,11 @@
 package neutron
 
-import "testing"
+import (
+	"net"
+	"testing"
+
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+)
 
 // extSnap builds the shared topology for the ExternalNetworkByPort
 // tests: two external networks (one named, one nameless), one tenant
@@ -160,4 +165,49 @@ func TestExternalNetworkByPortGatewayIPRule(t *testing.T) {
 	if len(hits) != 1 || hits[0].PortID != "port-vm-routed" {
 		t.Fatalf("no-gateway fallback: hits = %+v, want port-vm-routed ambiguous", hits)
 	}
+}
+
+// TestRouterExtMACs: only gatewayed routers' interface MACs map, to
+// their gateway network's label (name, ID fallback); no-gateway
+// routers, non-router ports, and unparseable MACs are absent.
+func TestRouterExtMACs(t *testing.T) {
+	snap := Snapshot{
+		Networks: []Network{
+			{ID: "net-pub1", Name: "public-1", IsExternal: true},
+			{ID: "net-pub2", Name: "", IsExternal: true}, // nameless → ID
+		},
+		Routers: []Router{
+			{ID: "rtr-1", ExternalNetworkID: "net-pub1"},
+			{ID: "rtr-2", ExternalNetworkID: "net-pub2"},
+			{ID: "rtr-nogw", ExternalNetworkID: ""},
+		},
+		Ports: []Port{
+			{ID: "p1", DeviceOwner: DeviceOwnerRouterInterface, DeviceID: "rtr-1", MACAddress: "fa:16:3e:00:00:01"},
+			{ID: "p2", DeviceOwner: DeviceOwnerRouterInterface, DeviceID: "rtr-2", MACAddress: "fa:16:3e:00:00:02"},
+			{ID: "p3", DeviceOwner: DeviceOwnerRouterInterface, DeviceID: "rtr-nogw", MACAddress: "fa:16:3e:00:00:03"},
+			{ID: "p4", DeviceOwner: DeviceOwnerRouterInterface, DeviceID: "rtr-1", MACAddress: "not-a-mac"},
+			{ID: "p5", DeviceOwner: "compute:nova", DeviceID: "srv-1", MACAddress: "fa:16:3e:00:00:04"},
+		},
+	}
+	got := RouterExtMACs(&snap)
+	if len(got) != 2 {
+		t.Fatalf("RouterExtMACs = %v, want exactly p1+p2", got)
+	}
+	if got[macU64(t, "fa:16:3e:00:00:01")] != "public-1" {
+		t.Errorf("rtr-1 interface label = %q, want public-1", got[macU64(t, "fa:16:3e:00:00:01")])
+	}
+	if got[macU64(t, "fa:16:3e:00:00:02")] != "net-pub2" {
+		t.Errorf("rtr-2 interface label = %q, want ID fallback net-pub2", got[macU64(t, "fa:16:3e:00:00:02")])
+	}
+}
+
+func macU64(t *testing.T, s string) uint64 {
+	t.Helper()
+	hw, err := net.ParseMAC(s)
+	if err != nil {
+		t.Fatalf("ParseMAC(%q): %v", s, err)
+	}
+	var key [6]uint8
+	copy(key[:], hw)
+	return bpf.MACKey(key)
 }
