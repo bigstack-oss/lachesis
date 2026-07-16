@@ -46,6 +46,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // FlowEvictor deletes a flow entry from the kernel telemetry_map — the
@@ -69,6 +70,7 @@ type Buffer struct {
 	order   *list.List
 	cap     int
 	ttl     time.Duration
+	tun     *tunables.Store
 	state   *state.GlobalState
 	evictor FlowEvictor
 	mx      *Metrics
@@ -96,6 +98,11 @@ type Options struct {
 	Cap     int
 	TTL     time.Duration
 	Now     func() time.Time
+	// Tunables, when wired, overrides Cap/TTL with the live
+	// hot-reloadable values, read at each admission / expiry check. A
+	// cap shrink applies through the normal LRU eviction on the next
+	// admission. nil (unit tests) freezes the constructed bounds.
+	Tunables *tunables.Store
 }
 
 // NewBuffer constructs a buffer, applying defaults for any unset bound.
@@ -117,11 +124,28 @@ func NewBuffer(opts Options) *Buffer {
 		order:   list.New(),
 		cap:     cp,
 		ttl:     ttl,
+		tun:     opts.Tunables,
 		state:   opts.State,
 		evictor: opts.Evictor,
 		mx:      opts.Metrics,
 		now:     now,
 	}
+}
+
+// capNow / ttlNow return the live bounds when a tunables store is
+// wired, else the constructed ones.
+func (b *Buffer) capNow() int {
+	if b.tun != nil {
+		return b.tun.Get().UnresolvedCap
+	}
+	return b.cap
+}
+
+func (b *Buffer) ttlNow() time.Duration {
+	if b.tun != nil {
+		return b.tun.Get().UnresolvedTTL
+	}
+	return b.ttl
 }
 
 // Capture integrates one drained reading for an unknown-MAC flow into
@@ -161,7 +185,7 @@ func (b *Buffer) Sweep(force bool) {
 	now := b.now()
 	expired := 0
 	for key, e := range b.entries {
-		if !force && now.Sub(e.firstSeen) < b.ttl {
+		if !force && now.Sub(e.firstSeen) < b.ttlNow() {
 			continue
 		}
 		b.foldToUnknown(key, e.total)
@@ -201,7 +225,7 @@ func (b *Buffer) Len() int { return len(b.entries) }
 // the "unknown" tenant (never dropping them) and resetting its kernel
 // entry.
 func (b *Buffer) evictOverCap() {
-	for len(b.entries) > b.cap {
+	for len(b.entries) > b.capNow() {
 		back := b.order.Back()
 		if back == nil {
 			return

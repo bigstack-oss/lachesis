@@ -3,9 +3,9 @@ package gc
 import (
 	"container/heap"
 	"log/slog"
-	"sync/atomic"
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // FlowEvictor deletes a flow entry from the kernel telemetry_map. Like
@@ -31,66 +31,39 @@ type FlowEvictor interface {
 // the low watermark over a few scrapes rather than in one long stall.
 //
 // The three bounds (high watermark, low watermark, per-pass cap) are
-// operator-tunable and hot-reloadable: they live in an [atomic.Pointer]
-// snapshot that the scrape goroutine Loads each pass and the SIGHUP
-// reload goroutine Stores via [PressureReliever.SetPressureParams]. The
-// relieving flag, by contrast, is touched only from the scrape
-// goroutine, so it needs no synchronisation.
+// operator-tunable and hot-reloadable: the scrape goroutine reads the
+// shared [tunables.Store] snapshot each pass, and the SIGHUP reload
+// swaps it (runtime.Manager.Reload). The relieving flag, by contrast,
+// is touched only from the scrape goroutine, so it needs no
+// synchronisation.
 type PressureReliever struct {
 	evictor    FlowEvictor
 	maxEntries int
 	mx         *Metrics
-	params     atomic.Pointer[pressureParams]
+	tun        *tunables.Store
 	relieving  bool
 }
 
-// pressureParams is the hot-swappable tuning snapshot. high and low are
-// fill ratios; maxPerPass caps evictions per scrape.
-type pressureParams struct {
-	high, low  float64
-	maxPerPass int
-}
-
-// PressureOptions bundles the inputs to [NewPressureReliever]. Evictor,
-// MaxEntries, and Metrics are required; MaxEntries must be positive (it
-// is the fill-ratio denominator). The three tuning values come from
-// config.GCConfig and are validated there.
+// PressureOptions bundles the inputs to [NewPressureReliever]. All
+// fields are required; MaxEntries must be positive (it is the
+// fill-ratio denominator). The tuning values come from the shared
+// tunables snapshot, validated at load/reload by config.GCConfig.
 type PressureOptions struct {
-	Evictor       FlowEvictor
-	MaxEntries    int
-	Metrics       *Metrics
-	HighWatermark float64
-	LowWatermark  float64
-	MaxPerPass    int
+	Evictor    FlowEvictor
+	MaxEntries int
+	Metrics    *Metrics
+	Tunables   *tunables.Store
 }
 
 // NewPressureReliever constructs a reliever. MaxEntries is the kernel
-// telemetry_map's compiled-in capacity (bpf.MapTelemetryMaxEntries);
-// the watermarks and per-pass cap seed the initial tuning snapshot.
+// telemetry_map's compiled-in capacity (bpf.MapTelemetryMaxEntries).
 func NewPressureReliever(opts PressureOptions) *PressureReliever {
-	p := &PressureReliever{
+	return &PressureReliever{
 		evictor:    opts.Evictor,
 		maxEntries: opts.MaxEntries,
 		mx:         opts.Metrics,
+		tun:        opts.Tunables,
 	}
-	p.params.Store(&pressureParams{
-		high:       opts.HighWatermark,
-		low:        opts.LowWatermark,
-		maxPerPass: opts.MaxPerPass,
-	})
-	return p
-}
-
-// SetPressureParams atomically swaps the tuning snapshot. The SIGHUP
-// reload goroutine calls it; the scrape goroutine picks up the new
-// values on its next Relieve. Values are assumed pre-validated —
-// config.GCConfig.Validate runs in runtime.Manager.Reload, which
-// rejects an invalid config before reaching here.
-func (p *PressureReliever) SetPressureParams(high, low float64, maxPerPass int) {
-	if p == nil {
-		return
-	}
-	p.params.Store(&pressureParams{high: high, low: low, maxPerPass: maxPerPass})
 }
 
 // Relieve runs one pressure-relief pass over the just-drained readings
@@ -105,10 +78,10 @@ func (p *PressureReliever) Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics) {
 	if p == nil || p.maxEntries <= 0 {
 		return
 	}
-	pp := p.params.Load()
+	pp := p.tun.Get()
 	n := len(drained)
-	high := int(pp.high * float64(p.maxEntries))
-	low := int(pp.low * float64(p.maxEntries))
+	high := int(pp.PressureHighWatermark * float64(p.maxEntries))
+	low := int(pp.PressureLowWatermark * float64(p.maxEntries))
 
 	switch {
 	case n <= low:
@@ -120,8 +93,8 @@ func (p *PressureReliever) Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics) {
 	p.relieving = true
 
 	want := n - low
-	if want > pp.maxPerPass {
-		want = pp.maxPerPass
+	if want > pp.PressureMaxPerPass {
+		want = pp.PressureMaxPerPass
 	}
 	victims := selectOldest(drained, want)
 

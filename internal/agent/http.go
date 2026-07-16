@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -28,12 +29,20 @@ func (a *Agent) openHTTP(opts Options) error {
 	}
 
 	mgr := runtime.New(opts.ConfigPath, opts.Config, opts.Log)
+	mgr.SetTunables(a.tun)
+	mgr.SetMetrics(a.mx.runtime)
 	dbg := debug.New(debug.Options{
 		Snapshot:  a.neutron.Snapshot,
 		Trie:      a.neutron.Trie,
 		Anomalies: a.neutron.Anomalies,
 		LastSync:  a.neutron.LastSyncTime,
 		MACLookup: a.meta.Lookup,
+		StaleAfter: func() time.Duration {
+			// The stale badge follows the LIVE reconcile cadence — a
+			// hardcoded threshold would desync when the interval is
+			// retuned (sync age > one periodic pass = a pass missed).
+			return a.tun.Get().ReconcileInterval
+		},
 		Flows: func() []state.Entry {
 			ents, _ := a.state.SnapshotWithSettled(nil, nil)
 			return ents

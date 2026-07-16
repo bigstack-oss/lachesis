@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // Test tuning values mirror the config defaults (docs/DESIGN.md §3.1).
@@ -18,13 +19,22 @@ const (
 
 // newReliever builds a reliever with the default-mirroring tuning.
 func newReliever(ev FlowEvictor, maxN int, mx *Metrics) *PressureReliever {
+	return newRelieverWith(ev, maxN, mx, testHigh, testLow, testCap)
+}
+
+// newRelieverWith wires a reliever to its own store seeded with the
+// given tuning — tests mutate the store to model a SIGHUP reload.
+func newRelieverWith(ev FlowEvictor, maxN int, mx *Metrics, high, low float64, perPass int) *PressureReliever {
+	tun := tunables.New(tunables.Values{
+		PressureHighWatermark: high,
+		PressureLowWatermark:  low,
+		PressureMaxPerPass:    perPass,
+	})
 	return NewPressureReliever(PressureOptions{
-		Evictor:       ev,
-		MaxEntries:    maxN,
-		Metrics:       mx,
-		HighWatermark: testHigh,
-		LowWatermark:  testLow,
-		MaxPerPass:    testCap,
+		Evictor:    ev,
+		MaxEntries: maxN,
+		Metrics:    mx,
+		Tunables:   tun,
 	})
 }
 
@@ -185,11 +195,11 @@ func TestRelieve_DeleteFailureNotCounted(t *testing.T) {
 	}
 }
 
-// TestSetPressureParams_HotSwapTakesEffect proves a reloaded tuning
+// TestPressureTunables_HotSwapTakesEffect proves a reloaded tuning
 // snapshot is honoured on the next pass: a fill between the default
 // watermarks (no relief) starts evicting once the high watermark is
-// lowered beneath it.
-func TestSetPressureParams_HotSwapTakesEffect(t *testing.T) {
+// lowered beneath it via the shared tunables store — the SIGHUP path.
+func TestPressureTunables_HotSwapTakesEffect(t *testing.T) {
 	maxN := bpf.MapTelemetryMaxEntries
 	n := int(0.78 * float64(maxN)) // between default low (75%) and high (80%)
 	drained := make(map[bpf.FlowKey]bpf.FlowMetrics, n)
@@ -204,8 +214,13 @@ func TestSetPressureParams_HotSwapTakesEffect(t *testing.T) {
 		t.Fatalf("evicted %d at 78%% fill with an 80%% high watermark, want 0", len(ev.deleted))
 	}
 
-	// Lower the high watermark beneath the current fill; next pass evicts.
-	p.SetPressureParams(0.70, 0.65, testCap)
+	// Lower the high watermark beneath the current fill (as a SIGHUP
+	// reload would); next pass evicts.
+	p.tun.Replace(tunables.Values{
+		PressureHighWatermark: 0.70,
+		PressureLowWatermark:  0.65,
+		PressureMaxPerPass:    testCap,
+	})
 	p.Relieve(drained)
 	if len(ev.deleted) == 0 {
 		t.Error("no eviction after lowering the high watermark below the fill — hot swap not applied")

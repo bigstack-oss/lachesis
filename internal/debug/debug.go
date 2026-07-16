@@ -57,6 +57,11 @@ type Options struct {
 	// the /debug/flows MAC-filtered query. nil serves empty results
 	// (agents wired without state access).
 	Flows func() []state.Entry
+	// StaleAfter returns the sync age beyond which the index page
+	// flags the snapshot stale. The agent wires the live reconcile
+	// interval (the two are the same cadence); nil falls back to the
+	// static default.
+	StaleAfter func() time.Duration
 	// Fallback handles /debug routes this package does not own
 	// (runtime.Manager's /debug/config, /debug/log-level). nil
 	// means unknown /debug paths 404.
