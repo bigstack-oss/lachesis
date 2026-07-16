@@ -9,6 +9,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 func newClassifier(t *testing.T) (*Classifier, *state.GlobalState, *metadata.ShardedMetadataMap, *Buffer) {
@@ -16,7 +17,7 @@ func newClassifier(t *testing.T) (*Classifier, *state.GlobalState, *metadata.Sha
 	st := state.New()
 	meta := metadata.New()
 	clk := &fakeClock{t: time.Unix(1000, 0)}
-	buf := NewBuffer(Options{State: st, Evictor: &recordingEvictor{}, Metrics: NewMetrics(), TTL: time.Minute, Now: clk.now})
+	buf := NewBuffer(Options{State: st, Evictor: &recordingEvictor{}, Metrics: NewMetrics(), Tunables: tunables.New(tunables.Values{UnresolvedCap: 10_000, UnresolvedTTL: time.Minute}), Now: clk.now})
 	return NewClassifier(st, meta, buf), st, meta, buf
 }
 
@@ -45,7 +46,7 @@ func TestClassifier_LateBindingResolvesToTenant(t *testing.T) {
 	mx := NewMetrics()
 	ev := &recordingEvictor{}
 	clk := &fakeClock{t: time.Unix(1000, 0)}
-	buf := NewBuffer(Options{State: st, Evictor: ev, Metrics: mx, TTL: time.Minute, Now: clk.now})
+	buf := NewBuffer(Options{State: st, Evictor: ev, Metrics: mx, Tunables: tunables.New(tunables.Values{UnresolvedCap: 10_000, UnresolvedTTL: time.Minute}), Now: clk.now})
 	c := NewClassifier(st, meta, buf)
 
 	key := flowKey(42, bpf.ZoneExternal, bpf.DirectionEgress)

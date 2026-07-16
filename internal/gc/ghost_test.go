@@ -12,6 +12,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // fakeGauge records the last value set for each kernel map.
@@ -36,7 +37,7 @@ func TestSweep_RefreshesMacGauge(t *testing.T) {
 
 	ev := &recordingEvictor{meta: meta}
 	fg := &fakeGauge{}
-	g := New(Options{Meta: meta, Evictor: ev, MapGauge: fg, Metrics: NewMetrics(), Interval: time.Hour})
+	g := New(Options{Meta: meta, Evictor: ev, MapGauge: fg, Metrics: NewMetrics(), Tunables: tunables.New(tunables.Values{GhostSweepInterval: time.Hour})})
 	g.sweep(now)
 
 	if got := fg.vals[bpf.MapMacTenant]; got != 1 {
@@ -70,7 +71,7 @@ func (e *recordingEvictor) Delete(mac uint64) error {
 func newSweeper(t *testing.T, meta *metadata.ShardedMetadataMap, ev MacEvictor) (*GhostSweeper, *Metrics) {
 	t.Helper()
 	mx := NewMetrics()
-	g := New(Options{Meta: meta, Evictor: ev, Metrics: mx, Interval: time.Hour})
+	g := New(Options{Meta: meta, Evictor: ev, Metrics: mx, Tunables: tunables.New(tunables.Values{GhostSweepInterval: time.Hour})})
 	return g, mx
 }
 
@@ -117,7 +118,7 @@ func TestSweep_EvictsResidualFlowsBeforeUserspaceDelete(t *testing.T) {
 	ev := &recordingEvictor{meta: meta}
 	fe := &recordingFlowEvictor{meta: meta, flowsPerMAC: 2}
 	mx := NewMetrics()
-	g := New(Options{Meta: meta, Evictor: ev, FlowEvictor: fe, Metrics: mx, Interval: time.Hour})
+	g := New(Options{Meta: meta, Evictor: ev, FlowEvictor: fe, Metrics: mx, Tunables: tunables.New(tunables.Values{GhostSweepInterval: time.Hour})})
 	g.sweep(now)
 
 	if fe.sawUserspaceGone {
@@ -175,7 +176,7 @@ func TestSweep_SettlesFlowsToTenantBeforeUserspaceDelete(t *testing.T) {
 
 	ev := &recordingEvictor{meta: meta}
 	mx := NewMetrics()
-	g := New(Options{Meta: meta, Evictor: ev, Settler: st, Metrics: mx, Interval: time.Hour})
+	g := New(Options{Meta: meta, Evictor: ev, Settler: st, Metrics: mx, Tunables: tunables.New(tunables.Values{GhostSweepInterval: time.Hour})})
 	g.sweep(now)
 
 	flows, settled := st.SnapshotWithSettled(nil, nil)
@@ -304,7 +305,8 @@ func TestRun_AwaitsStateRestoredBeforeSweeping(t *testing.T) {
 
 	seq := boot.New()
 	ev := &recordingEvictor{meta: meta}
-	g := New(Options{Meta: meta, Evictor: ev, Seq: seq, Metrics: NewMetrics(), Interval: 5 * time.Millisecond})
+	g := New(Options{Meta: meta, Evictor: ev, Seq: seq, Metrics: NewMetrics(),
+		Tunables: tunables.New(tunables.Values{GhostSweepInterval: 5 * time.Millisecond})})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -340,7 +342,7 @@ func TestRun_ReturnsWhenBootAbortsBeforePhase(t *testing.T) {
 	seq := boot.New()
 	g := New(Options{
 		Meta: metadata.New(), Evictor: &recordingEvictor{meta: metadata.New()},
-		Seq: seq, Metrics: NewMetrics(), Interval: time.Hour,
+		Seq: seq, Metrics: NewMetrics(), Tunables: tunables.New(tunables.Values{GhostSweepInterval: time.Hour}),
 	})
 
 	done := make(chan struct{})
@@ -377,7 +379,7 @@ func TestSweep_SettlesUnderPerFlowRouterLabel(t *testing.T) {
 
 	g := New(Options{
 		Meta: meta, Evictor: &recordingEvictor{meta: meta}, Settler: st, Routers: routers,
-		Metrics: NewMetrics(), Interval: time.Hour,
+		Metrics: NewMetrics(), Tunables: tunables.New(tunables.Values{GhostSweepInterval: time.Hour}),
 	})
 	g.sweep(now)
 

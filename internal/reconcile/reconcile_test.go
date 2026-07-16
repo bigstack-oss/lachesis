@@ -14,6 +14,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // fakeMap is a kernelwriter.MapUpdateDeleter that counts operations and,
@@ -180,7 +181,7 @@ func TestRun_AwaitsStateRestored(t *testing.T) {
 		Interner: metadata.NewTenantInterner(),
 		Seq:      boot.New(), // PhaseInit; never advanced
 		Metrics:  mx,
-		Interval: time.Millisecond,
+		Tunables: tunables.New(tunables.Values{ReconcileInterval: time.Millisecond, GhostGrace: 60 * time.Second}),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -213,7 +214,7 @@ func TestKick_TriggersReconcilePass(t *testing.T) {
 		Trie:     &fakeMap{},
 		Interner: metadata.NewTenantInterner(),
 		Metrics:  NewMetrics(),
-		Interval: time.Hour, // timer must not fire; only the kick should
+		Tunables: tunables.New(tunables.Values{ReconcileInterval: time.Hour, GhostGrace: 60 * time.Second}), // timer must not fire; only the kick should
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -240,7 +241,7 @@ func TestKick_TriggersReconcilePass(t *testing.T) {
 func TestKick_NonBlockingWhenPending(t *testing.T) {
 	r := New(Options{
 		Source: &fakeSrc{}, Trie: &fakeMap{},
-		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(), Interval: time.Hour,
+		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(), Tunables: tunables.New(tunables.Values{ReconcileInterval: time.Hour, GhostGrace: 60 * time.Second}),
 	})
 	done := make(chan struct{})
 	go func() {
@@ -278,7 +279,7 @@ func TestRun_ReconcilesOnTick(t *testing.T) {
 		Trie:     fm,
 		Interner: metadata.NewTenantInterner(),
 		Metrics:  NewMetrics(),
-		Interval: 5 * time.Millisecond,
+		Tunables: tunables.New(tunables.Values{ReconcileInterval: 5 * time.Millisecond, GhostGrace: 60 * time.Second}),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

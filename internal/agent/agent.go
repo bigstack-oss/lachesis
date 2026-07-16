@@ -179,8 +179,7 @@ func New(opts Options) (*Agent, error) {
 	a.mx = newSubsystemMetrics(n.Metrics(), opts.Config.Kafka.Topic)
 	a.scraper = scraper.New(
 		telemetryFillReader{inner: opts.Reader, stats: opts.Stats, mx: a.mx.bpf},
-		st, opts.Config.Scrape.Interval)
-	a.scraper.SetTunables(tun)
+		st, tun)
 	a.collector = metrics.New(st, a.scraper, opts.resolverOrDefault(meta, routers))
 
 	if err := a.openHTTP(opts); err != nil {

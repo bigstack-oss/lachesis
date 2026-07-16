@@ -8,6 +8,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/config"
 	"github.com/bigstack-oss/lachesis/internal/gc"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // CloseListenerForTest closes the agent's HTTP listener out from under
@@ -51,7 +52,7 @@ func WireGhostSweeperForTest(a *Agent, ev gc.MacEvictor, interval time.Duration)
 		Evictor:  ev,
 		Seq:      a.seq,
 		Metrics:  a.mx.gc,
-		Interval: interval,
+		Tunables: tunables.New(tunables.Values{GhostSweepInterval: interval}),
 	})
 	for p := boot.PhaseBPFLoaded; p <= boot.PhaseStateRestored; p++ {
 		_ = a.seq.Advance(p)

@@ -68,8 +68,6 @@ type Buffer struct {
 	// order is an LRU list of bpf.FlowKey, most-recently-captured at the
 	// front; the back is the eviction victim when the cap is exceeded.
 	order   *list.List
-	cap     int
-	ttl     time.Duration
 	tun     *tunables.Store
 	state   *state.GlobalState
 	evictor FlowEvictor
@@ -95,26 +93,16 @@ type Options struct {
 	State   *state.GlobalState
 	Evictor FlowEvictor
 	Metrics *Metrics
-	Cap     int
-	TTL     time.Duration
 	Now     func() time.Time
-	// Tunables, when wired, overrides Cap/TTL with the live
-	// hot-reloadable values, read at each admission / expiry check. A
-	// cap shrink applies through the normal LRU eviction on the next
-	// admission. nil (unit tests) freezes the constructed bounds.
+	// Tunables supplies the live buffer bounds (cap, TTL), read at
+	// each admission / expiry check — a cap shrink applies through the
+	// normal LRU eviction on the next admission. REQUIRED; unit tests
+	// construct a store with the bounds they exercise.
 	Tunables *tunables.Store
 }
 
-// NewBuffer constructs a buffer, applying defaults for any unset bound.
+// NewBuffer constructs a buffer over the live tunable bounds.
 func NewBuffer(opts Options) *Buffer {
-	cp := opts.Cap
-	if cp <= 0 {
-		cp = defaultCap
-	}
-	ttl := opts.TTL
-	if ttl <= 0 {
-		ttl = defaultTTL
-	}
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -122,30 +110,12 @@ func NewBuffer(opts Options) *Buffer {
 	return &Buffer{
 		entries: make(map[bpf.FlowKey]*entry),
 		order:   list.New(),
-		cap:     cp,
-		ttl:     ttl,
 		tun:     opts.Tunables,
 		state:   opts.State,
 		evictor: opts.Evictor,
 		mx:      opts.Metrics,
 		now:     now,
 	}
-}
-
-// capNow / ttlNow return the live bounds when a tunables store is
-// wired, else the constructed ones.
-func (b *Buffer) capNow() int {
-	if b.tun != nil {
-		return b.tun.Get().UnresolvedCap
-	}
-	return b.cap
-}
-
-func (b *Buffer) ttlNow() time.Duration {
-	if b.tun != nil {
-		return b.tun.Get().UnresolvedTTL
-	}
-	return b.ttl
 }
 
 // Capture integrates one drained reading for an unknown-MAC flow into
@@ -185,7 +155,7 @@ func (b *Buffer) Sweep(force bool) {
 	now := b.now()
 	expired := 0
 	for key, e := range b.entries {
-		if !force && now.Sub(e.firstSeen) < b.ttlNow() {
+		if !force && now.Sub(e.firstSeen) < b.tun.Get().UnresolvedTTL {
 			continue
 		}
 		b.foldToUnknown(key, e.total)
@@ -225,7 +195,7 @@ func (b *Buffer) Len() int { return len(b.entries) }
 // the "unknown" tenant (never dropping them) and resetting its kernel
 // entry.
 func (b *Buffer) evictOverCap() {
-	for len(b.entries) > b.capNow() {
+	for len(b.entries) > b.tun.Get().UnresolvedCap {
 		back := b.order.Back()
 		if back == nil {
 			return

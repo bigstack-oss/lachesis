@@ -10,6 +10,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/scraper"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // fakeReader is the unit-test MapReader. It returns whatever its
@@ -60,7 +61,7 @@ func TestTick_AppliesDeltasForEachEntry(t *testing.T) {
 		},
 	}
 	st := state.New()
-	s := scraper.New(r, st, time.Second)
+	s := scraper.New(r, st, tunables.New(tunables.Values{ScrapeInterval: time.Second}))
 
 	if err := s.Tick(); err != nil {
 		t.Fatalf("Tick 1: %v", err)
@@ -102,7 +103,7 @@ func TestTick_ClearsBufferBetweenTicks(t *testing.T) {
 		},
 	}
 	st := state.New()
-	s := scraper.New(r, st, time.Second)
+	s := scraper.New(r, st, tunables.New(tunables.Values{ScrapeInterval: time.Second}))
 
 	if err := s.Tick(); err != nil {
 		t.Fatalf("Tick 1: %v", err)
@@ -131,7 +132,7 @@ func TestTick_ErrorIncrementsCounterAndLeavesStateUntouched(t *testing.T) {
 		errOn:   1,
 	}
 	st := state.New()
-	s := scraper.New(r, st, time.Second)
+	s := scraper.New(r, st, tunables.New(tunables.Values{ScrapeInterval: time.Second}))
 
 	if err := s.Tick(); err == nil {
 		t.Fatal("Tick: expected error, got nil")
@@ -149,7 +150,7 @@ func TestTick_ErrorIncrementsCounterAndLeavesStateUntouched(t *testing.T) {
 
 func TestTick_LastSuccessUnixUpdated(t *testing.T) {
 	r := &fakeReader{returns: []map[bpf.FlowKey]bpf.FlowMetrics{{}}}
-	s := scraper.New(r, state.New(), time.Second)
+	s := scraper.New(r, state.New(), tunables.New(tunables.Values{ScrapeInterval: time.Second}))
 
 	before := time.Now().Unix()
 	if err := s.Tick(); err != nil {
@@ -165,7 +166,7 @@ func TestTick_LastSuccessUnixUpdated(t *testing.T) {
 
 func TestRun_RespectsContextCancel(t *testing.T) {
 	r := &fakeReader{returns: []map[bpf.FlowKey]bpf.FlowMetrics{{}}}
-	s := scraper.New(r, state.New(), 10*time.Millisecond)
+	s := scraper.New(r, state.New(), tunables.New(tunables.Values{ScrapeInterval: 10 * time.Millisecond}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -201,7 +202,7 @@ func TestRun_FinalTickOnCancel(t *testing.T) {
 		},
 	}
 	st := state.New()
-	s := scraper.New(r, st, time.Hour) // ticker never fires; initial + final ticks only
+	s := scraper.New(r, st, tunables.New(tunables.Values{ScrapeInterval: time.Hour})) // ticker never fires; initial + final ticks only
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -248,7 +249,7 @@ func TestRun_SurvivesReaderErrors(t *testing.T) {
 		},
 		errOn: 2,
 	}
-	s := scraper.New(r, state.New(), 5*time.Millisecond)
+	s := scraper.New(r, state.New(), tunables.New(tunables.Values{ScrapeInterval: 5 * time.Millisecond}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -291,7 +292,7 @@ func TestTick_InvokesEvictorAfterFlush(t *testing.T) {
 	}}
 	st := state.New()
 	ev := &flushCheckEvictor{st: st, probe: probe}
-	s := scraper.New(r, st, time.Second)
+	s := scraper.New(r, st, tunables.New(tunables.Values{ScrapeInterval: time.Second}))
 	s.SetEvictor(ev)
 
 	if err := s.Tick(); err != nil {
@@ -308,7 +309,7 @@ func TestTick_InvokesEvictorAfterFlush(t *testing.T) {
 func TestTick_ErroredDrainSkipsEvictor(t *testing.T) {
 	r := &fakeReader{returns: []map[bpf.FlowKey]bpf.FlowMetrics{{}}, errOn: 1}
 	ev := &flushCheckEvictor{st: state.New()}
-	s := scraper.New(r, state.New(), time.Second)
+	s := scraper.New(r, state.New(), tunables.New(tunables.Values{ScrapeInterval: time.Second}))
 	s.SetEvictor(ev)
 
 	if err := s.Tick(); err == nil {
@@ -336,7 +337,7 @@ func TestTick_RoutesEachReadingThroughSink(t *testing.T) {
 	}}
 	st := state.New()
 	sink := &recordingSink{}
-	s := scraper.New(r, st, time.Second)
+	s := scraper.New(r, st, tunables.New(tunables.Values{ScrapeInterval: time.Second}))
 	s.SetSink(sink)
 
 	if err := s.Tick(); err != nil {
@@ -357,7 +358,7 @@ func TestTick_RoutesEachReadingThroughSink(t *testing.T) {
 func TestRun_ShutdownForceSweepsTheSink(t *testing.T) {
 	r := &fakeReader{returns: []map[bpf.FlowKey]bpf.FlowMetrics{{}}}
 	sink := &recordingSink{}
-	s := scraper.New(r, state.New(), time.Hour) // only the initial + final tick fire
+	s := scraper.New(r, state.New(), tunables.New(tunables.Values{ScrapeInterval: time.Hour})) // only the initial + final tick fire
 	s.SetSink(sink)
 
 	ctx, cancel := context.WithCancel(context.Background())

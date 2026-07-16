@@ -186,7 +186,7 @@ func (r *Reconciler) ghostGoneMACs(desired map[uint64]metadata.TenantMeta, now t
 		return true
 	})
 	for _, mac := range gone {
-		r.meta.MarkDelete(mac, now.Add(r.graceNow()))
+		r.meta.MarkDelete(mac, now.Add(r.tun.Get().GhostGrace))
 	}
 	return len(gone)
 }

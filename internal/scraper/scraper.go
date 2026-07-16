@@ -62,10 +62,9 @@ type FlowSink interface {
 // [state.GlobalState]. Construct one with [New], then call [Scraper.Run]
 // on a long-lived goroutine.
 type Scraper struct {
-	reader   MapReader
-	state    *state.GlobalState
-	interval time.Duration
-	tun      *tunables.Store
+	reader MapReader
+	state  *state.GlobalState
+	tun    *tunables.Store
 
 	// buf is reused across ticks so steady-state BatchLookup does no
 	// allocation on the scraper side. The MapReader is expected to
@@ -89,14 +88,16 @@ type Scraper struct {
 	lastOK atomic.Int64 // unix seconds; 0 = never succeeded
 }
 
-// New constructs a Scraper. interval must be ≥1s; callers are
-// expected to have run [config.ScrapeConfig.Validate] first.
-func New(reader MapReader, st *state.GlobalState, interval time.Duration) *Scraper {
+// New constructs a Scraper. tun supplies the live scrape cadence
+// (validated ≥1s by [config.ScrapeConfig.Validate]; hot-reload applies
+// at the next tick — the delta math is interval-agnostic, so retiming
+// is safe mid-run).
+func New(reader MapReader, st *state.GlobalState, tun *tunables.Store) *Scraper {
 	return &Scraper{
-		reader:   reader,
-		state:    st,
-		interval: interval,
-		buf:      make(map[bpf.FlowKey]bpf.FlowMetrics, initialBufCap),
+		reader: reader,
+		state:  st,
+		tun:    tun,
+		buf:    make(map[bpf.FlowKey]bpf.FlowMetrics, initialBufCap),
 	}
 }
 
@@ -112,20 +113,6 @@ func (s *Scraper) SetEvictor(e Evictor) { s.evictor = e }
 // whether its MAC is known).
 func (s *Scraper) SetSink(sink FlowSink) { s.sink = sink }
 
-// SetTunables wires the live-knob store so the scrape interval
-// hot-reloads (applies at the next tick — the delta math is
-// interval-agnostic, so retiming is safe mid-run). Call before Run,
-// like [Scraper.SetEvictor]. nil keeps the constructed interval.
-func (s *Scraper) SetTunables(t *tunables.Store) { s.tun = t }
-
-// intervalNow returns the live scrape cadence.
-func (s *Scraper) intervalNow() time.Duration {
-	if s.tun != nil {
-		return s.tun.Get().ScrapeInterval
-	}
-	return s.interval
-}
-
 // Run drives the scrape loop until ctx is cancelled. The first tick
 // fires immediately so /metrics has data within one interval of
 // startup; subsequent ticks fire on the configured cadence.
@@ -140,7 +127,7 @@ func (s *Scraper) Run(ctx context.Context) {
 	if err := s.Tick(); err != nil {
 		slog.Warn("initial tick failed", "component", componentScraper, "err", err)
 	}
-	cur := s.intervalNow()
+	cur := s.tun.Get().ScrapeInterval
 	t := time.NewTicker(cur)
 	defer t.Stop()
 	for {
@@ -160,7 +147,7 @@ func (s *Scraper) Run(ctx context.Context) {
 			if err := s.Tick(); err != nil {
 				slog.Warn("tick failed", "component", componentScraper, "err", err)
 			}
-			if next := s.intervalNow(); next != cur {
+			if next := s.tun.Get().ScrapeInterval; next != cur {
 				t.Reset(next)
 				cur = next
 			}
