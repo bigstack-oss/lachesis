@@ -17,6 +17,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // MapReader is the kernel-side data source drained on every tick.
@@ -64,6 +65,7 @@ type Scraper struct {
 	reader   MapReader
 	state    *state.GlobalState
 	interval time.Duration
+	tun      *tunables.Store
 
 	// buf is reused across ticks so steady-state BatchLookup does no
 	// allocation on the scraper side. The MapReader is expected to
@@ -110,6 +112,20 @@ func (s *Scraper) SetEvictor(e Evictor) { s.evictor = e }
 // whether its MAC is known).
 func (s *Scraper) SetSink(sink FlowSink) { s.sink = sink }
 
+// SetTunables wires the live-knob store so the scrape interval
+// hot-reloads (applies at the next tick — the delta math is
+// interval-agnostic, so retiming is safe mid-run). Call before Run,
+// like [Scraper.SetEvictor]. nil keeps the constructed interval.
+func (s *Scraper) SetTunables(t *tunables.Store) { s.tun = t }
+
+// intervalNow returns the live scrape cadence.
+func (s *Scraper) intervalNow() time.Duration {
+	if s.tun != nil {
+		return s.tun.Get().ScrapeInterval
+	}
+	return s.interval
+}
+
 // Run drives the scrape loop until ctx is cancelled. The first tick
 // fires immediately so /metrics has data within one interval of
 // startup; subsequent ticks fire on the configured cadence.
@@ -124,7 +140,8 @@ func (s *Scraper) Run(ctx context.Context) {
 	if err := s.Tick(); err != nil {
 		slog.Warn("initial tick failed", "component", componentScraper, "err", err)
 	}
-	t := time.NewTicker(s.interval)
+	cur := s.intervalNow()
+	t := time.NewTicker(cur)
 	defer t.Stop()
 	for {
 		select {
@@ -142,6 +159,10 @@ func (s *Scraper) Run(ctx context.Context) {
 		case <-t.C:
 			if err := s.Tick(); err != nil {
 				slog.Warn("tick failed", "component", componentScraper, "err", err)
+			}
+			if next := s.intervalNow(); next != cur {
+				t.Reset(next)
+				cur = next
 			}
 		}
 	}

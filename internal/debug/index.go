@@ -19,7 +19,7 @@ var indexTemplate = parsePage("index.html")
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	model := buildIndexModel(
 		s.opts.Snapshot(), s.opts.Trie(), s.opts.Anomalies(),
-		s.opts.LastSync(), time.Now())
+		s.opts.LastSync(), time.Now(), s.staleAfter())
 
 	q := r.URL.Query()
 	ip := strings.TrimSpace(q.Get("ip"))
@@ -45,14 +45,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // loads and shows "0 / never". now is injected so tests can pin a
 // deterministic SyncAgeText without freezing real time.
 func buildIndexModel(snap *neutron.Snapshot, trie []neutron.TrieEntry,
-	anomalies *neutron.Anomalies, last, now time.Time) indexModel {
+	anomalies *neutron.Anomalies, last, now time.Time, staleAfter time.Duration) indexModel {
 
 	m := indexModel{LastSync: last}
 	if !last.IsZero() {
 		age := now.Sub(last)
 		m.Synced = true
 		m.SyncAgeText = humanAge(age) + " ago"
-		m.SyncStale = age > syncStaleThreshold
+		m.SyncStale = age > staleAfter
 	}
 	if snap != nil {
 		m.Counts.Networks = len(snap.Networks)
@@ -74,6 +74,15 @@ func buildIndexModel(snap *neutron.Snapshot, trie []neutron.TrieEntry,
 		}
 	}
 	return m
+}
+
+// staleAfter resolves the staleness threshold: the wired live value,
+// else the static default.
+func (s *Server) staleAfter() time.Duration {
+	if s.opts.StaleAfter != nil {
+		return s.opts.StaleAfter()
+	}
+	return syncStaleThreshold
 }
 
 // countTenants returns the number of distinct ProjectIDs owning any

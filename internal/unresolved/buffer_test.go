@@ -9,6 +9,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // recordingEvictor records the kernel telemetry_map deletes the buffer
@@ -213,5 +214,26 @@ func TestBuffer_DepthGaugeTracksOccupancy(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(mx.evictions.WithLabelValues(reasonExpired)); got != 0 {
 		t.Errorf("expired evictions = %v, want 0", got)
+	}
+}
+
+// TestBuffer_CapShrinkAppliesLive: a hot-reloaded smaller cap takes
+// effect through the normal LRU eviction on the next admission
+// (lachesis#156) — no restart, no special-case flush.
+func TestBuffer_CapShrinkAppliesLive(t *testing.T) {
+	tun := tunables.New(tunables.Values{UnresolvedCap: 4, UnresolvedTTL: time.Hour})
+	b := NewBuffer(Options{State: state.New(), Evictor: &recordingEvictor{}, Metrics: NewMetrics(), Tunables: tun})
+
+	for i := uint32(1); i <= 4; i++ {
+		b.Capture(flowKey(i, bpf.ZoneExternal, bpf.DirectionEgress), bpf.FlowMetrics{Bytes: 10, Packets: 1})
+	}
+	if got := b.Len(); got != 4 {
+		t.Fatalf("len = %d, want 4 at cap", got)
+	}
+
+	tun.Replace(tunables.Values{UnresolvedCap: 2, UnresolvedTTL: time.Hour})
+	b.Capture(flowKey(9, bpf.ZoneExternal, bpf.DirectionEgress), bpf.FlowMetrics{Bytes: 10, Packets: 1})
+	if got := b.Len(); got != 2 {
+		t.Fatalf("len = %d after shrink-to-2 admission, want 2 (LRU evicted down to the live cap)", got)
 	}
 }

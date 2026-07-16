@@ -6,15 +6,16 @@
 //
 // Hot vs load-time fields:
 //
-//   - Hot: applied immediately on reload. Today: logging.level and the
-//     gc.* pressure-relief tunables (via the [PressureTunable] seam).
-//   - Load-time: change in the YAML is logged as a warning and ignored;
-//     restart is required for it to take effect. Today: http.listen,
-//     bpf.pin_path, scrape.interval (until the scraper supports retiming),
-//     logging.format.
-//
-// Hot fields are extended over time as subsystems add the necessary
-// atomic plumbing.
+//   - Hot: applied immediately on reload. logging.level, plus every
+//     field config.Config.Tunables projects — ghost grace/sweep,
+//     reconcile/scrape/WAL-flush intervals, the unresolved-buffer
+//     bounds, and the gc pressure thresholds. Consumers read the
+//     shared [tunables.Store] snapshot at their own use sites, so
+//     cadence changes take effect at the next tick.
+//   - Load-time: change in the YAML is logged as a warning and
+//     ignored; restart is required. Resource-binding fields only:
+//     http.listen, bpf.pin_path, wal.path, logging.format, and the
+//     neutron/kafka connection sections.
 package runtime
 
 import (
@@ -31,15 +32,8 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/config"
 	"github.com/bigstack-oss/lachesis/internal/logging"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
-
-// PressureTunable receives hot-reloaded pressure-relief parameters. The
-// GC's pressure reliever implements it; the agent wires the instance via
-// [Manager.SetPressureTunable]. Defined here (the consumer) so the
-// runtime package needs no dependency on the gc package.
-type PressureTunable interface {
-	SetPressureParams(high, low float64, maxPerPass int)
-}
 
 // Manager owns the agent's runtime configuration state. Construct one in
 // main after [config.Load] and [logging.Init], then call [Manager.InstallSIGHUP]
@@ -49,7 +43,8 @@ type Manager struct {
 	configPath string        // YAML path; empty disables SIGHUP reload
 	current    config.Config // last applied snapshot
 	log        *logging.Handle
-	pressure   PressureTunable // nil off-Linux, where no reliever runs
+	tun        *tunables.Store // nil = tunables stay load-time (bare unit tests)
+	mx         *Metrics        // nil = reload outcomes unobserved (unit tests)
 }
 
 // New creates a Manager seeded with the initial config snapshot. The
@@ -63,13 +58,18 @@ func New(configPath string, initial config.Config, log *logging.Handle) *Manager
 	}
 }
 
-// SetPressureTunable wires the pressure-relief reliever so SIGHUP
-// reloads of the gc.* fields apply live. Call once during boot, before
-// [Manager.InstallSIGHUP]. A nil tunable (off-Linux, where no reliever
-// runs) leaves the gc.* fields effectively load-time.
-func (m *Manager) SetPressureTunable(t PressureTunable) {
+// SetTunables wires the shared hot-knob store SIGHUP reloads swap.
+// Call once during boot, before [Manager.InstallSIGHUP].
+func (m *Manager) SetTunables(s *tunables.Store) {
 	m.mu.Lock()
-	m.pressure = t
+	m.tun = s
+	m.mu.Unlock()
+}
+
+// SetMetrics wires the reload-outcome counter. Call once during boot.
+func (m *Manager) SetMetrics(mx *Metrics) {
+	m.mu.Lock()
+	m.mx = mx
 	m.mu.Unlock()
 }
 
@@ -93,9 +93,11 @@ func (m *Manager) Reload() error {
 	}
 	next, err := config.LoadYAML(m.configPath)
 	if err != nil {
+		m.recordReload(reloadReadError)
 		return err
 	}
 	if err := next.Validate(); err != nil {
+		m.recordReload(reloadInvalid)
 		return fmt.Errorf("runtime: new config invalid: %w", err)
 	}
 
@@ -104,6 +106,7 @@ func (m *Manager) Reload() error {
 
 	if next.Logging.Level != m.current.Logging.Level {
 		if err := m.log.SetLevel(next.Logging.Level); err != nil {
+			m.recordReload(reloadInvalid)
 			return fmt.Errorf("runtime: apply logging.level: %w", err)
 		}
 		slog.Info("logging.level changed",
@@ -111,28 +114,54 @@ func (m *Manager) Reload() error {
 			"from", m.current.Logging.Level, "to", next.Logging.Level)
 	}
 
-	if next.GC != m.current.GC {
-		if m.pressure != nil {
-			m.pressure.SetPressureParams(
-				next.GC.PressureHighWatermark,
-				next.GC.PressureLowWatermark,
-				next.GC.PressureMaxPerPass)
-		}
-		slog.Info("gc pressure params changed",
-			"component", componentReload,
-			"high", next.GC.PressureHighWatermark,
-			"low", next.GC.PressureLowWatermark,
-			"max_per_pass", next.GC.PressureMaxPerPass)
-	}
+	m.applyTunables(next)
 
 	warnLoadTimeChange("http.listen", m.current.HTTP.Listen, next.HTTP.Listen)
 	warnLoadTimeChange("bpf.pin_path", m.current.BPF.PinPath, next.BPF.PinPath)
-	warnLoadTimeChange("scrape.interval",
-		m.current.Scrape.Interval.String(), next.Scrape.Interval.String())
+	warnLoadTimeChange("wal.path", m.current.WAL.Path, next.WAL.Path)
 	warnLoadTimeChange("logging.format", m.current.Logging.Format, next.Logging.Format)
 
 	m.current = next
+	m.recordReload(reloadApplied)
 	return nil
+}
+
+// applyTunables swaps the hot-knob snapshot and logs every field that
+// changed, old→new — the operator's confirmation that the HUP took.
+// Caller holds m.mu.
+func (m *Manager) applyTunables(next config.Config) {
+	if m.tun == nil {
+		return
+	}
+	oldV, newV := m.current.Tunables(), next.Tunables()
+	if oldV == newV {
+		return
+	}
+	m.tun.Replace(newV)
+	logTunableChange("gc.ghost_grace", oldV.GhostGrace, newV.GhostGrace)
+	logTunableChange("gc.ghost_sweep_interval", oldV.GhostSweepInterval, newV.GhostSweepInterval)
+	logTunableChange("reconcile.interval", oldV.ReconcileInterval, newV.ReconcileInterval)
+	logTunableChange("scrape.interval", oldV.ScrapeInterval, newV.ScrapeInterval)
+	logTunableChange("wal.flush_interval", oldV.WALFlushInterval, newV.WALFlushInterval)
+	logTunableChange("unresolved.ttl", oldV.UnresolvedTTL, newV.UnresolvedTTL)
+	logTunableChange("unresolved.cap", oldV.UnresolvedCap, newV.UnresolvedCap)
+	logTunableChange("gc.pressure_high_watermark", oldV.PressureHighWatermark, newV.PressureHighWatermark)
+	logTunableChange("gc.pressure_low_watermark", oldV.PressureLowWatermark, newV.PressureLowWatermark)
+	logTunableChange("gc.pressure_max_per_pass", oldV.PressureMaxPerPass, newV.PressureMaxPerPass)
+}
+
+func logTunableChange[T comparable](field string, oldV, newV T) {
+	if oldV == newV {
+		return
+	}
+	slog.Info("tunable changed", "component", componentReload,
+		"field", field, "from", oldV, "to", newV)
+}
+
+func (m *Manager) recordReload(result string) {
+	if m.mx != nil {
+		m.mx.RecordReload(result)
+	}
 }
 
 func warnLoadTimeChange(field, current, fromYAML string) {

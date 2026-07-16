@@ -16,6 +16,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/config"
 	"github.com/bigstack-oss/lachesis/internal/logging"
 	"github.com/bigstack-oss/lachesis/internal/runtime"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 func TestReload_AppliesHotField(t *testing.T) {
@@ -244,25 +245,12 @@ func TestInstallSIGHUP_TriggersReload(t *testing.T) {
 	t.Errorf("SIGHUP did not trigger reload; level still %q", logHandle.CurrentLevel())
 }
 
-// fakePressureTunable records the most recent SetPressureParams call so
-// reload tests can assert the gc.* fields were applied live.
-type fakePressureTunable struct {
-	high, low float64
-	cap       int
-	calls     int
-}
-
-func (f *fakePressureTunable) SetPressureParams(high, low float64, maxPerPass int) {
-	f.high, f.low, f.cap = high, low, maxPerPass
-	f.calls++
-}
-
 func TestReload_AppliesGCParamsLive(t *testing.T) {
 	path, initial := setup(t, "info")
 	logHandle, _ := logging.Init(initial.Logging, &bytes.Buffer{})
 	mgr := runtime.New(path, initial, logHandle)
-	tun := &fakePressureTunable{}
-	mgr.SetPressureTunable(tun)
+	tun := tunables.New(initial.Tunables())
+	mgr.SetTunables(tun)
 
 	updated := `
 version: "1"
@@ -278,11 +266,10 @@ gc:
 		t.Fatalf("Reload: %v", err)
 	}
 
-	if tun.calls != 1 {
-		t.Errorf("SetPressureParams calls = %d, want 1", tun.calls)
-	}
-	if tun.high != 0.90 || tun.low != 0.85 || tun.cap != 500 {
-		t.Errorf("applied params = (%v, %v, %d), want (0.90, 0.85, 500)", tun.high, tun.low, tun.cap)
+	got := tun.Get()
+	if got.PressureHighWatermark != 0.90 || got.PressureLowWatermark != 0.85 || got.PressureMaxPerPass != 500 {
+		t.Errorf("applied params = (%v, %v, %d), want (0.90, 0.85, 500)",
+			got.PressureHighWatermark, got.PressureLowWatermark, got.PressureMaxPerPass)
 	}
 	if got := mgr.Current().GC.PressureHighWatermark; got != 0.90 {
 		t.Errorf("Current().GC.PressureHighWatermark = %v, want 0.90", got)
@@ -293,8 +280,8 @@ func TestReload_RejectsInvalidGCParams(t *testing.T) {
 	path, initial := setup(t, "info")
 	logHandle, _ := logging.Init(initial.Logging, &bytes.Buffer{})
 	mgr := runtime.New(path, initial, logHandle)
-	tun := &fakePressureTunable{}
-	mgr.SetPressureTunable(tun)
+	tun := tunables.New(initial.Tunables())
+	mgr.SetTunables(tun)
 
 	// high == 1.0 is the dangerous footgun: relief would never fire and
 	// the kernel would silently drop counters. Reload must reject it and
@@ -312,8 +299,8 @@ gc:
 	if err := mgr.Reload(); err == nil {
 		t.Fatal("Reload accepted pressure_high_watermark=1.0")
 	}
-	if tun.calls != 0 {
-		t.Errorf("invalid reload applied params anyway (%d calls), want 0", tun.calls)
+	if got := tun.Get().PressureHighWatermark; got != 0.80 {
+		t.Errorf("invalid reload changed the live store to %v, want 0.80 (untouched)", got)
 	}
 	if got := mgr.Current().GC.PressureHighWatermark; got != 0.80 {
 		t.Errorf("Current().GC.PressureHighWatermark = %v, want 0.80 (unchanged after a rejected reload)", got)
@@ -354,5 +341,70 @@ logging:
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write yaml: %v", err)
+	}
+}
+
+// TestReload_AppliesNewTunablesLive: the five new knobs flow through a
+// SIGHUP reload into the shared store — the values every consumer
+// reads at its next use site.
+func TestReload_AppliesNewTunablesLive(t *testing.T) {
+	path, initial := setup(t, "info")
+	logHandle, _ := logging.Init(initial.Logging, &bytes.Buffer{})
+	mgr := runtime.New(path, initial, logHandle)
+	tun := tunables.New(initial.Tunables())
+	mgr.SetTunables(tun)
+
+	updated := `
+version: "1"
+gc:
+  ghost_grace: 90s
+  ghost_sweep_interval: 30s
+reconcile:
+  interval: 2m
+unresolved:
+  cap: 5000
+  ttl: 45s
+`
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	if err := mgr.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	got := tun.Get()
+	if got.GhostGrace != 90*time.Second || got.GhostSweepInterval != 30*time.Second {
+		t.Errorf("ghost knobs = %v/%v, want 90s/30s", got.GhostGrace, got.GhostSweepInterval)
+	}
+	if got.ReconcileInterval != 2*time.Minute {
+		t.Errorf("reconcile interval = %v, want 2m", got.ReconcileInterval)
+	}
+	if got.UnresolvedCap != 5000 || got.UnresolvedTTL != 45*time.Second {
+		t.Errorf("unresolved bounds = %d/%v, want 5000/45s", got.UnresolvedCap, got.UnresolvedTTL)
+	}
+}
+
+// TestReload_RejectsZeroGhostGrace: a zero grace would kill dying-flow
+// attribution — the reload must reject the whole file and keep the
+// running values.
+func TestReload_RejectsZeroGhostGrace(t *testing.T) {
+	path, initial := setup(t, "info")
+	logHandle, _ := logging.Init(initial.Logging, &bytes.Buffer{})
+	mgr := runtime.New(path, initial, logHandle)
+	tun := tunables.New(initial.Tunables())
+	mgr.SetTunables(tun)
+
+	bad := `
+version: "1"
+gc:
+  ghost_grace: 0s
+`
+	if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	if err := mgr.Reload(); err == nil {
+		t.Fatal("Reload accepted ghost_grace=0")
+	}
+	if got := tun.Get().GhostGrace; got != 60*time.Second {
+		t.Errorf("rejected reload changed the live grace to %v, want 60s", got)
 	}
 }

@@ -42,6 +42,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/runtime"
 	"github.com/bigstack-oss/lachesis/internal/scraper"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // Agent owns the in-process composition of the telemetry data plane:
@@ -116,6 +117,9 @@ type Agent struct {
 	// Resolver reads per flow; cold start seeds it, the reconciler
 	// swaps it per pass (docs/DESIGN.md §11.5).
 	routers *metadata.RouterMACs
+	// tun is the hot-reloadable knob snapshot every cadence loop and
+	// bound reads live; the runtime Manager swaps it on SIGHUP.
+	tun *tunables.Store
 	// interner assigns the u32 tenant_id values the kernel maps
 	// key on. Lives on Agent because both the cold-start writer
 	// and the incremental Kafka updater share it.
@@ -155,6 +159,7 @@ func New(opts Options) (*Agent, error) {
 	st := state.New()
 	meta := metadata.New()
 	routers := metadata.NewRouterMACs()
+	tun := tunables.New(opts.Config.Tunables())
 	n, err := neutron.New(opts.Config.Neutron)
 	if err != nil {
 		return nil, fmt.Errorf("agent: neutron credentials: %w", err)
@@ -165,6 +170,7 @@ func New(opts Options) (*Agent, error) {
 		state:    st,
 		meta:     meta,
 		routers:  routers,
+		tun:      tun,
 		neutron:  n,
 		interner: metadata.NewTenantInterner(),
 		seq:      opts.sequencerOrDefault(),
@@ -174,6 +180,7 @@ func New(opts Options) (*Agent, error) {
 	a.scraper = scraper.New(
 		telemetryFillReader{inner: opts.Reader, stats: opts.Stats, mx: a.mx.bpf},
 		st, opts.Config.Scrape.Interval)
+	a.scraper.SetTunables(tun)
 	a.collector = metrics.New(st, a.scraper, opts.resolverOrDefault(meta, routers))
 
 	if err := a.openHTTP(opts); err != nil {

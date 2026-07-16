@@ -36,6 +36,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // MapGauge refreshes a kernel map's current-entry gauge
@@ -81,6 +82,7 @@ type Reconciler struct {
 	macWriter MacWriter
 	routers   *metadata.RouterMACs
 	settler   FlowSettler
+	tun       *tunables.Store
 	interner  *metadata.TenantInterner
 	seq       *boot.Sequencer
 	mx        *Metrics
@@ -120,6 +122,10 @@ type Options struct {
 	// Optional (nil skips); the agent wires its bpf metrics bundle.
 	BPFGauge MapGauge
 	Interval time.Duration
+	// Tunables, when wired, supplies the live reconcile interval and
+	// ghost grace (hot-reload; interval applies at the next tick). nil
+	// (unit tests) freezes Interval and metadata.GhostGrace.
+	Tunables *tunables.Store
 }
 
 // New constructs a Reconciler from opts, applying the default interval
@@ -136,6 +142,7 @@ func New(opts Options) *Reconciler {
 		macWriter: opts.MacWriter,
 		routers:   opts.Routers,
 		settler:   opts.Settler,
+		tun:       opts.Tunables,
 		interner:  opts.Interner,
 		seq:       opts.Seq,
 		mx:        opts.Metrics,
@@ -176,7 +183,8 @@ func (r *Reconciler) Run(ctx context.Context) {
 			return
 		}
 	}
-	t := time.NewTicker(r.interval)
+	cur := r.intervalNow()
+	t := time.NewTicker(cur)
 	defer t.Stop()
 	for {
 		select {
@@ -187,7 +195,30 @@ func (r *Reconciler) Run(ctx context.Context) {
 		case <-r.kick:
 			r.reconcileOnce(ctx, time.Now())
 		}
+		if next := r.intervalNow(); next != cur {
+			t.Reset(next)
+			cur = next
+		}
 	}
+}
+
+// intervalNow returns the live reconcile cadence: the tunables value
+// when wired, else the constructed interval. A hot change applies at
+// the next tick (worst case one old interval of delay).
+func (r *Reconciler) intervalNow() time.Duration {
+	if r.tun != nil {
+		return r.tun.Get().ReconcileInterval
+	}
+	return r.interval
+}
+
+// graceNow returns the live Lingering-Ghost grace, falling back to the
+// [metadata.GhostGrace] default when no tunables store is wired.
+func (r *Reconciler) graceNow() time.Duration {
+	if r.tun != nil {
+		return r.tun.Get().GhostGrace
+	}
+	return metadata.GhostGrace
 }
 
 // reconcileOnce runs one full reconcile pass: fetch a fresh snapshot,

@@ -10,6 +10,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // fakeMacWriter records the kernel mac_tenant_map upserts the reconcile
@@ -387,5 +388,28 @@ func TestReconcileMACs_ExternalNetworkChangeSettlesOldAttribution(t *testing.T) 
 	}
 	if got[wantSame] != 300 {
 		t.Errorf("same-tenant fold = %d under %+v, want 300 (none)", got[wantSame], wantSame)
+	}
+}
+
+// TestReconcileMACs_GhostGraceIsLive: a hot-reloaded ghost grace
+// applies to the NEXT MarkDelete — the operator can widen the dying-
+// flow window without a restart (lachesis#156).
+func TestReconcileMACs_GhostGraceIsLive(t *testing.T) {
+	meta := metadata.New()
+	m1 := mac(t, "aa:00:00:00:00:01")
+	meta.Insert(m1, &metadata.TenantMeta{ProjectID: "proj-a"})
+
+	tun := tunables.New(tunables.Values{GhostGrace: 5 * time.Minute, ReconcileInterval: time.Minute})
+	r := New(Options{
+		Meta: meta, MacWriter: &fakeMacWriter{},
+		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(),
+		Tunables: tun,
+	})
+	now := time.Unix(2000, 0)
+	r.reconcileMACs(&neutron.Snapshot{}, now) // port gone → ghosted with live grace
+
+	got, _ := meta.Lookup(m1)
+	if want := now.Add(5 * time.Minute); !got.DeleteAt.Equal(want) {
+		t.Fatalf("DeleteAt = %v, want %v (the tunable grace, not the 60s default)", got.DeleteAt, want)
 	}
 }

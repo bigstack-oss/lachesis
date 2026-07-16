@@ -30,7 +30,8 @@ func (a *Agent) WALMetrics() *wal.Metrics { return a.mx.wal }
 // so the final flush snapshots every delta the scraper drained
 // before the SIGINT/SIGTERM. That makes a clean shutdown lossless.
 func (a *Agent) walFlushLoop(ctx context.Context) {
-	t := time.NewTicker(a.cfg.WAL.FlushInterval)
+	cur := a.tun.Get().WALFlushInterval
+	t := time.NewTicker(cur)
 	defer t.Stop()
 	for {
 		select {
@@ -42,6 +43,10 @@ func (a *Agent) walFlushLoop(ctx context.Context) {
 			slog.Info("final flush ok", "component", componentWAL, "records", len(a.walRecBuf))
 			return
 		case <-t.C:
+			if next := a.tun.Get().WALFlushInterval; next != cur {
+				t.Reset(next)
+				cur = next
+			}
 			if err := a.flushWAL(); err != nil {
 				slog.Warn("periodic flush failed", "component", componentWAL, "err", err)
 			}

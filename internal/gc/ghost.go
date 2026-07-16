@@ -37,6 +37,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/state"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // MapGauge refreshes the kernel mac_tenant_map current-entry gauge after
@@ -88,6 +89,7 @@ type GhostSweeper struct {
 	flowEvictor MacFlowEvictor
 	settler     FlowSettler
 	routers     *metadata.RouterMACs
+	tun         *tunables.Store
 	mapGauge    MapGauge
 	seq         *boot.Sequencer
 	mx          *Metrics
@@ -113,6 +115,9 @@ type Options struct {
 	// the series the Collector was emitting. Optional (nil = per-VM
 	// fallback only — pre-per-flow unit tests).
 	Routers *metadata.RouterMACs
+	// Tunables, when wired, supplies the live sweep cadence
+	// (hot-reload; applies at the next tick). nil freezes Interval.
+	Tunables *tunables.Store
 	// MapGauge refreshes the mac_tenant_map fill gauge after a sweep.
 	// Optional (nil skips); the agent wires its bpf metrics bundle.
 	MapGauge MapGauge
@@ -134,6 +139,7 @@ func New(opts Options) *GhostSweeper {
 		flowEvictor: opts.FlowEvictor,
 		settler:     opts.Settler,
 		routers:     opts.Routers,
+		tun:         opts.Tunables,
 		mapGauge:    opts.MapGauge,
 		seq:         opts.Seq,
 		mx:          opts.Metrics,
@@ -155,7 +161,8 @@ func (g *GhostSweeper) Run(ctx context.Context) {
 			return
 		}
 	}
-	t := time.NewTicker(g.interval)
+	cur := g.intervalNow()
+	t := time.NewTicker(cur)
 	defer t.Stop()
 	for {
 		select {
@@ -163,8 +170,21 @@ func (g *GhostSweeper) Run(ctx context.Context) {
 			return
 		case now := <-t.C:
 			g.sweep(now)
+			if next := g.intervalNow(); next != cur {
+				t.Reset(next)
+				cur = next
+			}
 		}
 	}
+}
+
+// intervalNow returns the live sweep cadence: the tunables value when
+// wired, else the constructed interval.
+func (g *GhostSweeper) intervalNow() time.Duration {
+	if g.tun != nil {
+		return g.tun.Get().GhostSweepInterval
+	}
+	return g.interval
 }
 
 // sweep removes the ghosts whose grace has elapsed as of now. It is pure

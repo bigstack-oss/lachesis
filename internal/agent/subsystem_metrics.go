@@ -15,6 +15,7 @@ import (
 	cnetlink "github.com/bigstack-oss/lachesis/internal/netlink"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
 	"github.com/bigstack-oss/lachesis/internal/reconcile"
+	"github.com/bigstack-oss/lachesis/internal/runtime"
 	"github.com/bigstack-oss/lachesis/internal/scraper"
 	"github.com/bigstack-oss/lachesis/internal/unresolved"
 	"github.com/bigstack-oss/lachesis/internal/wal"
@@ -37,6 +38,7 @@ type subsystemMetrics struct {
 	unresolved *unresolved.Metrics
 	reconcile  *reconcile.Metrics
 	kafka      *kafka.Metrics
+	runtime    *runtime.Metrics
 	registry   *cnetlink.Registry
 }
 
@@ -67,6 +69,7 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics, kafkaTopic string) subsyste
 		netlink:    cnetlink.NewMetrics(nlReg.Len),
 		gc:         gc.NewMetrics(),
 		unresolved: unresolved.NewMetrics(),
+		runtime:    runtime.NewMetrics(),
 		reconcile:  reconcile.NewMetrics(),
 		kafka:      kafka.NewMetrics(kafkaTopic),
 		registry:   nlReg,
@@ -132,5 +135,6 @@ func (m subsystemMetrics) registrations() []labelledCollectors {
 		{componentUnresolved, m.unresolved.Collectors()},
 		{componentReconcile, m.reconcile.Collectors()},
 		{componentKafka, m.kafka.Collectors()},
+		{componentRuntime, m.runtime.Collectors()},
 	}
 }

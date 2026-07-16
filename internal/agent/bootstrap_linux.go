@@ -245,23 +245,21 @@ func (b *bootstrapper) wireGC() error {
 		FlowEvictor: telemetryMacFlowEvictor{m: telMap},
 		Settler:     b.ag.state,
 		Routers:     b.ag.routers,
+		Tunables:    b.ag.tun,
 		MapGauge:    b.ag.mx.bpf,
 		Seq:         b.ag.seq,
 		Metrics:     b.ag.mx.gc,
 	})
 	telEvictor := telemetryFlowEvictor{m: telMap}
 	reliever := gc.NewPressureReliever(gc.PressureOptions{
-		Evictor:       telEvictor,
-		MaxEntries:    bpf.MapTelemetryMaxEntries,
-		Metrics:       b.ag.mx.gc,
-		HighWatermark: b.cfg.GC.PressureHighWatermark,
-		LowWatermark:  b.cfg.GC.PressureLowWatermark,
-		MaxPerPass:    b.cfg.GC.PressureMaxPerPass,
+		Evictor:    telEvictor,
+		MaxEntries: bpf.MapTelemetryMaxEntries,
+		Metrics:    b.ag.mx.gc,
+		Tunables:   b.ag.tun,
 	})
 	b.ag.scraper.SetEvictor(reliever)
 	// Make the gc.* config hot-reloadable: SIGHUP reloads swap the
 	// reliever's tuning snapshot through this seam.
-	b.ag.runtime.SetPressureTunable(reliever)
 
 	// Divert unknown-MAC flows into the capped UnresolvedBuffer rather
 	// than letting them grow GlobalState without bound; known flows (and
@@ -269,9 +267,10 @@ func (b *bootstrapper) wireGC() error {
 	// telemetry_map evictor — it resets a flow's kernel counter when it
 	// folds the flow to "unknown", so reappearance never double-counts.
 	buf := unresolved.NewBuffer(unresolved.Options{
-		State:   b.ag.state,
-		Evictor: telEvictor,
-		Metrics: b.ag.mx.unresolved,
+		Tunables: b.ag.tun,
+		State:    b.ag.state,
+		Evictor:  telEvictor,
+		Metrics:  b.ag.mx.unresolved,
 	})
 	b.ag.scraper.SetSink(unresolved.NewClassifier(b.ag.state, b.ag.meta, buf))
 	return nil
@@ -304,6 +303,7 @@ func (b *bootstrapper) wireReconcile() error {
 		MacWriter: macTenantWriter{m: macMap},
 		Routers:   b.ag.routers,
 		Settler:   b.ag.state,
+		Tunables:  b.ag.tun,
 		Interner:  b.ag.interner,
 		Seq:       b.ag.seq,
 		Metrics:   b.ag.mx.reconcile,

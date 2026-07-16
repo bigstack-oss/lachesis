@@ -36,6 +36,7 @@ const (
 	componentUnresolved = "unresolved"
 	componentReconcile  = "reconcile"
 	componentKafka      = "kafka"
+	componentRuntime    = "runtime"
 )
 
 // httpReadHeaderTimeout bounds how long the HTTP server will wait
