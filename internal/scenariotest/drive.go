@@ -162,10 +162,7 @@ func (d *driver) waitMACsLearned() error {
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		missing, err := d.unresolvedMACs(urls, want)
-		if err != nil {
-			return err
-		}
+		missing := d.unresolvedMACs(urls, want)
 		if len(missing) == 0 {
 			d.logf("mac-learn gate: ok (%d MAC(s) resolved on %d agent(s))", len(want), len(urls))
 			return nil
@@ -183,17 +180,23 @@ func (d *driver) waitMACsLearned() error {
 }
 
 // unresolvedMACs returns a description of every (port, agent) pair the
-// gate is still waiting on: the agent has not learned the MAC, or —
-// stale ghost from MAC reuse — still resolves it to a different tenant.
-func (d *driver) unresolvedMACs(urls []string, want []ResourceRef) ([]string, error) {
+// gate is still waiting on: the agent has not learned the MAC, a stale
+// ghost from MAC reuse still resolves it to a different tenant, or the
+// lookup itself failed. Lookup errors count as unresolved rather than
+// aborting — the gate is a minutes-long poll against live HTTP
+// endpoints, and one refused connection during an agent's busy moment
+// must not kill the run; a persistent error surfaces verbatim in the
+// timeout message. A Found hit with an empty TenantID passes the
+// tenant check — a real agent always carries the tenant on a hit, so
+// the leniency only lets tenant-agnostic test stubs through.
+func (d *driver) unresolvedMACs(urls []string, want []ResourceRef) []string {
 	var missing []string
 	for _, p := range want {
 		for _, u := range urls {
 			lk, err := d.opts.Metrics.LookupMAC(d.ctx, u, p.MAC)
-			if err != nil {
-				return nil, fmt.Errorf("mac-learn gate: %w", err)
-			}
 			switch {
+			case err != nil:
+				missing = append(missing, fmt.Sprintf("%s (%s) lookup on %s failed: %v", p.DSLID, p.MAC, u, err))
 			case !lk.Found:
 				missing = append(missing, fmt.Sprintf("%s (%s) unknown to %s", p.DSLID, p.MAC, u))
 			case lk.TenantID != "" && p.ProjectID != "" && lk.TenantID != p.ProjectID:
@@ -201,7 +204,7 @@ func (d *driver) unresolvedMACs(urls []string, want []ResourceRef) ([]string, er
 			}
 		}
 	}
-	return missing, nil
+	return missing
 }
 
 // captureBaseline snapshots lachesis_bytes_total across all agents and
