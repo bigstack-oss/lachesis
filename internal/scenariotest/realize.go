@@ -361,11 +361,15 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 		if err != nil {
 			return err
 		}
+		mac, err := r.opts.Cloud.PortMAC(r.ctx, portID)
+		if err != nil {
+			return err
+		}
 		r.vmPort[p.ID] = portID
 		r.vmProject[p.ID] = proj
 		r.vmInternalIP[p.ID] = fip.IPAddress
 		r.vmOrder = append(r.vmOrder, p.ID)
-		r.rs.Ports = append(r.rs.Ports, ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj})
+		r.rs.Ports = append(r.rs.Ports, ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj, MAC: mac})
 		if err := r.save(); err != nil {
 			return err
 		}

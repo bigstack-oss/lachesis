@@ -57,8 +57,9 @@ type fakeCloud struct {
 
 	// MAC model: every port gets a MAC (explicit from the spec, or a
 	// synthetic assignment), unique per network like real Neutron.
-	portMAC map[string]string // port id → mac
-	portNet map[string]string // port id → network id
+	portMAC     map[string]string // port id → mac
+	portProject map[string]string // port id → project
+	portNet     map[string]string // port id → network id
 
 	// teardown model: residualPorts seeds platform-created ports
 	// (cube:mgr) per network id; deletions and detaches append to
@@ -82,6 +83,7 @@ func newFakeCloud(env *fakeEnv) *fakeCloud {
 		portSubnet: map[string]string{}, routerExt: map[string]string{},
 		routerSubnets: map[string]map[string]bool{},
 		portMAC:       map[string]string{}, portNet: map[string]string{},
+		portProject:   map[string]string{},
 		residualPorts: map[string][]string{}, deleted: map[string]bool{},
 	}
 }
@@ -136,7 +138,7 @@ func (c *fakeCloud) CreateRouter(_ context.Context, _ string, spec RouterSpec) (
 // CreatePort models Neutron's per-network MAC uniqueness: an explicit
 // MACAddress already used by a live port on the same network is
 // rejected (MacAddressInUse), otherwise a synthetic MAC is assigned.
-func (c *fakeCloud) CreatePort(_ context.Context, _ string, spec PortSpec) (string, error) {
+func (c *fakeCloud) CreatePort(_ context.Context, proj string, spec PortSpec) (string, error) {
 	if spec.MACAddress != "" {
 		for pid, mac := range c.portMAC {
 			if mac == spec.MACAddress && c.portNet[pid] == spec.NetworkID && !c.deleted["port:"+pid] {
@@ -148,6 +150,7 @@ func (c *fakeCloud) CreatePort(_ context.Context, _ string, spec PortSpec) (stri
 	id := c.id("port")
 	c.portSubnet[id] = spec.SubnetID
 	c.portNet[id] = spec.NetworkID
+	c.portProject[id] = proj
 	if spec.MACAddress != "" {
 		c.portMAC[id] = spec.MACAddress
 	} else {
@@ -247,7 +250,10 @@ func (c *fakeCloud) DeleteNetwork(_ context.Context, _, id string) error {
 
 // fakeMetrics reports an attached-interface count that grows as the
 // fake Cloud boots servers, so the attach gate goes green.
-type fakeMetrics struct{ env *fakeEnv }
+type fakeMetrics struct {
+	instantMACs
+	env *fakeEnv
+}
 
 func (m *fakeMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	return ScrapeResult{
@@ -517,8 +523,27 @@ func TestRealize_AttachGateTimesOut(t *testing.T) {
 	}
 }
 
-type stuckMetrics struct{}
+type stuckMetrics struct{ instantMACs }
 
 func (stuckMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	return ScrapeResult{Present: map[string]bool{metricBytesTotal: true, metricAttachedInterfaces: true}, AttachedInterfaces: 5}, nil
+}
+
+// TestRealize_RecordsVMPortMACs: up records each VM port's
+// Neutron-assigned MAC in the run-state — the MAC-learn gate's input
+// (lachesis#153).
+func TestRealize_RecordsVMPortMACs(t *testing.T) {
+	_, rs := realizeFixture(t, sameTenantScenario())
+	vmPorts := 0
+	for _, p := range rs.Ports {
+		if p.DSLID == "vm-a" || p.DSLID == "vm-b" {
+			vmPorts++
+			if p.MAC == "" {
+				t.Errorf("VM port %s recorded without a MAC", p.DSLID)
+			}
+		}
+	}
+	if vmPorts != 2 {
+		t.Fatalf("run-state has %d VM port refs, want 2: %+v", vmPorts, rs.Ports)
+	}
 }

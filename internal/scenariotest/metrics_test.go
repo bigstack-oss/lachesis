@@ -2,6 +2,7 @@ package scenariotest
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -106,4 +107,42 @@ func findBytes(samples []BytesSample, tenant, zone, dir string) *BytesSample {
 		}
 	}
 	return nil
+}
+
+// TestHTTPMetrics_LookupMAC: the live MetricsSource derives the
+// /debug/lookup URL from the metrics URL and parses the
+// mac_tenant_map section; a body without the section is a clean
+// not-found, not an error.
+func TestHTTPMetrics_LookupMAC(t *testing.T) {
+	var gotPath, gotMAC string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMAC = r.URL.Query().Get("mac")
+		if gotMAC == "fa:16:3e:00:00:01" {
+			fmt.Fprint(w, `{"query":{"mac":"fa:16:3e:00:00:01"},"mac_tenant_map":{"found":true,"tenant_id":"proj-a"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"query":{"mac":"x"}}`)
+	}))
+	defer srv.Close()
+	h := NewHTTPMetrics(srv.Client())
+
+	lk, err := h.LookupMAC(context.Background(), srv.URL+"/metrics", "fa:16:3e:00:00:01")
+	if err != nil {
+		t.Fatalf("LookupMAC: %v", err)
+	}
+	if gotPath != "/debug/lookup" {
+		t.Errorf("lookup path = %q, want /debug/lookup (derived from metrics URL)", gotPath)
+	}
+	if !lk.Found || lk.TenantID != "proj-a" {
+		t.Errorf("lookup = %+v, want found proj-a", lk)
+	}
+
+	lk, err = h.LookupMAC(context.Background(), srv.URL+"/metrics", "fa:16:3e:00:00:99")
+	if err != nil {
+		t.Fatalf("LookupMAC (miss): %v", err)
+	}
+	if lk.Found {
+		t.Errorf("missing mac_tenant_map section must decode as not-found: %+v", lk)
+	}
 }

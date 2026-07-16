@@ -113,7 +113,10 @@ func TestAssert_NegativeDeltaFlagsBaseline(t *testing.T) {
 
 // settleMetrics reports counters that cross the threshold on the
 // second scrape round, proving the poll-until-settle loop.
-type settleMetrics struct{ calls *int }
+type settleMetrics struct {
+	instantMACs
+	calls *int
+}
 
 func (m settleMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	*m.calls++
@@ -129,7 +132,7 @@ func (m settleMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 
 func TestAssert_SettlesOnLaterScrape(t *testing.T) {
 	calls := 0
-	rep, _, err := runAssertFixture(t, assertScenario(), assertState(), settleMetrics{&calls}, 30*time.Second)
+	rep, _, err := runAssertFixture(t, assertScenario(), assertState(), settleMetrics{calls: &calls}, 30*time.Second)
 	if err != nil {
 		t.Fatalf("Assert: %v", err)
 	}

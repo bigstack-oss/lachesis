@@ -2,8 +2,11 @@ package scenariotest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
@@ -91,11 +94,25 @@ type MetricsSnapshot struct {
 	Anomalies map[string]float64
 }
 
-// MetricsSource scrapes and parses one agent's /metrics. preflight and
-// realize consume it through this seam so they are testable without a
-// live agent.
+// MACLookup is one agent's answer to "have you learned this MAC?" —
+// the `mac_tenant_map` section of its /debug/lookup response. A Found
+// hit means the reconcile pass that learned the MAC has committed, so
+// the kernel-side insert (userspace-then-kernel, same pass) has been
+// performed too.
+type MACLookup struct {
+	Found    bool
+	TenantID string
+}
+
+// MetricsSource scrapes and parses one agent's observability surfaces:
+// /metrics (Scrape) and the /debug/lookup MAC query (LookupMAC, used
+// by drive's MAC-learn gate). preflight, realize, and drive consume it
+// through this seam so they are testable without a live agent. url is
+// always the agent's metrics URL; the live implementation derives the
+// debug endpoint from it.
 type MetricsSource interface {
 	Scrape(ctx context.Context, url string) (ScrapeResult, error)
+	LookupMAC(ctx context.Context, url, mac string) (MACLookup, error)
 }
 
 // HTTPMetrics is the live [MetricsSource]: it GETs each /metrics URL
@@ -132,6 +149,40 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	r.Servers = serverSamples(fams)
 	r.Anomalies = anomalySamples(fams)
 	return r, nil
+}
+
+// LookupMAC implements the MAC half of [MetricsSource] against the
+// agent's /debug/lookup endpoint, derived from the metrics URL (the
+// agent serves /metrics and /debug on one listener). A 200 with no
+// mac_tenant_map section decodes as not-found — the endpoint reports
+// what it saw, it does not 404 on misses.
+func (h *HTTPMetrics) LookupMAC(ctx context.Context, metricsURL, mac string) (MACLookup, error) {
+	u := strings.TrimSuffix(metricsURL, "/metrics") + "/debug/lookup?mac=" + url.QueryEscape(mac)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return MACLookup{}, fmt.Errorf("lookup: build request %s: %w", u, err)
+	}
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		return MACLookup{}, fmt.Errorf("lookup: get %s: %w", u, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return MACLookup{}, fmt.Errorf("lookup: get %s: status %d", u, resp.StatusCode)
+	}
+	var body struct {
+		MAC *struct {
+			Found    bool   `json:"found"`
+			TenantID string `json:"tenant_id"`
+		} `json:"mac_tenant_map"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return MACLookup{}, fmt.Errorf("lookup: decode %s: %w", u, err)
+	}
+	if body.MAC == nil {
+		return MACLookup{}, nil
+	}
+	return MACLookup{Found: body.MAC.Found, TenantID: body.MAC.TenantID}, nil
 }
 
 // sampleAcross scrapes every agent URL and aggregates the health

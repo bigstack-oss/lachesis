@@ -66,7 +66,7 @@ func TestPreflight_AgentMissingMetric(t *testing.T) {
 }
 
 // halfMetrics reports bytes present but the attach gauge absent.
-type halfMetrics struct{}
+type halfMetrics struct{ instantMACs }
 
 func (halfMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	return ScrapeResult{Present: map[string]bool{metricBytesTotal: true, metricAttachedInterfaces: false}}, nil

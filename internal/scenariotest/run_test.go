@@ -20,6 +20,7 @@ func runScenario() *Scenario {
 // the fake env (gate + recheck), and the bytes counter climbs by 2 MiB
 // per scrape so assert's first delta after drive's baseline passes.
 type runMetrics struct {
+	instantMACs
 	env *fakeEnv
 	val float64
 }
