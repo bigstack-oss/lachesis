@@ -50,6 +50,10 @@ func testAnomalies(t *testing.T) *neutron.Anomalies {
 		DanglingRoutes: []neutron.DanglingRoute{
 			{SourceTenant: "T2", SourceRouter: "r-9", Destination: "10.5.0.0/24", Nexthop: "10.0.0.99"},
 		},
+		MultiExternalPaths: []neutron.MultiExternalPathHit{
+			{PortID: "p-multi", ServerID: "srv-multi", ProjectID: "T1",
+				Candidates: []string{"public-1", "public-2"}, Picked: "public-1"},
+		},
 	}
 }
 
@@ -109,8 +113,8 @@ func TestIndex_JSON(t *testing.T) {
 	if m.Counts != want {
 		t.Errorf("counts = %+v, want %+v", m.Counts, want)
 	}
-	if m.Anomalies.Total != 3 || m.Anomalies.Cycles != 1 || m.Anomalies.DanglingRoutes != 1 {
-		t.Errorf("anomaly counts = %+v, want total=3 cycles=1 dangling=1", m.Anomalies)
+	if m.Anomalies.Total != 4 || m.Anomalies.Cycles != 1 || m.Anomalies.DanglingRoutes != 1 || m.Anomalies.MultiExternalPaths != 1 {
+		t.Errorf("anomaly counts = %+v, want total=4 cycles=1 dangling=1 multi_external_paths=1", m.Anomalies)
 	}
 }
 
@@ -147,8 +151,8 @@ func TestAnomalies_JSON(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if m.Total != 3 {
-		t.Errorf("total = %d, want 3", m.Total)
+	if m.Total != 4 {
+		t.Errorf("total = %d, want 4", m.Total)
 	}
 	if len(m.Cycles) != 1 || m.Cycles[0].SourceTenantName != "alpha" {
 		t.Errorf("cycles = %+v, want one row resolved to alpha", m.Cycles)
@@ -165,7 +169,7 @@ func TestAnomalies_HTML(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// Resolved names render; ambiguity owners pre-join names + UUIDs.
-	for _, want := range []string{"alpha", "alpha (T1), beta (T2)", "10.99.0.0/16", "10.0.0.99"} {
+	for _, want := range []string{"alpha", "alpha (T1), beta (T2)", "10.99.0.0/16", "10.0.0.99", "srv-multi", "public-1, public-2"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("anomalies body missing %q", want)
 		}

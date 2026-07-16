@@ -578,8 +578,10 @@ func (DeleteFIPStep) Kind() string { return "delete-fip" }
 
 func (s DeleteFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	deleted := 0
+	kept := make([]FIPRef, 0, len(env.State.FIPs))
 	for _, f := range env.State.FIPs {
 		if f.VMID != s.VM || f.Network != s.Network || f.Network == "" {
+			kept = append(kept, f)
 			continue
 		}
 		if err := env.Cloud.DeleteFIP(ctx, f.ProjectID, f.ID); err != nil {
@@ -591,7 +593,10 @@ func (s DeleteFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	if deleted == 0 {
 		return fmt.Errorf("run-state has no FIP for VM %q from network %q", s.VM, s.Network)
 	}
-	return nil
+	// Drop the deleted refs so `down` doesn't re-delete them — the
+	// run-state stays a truthful inventory of what is still live.
+	env.State.FIPs = kept
+	return env.State.Save(env.StatePath)
 }
 
 const (
