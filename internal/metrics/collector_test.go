@@ -271,7 +271,7 @@ func TestCollect_SeriesMonotonicAcrossGhostSweep(t *testing.T) {
 		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
 	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 1000, Packets: 10, LastSeenNs: 1})
 
-	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 
@@ -345,7 +345,7 @@ func TestCollect_MACReuseDoesNotInheritOrReplay(t *testing.T) {
 	meta.Insert(macKey, &metadata.TenantMeta{ProjectID: "tenant-b"})
 	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 2})
 
-	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 
@@ -439,7 +439,7 @@ func TestCollect_ExternalNetworkLabelRouting(t *testing.T) {
 	st.ApplyDelta(ext, bpf.FlowMetrics{Bytes: 700, Packets: 7, LastSeenNs: 1})
 	st.ApplyDelta(same, bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 2})
 
-	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 
@@ -482,7 +482,7 @@ func TestCollect_ServerFamilyEmitsLiveRowsOnly(t *testing.T) {
 		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
 	st.ApplyDelta(unknown, bpf.FlowMetrics{Bytes: 55, Packets: 1, LastSeenNs: 2})
 
-	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 
@@ -514,7 +514,7 @@ func TestCollect_ServerFamilyMortalAcrossSweep(t *testing.T) {
 		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
 	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 1000, Packets: 10, LastSeenNs: 1})
 
-	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta))
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 
@@ -550,5 +550,52 @@ lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenan
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"lachesis_bytes_total", "lachesis_server_bytes_total"); err != nil {
 		t.Errorf("after sweep: %v", err)
+	}
+}
+
+// TestCollect_PerFlowRouterSplitsExternalNetworks: one VM pushing
+// through two routers emits per-network series on BOTH families — the
+// per-flow attribution that dissolves the multi-path ambiguity
+// (docs/DESIGN.md §11.5) — with the per-VM label covering only the
+// router-map miss.
+func TestCollect_PerFlowRouterSplitsExternalNetworks(t *testing.T) {
+	meta := metadata.New()
+	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	rtr1 := [6]uint8{0xfa, 0x16, 0x3e, 0, 0, 0x10}
+	rtr2 := [6]uint8{0xfa, 0x16, 0x3e, 0, 0, 0x20}
+	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
+		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+	})
+	routers := metadata.NewRouterMACs()
+	routers.Replace(map[uint64]string{
+		bpf.MACKey(rtr1): "public-1",
+		bpf.MACKey(rtr2): "public-2",
+	})
+
+	st := state.New()
+	mk := func(peer [6]uint8) bpf.FlowKey {
+		return bpf.FlowKey{SrcMac: vmMAC, DstMac: peer, EthProto: 0x0800,
+			Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	}
+	st.ApplyDelta(mk(rtr1), bpf.FlowMetrics{Bytes: 700, Packets: 7, LastSeenNs: 1})
+	st.ApplyDelta(mk(rtr2), bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 2})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, routers))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 700
+lachesis_bytes_total{direction="tx",external_network="public-2",tenant_id="tenant-a",zone="external"} 300
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/DESIGN.md §11.5).
+# TYPE lachesis_server_bytes_total counter
+lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
+lachesis_server_bytes_total{direction="tx",external_network="public-2",server_id="srv-1",tenant_id="tenant-a",zone="external"} 300
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"lachesis_bytes_total", "lachesis_server_bytes_total"); err != nil {
+		t.Errorf("GatherAndCompare: %v", err)
 	}
 }

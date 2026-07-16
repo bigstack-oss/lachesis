@@ -142,7 +142,9 @@ func (r *Reconciler) settleAttributionChange(mac uint64, old *metadata.TenantMet
 		if metadata.VMMAC(k) != mac {
 			return "", "", false
 		}
-		return old.ProjectID, metadata.ExternalNetworkLabel(old.ExternalNetwork, k.DstZone), true
+		// Per-flow label with the current (not-yet-changed) router map —
+		// exactly what the Collector was emitting for this row.
+		return old.ProjectID, metadata.FlowExternalLabel(r.routers, old.ExternalNetwork, k), true
 	})
 	if folded > 0 {
 		slog.Info("settled flows to previous attribution before reassignment",

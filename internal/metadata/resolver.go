@@ -12,15 +12,19 @@ import "github.com/bigstack-oss/lachesis/internal/bpf"
 //
 // On lookup miss it returns the [UnknownTenantID] / [NoExternalNetwork]
 // sentinels; on hit, the entry's attribution fields with the
-// external-network zone gate applied. Safe for concurrent use
-// (read-only).
+// external_network label resolved per flow ([FlowExternalLabel]: peer
+// router-interface MAC first, per-VM attribution as the fallback).
+// Safe for concurrent use (read-only).
 type Resolver struct {
-	m *ShardedMetadataMap
+	m       *ShardedMetadataMap
+	routers *RouterMACs
 }
 
-// NewResolver wraps m. m must outlive the Resolver.
-func NewResolver(m *ShardedMetadataMap) *Resolver {
-	return &Resolver{m: m}
+// NewResolver wraps m and routers; both must outlive the Resolver.
+// routers may be nil (a resolver without per-flow router attribution —
+// the per-VM fallback then always applies).
+func NewResolver(m *ShardedMetadataMap, routers *RouterMACs) *Resolver {
+	return &Resolver{m: m, routers: routers}
 }
 
 // VMMAC returns the VM-side MAC of key as a [bpf.MACKey] u64, applying
@@ -48,7 +52,7 @@ func (r *Resolver) Resolve(key bpf.FlowKey) Attribution {
 	return Attribution{
 		Tenant:          meta.ProjectID,
 		ServerID:        meta.ServerID,
-		ExternalNetwork: ExternalNetworkLabel(meta.ExternalNetwork, key.DstZone),
+		ExternalNetwork: FlowExternalLabel(r.routers, meta.ExternalNetwork, key),
 	}
 }
 
@@ -56,11 +60,9 @@ func (r *Resolver) Resolve(key bpf.FlowKey) Attribution {
 // external_network label meaningful and low-cardinality: only
 // EXTERNAL-zone series carry a real network label; everything else —
 // other zones, and external flows of a VM with no resolved external
-// path — gets the [NoExternalNetwork] sentinel. Single source of the
-// gate: the Collector's live aggregation, the ghost sweep's settle
-// fold, and the reconciler's attribution-change fold all label through
-// here, so a flow's settled bytes land in exactly the bucket its live
-// series occupied.
+// path — gets the [NoExternalNetwork] sentinel. It is the per-VM half
+// of the label rule; every emitter labels through [FlowExternalLabel],
+// which layers the per-flow router-MAC resolution on top of this gate.
 func ExternalNetworkLabel(extNet string, zone bpf.ZoneCode) string {
 	if zone != bpf.ZoneExternal || extNet == "" {
 		return NoExternalNetwork

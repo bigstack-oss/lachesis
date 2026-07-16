@@ -65,11 +65,11 @@ func (o Options) validate() error {
 // the old [metrics.UnknownTenant] stub produced, so pre-Bootstrap
 // scrapes (and the no-Neutron loadtest harness) behave
 // indistinguishably from before this change.
-func (o Options) resolverOrDefault(meta *metadata.ShardedMetadataMap) metrics.TenantResolver {
+func (o Options) resolverOrDefault(meta *metadata.ShardedMetadataMap, routers *metadata.RouterMACs) metrics.TenantResolver {
 	if o.Resolver != nil {
 		return o.Resolver
 	}
-	return metadata.NewResolver(meta)
+	return metadata.NewResolver(meta, routers)
 }
 
 // sequencerOrDefault returns the caller's [boot.Sequencer] when set,
