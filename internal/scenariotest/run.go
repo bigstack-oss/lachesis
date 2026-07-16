@@ -26,6 +26,9 @@ type RunOptions struct {
 	// SinkDelay passes through to [DriveOptions.SinkDelay]; tests set
 	// a negative value to skip the sink-bind pause.
 	SinkDelay time.Duration
+	// MACLearnTimeout passes through to [DriveOptions.MACLearnTimeout];
+	// zero uses [DefaultMACLearnTimeout], tests set a small value.
+	MACLearnTimeout time.Duration
 }
 
 // Run composes the whole loop: preflight → up → the scenario's step
@@ -96,17 +99,18 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 
 	report := AssertReport{Scenario: rs.Scenario, RunID: rs.RunID, OK: true}
 	env := &StepEnv{
-		Config:     opts.Config,
-		Scenario:   opts.Scenario,
-		State:      rs,
-		StatePath:  opts.StatePath,
-		ReportPath: opts.ReportPath,
-		Cloud:      opts.Cloud,
-		Metrics:    opts.Metrics,
-		Exec:       opts.Exec,
-		Log:        opts.Log,
-		SinkDelay:  opts.SinkDelay,
-		Report:     &report,
+		Config:          opts.Config,
+		Scenario:        opts.Scenario,
+		State:           rs,
+		StatePath:       opts.StatePath,
+		ReportPath:      opts.ReportPath,
+		Cloud:           opts.Cloud,
+		Metrics:         opts.Metrics,
+		Exec:            opts.Exec,
+		Log:             opts.Log,
+		SinkDelay:       opts.SinkDelay,
+		MACLearnTimeout: opts.MACLearnTimeout,
+		Report:          &report,
 	}
 	for i, st := range steps {
 		fmt.Fprintf(opts.Log, "run: step %d/%d: %s\n", i+1, len(steps), st.Kind())

@@ -65,6 +65,9 @@ type StepEnv struct {
 	Exec       VMExec
 	Log        io.Writer
 	SinkDelay  time.Duration
+	// MACLearnTimeout passes through to [DriveOptions.MACLearnTimeout];
+	// zero uses the default, tests set a small value.
+	MACLearnTimeout time.Duration
 
 	// Report accumulates every step's assertion rows; `run` persists
 	// it once the script completes.
@@ -144,14 +147,15 @@ func (s DriveStep) Run(ctx context.Context, env *StepEnv) error {
 	sc := *env.Scenario
 	sc.Flows = s.Flows
 	return Drive(ctx, DriveOptions{
-		Config:    env.Config,
-		Scenario:  &sc,
-		State:     env.State,
-		StatePath: env.StatePath,
-		Metrics:   env.Metrics,
-		Exec:      env.Exec,
-		Log:       env.Log,
-		SinkDelay: env.SinkDelay,
+		Config:          env.Config,
+		Scenario:        &sc,
+		State:           env.State,
+		StatePath:       env.StatePath,
+		Metrics:         env.Metrics,
+		Exec:            env.Exec,
+		Log:             env.Log,
+		SinkDelay:       env.SinkDelay,
+		MACLearnTimeout: env.MACLearnTimeout,
 	})
 }
 
@@ -208,8 +212,10 @@ func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
 
 // DeleteVMStep tears down exactly one VM — FIP, then server (waiting
 // until Nova forgets it, so the port unbinds), then port — recording
-// its MAC first for a later [BootVMStep]. The run-state records stay;
-// the final down re-deletes them as 404-tolerant no-ops.
+// its MAC first for a later [BootVMStep]. The FIP/server records stay
+// (the final down re-deletes them as 404-tolerant no-ops); the port
+// ref leaves the run-state so the MAC-learn gate never waits on a
+// dead port.
 type DeleteVMStep struct {
 	VM string
 }
@@ -245,13 +251,24 @@ func (s DeleteVMStep) Run(ctx context.Context, env *StepEnv) error {
 			return err
 		}
 	}
+	// The deleted port's ref leaves the run-state: the MAC-learn gate
+	// waits on every recorded (MAC, tenant) pair, and a dead port's
+	// MAC may be reborn under ANOTHER tenant (mac-reuse) — a stale ref
+	// would make the gate unsatisfiable. Truthful-inventory rule, same
+	// as [DeleteFIPStep].
+	kept := make([]ResourceRef, 0, len(env.State.Ports))
 	for _, p := range env.State.Ports {
 		if p.DSLID != s.VM {
+			kept = append(kept, p)
 			continue
 		}
 		if err := env.Cloud.DeletePort(ctx, p.ProjectID, p.ID); err != nil {
 			return err
 		}
+	}
+	env.State.Ports = kept
+	if err := env.State.Save(env.StatePath); err != nil {
+		return err
 	}
 	env.logf("delete-vm: %s gone (mac %s recorded)", s.VM, mac)
 	return nil
@@ -443,7 +460,13 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	env.State.Ports = append(env.State.Ports, ResourceRef{DSLID: s.VM, ID: portID, Name: name, ProjectID: proj.ID})
+	portMAC := mac
+	if portMAC == "" {
+		if portMAC, err = env.Cloud.PortMAC(ctx, portID); err != nil {
+			return err
+		}
+	}
+	env.State.Ports = append(env.State.Ports, ResourceRef{DSLID: s.VM, ID: portID, Name: name, ProjectID: proj.ID, MAC: portMAC})
 	if err := env.State.Save(env.StatePath); err != nil {
 		return err
 	}

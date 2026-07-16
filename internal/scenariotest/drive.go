@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,9 @@ type DriveOptions struct {
 	// streaming into it, giving the listener time to bind. Zero uses
 	// [defaultSinkDelay]; tests set a negative value to skip.
 	SinkDelay time.Duration
+	// MACLearnTimeout bounds the pre-drive MAC-learn gate. Zero uses
+	// [DefaultMACLearnTimeout]; tests set a small value.
+	MACLearnTimeout time.Duration
 	// ReadyTimeout bounds the per-VM SSH-readiness wait. Zero uses
 	// [defaultReadyTimeout].
 	ReadyTimeout time.Duration
@@ -49,6 +53,15 @@ const (
 	// count at the tap) push 1 MiB in ~18 packets instead of the 1024
 	// one-per-second packets that killed the exec budget.
 	pingPayloadBytes = 60000
+
+	// DefaultMACLearnTimeout bounds the pre-drive MAC-learn gate. The
+	// agents learn a new port when Kafka kicks the reconciler (seconds)
+	// or the 5-minute periodic pass runs — same no-Kafka ceiling
+	// reasoning as [DefaultAnomalyTimeout].
+	DefaultMACLearnTimeout = 8 * time.Minute
+	// macLearnPollInterval is the pause between MAC-learn gate polls
+	// (shrunk proportionally when the configured timeout is small).
+	macLearnPollInterval = 3 * time.Second
 )
 
 // Drive pushes every declared flow across the realized topology: it
@@ -71,6 +84,9 @@ func Drive(ctx context.Context, opts DriveOptions) error {
 	d := &driver{ctx: ctx, opts: opts}
 
 	if err := d.recheckAttach(); err != nil {
+		return err
+	}
+	if err := d.waitMACsLearned(); err != nil {
 		return err
 	}
 	if err := d.captureBaseline(); err != nil {
@@ -114,6 +130,78 @@ func (d *driver) recheckAttach() error {
 	}
 	d.logf("attach recheck: ok (attached_interfaces %.0f ≥ %.0f)", snap.AttachedInterfaces, rec.Target)
 	return nil
+}
+
+// waitMACsLearned gates the drive on every created VM MAC being
+// resolvable by EVERY configured agent — the fix for the learning race
+// where traffic pushed before the agents' maps know a just-created
+// port classifies as zone="miss" forever (dst_zone is baked into the
+// flow key at packet time). Multi-agent because zone classification
+// needs the PEER's MAC on the peer VM's node, not just the local one.
+// Skips (with a log line) when the run-state predates MAC recording.
+func (d *driver) waitMACsLearned() error {
+	var want []ResourceRef
+	for _, p := range d.opts.State.Ports {
+		if p.MAC != "" {
+			want = append(want, p)
+		}
+	}
+	if len(want) == 0 {
+		d.logf("mac-learn gate: run-state records no port MACs; skipping")
+		return nil
+	}
+	urls := agentURLs(d.opts.Config)
+
+	timeout := d.opts.MACLearnTimeout
+	if timeout <= 0 {
+		timeout = DefaultMACLearnTimeout
+	}
+	interval := macLearnPollInterval
+	if interval > timeout/10 {
+		interval = timeout / 10
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		missing, err := d.unresolvedMACs(urls, want)
+		if err != nil {
+			return err
+		}
+		if len(missing) == 0 {
+			d.logf("mac-learn gate: ok (%d MAC(s) resolved on %d agent(s))", len(want), len(urls))
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("mac-learn gate: not resolved after %s: %s — agents have not learned the new port(s) (Kafka down and the periodic reconcile not yet run?)",
+				timeout, strings.Join(missing, ", "))
+		}
+		select {
+		case <-d.ctx.Done():
+			return d.ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+// unresolvedMACs returns a description of every (port, agent) pair the
+// gate is still waiting on: the agent has not learned the MAC, or —
+// stale ghost from MAC reuse — still resolves it to a different tenant.
+func (d *driver) unresolvedMACs(urls []string, want []ResourceRef) ([]string, error) {
+	var missing []string
+	for _, p := range want {
+		for _, u := range urls {
+			lk, err := d.opts.Metrics.LookupMAC(d.ctx, u, p.MAC)
+			if err != nil {
+				return nil, fmt.Errorf("mac-learn gate: %w", err)
+			}
+			switch {
+			case !lk.Found:
+				missing = append(missing, fmt.Sprintf("%s (%s) unknown to %s", p.DSLID, p.MAC, u))
+			case lk.TenantID != "" && p.ProjectID != "" && lk.TenantID != p.ProjectID:
+				missing = append(missing, fmt.Sprintf("%s (%s) stale tenant %s on %s", p.DSLID, p.MAC, lk.TenantID, u))
+			}
+		}
+	}
+	return missing, nil
 }
 
 // captureBaseline snapshots lachesis_bytes_total across all agents and

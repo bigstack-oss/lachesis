@@ -74,6 +74,11 @@ type ResourceRef struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	ProjectID string `json:"project_id"`
+	// MAC is the port's Neutron-assigned (or step-pinned) MAC address,
+	// recorded on VM-port refs only. Drive's MAC-learn gate polls the
+	// agents until every recorded MAC resolves before pushing traffic.
+	// Empty on non-port refs and on run-states predating the gate.
+	MAC string `json:"mac,omitempty"`
 }
 
 // FIPRef records one allocated floating IP and the VM it fronts.

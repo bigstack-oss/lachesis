@@ -76,6 +76,7 @@ func (e *streamExec) Run(ctx context.Context, addr, command string) (string, err
 // re-buckets tenant A's bytes to "unknown", and the reborn MAC hands
 // tenant A's history to tenant B.
 type stepMetrics struct {
+	instantMACs
 	env   *fakeEnv
 	cloud *fakeCloud
 	exec  *streamExec
@@ -83,6 +84,19 @@ type stepMetrics struct {
 	bug         bool
 	frozenSweep bool // the sweep never fires: settled stays flat
 	noSettled   bool // agent predates the fold: metric absent entirely
+}
+
+// LookupMAC mirrors a fully-synced agent: a MAC resolves to the
+// project of the live (undeleted) port carrying it. Shadows the
+// embedded tenant-agnostic instantMACs so the mac-reuse loop
+// exercises the MAC-learn gate's stale-tenant rule (lachesis#153).
+func (m *stepMetrics) LookupMAC(_ context.Context, _, mac string) (MACLookup, error) {
+	for pid, pmac := range m.cloud.portMAC {
+		if pmac == mac && !m.cloud.deleted["port:"+pid] {
+			return MACLookup{Found: true, TenantID: m.cloud.portProject[pid]}, nil
+		}
+	}
+	return MACLookup{}, nil
 }
 
 const drivenBytes = float64(2 << 20)
@@ -166,6 +180,11 @@ func stepsFixture(t *testing.T, mm *stepMetrics, sc *Scenario) (*fakeCloud, *str
 		Exec:       exec,
 		Log:        io.Discard,
 		SinkDelay:  -1,
+		// Small gate timeout: with a truthful run-state the MAC-learn
+		// gate resolves instantly against the fake cloud; a stale dead
+		// port ref (the lachesis#153 mac-reuse regression) fails fast
+		// here instead of hanging the suite.
+		MACLearnTimeout: time.Second,
 	})
 	return cloud, exec, statePath, rep, err
 }
@@ -188,32 +207,34 @@ func TestSteps_MACReuseFullLoop(t *testing.T) {
 		t.Fatalf("servers booted = %d, want 4 (3 realized + 1 deferred)", len(cloud.servers))
 	}
 
-	// The reborn port pinned exactly the deleted VM's MAC.
+	// The reborn port pinned exactly the deleted VM's MAC. vm-a's ref
+	// is gone from the run-state (DeleteVMStep keeps the inventory
+	// truthful — the MAC-learn gate must never wait on a dead port),
+	// so read the ground truth from the fake cloud: the first created
+	// port is vm-a's, and it must be deleted with its MAC reborn on
+	// the pinned-MAC port.
 	rs, err := LoadRunState(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	vmAPort := ""
 	for _, p := range rs.Ports {
 		if p.DSLID == "vm-a" {
-			vmAPort = p.ID
+			t.Errorf("deleted vm-a's port ref still in run-state: %+v", p)
 		}
 	}
-	wantMAC := cloud.portMAC[vmAPort]
 	var rebornMAC string
 	for _, p := range cloud.ports {
 		if p.MACAddress != "" {
 			rebornMAC = p.MACAddress
 		}
 	}
-	if wantMAC == "" || rebornMAC != wantMAC {
-		t.Errorf("reborn port MAC = %q, want the deleted VM's %q", rebornMAC, wantMAC)
+	macCount := map[string]int{}
+	for _, m := range cloud.portMAC {
+		macCount[m]++
 	}
-
-	// vm-a was deleted mid-run (before the final Down), and teardown
-	// ran; the report survives it.
-	if !cloud.deleted["port:"+vmAPort] {
-		t.Error("vm-a's port was not deleted")
+	if rebornMAC == "" || macCount[rebornMAC] != 2 {
+		t.Errorf("reborn MAC %q appears on %d port(s), want 2 (vm-a's auto-assigned + the pinned reborn)",
+			rebornMAC, macCount[rebornMAC])
 	}
 	if len(cloud.downOps) == 0 {
 		t.Error("down did not run")
@@ -369,6 +390,7 @@ func (e *extExec) Run(ctx context.Context, addr, command string) (string, error)
 // counters follow the ping drive under the deterministic pick, and the
 // per-server family mirrors the tenant family for the one VM.
 type extPathMetrics struct {
+	instantMACs
 	env   *fakeEnv
 	cloud *fakeCloud
 	exec  *extExec
