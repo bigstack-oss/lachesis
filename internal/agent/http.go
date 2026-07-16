@@ -14,6 +14,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/debug"
 	"github.com/bigstack-oss/lachesis/internal/runtime"
+	"github.com/bigstack-oss/lachesis/internal/state"
 )
 
 // openHTTP wires the agent's HTTP surface: the Prometheus registry,
@@ -33,7 +34,11 @@ func (a *Agent) openHTTP(opts Options) error {
 		Anomalies: a.neutron.Anomalies,
 		LastSync:  a.neutron.LastSyncTime,
 		MACLookup: a.meta.Lookup,
-		Fallback:  mgr.DebugHandler(),
+		Flows: func() []state.Entry {
+			ents, _ := a.state.SnapshotWithSettled(nil, nil)
+			return ents
+		},
+		Fallback: mgr.DebugHandler(),
 	})
 	handler := buildHTTPHandler(reg, dbg.Handler())
 

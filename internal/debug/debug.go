@@ -28,6 +28,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/state"
 )
 
 //go:embed templates/*.html
@@ -52,6 +53,10 @@ type Options struct {
 	// form) against the userspace mirror. nil renders the MAC
 	// section as not-found.
 	MACLookup func(mac uint64) (*metadata.TenantMeta, bool)
+	// Flows returns a snapshot of the live GlobalState flow rows for
+	// the /debug/flows MAC-filtered query. nil serves empty results
+	// (agents wired without state access).
+	Flows func() []state.Entry
 	// Fallback handles /debug routes this package does not own
 	// (runtime.Manager's /debug/config, /debug/log-level). nil
 	// means unknown /debug paths 404.
@@ -95,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /debug", s.handleIndex)
 	mux.HandleFunc("GET /debug/anomalies", s.handleAnomalies)
 	mux.HandleFunc("GET /debug/lookup", s.handleLookup)
+	mux.HandleFunc("GET /debug/flows", s.handleFlows)
 	mux.HandleFunc("GET /debug/zones", s.handleZones)
 	mux.HandleFunc("GET /debug/topology", s.handleTopology)
 	mux.HandleFunc("GET /debug/topology/{tenant}", s.handleTopologyTenant)
