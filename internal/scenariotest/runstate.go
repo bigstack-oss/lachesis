@@ -74,11 +74,15 @@ type ResourceRef struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	ProjectID string `json:"project_id"`
-	// MAC is the port's Neutron-assigned (or step-pinned) MAC address,
-	// recorded on VM-port refs only. Drive's MAC-learn gate polls the
-	// agents until every recorded MAC resolves before pushing traffic.
+	// MAC is the port's Neutron-assigned (or step-pinned) MAC address.
+	// On VM-port refs it feeds drive's MAC-learn gate; on
+	// router-interface refs (RouterInterface true) it feeds
+	// [AssertFlowPeerStep]'s peer checks — the gate must SKIP those,
+	// because router MACs are deliberately never in mac_tenant_map.
 	// Empty on non-port refs and on run-states predating the gate.
 	MAC string `json:"mac,omitempty"`
+	// RouterInterface marks a router-interface port ref (never a VM's).
+	RouterInterface bool `json:"router_interface,omitempty"`
 }
 
 // FIPRef records one allocated floating IP and the VM it fronts.

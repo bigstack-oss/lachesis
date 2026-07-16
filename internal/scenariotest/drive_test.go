@@ -48,6 +48,10 @@ func (instantMACs) LookupMAC(context.Context, string, string) (MACLookup, error)
 	return MACLookup{Found: true}, nil
 }
 
+func (instantMACs) LookupFlows(context.Context, string, string) ([]FlowRow, error) {
+	return nil, nil
+}
+
 // driveMetrics reports a healthy cluster consistent with driveState's
 // attach record.
 type driveMetrics struct {
@@ -393,5 +397,34 @@ func TestDrive_MACGatePersistentLookupErrorInTimeout(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "mac-learn gate") || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("want gate timeout carrying the lookup error, got %v", err)
+	}
+}
+
+// TestDrive_MACGateSkipsRouterInterfaceRefs: router-interface MACs are
+// recorded for the flow-peer assertions but are deliberately never in
+// mac_tenant_map — the gate must not wait on them (the lachesis#146
+// live regression: an 8-minute timeout on a MAC that can never
+// resolve).
+func TestDrive_MACGateSkipsRouterInterfaceRefs(t *testing.T) {
+	sc := sameTenantScenario()
+	sc.Flows = nil
+	calls := 0
+	// The VM MAC resolves immediately; the fake never resolves anything
+	// else — if the gate consulted the rif ref, it would time out.
+	m := learnMetrics{driveMetrics: driveMetrics{attached: 7}, learnAfter: 0, calls: &calls, tenant: "p1"}
+	rs := macGateState()
+	rs.Ports = append(rs.Ports, ResourceRef{
+		DSLID: "p-rif-r-1", ID: "port-9", ProjectID: "p1",
+		MAC: "fa:16:3e:00:00:99", RouterInterface: true,
+	})
+
+	statePath := t.TempDir() + "/state.json"
+	err := Drive(context.Background(), DriveOptions{
+		Config: testConfig(), Scenario: sc, State: rs, StatePath: statePath,
+		Metrics: m, Exec: &fakeExec{}, Log: io.Discard,
+		SinkDelay: -1, MACLearnTimeout: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Drive must not gate on router-interface refs: %v", err)
 	}
 }

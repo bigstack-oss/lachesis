@@ -317,7 +317,11 @@ func (r *realizer) routerInterfaces(snap neutron.Snapshot) error {
 		if err != nil {
 			return err
 		}
-		r.rs.Ports = append(r.rs.Ports, ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj})
+		mac, err := r.opts.Cloud.PortMAC(r.ctx, portID)
+		if err != nil {
+			return err
+		}
+		r.rs.Ports = append(r.rs.Ports, ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj, MAC: mac, RouterInterface: true})
 		if err := r.save(); err != nil {
 			return err
 		}
