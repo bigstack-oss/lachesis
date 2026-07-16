@@ -1,6 +1,9 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // GCConfig groups the tunables for pressure-relief eviction of the
 // kernel telemetry_map (docs/DESIGN.md §3.1). All three are
@@ -30,6 +33,15 @@ type GCConfig struct {
 	// successive scrapes rather than one long pause. Raising it drains
 	// faster at the cost of a longer stall on each scrape that evicts.
 	PressureMaxPerPass int `yaml:"pressure_max_per_pass"`
+	// GhostGrace is the Lingering-Ghost TTL (docs/DESIGN.md §3.4): how
+	// long a deleted port's metadata survives so dying FIN/RST packets
+	// still attribute. Shorter = less MAC-reuse exposure; longer =
+	// better teardown-tail attribution. Hot-reloadable; applies to
+	// ghosts marked after the change.
+	GhostGrace time.Duration `yaml:"ghost_grace"`
+	// GhostSweepInterval is the ghost-sweep cadence. Hot-reloadable
+	// (takes effect at the sweeper's next tick).
+	GhostSweepInterval time.Duration `yaml:"ghost_sweep_interval"`
 }
 
 // gcDefaults returns the pressure-relief baseline from docs/DESIGN.md
@@ -41,6 +53,8 @@ func gcDefaults() GCConfig {
 		PressureHighWatermark: 0.80,
 		PressureLowWatermark:  0.75,
 		PressureMaxPerPass:    1000,
+		GhostGrace:            60 * time.Second,
+		GhostSweepInterval:    60 * time.Second,
 	}
 }
 
@@ -55,6 +69,12 @@ func (c GCConfig) Validate() error {
 	}
 	if c.PressureLowWatermark <= 0 || c.PressureLowWatermark >= c.PressureHighWatermark {
 		return fmt.Errorf("pressure_low_watermark %v must be in (0, pressure_high_watermark=%v)", c.PressureLowWatermark, c.PressureHighWatermark)
+	}
+	if c.GhostGrace <= 0 {
+		return fmt.Errorf("ghost_grace %v must be > 0 — zero grace kills dying-flow attribution (docs/DESIGN.md §3.4)", c.GhostGrace)
+	}
+	if c.GhostSweepInterval <= 0 {
+		return fmt.Errorf("ghost_sweep_interval %v must be > 0", c.GhostSweepInterval)
 	}
 	if c.PressureMaxPerPass < 1 {
 		return fmt.Errorf("pressure_max_per_pass %d must be >= 1", c.PressureMaxPerPass)

@@ -26,34 +26,42 @@
 //  4. Add the section's Validate call to [Config.Validate].
 package config
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/bigstack-oss/lachesis/internal/tunables"
+)
 
 // Config is the agent's complete runtime configuration.
 type Config struct {
-	Version string        `yaml:"version"`
-	HTTP    HTTPConfig    `yaml:"http"`
-	BPF     BPFConfig     `yaml:"bpf"`
-	Scrape  ScrapeConfig  `yaml:"scrape"`
-	Logging LoggingConfig `yaml:"logging"`
-	WAL     WALConfig     `yaml:"wal"`
-	Neutron NeutronConfig `yaml:"neutron"`
-	GC      GCConfig      `yaml:"gc"`
-	Kafka   KafkaConfig   `yaml:"kafka"`
+	Version    string           `yaml:"version"`
+	HTTP       HTTPConfig       `yaml:"http"`
+	BPF        BPFConfig        `yaml:"bpf"`
+	Scrape     ScrapeConfig     `yaml:"scrape"`
+	Logging    LoggingConfig    `yaml:"logging"`
+	WAL        WALConfig        `yaml:"wal"`
+	Neutron    NeutronConfig    `yaml:"neutron"`
+	GC         GCConfig         `yaml:"gc"`
+	Kafka      KafkaConfig      `yaml:"kafka"`
+	Reconcile  ReconcileConfig  `yaml:"reconcile"`
+	Unresolved UnresolvedConfig `yaml:"unresolved"`
 }
 
 // Defaults returns the production-ready configuration baseline. Each
 // section's defaults helper lives in its own file.
 func Defaults() Config {
 	return Config{
-		Version: Version,
-		HTTP:    httpDefaults(),
-		BPF:     bpfDefaults(),
-		Scrape:  scrapeDefaults(),
-		Logging: loggingDefaults(),
-		WAL:     walDefaults(),
-		Neutron: neutronDefaults(),
-		GC:      gcDefaults(),
-		Kafka:   kafkaDefaults(),
+		Version:    Version,
+		HTTP:       httpDefaults(),
+		BPF:        bpfDefaults(),
+		Scrape:     scrapeDefaults(),
+		Logging:    loggingDefaults(),
+		WAL:        walDefaults(),
+		Neutron:    neutronDefaults(),
+		GC:         gcDefaults(),
+		Kafka:      kafkaDefaults(),
+		Reconcile:  reconcileDefaults(),
+		Unresolved: unresolvedDefaults(),
 	}
 }
 
@@ -88,5 +96,30 @@ func (c Config) Validate() error {
 	if err := c.Kafka.Validate(); err != nil {
 		return fmt.Errorf("kafka: %w", err)
 	}
+	if err := c.Reconcile.Validate(); err != nil {
+		return fmt.Errorf("reconcile: %w", err)
+	}
+	if err := c.Unresolved.Validate(); err != nil {
+		return fmt.Errorf("unresolved: %w", err)
+	}
 	return nil
+}
+
+// Tunables projects the hot-reloadable subset of the (validated)
+// config into the snapshot shape consumers read live. The projection
+// is the single place that decides WHICH fields are hot — a field
+// absent here is load-time by construction.
+func (c Config) Tunables() tunables.Values {
+	return tunables.Values{
+		GhostGrace:            c.GC.GhostGrace,
+		GhostSweepInterval:    c.GC.GhostSweepInterval,
+		ReconcileInterval:     c.Reconcile.Interval,
+		ScrapeInterval:        c.Scrape.Interval,
+		WALFlushInterval:      c.WAL.FlushInterval,
+		UnresolvedTTL:         c.Unresolved.TTL,
+		UnresolvedCap:         c.Unresolved.Cap,
+		PressureHighWatermark: c.GC.PressureHighWatermark,
+		PressureLowWatermark:  c.GC.PressureLowWatermark,
+		PressureMaxPerPass:    c.GC.PressureMaxPerPass,
+	}
 }
