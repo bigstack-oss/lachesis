@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -144,5 +145,16 @@ func TestHTTPMetrics_LookupMAC(t *testing.T) {
 	}
 	if lk.Found {
 		t.Errorf("missing mac_tenant_map section must decode as not-found: %+v", lk)
+	}
+}
+
+// TestHTTPMetrics_LookupMACRejectsUnexpectedURL: a metrics URL that
+// doesn't end in /metrics can't derive the debug endpoint — fail with
+// a config-pointing error instead of GETting a guessed URL.
+func TestHTTPMetrics_LookupMACRejectsUnexpectedURL(t *testing.T) {
+	h := NewHTTPMetrics(nil)
+	_, err := h.LookupMAC(context.Background(), "http://cc1:9090/metrics/", "fa:16:3e:00:00:01")
+	if err == nil || !strings.Contains(err.Error(), "metrics_url") {
+		t.Fatalf("want config-pointing derivation error, got %v", err)
 	}
 }

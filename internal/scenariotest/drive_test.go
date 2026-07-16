@@ -336,3 +336,62 @@ func TestDrive_MACGateSkipsPreGateRunState(t *testing.T) {
 		t.Errorf("gate polled %d time(s) on a MAC-less run-state, want 0", calls)
 	}
 }
+
+// flakyMACs errors the first failFirst lookups — an agent briefly
+// unreachable mid-gate — then resolves.
+type flakyMACs struct {
+	driveMetrics
+	failFirst int
+	calls     *int
+}
+
+func (m flakyMACs) LookupMAC(context.Context, string, string) (MACLookup, error) {
+	*m.calls++
+	if *m.calls <= m.failFirst {
+		return MACLookup{}, fmt.Errorf("transient: connection refused")
+	}
+	return MACLookup{Found: true, TenantID: "p1"}, nil
+}
+
+// TestDrive_MACGateToleratesTransientLookupErrors: a lookup error is
+// "unresolved, keep polling", not a drive abort — one refused
+// connection during a minutes-long gate must not kill the run.
+func TestDrive_MACGateToleratesTransientLookupErrors(t *testing.T) {
+	sc := sameTenantScenario()
+	sc.Flows = nil
+	calls := 0
+	m := flakyMACs{driveMetrics: driveMetrics{attached: 7}, failFirst: 2, calls: &calls}
+
+	statePath := t.TempDir() + "/state.json"
+	err := Drive(context.Background(), DriveOptions{
+		Config: testConfig(), Scenario: sc, State: macGateState(), StatePath: statePath,
+		Metrics: m, Exec: &fakeExec{}, Log: io.Discard,
+		SinkDelay: -1, MACLearnTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Drive must survive transient lookup errors: %v", err)
+	}
+	if calls <= 2 {
+		t.Errorf("gate polled %d time(s), want > 2 (kept polling through the errors)", calls)
+	}
+}
+
+// TestDrive_MACGatePersistentLookupErrorInTimeout: a lookup error that
+// never clears still fails the gate at the deadline, with the error
+// verbatim in the message.
+func TestDrive_MACGatePersistentLookupErrorInTimeout(t *testing.T) {
+	sc := sameTenantScenario()
+	sc.Flows = nil
+	calls := 0
+	m := flakyMACs{driveMetrics: driveMetrics{attached: 7}, failFirst: 1 << 30, calls: &calls}
+
+	statePath := t.TempDir() + "/state.json"
+	err := Drive(context.Background(), DriveOptions{
+		Config: testConfig(), Scenario: sc, State: macGateState(), StatePath: statePath,
+		Metrics: m, Exec: &fakeExec{}, Log: io.Discard,
+		SinkDelay: -1, MACLearnTimeout: 200 * time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "mac-learn gate") || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("want gate timeout carrying the lookup error, got %v", err)
+	}
+}

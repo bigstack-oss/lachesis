@@ -157,7 +157,11 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 // mac_tenant_map section decodes as not-found — the endpoint reports
 // what it saw, it does not 404 on misses.
 func (h *HTTPMetrics) LookupMAC(ctx context.Context, metricsURL, mac string) (MACLookup, error) {
-	u := strings.TrimSuffix(metricsURL, "/metrics") + "/debug/lookup?mac=" + url.QueryEscape(mac)
+	base, ok := strings.CutSuffix(metricsURL, "/metrics")
+	if !ok {
+		return MACLookup{}, fmt.Errorf("lookup: metrics URL %q does not end in /metrics — cannot derive /debug/lookup (check cluster.agents[].metrics_url)", metricsURL)
+	}
+	u := base + "/debug/lookup?mac=" + url.QueryEscape(mac)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return MACLookup{}, fmt.Errorf("lookup: build request %s: %w", u, err)
