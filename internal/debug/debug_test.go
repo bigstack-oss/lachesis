@@ -11,6 +11,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/state"
 )
 
 // testSnapshot is a small but fully-populated snapshot: two tenants,
@@ -227,5 +228,57 @@ func TestHumanAge(t *testing.T) {
 		if got := humanAge(tc.d); got != tc.want {
 			t.Errorf("humanAge(%v) = %q, want %q", tc.d, got, tc.want)
 		}
+	}
+}
+
+// TestFlows_JSON: /debug/flows filters the live rows by MAC (either
+// side), decodes keys to operator strings, and 400s without a mac.
+func TestFlows_JSON(t *testing.T) {
+	vm := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	rtr := [6]uint8{0xfa, 0x16, 0x3e, 0, 0, 0x10}
+	other := [6]uint8{0xbb, 0, 0, 0, 0, 2}
+	srv := New(Options{Flows: func() []state.Entry {
+		return []state.Entry{
+			{Key: bpf.FlowKey{SrcMac: vm, DstMac: rtr, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal},
+				Total: bpf.FlowMetrics{Bytes: 900, Packets: 9}},
+			{Key: bpf.FlowKey{SrcMac: other, DstMac: vm, Direction: bpf.DirectionEgress, DstZone: bpf.ZoneSameTenant},
+				Total: bpf.FlowMetrics{Bytes: 100, Packets: 1}},
+			{Key: bpf.FlowKey{SrcMac: other, DstMac: other, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneInfra},
+				Total: bpf.FlowMetrics{Bytes: 50, Packets: 1}},
+		}
+	}})
+
+	rec := get(t, srv.Handler(), "/debug/flows?mac=fa:16:3e:00:00:10")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var res struct {
+		Total int `json:"total"`
+		Rows  []struct {
+			SrcMAC string `json:"src_mac"`
+			DstMAC string `json:"dst_mac"`
+			Zone   string `json:"zone"`
+			Bytes  uint64 `json:"bytes"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res.Total != 1 || len(res.Rows) != 1 {
+		t.Fatalf("rows = %+v, want exactly the router-peer flow", res)
+	}
+	r := res.Rows[0]
+	if r.DstMAC != "fa:16:3e:00:00:10" || r.Zone != "external" || r.Bytes != 900 {
+		t.Errorf("row = %+v, want dst router MAC, external, 900B", r)
+	}
+
+	if rec := get(t, srv.Handler(), "/debug/flows"); rec.Code != http.StatusBadRequest {
+		t.Errorf("missing mac: status = %d, want 400", rec.Code)
+	}
+	// nil accessor serves empty, not 404 (consumers distinguish
+	// "no flows" from "no endpoint").
+	empty := New(Options{})
+	if rec := get(t, empty.Handler(), "/debug/flows?mac=aa:00:00:00:00:01"); rec.Code != http.StatusOK {
+		t.Errorf("nil accessor: status = %d, want 200", rec.Code)
 	}
 }
