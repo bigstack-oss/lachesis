@@ -73,7 +73,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(lachesis_bytes_total, tenant_id)",
+          "query": "query_result(lachesis_tenant_info)",
           "refId": "tenant"
         },
         "refresh": 2,
@@ -90,7 +90,8 @@
           ]
         },
         "sort": 1,
-        "options": []
+        "options": [],
+        "regex": "/name=\"(?<text>[^\"]+)\".*tenant_id=\"(?<value>[^\"]+)\"/"
       },
       {
         "name": "zone",
@@ -157,7 +158,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(lachesis_server_bytes_total, server_id)",
+          "query": "query_result(lachesis_server_info)",
           "refId": "server"
         },
         "refresh": 2,
@@ -174,7 +175,8 @@
           ]
         },
         "sort": 1,
-        "options": []
+        "options": [],
+        "regex": "/name=\"(?<text>[^\"]+)\".*server_id=\"(?<value>[^\"]+)\"/"
       }
     ]
   },
@@ -218,7 +220,16 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[1m]))",
+          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[1m])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)",
+          "legendFormat": "{{name}} ({{tenant_id}})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[1m])) unless on(tenant_id) lachesis_tenant_info",
           "legendFormat": "{{tenant_id}}",
           "datasource": {
             "type": "prometheus",
@@ -243,12 +254,16 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
             "max"
           ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
         }
       }
     },
@@ -270,7 +285,16 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[1m]))",
+          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[1m])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)",
+          "legendFormat": "{{name}} ({{tenant_id}})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[1m])) unless on(tenant_id) lachesis_tenant_info",
           "legendFormat": "{{tenant_id}}",
           "datasource": {
             "type": "prometheus",
@@ -295,12 +319,16 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
             "max"
           ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
         }
       }
     },
@@ -322,7 +350,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (tenant_id, zone, direction) (lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})",
+          "expr": "(\n  sum by (tenant_id, zone, direction) (lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)\n)\nor\nlabel_replace(\n  sum by (tenant_id, zone, direction) (lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    unless on(tenant_id) lachesis_tenant_info,\n  \"name\", \"\", \"\", \"\"\n)",
           "format": "table",
           "instant": true,
           "datasource": {
@@ -342,6 +370,13 @@
             },
             "renameByName": {
               "Value": "bytes"
+            },
+            "indexByName": {
+              "tenant_id": 0,
+              "name": 1,
+              "zone": 2,
+              "direction": 3,
+              "Value": 4
             }
           }
         },
@@ -413,12 +448,16 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
             "max"
           ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
         }
       }
     },
@@ -478,12 +517,16 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
             "max"
           ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
         }
       }
     },
@@ -530,12 +573,16 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
             "max"
           ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
         }
       }
     },
@@ -570,7 +617,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "topk(15, sum by (server_id, tenant_id) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[5m])))",
+          "expr": "(\n  topk(15, sum by (server_id, tenant_id) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[5m])))\n    * on(server_id) group_left(name) max by (server_id, name) (lachesis_server_info)\n)\nor\nlabel_replace(\n  topk(15, sum by (server_id, tenant_id) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[5m])))\n    unless on(server_id) lachesis_server_info,\n  \"name\", \"\", \"\", \"\"\n)",
           "format": "table",
           "instant": true,
           "datasource": {
@@ -590,6 +637,12 @@
             },
             "renameByName": {
               "Value": "Bps"
+            },
+            "indexByName": {
+              "server_id": 0,
+              "name": 1,
+              "tenant_id": 2,
+              "Value": 3
             }
           }
         },
@@ -636,7 +689,16 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (server_id, direction) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[1m]))",
+          "expr": "sum by (server_id, direction) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[1m])) * on(server_id) group_left(name) max by (server_id, name) (lachesis_server_info)",
+          "legendFormat": "{{name}} ({{server_id}}) {{direction}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (server_id, direction) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[1m])) unless on(server_id) lachesis_server_info",
           "legendFormat": "{{server_id}} {{direction}}",
           "datasource": {
             "type": "prometheus",
@@ -661,12 +723,16 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
             "max"
           ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
         }
       }
     }
