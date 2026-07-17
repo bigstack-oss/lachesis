@@ -32,6 +32,17 @@ type RunOptions struct {
 	// but teardown still runs to completion under [teardownTimeout].
 	HardStop context.Context
 
+	// State, when non-nil, resumes against an already-realized
+	// topology (a prior `run --keep` or `up`): realize is skipped, the
+	// full preflight narrows to the agent checks (the realize-only
+	// prerequisites no longer matter to kept VMs), and the step script
+	// runs directly — the drive step's attach recheck re-verifies the
+	// gate against the state's attach record. StatePath must be the
+	// loaded file's own path; RunID is ignored (the state's is used).
+	// Teardown semantics are unchanged (Keep still leaves the topology
+	// up).
+	State *RunState
+
 	// Keep skips the teardown, leaving the topology up for debugging.
 	// The run-state records everything a later `down` needs.
 	Keep bool
@@ -45,7 +56,9 @@ type RunOptions struct {
 }
 
 // Run composes the whole loop: preflight → up → the scenario's step
-// script → down. An empty [Scenario.Steps] runs the classic linear
+// script → down. With [RunOptions.State] set it resumes instead:
+// realize is skipped and the script runs against the kept topology.
+// An empty [Scenario.Steps] runs the classic linear
 // script — drive every declared flow, assert every declared
 // expectation — so plain scenarios behave as always; a scripted
 // scenario (e.g. mac-reuse) declares its own step order instead.
@@ -62,6 +75,10 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
+	if opts.State != nil && opts.State.TornDown {
+		// Checked before any network work: the answer is in the file.
+		return AssertReport{}, fmt.Errorf("run: run-state %s is already torn down — start a fresh run", opts.StatePath)
+	}
 	if opts.ReportPath == "" {
 		opts.ReportPath = DefaultReportPath(opts.StatePath)
 	}
@@ -70,29 +87,39 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 		steps = defaultSteps(opts.Scenario)
 	}
 
-	pre := Preflight(ctx, opts.Config, opts.Scenario, opts.Cloud, opts.Metrics)
-	if !pre.OK {
-		for _, c := range pre.Checks {
-			if !c.OK {
-				opts.Log.Error("preflight check failed", "check", c.Name, "detail", c.Detail)
+	if opts.State == nil {
+		pre := Preflight(ctx, opts.Config, opts.Scenario, opts.Cloud, opts.Metrics)
+		if !pre.OK {
+			for _, c := range pre.Checks {
+				if !c.OK {
+					opts.Log.Error("preflight check failed", "check", c.Name, "detail", c.Detail)
+				}
 			}
+			return AssertReport{}, fmt.Errorf("run: preflight not ready")
 		}
-		return AssertReport{}, fmt.Errorf("run: preflight not ready")
+	} else if err := preflightResume(ctx, opts.Config, opts.Metrics); err != nil {
+		return AssertReport{}, err
 	}
 	if err := checkStepMetrics(ctx, opts, steps); err != nil {
 		return AssertReport{}, err
 	}
 	opts.Log.Info("preflight ready")
 
-	rs, upErr := Realize(ctx, RealizeOptions{
-		Config:    opts.Config,
-		Scenario:  opts.Scenario,
-		RunID:     opts.RunID,
-		StatePath: opts.StatePath,
-		Cloud:     opts.Cloud,
-		Metrics:   opts.Metrics,
-		Log:       opts.Log,
-	})
+	rs := opts.State
+	var upErr error
+	if rs == nil {
+		rs, upErr = Realize(ctx, RealizeOptions{
+			Config:    opts.Config,
+			Scenario:  opts.Scenario,
+			RunID:     opts.RunID,
+			StatePath: opts.StatePath,
+			Cloud:     opts.Cloud,
+			Metrics:   opts.Metrics,
+			Log:       opts.Log,
+		})
+	} else {
+		opts.Log.Info("resuming against kept topology", "run_id", rs.RunID, "state", opts.StatePath)
+	}
 	// From here on, anything recorded in rs gets torn down on every
 	// exit path (unless Keep) — including a partial `up`.
 	defer func() {
@@ -155,6 +182,25 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 	}
 	opts.Log.Info("report written", "path", opts.ReportPath)
 	return report, nil
+}
+
+// preflightResume is the resume-path replacement for the full
+// preflight: every agent reachable and exposing the required families.
+// The realize-only prerequisites (image, flavor, keypair, secgroup,
+// external network) are deliberately not re-checked — the kept VMs no
+// longer depend on them, and a prerequisite deleted after `up` must
+// not block iterating against the topology it built.
+func preflightResume(ctx context.Context, cfg Config, m MetricsSource) error {
+	for _, u := range agentURLs(cfg) {
+		res, err := m.Scrape(ctx, u)
+		if err != nil {
+			return fmt.Errorf("run: scrape %s: %w", u, err)
+		}
+		if err := requiredMetrics(res); err != nil {
+			return fmt.Errorf("run: agent at %s: %w", u, err)
+		}
+	}
+	return nil
 }
 
 // checkStepMetrics scrapes each agent once and verifies it exposes

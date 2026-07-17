@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -30,7 +31,12 @@ gate, and metrics baselines); --all runs every registered scenario in registry
 order, minus any named by --skip. A failing scenario is torn down and the
 suite continues — the exit code is non-zero if any failed — and the run ends
 with a suite summary. Each scenario keeps its own run-state and report files,
-so --state/--report only apply when running a single scenario.`,
+so --state/--report only apply when running a single scenario.
+
+With a single scenario, --state pointing at an existing, still-live run-state
+file resumes against that kept topology (the partner of --keep): realize is
+skipped, the attach gate is re-verified, and the step script runs directly. A
+torn-down file (a completed run's leftover) is overwritten by a fresh run.`,
 		Args: func(_ *cobra.Command, args []string) error {
 			switch {
 			case all && len(args) > 0:
@@ -123,6 +129,33 @@ func twoStageContexts(parent context.Context, sig <-chan os.Signal, release func
 	return runCtx, hardCtx, func() { release(); runCancel(); hardCancel() }
 }
 
+// resolveResume decides what an existing --state file means: a
+// still-live one resumes against its kept topology (the partner of
+// --keep); a torn-down one is a completed run's leftover and gets
+// overwritten by a fresh run (the pre-resume behavior, so scripts
+// pinning --state to a fixed path keep working). A file for a
+// different scenario is an error, as it is for drive/assert/down.
+func resolveResume(statePath string, sc *scenariotest.Scenario, log *slog.Logger) (*scenariotest.RunState, error) {
+	if statePath == "" {
+		return nil, nil
+	}
+	rs, err := loadRunState(statePath, sc, "run")
+	switch {
+	case err == nil && rs.TornDown:
+		log.Info("existing run-state is torn down — starting a fresh run over it", "state", statePath)
+		return nil, nil
+	case err == nil:
+		if len(sc.Steps) > 0 {
+			log.Warn("resuming a step-scripted scenario — its script may not be idempotent against the already-mutated topology")
+		}
+		return rs, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, nil // fresh run writing there
+	default:
+		return nil, err
+	}
+}
+
 // runOne is the single-scenario path — behavior identical to `run`
 // before multi-scenario support.
 func runOne(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, sc *scenariotest.Scenario, keep bool) error {
@@ -130,9 +163,17 @@ func runOne(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, 
 	if err != nil {
 		return err
 	}
-	runID, err := scenariotest.NewRunID()
+
+	resume, err := resolveResume(opts.state, sc, log)
 	if err != nil {
-		return fmt.Errorf("run: %w", err)
+		return err
+	}
+
+	runID := ""
+	if resume == nil {
+		if runID, err = scenariotest.NewRunID(); err != nil {
+			return fmt.Errorf("run: %w", err)
+		}
 	}
 	state := opts.state
 	if state == "" {
@@ -158,6 +199,7 @@ func runOne(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, 
 		Exec:       scenariotest.NewSSHExec(cfg.SSH, log),
 		Log:        log,
 		HardStop:   hardStop,
+		State:      resume,
 		Keep:       keep,
 	})
 	if err != nil {

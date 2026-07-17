@@ -37,16 +37,17 @@ func (m *runMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	}, nil
 }
 
-func runFixture(t *testing.T, keep bool, exec VMExec) (*fakeCloud, AssertReport, string, error) {
+// baseRunOptions is the canonical fixture: fake env/cloud with the T1
+// project pre-seeded (so the tenant UUID is stable and the metrics
+// fake can label its series), climbing metrics, and a temp state
+// path. Tests mutate the returned options (Keep, State, Exec, …).
+func baseRunOptions(t *testing.T) (*fakeCloud, RunOptions) {
 	t.Helper()
 	env := &fakeEnv{baseAttached: 5}
 	cloud := newFakeCloud(env)
-	// Pre-seed the project so the tenant UUID is stable and the
-	// metrics fake can label its series accordingly.
 	cloud.preProjects["scenariotest-T1"] = "uuid-t1"
-	dir := t.TempDir()
-	statePath := dir + "/state.json"
-	rep, err := Run(context.Background(), RunOptions{
+	statePath := t.TempDir() + "/state.json"
+	return cloud, RunOptions{
 		Config:     testConfig(),
 		Scenario:   runScenario(),
 		RunID:      "run1",
@@ -54,12 +55,19 @@ func runFixture(t *testing.T, keep bool, exec VMExec) (*fakeCloud, AssertReport,
 		ReportPath: DefaultReportPath(statePath),
 		Cloud:      cloud,
 		Metrics:    &runMetrics{env: env},
-		Exec:       exec,
+		Exec:       &fakeExec{},
 		Log:        slog.New(slog.DiscardHandler),
-		Keep:       keep,
 		SinkDelay:  -1,
-	})
-	return cloud, rep, statePath, err
+	}
+}
+
+func runFixture(t *testing.T, keep bool, exec VMExec) (*fakeCloud, AssertReport, string, error) {
+	t.Helper()
+	cloud, opts := baseRunOptions(t)
+	opts.Keep = keep
+	opts.Exec = exec
+	rep, err := Run(context.Background(), opts)
+	return cloud, rep, opts.StatePath, err
 }
 
 func TestRun_FullLoop(t *testing.T) {
@@ -100,6 +108,80 @@ func TestRun_KeepSkipsDown(t *testing.T) {
 	}
 }
 
+func TestRun_ResumeSkipsRealize(t *testing.T) {
+	cloud, opts := baseRunOptions(t)
+	first := opts
+	first.Keep = true
+	if _, err := Run(context.Background(), first); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	rs, err := LoadRunState(opts.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serversBefore := len(cloud.servers)
+
+	second := opts
+	second.State = rs
+	rep, err := Run(context.Background(), second)
+	if err != nil {
+		t.Fatalf("resume run: %v", err)
+	}
+	if !rep.OK {
+		t.Fatalf("resume report should pass: %+v", rep)
+	}
+	if len(cloud.servers) != serversBefore {
+		t.Errorf("resume must not realize: %d new server(s) created", len(cloud.servers)-serversBefore)
+	}
+	if len(cloud.downOps) == 0 {
+		t.Error("resume without Keep must tear down")
+	}
+}
+
+func TestRun_ResumeRefusesTornDown(t *testing.T) {
+	_, opts := baseRunOptions(t)
+	rs := NewRunState("run1", opts.Scenario.Name, "scenariotest")
+	rs.TornDown = true
+	opts.State = rs
+	_, err := Run(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "already torn down") {
+		t.Fatalf("want already-torn-down error, got %v", err)
+	}
+}
+
+// blindMetrics scrapes fine but exposes none of the required families
+// — a stand-in for a stopped or ancient agent on the resume path.
+type blindMetrics struct{ instantMACs }
+
+func (blindMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+	return ScrapeResult{Present: map[string]bool{}}, nil
+}
+
+func TestRun_ResumeStillChecksAgents(t *testing.T) {
+	cloud, opts := baseRunOptions(t)
+	first := opts
+	first.Keep = true
+	if _, err := Run(context.Background(), first); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	rs, err := LoadRunState(opts.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	teardownsBefore := len(cloud.downOps)
+
+	second := opts
+	second.State = rs
+	second.Metrics = blindMetrics{}
+	_, err = Run(context.Background(), second)
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("resume against a blind agent must fail the slimmed preflight, got %v", err)
+	}
+	if len(cloud.downOps) != teardownsBefore {
+		t.Errorf("a failed resume preflight must not tear the kept topology down: %v", cloud.downOps[teardownsBefore:])
+	}
+}
+
 // cancelExec cancels the run context the moment drive starts pushing
 // traffic — simulating an operator interrupt mid-run.
 type cancelExec struct{ cancel context.CancelFunc }
@@ -112,29 +194,16 @@ func (e cancelExec) Run(ctx context.Context, _, cmd string) (string, error) {
 	return "", nil
 }
 
-// interruptFixture is runFixture with a cancellable run context and an
-// optional HardStop.
+// interruptFixture is the base fixture with a run context the exec
+// cancels mid-drive, plus an optional HardStop.
 func interruptFixture(t *testing.T, hardStop context.Context) (*fakeCloud, error) {
 	t.Helper()
-	env := &fakeEnv{baseAttached: 5}
-	cloud := newFakeCloud(env)
-	cloud.preProjects["scenariotest-T1"] = "uuid-t1"
-	statePath := t.TempDir() + "/state.json"
+	cloud, opts := baseRunOptions(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, err := Run(ctx, RunOptions{
-		Config:     testConfig(),
-		Scenario:   runScenario(),
-		RunID:      "run1",
-		StatePath:  statePath,
-		ReportPath: DefaultReportPath(statePath),
-		Cloud:      cloud,
-		Metrics:    &runMetrics{env: env},
-		Exec:       cancelExec{cancel: cancel},
-		Log:        slog.New(slog.DiscardHandler),
-		HardStop:   hardStop,
-		SinkDelay:  -1,
-	})
+	opts.Exec = cancelExec{cancel: cancel}
+	opts.HardStop = hardStop
+	_, err := Run(ctx, opts)
 	return cloud, err
 }
 
