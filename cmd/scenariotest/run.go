@@ -73,12 +73,13 @@ so --state/--report only apply when running a single scenario.`,
 				return usageError{errors.New("--state/--report name single files; drop them when running multiple scenarios")}
 			}
 
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			log := opts.logger()
+			ctx, hardStop, stop := interruptContexts(cmd.Context(), log)
 			defer stop()
 			if len(scs) == 1 {
-				return runOne(ctx, opts, scs[0], keep)
+				return runOne(ctx, hardStop, opts, log, scs[0], keep)
 			}
-			return runSuite(ctx, opts, scs, keep)
+			return runSuite(ctx, hardStop, opts, log, scs, keep)
 		},
 	}
 	cmd.Flags().BoolVar(&keep, "keep", false, "leave each topology up after assert")
@@ -87,9 +88,44 @@ so --state/--report only apply when running a single scenario.`,
 	return cmd
 }
 
+// interruptContexts arms `run`'s two-stage interrupt handling: the
+// first Ctrl-C cancels the returned run context (the scenario stops,
+// teardown still happens); the second cancels hardStop (teardown
+// aborts) and releases the handler, so a third falls through to the
+// default process kill. stop releases everything on normal exit.
+func interruptContexts(parent context.Context, log *slog.Logger) (runCtx, hardStop context.Context, stop func()) {
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, os.Interrupt)
+	return twoStageContexts(parent, sig, func() { signal.Stop(sig) }, log)
+}
+
+// twoStageContexts is interruptContexts with the signal source
+// injected so tests can drive it with a plain channel.
+func twoStageContexts(parent context.Context, sig <-chan os.Signal, release func(), log *slog.Logger) (context.Context, context.Context, func()) {
+	runCtx, runCancel := context.WithCancel(parent)
+	hardCtx, hardCancel := context.WithCancel(parent)
+	go func() {
+		select {
+		case <-sig:
+			log.Warn("interrupt: stopping the run — teardown still happens (interrupt again to abort it)")
+			runCancel()
+		case <-hardCtx.Done():
+			return
+		}
+		select {
+		case <-sig:
+			log.Warn("interrupt: hard stop — teardown aborted; run `down` with the run-state file to clean up")
+			hardCancel()
+			release()
+		case <-hardCtx.Done():
+		}
+	}()
+	return runCtx, hardCtx, func() { release(); runCancel(); hardCancel() }
+}
+
 // runOne is the single-scenario path — behavior identical to `run`
 // before multi-scenario support.
-func runOne(ctx context.Context, opts *rootOptions, sc *scenariotest.Scenario, keep bool) error {
+func runOne(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, sc *scenariotest.Scenario, keep bool) error {
 	cfg, sc, err := loadConfigAndScenario(opts.config, sc.Name)
 	if err != nil {
 		return err
@@ -107,7 +143,6 @@ func runOne(ctx context.Context, opts *rootOptions, sc *scenariotest.Scenario, k
 		report = scenariotest.DefaultReportPath(state)
 	}
 
-	log := opts.logger()
 	cloud, err := newCloud(ctx, cfg, log)
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
@@ -122,6 +157,7 @@ func runOne(ctx context.Context, opts *rootOptions, sc *scenariotest.Scenario, k
 		Metrics:    newMetrics(log),
 		Exec:       scenariotest.NewSSHExec(cfg.SSH, log),
 		Log:        log,
+		HardStop:   hardStop,
 		Keep:       keep,
 	})
 	if err != nil {
@@ -162,7 +198,7 @@ type suiteReport struct {
 // runSuite runs the scenarios sequentially, continuing past failures
 // (each scenario tears its own topology down either way, so the next
 // one starts from a clean cluster) and ends with the suite summary.
-func runSuite(ctx context.Context, opts *rootOptions, scs []*scenariotest.Scenario, keep bool) error {
+func runSuite(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, scs []*scenariotest.Scenario, keep bool) error {
 	if opts.config == "" {
 		return usageError{errors.New("missing required --config")}
 	}
@@ -170,7 +206,6 @@ func runSuite(ctx context.Context, opts *rootOptions, scs []*scenariotest.Scenar
 	if err != nil {
 		return err
 	}
-	log := opts.logger()
 	cloud, err := newCloud(ctx, cfg, log)
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
@@ -179,7 +214,7 @@ func runSuite(ctx context.Context, opts *rootOptions, scs []*scenariotest.Scenar
 	suite := suiteReport{OK: true}
 	for i, sc := range scs {
 		log.Info("suite: scenario starting", "n", i+1, "of", len(scs), "name", sc.Name)
-		row := runSuiteOne(ctx, cfg, cloud, opts, sc, keep, log)
+		row := runSuiteOne(ctx, hardStop, cfg, cloud, sc, keep, log)
 		suite.Scenarios = append(suite.Scenarios, row)
 		if !row.OK {
 			suite.OK = false
@@ -199,7 +234,7 @@ func runSuite(ctx context.Context, opts *rootOptions, scs []*scenariotest.Scenar
 	return nil
 }
 
-func runSuiteOne(ctx context.Context, cfg scenariotest.Config, cloud scenariotest.Cloud, opts *rootOptions, sc *scenariotest.Scenario, keep bool, log *slog.Logger) suiteScenario {
+func runSuiteOne(ctx, hardStop context.Context, cfg scenariotest.Config, cloud scenariotest.Cloud, sc *scenariotest.Scenario, keep bool, log *slog.Logger) suiteScenario {
 	row := suiteScenario{Scenario: sc.Name}
 	runID, err := scenariotest.NewRunID()
 	if err != nil {
@@ -220,6 +255,7 @@ func runSuiteOne(ctx context.Context, cfg scenariotest.Config, cloud scenariotes
 		Metrics:    newMetrics(log),
 		Exec:       scenariotest.NewSSHExec(cfg.SSH, log),
 		Log:        log,
+		HardStop:   hardStop,
 		Keep:       keep,
 	})
 	row.DurationSeconds = time.Since(start).Seconds()

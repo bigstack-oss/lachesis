@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
+	"log/slog"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // execRoot runs the real command tree with args and returns the error
@@ -71,6 +76,38 @@ func TestRenderSuite(t *testing.T) {
 	if strings.Count(out, "pass") != 1 {
 		t.Errorf("want exactly one pass row:\n%s", out)
 	}
+}
+
+func TestTwoStageContexts(t *testing.T) {
+	sig := make(chan os.Signal, 2)
+	var released atomic.Bool
+	runCtx, hardCtx, stop := twoStageContexts(context.Background(), sig, func() { released.Store(true) }, slog.New(slog.DiscardHandler))
+	defer stop()
+
+	if runCtx.Err() != nil || hardCtx.Err() != nil {
+		t.Fatal("contexts must start live")
+	}
+	sig <- os.Interrupt
+	<-runCtx.Done()
+	if hardCtx.Err() != nil {
+		t.Fatal("first interrupt must not cancel the hard-stop context")
+	}
+	sig <- os.Interrupt
+	<-hardCtx.Done()
+	waitFor(t, released.Load)
+}
+
+// waitFor polls cond briefly — the release side effect happens on the
+// handler goroutine after hardCtx is cancelled.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	for range 100 {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition not reached")
 }
 
 func TestEmitSuiteJSON(t *testing.T) {
