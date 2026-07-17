@@ -560,7 +560,7 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
@@ -612,7 +612,7 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
@@ -685,7 +685,7 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
@@ -746,7 +746,7 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull",
@@ -829,7 +829,7 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull"
@@ -1018,7 +1018,7 @@
         "legend": {
           "displayMode": "list",
           "placement": "bottom",
-          "showLegend": false
+          "showLegend": true
         }
       },
       "description": "Scrape lag. Sustained growth means the drain loop is stuck or erroring."
@@ -1292,7 +1292,7 @@
       "options": {
         "legend": {
           "displayMode": "table",
-          "placement": "right",
+          "placement": "bottom",
           "showLegend": true,
           "calcs": [
             "lastNotNull"
@@ -1512,7 +1512,7 @@
         "legend": {
           "displayMode": "list",
           "placement": "bottom",
-          "showLegend": false
+          "showLegend": true
         }
       },
       "description": "Interface Registry size over time; steps follow VM create/delete on this host."
