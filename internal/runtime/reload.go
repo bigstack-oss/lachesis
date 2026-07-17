@@ -138,24 +138,10 @@ func (m *Manager) applyTunables(next config.Config) {
 		return
 	}
 	m.tun.Replace(newV)
-	logTunableChange("gc.ghost_grace", oldV.GhostGrace, newV.GhostGrace)
-	logTunableChange("gc.ghost_sweep_interval", oldV.GhostSweepInterval, newV.GhostSweepInterval)
-	logTunableChange("reconcile.interval", oldV.ReconcileInterval, newV.ReconcileInterval)
-	logTunableChange("scrape.interval", oldV.ScrapeInterval, newV.ScrapeInterval)
-	logTunableChange("wal.flush_interval", oldV.WALFlushInterval, newV.WALFlushInterval)
-	logTunableChange("unresolved.ttl", oldV.UnresolvedTTL, newV.UnresolvedTTL)
-	logTunableChange("unresolved.cap", oldV.UnresolvedCap, newV.UnresolvedCap)
-	logTunableChange("gc.pressure_high_watermark", oldV.PressureHighWatermark, newV.PressureHighWatermark)
-	logTunableChange("gc.pressure_low_watermark", oldV.PressureLowWatermark, newV.PressureLowWatermark)
-	logTunableChange("gc.pressure_max_per_pass", oldV.PressureMaxPerPass, newV.PressureMaxPerPass)
-}
-
-func logTunableChange[T comparable](field string, oldV, newV T) {
-	if oldV == newV {
-		return
+	for _, c := range tunables.Diff(oldV, newV) {
+		slog.Info("tunable changed", "component", componentReload,
+			"field", c.Knob, "from", c.From, "to", c.To)
 	}
-	slog.Info("tunable changed", "component", componentReload,
-		"field", field, "from", oldV, "to", newV)
 }
 
 func (m *Manager) recordReload(result string) {
