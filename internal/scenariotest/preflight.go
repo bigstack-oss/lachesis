@@ -24,7 +24,8 @@ type Check struct {
 
 // Preflight verifies, without mutating anything, that the cluster is
 // ready to run sc: every prerequisite resolves, any pinned hypervisor
-// exists, and every configured agent is scraping and exposing the
+// exists (placement slots resolve against the configured agents
+// first), and every configured agent is scraping and exposing the
 // metrics scenariotest depends on. It never returns an error — every
 // failure is captured as a failed [Check] so the report shows the
 // full picture in one pass.
@@ -55,11 +56,12 @@ func Preflight(ctx context.Context, cfg Config, sc *Scenario, cloud Cloud, src M
 	add("external_network", err, "found "+cfg.Prerequisites.ExternalNetworkName+" ("+extid+")")
 
 	if len(sc.Placement) > 0 {
-		hosts, err := cloud.Hypervisors(ctx)
-		if err != nil {
+		if resolved, rerr := resolvePlacement(sc.Placement, cfg.Cluster.Agents); rerr != nil {
+			add("placement", rerr, "")
+		} else if hosts, err := cloud.Hypervisors(ctx); err != nil {
 			add("placement", err, "")
 		} else {
-			add("placement", checkPlacement(sc.Placement, hosts), fmt.Sprintf("%d host(s) validated", len(sc.Placement)))
+			add("placement", checkPlacement(resolved, hosts), fmt.Sprintf("%d host(s) validated", len(resolved)))
 		}
 	}
 

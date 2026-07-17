@@ -87,6 +87,10 @@ type realizer struct {
 	vmProject    map[string]string // VM DSL id → project id
 	vmInternalIP map[string]string
 	vmOrder      []string // VM DSL ids in creation order
+
+	// placement is Scenario.Placement with "node:<i>" slots resolved
+	// to configured agent hosts; set before any resource is created.
+	placement Placement
 }
 
 func (r *realizer) run() error {
@@ -94,6 +98,14 @@ func (r *realizer) run() error {
 	r.opts.Log.Info("realizing topology",
 		"networks", len(snap.Networks), "subnets", len(snap.Subnets),
 		"routers", len(snap.Routers), "ports", len(snap.Ports))
+
+	// Resolve placement slots first: a scenario asking for more nodes
+	// than the config lists must fail with nothing created yet.
+	placement, err := resolvePlacement(r.opts.Scenario.Placement, r.opts.Config.Cluster.Agents)
+	if err != nil {
+		return err
+	}
+	r.placement = placement
 
 	if err := r.resolvePrereqs(); err != nil {
 		return err
@@ -388,10 +400,6 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 func (r *realizer) bootServers() error {
 	for _, vmID := range r.vmOrder {
 		proj := r.vmProject[vmID]
-		az := ""
-		if host := r.opts.Scenario.Placement[vmID]; host != "" {
-			az = "nova:" + host
-		}
 		name := Mangle(r.prefix(), r.opts.RunID, vmID)
 		// No security group here: the VM boots on a pre-created port
 		// that already carries it, and Nova ignores boot-time secgroups
@@ -402,7 +410,7 @@ func (r *realizer) bootServers() error {
 			ImageID:          r.imageID,
 			PortID:           r.vmPort[vmID],
 			KeypairName:      r.opts.Config.Prerequisites.KeypairName,
-			AvailabilityZone: az,
+			AvailabilityZone: placementAZ(r.placement, vmID),
 		})
 		if err != nil {
 			return err

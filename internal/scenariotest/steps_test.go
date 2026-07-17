@@ -196,6 +196,23 @@ func stepsFixture(t *testing.T, mm *stepMetrics, sc *Scenario) (*fakeCloud, *str
 	return cloud, exec, statePath, rep, err
 }
 
+func TestSteps_BootVMHonorsPlacementSlot(t *testing.T) {
+	sc := macReuseScenario()
+	sc.Placement = Placement{"vm-d": "node:0"} // testConfig's only agent is compute-0
+	cloud, _, _, _, err := stepsFixture(t, &stepMetrics{}, sc)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The deferred vm-d's pin must resolve to the slot's agent host.
+	byName := map[string]string{}
+	for _, s := range cloud.servers {
+		byName[s.Name] = s.AvailabilityZone
+	}
+	if az := byName["scenariotest-run1-vm-d"]; az != "nova:compute-0" {
+		t.Errorf("deferred boot AZ = %q, want %q", az, "nova:compute-0")
+	}
+}
+
 func TestSteps_MACReuseFullLoop(t *testing.T) {
 	cloud, exec, statePath, rep, err := stepsFixture(t, &stepMetrics{}, macReuseScenario())
 	if err != nil {

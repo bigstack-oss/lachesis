@@ -38,9 +38,13 @@ type Scenario struct {
 	// created.
 	Flavor string
 
-	// Placement pins specific DSL VM ids to hypervisor names. A
-	// missing entry leaves placement to the Nova scheduler. Names
-	// are validated against the Nova hypervisor list at preflight.
+	// Placement pins specific DSL VM ids to hypervisors: either a
+	// literal hypervisor name (operator one-offs) or a symbolic slot
+	// "node:<i>" naming the i-th entry of the config's cluster.agents
+	// list, so a registered scenario never hard-codes a cluster's
+	// hostnames. A missing entry leaves placement to the Nova
+	// scheduler. Slots resolve and names are validated against the
+	// Nova hypervisor list at preflight.
 	Placement Placement
 
 	// Projects overrides per-project lifecycle policy. Any project
@@ -103,8 +107,9 @@ type FIPSpec struct {
 	FixedIP string
 }
 
-// Placement maps DSL VM id to hypervisor name. Empty value or
-// missing key = let Nova schedule.
+// Placement maps DSL VM id to a hypervisor name or a "node:<i>"
+// slot (see [Scenario.Placement]). Empty value or missing key = let
+// Nova schedule.
 type Placement map[string]string
 
 // ProjectPolicy maps project name (as it appears in the topology)
