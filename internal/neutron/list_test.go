@@ -21,6 +21,11 @@ type neutronStub struct {
 	portsJSON    string
 	routersJSON  string
 	projectsJSON string
+	serversJSON  string
+	// serversAllTenants records the all_tenants query value the last
+	// server-list request carried, so TestListServers can assert the
+	// cross-tenant ListOpts is wired.
+	serversAllTenants string
 }
 
 func newNeutronStub(t *testing.T) *neutronStub {
@@ -50,6 +55,9 @@ func newNeutronStub(t *testing.T) *neutronStub {
 			ns.serveJSON(w, r, ns.routersJSON)
 		case "/v3/projects":
 			ns.serveJSON(w, r, ns.projectsJSON)
+		case "/compute/v2.1/servers/detail":
+			ns.serversAllTenants = r.URL.Query().Get("all_tenants")
+			ns.serveJSON(w, r, ns.serversJSON)
 		default:
 			http.NotFound(w, r)
 		}
@@ -104,6 +112,13 @@ func (ns *neutronStub) serveKeystone(w http.ResponseWriter) {
 					"name": "keystone",
 					"endpoints": []any{
 						map[string]any{"interface": "internal", "region": "R1", "region_id": "R1", "url": ns.URL + "/v3"},
+					},
+				},
+				map[string]any{
+					"type": "compute",
+					"name": "nova",
+					"endpoints": []any{
+						map[string]any{"interface": "internal", "region": "R1", "region_id": "R1", "url": ns.URL + "/compute/v2.1/"},
 					},
 				},
 			},
@@ -327,6 +342,53 @@ func TestListProjects(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("project[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+func TestListServers(t *testing.T) {
+	ns := newNeutronStub(t)
+	defer ns.Close()
+	ns.serversJSON = `{
+		"servers": [
+			{"id":"srv-1","name":"web-0","tenant_id":"proj-1"},
+			{"id":"srv-2","name":"db-0","tenant_id":"proj-2"}
+		]
+	}`
+	c := newListClient(t, ns)
+
+	got, err := c.ListServers(context.Background())
+	if err != nil {
+		t.Fatalf("ListServers: %v", err)
+	}
+	want := []Server{
+		{ID: "srv-1", Name: "web-0", ProjectID: "proj-1"},
+		{ID: "srv-2", Name: "db-0", ProjectID: "proj-2"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d servers, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("server[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if ns.serversAllTenants != "true" {
+		t.Errorf("all_tenants query = %q, want \"true\" (cross-tenant scope)", ns.serversAllTenants)
+	}
+}
+
+// TestListServersComputeUnavailable pins the graceful path: when the
+// catalog carried no Compute endpoint (c.compute is nil), ListServers
+// returns an empty list and no error, so the info series is simply
+// absent rather than failing the sync.
+func TestListServersComputeUnavailable(t *testing.T) {
+	c := &Client{} // no compute client
+	got, err := c.ListServers(context.Background())
+	if err != nil {
+		t.Fatalf("ListServers with nil compute: %v", err)
+	}
+	if got != nil {
+		t.Errorf("got %+v, want nil", got)
 	}
 }
 

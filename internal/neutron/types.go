@@ -96,6 +96,20 @@ type Project struct {
 	Name string
 }
 
+// Server is the agent's view of a Nova server (VM). Carried in
+// [Snapshot.Servers] so the info-metric collector can emit
+// lachesis_server_info{server_id, name, tenant_id} for dashboard
+// name(id) joins. ProjectID comes from Nova's tenant_id field.
+//
+// Fetched best-effort ([Client.ListServers]): a Nova failure leaves
+// the list empty and the info series absent, never failing the sync —
+// unlike the Neutron resource lists the trie is built from.
+type Server struct {
+	ID        string
+	Name      string
+	ProjectID string
+}
+
 // Router is the trie-builder view of a Neutron router. Name is the
 // operator-assigned label; not used by trie classification but
 // surfaced in /debug pages to make sense of which router is which.

@@ -49,6 +49,10 @@ import (
 type Neutron struct {
 	creds   Credentials
 	metrics *Metrics
+	// info emits the identity info-metric families (lachesis_tenant_info,
+	// lachesis_server_info) from the committed snapshot. Registered by
+	// the agent alongside the metrics bundle. Never nil.
+	info *InfoCollector
 
 	// client is created by the first successful [Neutron.Sync] auth
 	// and reused afterwards, so a transient list failure retried by
@@ -90,12 +94,17 @@ func New(cfg config.NeutronConfig) (*Neutron, error) {
 		n.creds = creds
 	}
 	n.metrics = NewMetrics(n.LastSyncTime)
+	n.info = NewInfoCollector(n.Snapshot)
 	return n, nil
 }
 
 // Metrics returns the subsystem's instrument bundle for the agent's
 // registry to register. Never nil.
 func (n *Neutron) Metrics() *Metrics { return n.metrics }
+
+// InfoCollector returns the identity info-metric collector for the
+// agent's registry to register alongside [Neutron.Metrics]. Never nil.
+func (n *Neutron) InfoCollector() *InfoCollector { return n.info }
 
 // Snapshot returns the most recently committed resource snapshot,
 // or nil before the first [Neutron.Commit].
