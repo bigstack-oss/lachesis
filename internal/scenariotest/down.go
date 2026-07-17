@@ -26,6 +26,7 @@ type DownOptions struct {
 //
 // Order: FIPs (exact recorded IDs only — never a listing) → servers
 // (wait until gone; their taps must vanish before ports die) →
+// router routes (a route pins the interface its next-hop sits on) →
 // router interfaces (subnet- and port-based) → recorded ports →
 // routers (Neutron drops the gateway port itself) → a residual port
 // sweep scoped to each scenario network (platform-created ports like
@@ -50,6 +51,16 @@ func Down(ctx context.Context, opts DownOptions) error {
 				return err
 			}
 			return opts.Cloud.WaitServerGone(ctx, s.ProjectID, s.ID)
+		})
+	}
+	// Routes clear before any interface detach: a static route pins the
+	// interface its next-hop sits on, so Neutron 409s the detach with
+	// RouterInterfaceInUseByRoute while the route stands (observed on
+	// cross-tenant-routed's transit interfaces). The clear is 404-
+	// tolerant and a no-op on a route-free router, so it re-runs safely.
+	for _, r := range rs.Routers {
+		d.do("clear routes "+r.DSLID, func() error {
+			return opts.Cloud.ClearRouterRoutes(ctx, r.ProjectID, r.ID)
 		})
 	}
 	// Interfaces detach before ports and routers die: a subnet-based

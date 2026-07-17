@@ -560,6 +560,19 @@ func (o *OpenStack) DeletePort(ctx context.Context, projectID, id string) error 
 	return nil
 }
 
+func (o *OpenStack) ClearRouterRoutes(ctx context.Context, projectID, routerID string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	empty := []routers.Route{}
+	_, err = routers.Update(ctx, sc.network, routerID, routers.UpdateOpts{Routes: &empty}).Extract()
+	if err := ignoreNotFound(err); err != nil {
+		return fmt.Errorf("openstack: clear routes on router %s: %w", routerID, err)
+	}
+	return nil
+}
+
 func (o *OpenStack) RemoveRouterInterface(ctx context.Context, projectID, routerID, subnetID, portID string) error {
 	sc, err := o.scopedFor(ctx, projectID)
 	if err != nil {
