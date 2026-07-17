@@ -467,12 +467,18 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 		return err
 	}
 
+	// Deferred VMs honor Scenario.Placement like up-time boots do.
+	placement, err := resolvePlacement(env.Scenario.Placement, env.Config.Cluster.Agents)
+	if err != nil {
+		return err
+	}
 	serverID, err := env.Cloud.CreateServer(ctx, proj.ID, ServerSpec{
-		Name:        name,
-		FlavorID:    flavorID,
-		ImageID:     imageID,
-		PortID:      portID,
-		KeypairName: p.KeypairName,
+		Name:             name,
+		FlavorID:         flavorID,
+		ImageID:          imageID,
+		PortID:           portID,
+		KeypairName:      p.KeypairName,
+		AvailabilityZone: placementAZ(placement, s.VM),
 	})
 	if err != nil {
 		return err

@@ -386,6 +386,49 @@ func crossTenantRoutedScenario() *Scenario {
 	return &Scenario{Name: "other", Builder: b}
 }
 
+func TestRealize_PlacementSlotPinsAZ(t *testing.T) {
+	sc := sameTenantScenario()
+	sc.Placement = Placement{"vm-a": "node:0", "vm-b": "compute-9"}
+	cloud, _ := realizeFixture(t, sc)
+	byName := map[string]string{}
+	for _, s := range cloud.servers {
+		byName[s.Name] = s.AvailabilityZone
+	}
+	// testConfig's agents[0] is compute-0; the literal pin passes through.
+	if az := byName["scenariotest-run1-vm-a"]; az != "nova:compute-0" {
+		t.Errorf("vm-a AZ = %q, want %q (slot node:0)", az, "nova:compute-0")
+	}
+	if az := byName["scenariotest-run1-vm-b"]; az != "nova:compute-9" {
+		t.Errorf("vm-b AZ = %q, want %q (literal)", az, "nova:compute-9")
+	}
+}
+
+func TestRealize_PlacementSlotBeyondAgents_CreatesNothing(t *testing.T) {
+	env := &fakeEnv{baseAttached: 5}
+	cloud := newFakeCloud(env)
+	sc := sameTenantScenario()
+	sc.Placement = Placement{"vm-a": "node:3"} // testConfig lists one agent
+	rs, err := Realize(context.Background(), RealizeOptions{
+		Config:    testConfig(),
+		Scenario:  sc,
+		RunID:     "run1",
+		StatePath: t.TempDir() + "/state.json",
+		Cloud:     cloud,
+		Metrics:   &fakeMetrics{env: env},
+		Log:       slog.New(slog.DiscardHandler),
+	})
+	if err == nil {
+		t.Fatal("Realize should fail on an unresolvable slot")
+	}
+	// Resolution precedes every create: nothing to tear down.
+	if len(rs.Networks)+len(rs.Subnets)+len(rs.Routers)+len(rs.Ports)+len(rs.Servers) != 0 {
+		t.Errorf("resources were created before placement resolution failed: %+v", rs)
+	}
+	if len(cloud.servers) != 0 {
+		t.Errorf("servers booted = %d, want 0", len(cloud.servers))
+	}
+}
+
 func TestRealize_CrossTenantRouted(t *testing.T) {
 	cloud, rs := realizeFixture(t, crossTenantRoutedScenario())
 
