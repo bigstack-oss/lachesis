@@ -9,6 +9,7 @@ package neutron
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -82,6 +83,19 @@ func (n *Neutron) fetchAll(ctx context.Context) (Snapshot, error) {
 		n.metrics.RecordAPIError(endpointProjects, err)
 		return s, fmt.Errorf("list projects: %w", err)
 	}
+	// The Nova server list rides along for the optional
+	// lachesis_server_info family. Unlike the lists above it is
+	// non-fatal: a fetch failure records the API error, leaves
+	// Servers empty (info series absent), and lets the sync complete
+	// so the billing path is unaffected (docs/DESIGN.md §11.4).
+	if s.Servers, err = n.client.ListServers(ctx); err != nil {
+		n.metrics.RecordAPIError(endpointServers, err)
+		slog.Warn("list servers failed; lachesis_server_info absent until the next sync succeeds",
+			"component", componentNeutron, "err", err)
+		s.Servers = nil
+	}
+	// Servers is non-fatal: return nil regardless of the ListServers error
+	// above, so a Nova failure never aborts the sync.
 	return s, nil
 }
 

@@ -57,6 +57,7 @@ lachesis_neutron_api_errors_total{code="network",endpoint="networks"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="ports"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="projects"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="routers"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="servers"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
@@ -78,6 +79,7 @@ lachesis_neutron_api_errors_total{code="network",endpoint="networks"} 1
 lachesis_neutron_api_errors_total{code="network",endpoint="ports"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="projects"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="routers"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="servers"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),
@@ -102,6 +104,7 @@ lachesis_neutron_api_errors_total{code="network",endpoint="networks"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="ports"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="projects"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="routers"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="servers"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="subnets"} 0
 `
 	if err := testutil.GatherAndCompare(newRegistry(t, m), strings.NewReader(want),

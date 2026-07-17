@@ -3,6 +3,7 @@ package neutron
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
@@ -10,15 +11,22 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/osclient"
 )
 
-// Client is the agent's Neutron API handle. Internally it wraps two
-// [gophercloud.ServiceClient]s — the Network v2 client for Neutron
-// calls and an Identity v3 client used to resolve project IDs to
-// names. Keystone authentication, token caching, and reactive
-// 401-driven reauth live in [osclient.Authenticate]
-// (AllowReauth=true). Construct with [NewClient].
+// Client is the agent's Neutron API handle. Internally it wraps up to
+// three [gophercloud.ServiceClient]s — the Network v2 client for
+// Neutron calls, an Identity v3 client used to resolve project IDs to
+// names, and (best-effort) a Compute v2 client for the Nova server
+// list behind lachesis_server_info. Keystone authentication, token
+// caching, and reactive 401-driven reauth live in
+// [osclient.Authenticate] (AllowReauth=true). Construct with
+// [NewClient].
 type Client struct {
 	network  *gophercloud.ServiceClient
 	identity *gophercloud.ServiceClient
+	// compute is nil when the Keystone catalog carries no Compute
+	// endpoint for the agent's credentials. Its only consumer,
+	// [Client.ListServers], degrades to an empty list — the info
+	// series is optional, so a compute-less deployment keeps working.
+	compute *gophercloud.ServiceClient
 }
 
 // NewClient authenticates against Keystone with creds and returns a
@@ -48,7 +56,17 @@ func NewClient(ctx context.Context, creds Credentials) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("neutron: identity endpoint discovery: %w", err)
 	}
-	return &Client{network: net, identity: id}, nil
+	// Compute is best-effort: the agent needs it only for the optional
+	// lachesis_server_info family, so a catalog without a Compute
+	// endpoint leaves the client nil and logs rather than failing the
+	// whole cold-start (docs/DESIGN.md §11.4 info metrics).
+	compute, err := openstack.NewComputeV2(provider, eo)
+	if err != nil {
+		slog.Warn("compute endpoint discovery failed; lachesis_server_info will be absent",
+			"component", componentNeutron, "err", err)
+		compute = nil
+	}
+	return &Client{network: net, identity: id, compute: compute}, nil
 }
 
 // EndpointURL returns the Neutron base URL gophercloud discovered

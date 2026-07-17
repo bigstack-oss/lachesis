@@ -37,6 +37,12 @@ type Snapshot struct {
 	// UUID; consumers that need a human-readable label (the /debug
 	// pages, log enrichment) resolve through this slice.
 	Projects []Project
+	// Servers is the Nova server list, fetched best-effort so the
+	// info-metric collector can emit lachesis_server_info for dashboard
+	// name(id) joins. Empty when the Nova fetch failed or compute is
+	// unavailable — the info series is then simply absent
+	// ([Client.ListServers], [InfoCollector]).
+	Servers []Server
 }
 
 // TrieEntry is one row destined for the kernel `subnet_zone_trie`:
@@ -176,6 +182,7 @@ const (
 	endpointRouters     = "routers"
 	endpointProjects    = "projects"
 	endpointFloatingIPs = "floatingips"
+	endpointServers     = "servers"
 )
 
 // anomalyClass* are the `class` label values for the

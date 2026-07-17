@@ -40,6 +40,11 @@ type subsystemMetrics struct {
 	kafka      *kafka.Metrics
 	runtime    *runtime.Metrics
 	registry   *cnetlink.Registry
+	// neutronInfo emits the identity info-metric families
+	// (lachesis_tenant_info, lachesis_server_info). Owned by the agent's
+	// [neutron.Neutron] like neutron above; registered under the neutron
+	// component in [subsystemMetrics.registrations].
+	neutronInfo *neutron.InfoCollector
 }
 
 // newSubsystemMetrics constructs every subsystem's instrument bundle.
@@ -50,7 +55,7 @@ type subsystemMetrics struct {
 // 0 until the first cold-start push (mac_tenant_map,
 // subnet_zone_trie) or the first scrape drain (telemetry_map, via
 // [telemetryFillReader]) overwrites it.
-func newSubsystemMetrics(neutronMx *neutron.Metrics, kafkaTopic string) subsystemMetrics {
+func newSubsystemMetrics(neutronMx *neutron.Metrics, neutronInfo *neutron.InfoCollector, kafkaTopic string) subsystemMetrics {
 	nlReg := cnetlink.NewRegistry()
 
 	bpfMx := bpf.NewMetrics()
@@ -62,17 +67,18 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics, kafkaTopic string) subsyste
 	bpfMx.SetCurrent(bpf.MapTelemetry, 0)
 
 	return subsystemMetrics{
-		wal:        wal.NewMetrics(),
-		neutron:    neutronMx,
-		bpf:        bpfMx,
-		zombie:     zombie.NewMetrics(),
-		netlink:    cnetlink.NewMetrics(nlReg.Len),
-		gc:         gc.NewMetrics(),
-		unresolved: unresolved.NewMetrics(),
-		runtime:    runtime.NewMetrics(),
-		reconcile:  reconcile.NewMetrics(),
-		kafka:      kafka.NewMetrics(kafkaTopic),
-		registry:   nlReg,
+		wal:         wal.NewMetrics(),
+		neutron:     neutronMx,
+		bpf:         bpfMx,
+		zombie:      zombie.NewMetrics(),
+		netlink:     cnetlink.NewMetrics(nlReg.Len),
+		gc:          gc.NewMetrics(),
+		unresolved:  unresolved.NewMetrics(),
+		runtime:     runtime.NewMetrics(),
+		reconcile:   reconcile.NewMetrics(),
+		kafka:       kafka.NewMetrics(kafkaTopic),
+		registry:    nlReg,
+		neutronInfo: neutronInfo,
 	}
 }
 
@@ -127,7 +133,7 @@ func (r telemetryFillReader) BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) er
 func (m subsystemMetrics) registrations() []labelledCollectors {
 	return []labelledCollectors{
 		{componentWAL, m.wal.Collectors()},
-		{componentNeutron, m.neutron.Collectors()},
+		{componentNeutron, append(m.neutron.Collectors(), m.neutronInfo)},
 		{componentBPF, m.bpf.Collectors()},
 		{componentZombie, m.zombie.Collectors()},
 		{componentNetlink, m.netlink.Collectors()},

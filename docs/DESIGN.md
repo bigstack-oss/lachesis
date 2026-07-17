@@ -1478,6 +1478,41 @@ hook egress), rendered by `bpf.Direction.String()`. The kernel enum keeps
 its hook-frame names — the §4.2 directional swap depends on them. Do not
 reintroduce hook-frame strings into the metric labels.
 
+#### Identity info metrics (join series; emitted from the Neutron snapshot)
+
+Two additive *info* families let dashboards render human names next to the
+UUID labels without putting a name label on the billing families — the
+kube-state-metrics `kube_pod_info` pattern (a value-`1` series joined with
+PromQL `group_left`).
+
+| Metric | Type | Labels | Series lifecycle |
+|---|---|---|---|
+| `lachesis_tenant_info` | gauge (always 1) | `tenant_id, name` | mortal — one series per Keystone project in the committed snapshot |
+| `lachesis_server_info` | gauge (always 1) | `server_id, name, tenant_id` | mortal — one series per Nova server; **absent** when the Nova fetch fails |
+
+They are emitted by a dedicated `neutron.InfoCollector` (registered under the
+neutron subsystem), **not** the billing `metrics.Collector` — the billing
+families stay byte-identical, and because names live only in these info series
+a historical join shows the name an entity held *at that time* rather than
+back-dating a rename. Each scrape re-emits from the current
+`neutron.Snapshot()`, so a series vanishes the sync after its entity leaves the
+snapshot (a `GaugeVec` would instead leak deleted-entity series forever).
+Cardinality is one series per tenant / per server — no churn amplification.
+
+`tenant_id` names come free from the project list `Sync` already fetches;
+`server_id` names need a Nova server list, fetched **best-effort**
+(`Client.ListServers`, `AllTenants`) and non-fatally (a Nova/compute failure
+records `lachesis_neutron_api_errors_total{endpoint="servers"}` and leaves the
+family absent, never failing the sync). Dashboards join and fall back to bare
+ids when the info series is missing:
+
+```promql
+sum by (tenant_id) (rate(lachesis_bytes_total[1m]))
+  * on(tenant_id) group_left(name) lachesis_tenant_info          # named rows
+or sum by (tenant_id) (rate(lachesis_bytes_total[1m]))
+     unless on(tenant_id) lachesis_tenant_info                   # bare-id fallback
+```
+
 #### Health — implemented (per-subsystem; bounded cardinality)
 
 | Metric | Type | Labels | Source |

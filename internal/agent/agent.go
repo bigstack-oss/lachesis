@@ -176,7 +176,7 @@ func New(opts Options) (*Agent, error) {
 		seq:      opts.sequencerOrDefault(),
 		buildID:  agentBuildID(),
 	}
-	a.mx = newSubsystemMetrics(n.Metrics(), opts.Config.Kafka.Topic)
+	a.mx = newSubsystemMetrics(n.Metrics(), n.InfoCollector(), opts.Config.Kafka.Topic)
 	a.scraper = scraper.New(
 		telemetryFillReader{inner: opts.Reader, stats: opts.Stats, mx: a.mx.bpf},
 		st, tun)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/projects"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/external"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
@@ -173,6 +174,35 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	out := make([]Project, len(gcs))
 	for i, p := range gcs {
 		out[i] = Project{ID: p.ID, Name: p.Name}
+	}
+	return out, nil
+}
+
+// ListServers returns every Nova server the agent's credentials can
+// see, carrying the id, name, and owning project for the
+// lachesis_server_info family. AllTenants mirrors the cross-tenant
+// scope the agent already uses for the Neutron resource lists (a
+// compute-node agent is admin-scoped).
+//
+// It is deliberately tolerant: when the Compute endpoint is absent
+// from the catalog ([NewClient] left c.compute nil) it returns an
+// empty list and no error, so the info series is simply absent rather
+// than failing the sync. See [ListNetworks] for pagination semantics.
+func (c *Client) ListServers(ctx context.Context) ([]Server, error) {
+	if c.compute == nil {
+		return nil, nil
+	}
+	pages, err := servers.List(c.compute, servers.ListOpts{AllTenants: true}).AllPages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("nova: list servers: %w", err)
+	}
+	gcs, err := servers.ExtractServers(pages)
+	if err != nil {
+		return nil, fmt.Errorf("nova: extract servers: %w", err)
+	}
+	out := make([]Server, len(gcs))
+	for i, s := range gcs {
+		out[i] = Server{ID: s.ID, Name: s.Name, ProjectID: s.TenantID}
 	}
 	return out, nil
 }
