@@ -91,6 +91,13 @@ type Cloud interface {
 	WaitServerGone(ctx context.Context, projectID, id string) error
 	// DeletePort deletes a Neutron port.
 	DeletePort(ctx context.Context, projectID, id string) error
+	// ClearRouterRoutes removes all of a router's static (extra)
+	// routes. Teardown calls it before detaching interfaces: a route
+	// pins the interface its next-hop sits on, and Neutron 409s the
+	// detach with RouterInterfaceInUseByRoute otherwise. Unlike the
+	// realize-side SetRouterRoutes, it is 404-tolerant and a no-op on a
+	// route-free router, so a converging re-run stays idempotent.
+	ClearRouterRoutes(ctx context.Context, projectID, routerID string) error
 	// RemoveRouterInterface detaches a subnet or port from a router
 	// (exactly one of subnetID/portID set). Neutron deletes the
 	// interface port itself. Also 404-tolerant for "not an interface".

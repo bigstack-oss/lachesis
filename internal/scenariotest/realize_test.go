@@ -54,6 +54,10 @@ type fakeCloud struct {
 	portSubnet    map[string]string          // port id → subnet id
 	routerExt     map[string]string          // router id → ext network id
 	routerSubnets map[string]map[string]bool // router id → attached subnet ids
+	// routerRoutes is the router's live static routes; a non-empty set
+	// makes RemoveRouterInterface fail like Neutron's
+	// RouterInterfaceInUseByRoute, so teardown must clear routes first.
+	routerRoutes map[string][]RouteSpec // router id → current extra routes
 
 	// MAC model: every port gets a MAC (explicit from the spec, or a
 	// synthetic assignment), unique per network like real Neutron.
@@ -83,6 +87,7 @@ func newFakeCloud(env *fakeEnv) *fakeCloud {
 		preProjects: map[string]string{}, findErrs: map[string]error{},
 		portSubnet: map[string]string{}, routerExt: map[string]string{},
 		routerSubnets: map[string]map[string]bool{},
+		routerRoutes:  map[string][]RouteSpec{},
 		portMAC:       map[string]string{}, portNet: map[string]string{},
 		portName:      map[string]string{},
 		portProject:   map[string]string{},
@@ -179,6 +184,7 @@ func (c *fakeCloud) AddRouterInterface(_ context.Context, _, routerID, subnetID,
 }
 func (c *fakeCloud) SetRouterRoutes(_ context.Context, _, routerID string, routes []RouteSpec) error {
 	c.routes = append(c.routes, routeRec{routerID, routes})
+	c.routerRoutes[routerID] = routes
 	return nil
 }
 func (c *fakeCloud) CreateServer(_ context.Context, _ string, spec ServerSpec) (string, error) {
@@ -241,7 +247,16 @@ func (c *fakeCloud) WaitServerGone(context.Context, string, string) error {
 func (c *fakeCloud) DeletePort(ctx context.Context, _, id string) error {
 	return c.down(ctx, "port", id)
 }
+func (c *fakeCloud) ClearRouterRoutes(ctx context.Context, _, routerID string) error {
+	delete(c.routerRoutes, routerID)
+	return c.down(ctx, "routes", routerID)
+}
 func (c *fakeCloud) RemoveRouterInterface(ctx context.Context, _, routerID, subnetID, portID string) error {
+	// Neutron refuses (RouterInterfaceInUseByRoute) while a static
+	// route pins an interface of this router.
+	if len(c.routerRoutes[routerID]) > 0 {
+		return fmt.Errorf("fake neutron: router %s interface in use by route", routerID)
+	}
 	return c.down(ctx, "detach", routerID+"/"+subnetID+portID)
 }
 func (c *fakeCloud) DeleteRouter(ctx context.Context, _, id string) error {

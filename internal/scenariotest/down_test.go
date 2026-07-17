@@ -97,6 +97,49 @@ func TestDown_ResidualPortBlocksUntilSwept(t *testing.T) {
 	}
 }
 
+func TestDown_RouteBlocksInterfaceDetach(t *testing.T) {
+	// Sanity-check the fake models the live RouterInterfaceInUseByRoute
+	// behavior: with a static route still on the router, detaching any
+	// of its interfaces fails.
+	cloud := newFakeCloud(&fakeEnv{})
+	cloud.routerRoutes["rtr-1"] = []RouteSpec{{Destination: "10.50.0.0/24", Nexthop: "192.168.100.20"}}
+	if err := cloud.RemoveRouterInterface(context.Background(), "uuid-t1", "rtr-1", "sub-1", ""); err == nil {
+		t.Fatal("fake should refuse to detach an interface while the router carries routes")
+	}
+}
+
+func TestDown_ClearsRoutesBeforeDetach(t *testing.T) {
+	// r-T1 carries a transit static route, so Neutron (and the fake)
+	// pin its interfaces until the route is gone — the cross-tenant-
+	// routed teardown failure this ordering exists to fix.
+	cloud := newFakeCloud(&fakeEnv{})
+	cloud.routerRoutes["rtr-1"] = []RouteSpec{{Destination: "10.50.0.0/24", Nexthop: "192.168.100.20"}}
+
+	statePath, err := runDownFixture(t, downState(), cloud)
+	if err != nil {
+		t.Fatalf("Down must converge with a routed router: %v", err)
+	}
+	idx := func(op string) int {
+		for i, o := range cloud.downOps {
+			if o == op {
+				return i
+			}
+		}
+		t.Fatalf("op %q missing from %v", op, cloud.downOps)
+		return -1
+	}
+	if !(idx("routes:rtr-1") < idx("detach:rtr-1/sub-1")) {
+		t.Errorf("routes must clear before interface detach: %v", cloud.downOps)
+	}
+	saved, lerr := LoadRunState(statePath)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if !saved.TornDown {
+		t.Error("TornDown not persisted after converged teardown")
+	}
+}
+
 func TestDown_Idempotent(t *testing.T) {
 	cloud := newFakeCloud(&fakeEnv{})
 	cloud.residualPorts["net-1"] = []string{"port-mgr"}
