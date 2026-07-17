@@ -3,6 +3,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -37,6 +38,7 @@ type OpenStack struct {
 	creds   osclient.Credentials
 	timeout time.Duration
 	eo      gophercloud.EndpointOpts
+	log     *slog.Logger
 
 	identity *gophercloud.ServiceClient
 	network  *gophercloud.ServiceClient
@@ -58,8 +60,9 @@ type scopedClients struct {
 // authenticates (admin, scoped to the credential's own project), and
 // returns a ready [Cloud]. The endpoint-catalog interface defaults
 // to "public" — scenariotest is an operator-facing tool, not a
-// compute-node agent.
-func NewOpenStack(ctx context.Context, oc OpenStackCreds) (*OpenStack, error) {
+// compute-node agent. log (nil = discard) receives one [LevelTrace]
+// line per API call.
+func NewOpenStack(ctx context.Context, oc OpenStackCreds, log *slog.Logger) (*OpenStack, error) {
 	creds, err := oc.ResolveCredentials()
 	if err != nil {
 		return nil, err
@@ -68,10 +71,14 @@ func NewOpenStack(ctx context.Context, oc OpenStackCreds) (*OpenStack, error) {
 	if err != nil {
 		return nil, fmt.Errorf("openstack: %w", err)
 	}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	o := &OpenStack{
 		creds:   creds,
 		timeout: oc.RequestTimeout,
 		eo:      eo,
+		log:     log,
 		scoped:  map[string]*scopedClients{},
 	}
 
@@ -108,11 +115,12 @@ func NewOpenStack(ctx context.Context, oc OpenStackCreds) (*OpenStack, error) {
 }
 
 // applyTimeout caps every request on the provider with the config's
-// request_timeout. osclient deliberately leaves HTTP-client policy to
-// its consumers.
+// request_timeout and installs the wire-trace transport. osclient
+// deliberately leaves HTTP-client policy to its consumers.
 func (o *OpenStack) applyTimeout(provider *gophercloud.ProviderClient) {
-	if o.timeout > 0 {
-		provider.HTTPClient = http.Client{Timeout: o.timeout}
+	provider.HTTPClient = http.Client{
+		Timeout:   o.timeout, // zero = unbounded, as before
+		Transport: NewTraceTransport(nil, o.log),
 	}
 }
 

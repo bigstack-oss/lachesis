@@ -3,7 +3,7 @@ package scenariotest
 import (
 	"context"
 	"encoding/json"
-	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -41,7 +41,7 @@ func runAssertFixture(t *testing.T, sc *Scenario, rs *RunState, m MetricsSource,
 		State:         rs,
 		ReportPath:    reportPath,
 		Metrics:       m,
-		Log:           io.Discard,
+		Log:           slog.New(slog.DiscardHandler),
 		SettleTimeout: timeout,
 	})
 	return rep, reportPath, err
@@ -180,7 +180,7 @@ func TestAssert_MultiAgentTuplesSum(t *testing.T) {
 	reportPath := t.TempDir() + "/report.json"
 	rep, err := Assert(context.Background(), AssertOptions{
 		Config: cfg, Scenario: sc, State: rs, ReportPath: reportPath,
-		Metrics: m, Log: io.Discard, SettleTimeout: time.Second,
+		Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -28,7 +28,8 @@ report/run-state files are never touched).`,
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
-			cloud, err := newCloud(ctx, cfg)
+			log := opts.logger()
+			cloud, err := newCloud(ctx, cfg, log)
 			if err != nil {
 				return fmt.Errorf("down: %w", err)
 			}
@@ -37,7 +38,7 @@ report/run-state files are never touched).`,
 				State:     rs,
 				StatePath: opts.state,
 				Cloud:     cloud,
-				Log:       os.Stderr,
+				Log:       log,
 			}); err != nil {
 				return fmt.Errorf("down: %w", err)
 			}

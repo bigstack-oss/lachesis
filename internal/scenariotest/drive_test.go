@@ -3,7 +3,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -82,7 +82,7 @@ func driveFixture(t *testing.T, sc *Scenario, rs *RunState, exec VMExec, m Metri
 		StatePath: statePath,
 		Metrics:   m,
 		Exec:      exec,
-		Log:       io.Discard,
+		Log:       slog.New(slog.DiscardHandler),
 		SinkDelay: -1, // skip the sink-bind pause in tests
 	})
 	return statePath, err
@@ -274,7 +274,7 @@ func TestDrive_MACGateWaitsForLearning(t *testing.T) {
 	statePath := t.TempDir() + "/state.json"
 	err := Drive(context.Background(), DriveOptions{
 		Config: testConfig(), Scenario: sc, State: macGateState(), StatePath: statePath,
-		Metrics: m, Exec: &fakeExec{}, Log: io.Discard,
+		Metrics: m, Exec: &fakeExec{}, Log: slog.New(slog.DiscardHandler),
 		SinkDelay: -1, MACLearnTimeout: 2 * time.Second,
 	})
 	if err != nil {
@@ -297,7 +297,7 @@ func TestDrive_MACGateTimesOutLoudly(t *testing.T) {
 	statePath := t.TempDir() + "/state.json"
 	err := Drive(context.Background(), DriveOptions{
 		Config: testConfig(), Scenario: sc, State: macGateState(), StatePath: statePath,
-		Metrics: m, Exec: &fakeExec{}, Log: io.Discard,
+		Metrics: m, Exec: &fakeExec{}, Log: slog.New(slog.DiscardHandler),
 		SinkDelay: -1, MACLearnTimeout: 200 * time.Millisecond,
 	})
 	if err == nil || !strings.Contains(err.Error(), "mac-learn gate") || !strings.Contains(err.Error(), "vm-a") {
@@ -317,7 +317,7 @@ func TestDrive_MACGateRejectsStaleTenant(t *testing.T) {
 	statePath := t.TempDir() + "/state.json"
 	err := Drive(context.Background(), DriveOptions{
 		Config: testConfig(), Scenario: sc, State: macGateState(), StatePath: statePath,
-		Metrics: m, Exec: &fakeExec{}, Log: io.Discard,
+		Metrics: m, Exec: &fakeExec{}, Log: slog.New(slog.DiscardHandler),
 		SinkDelay: -1, MACLearnTimeout: 200 * time.Millisecond,
 	})
 	if err == nil || !strings.Contains(err.Error(), "stale tenant") {
@@ -369,7 +369,7 @@ func TestDrive_MACGateToleratesTransientLookupErrors(t *testing.T) {
 	statePath := t.TempDir() + "/state.json"
 	err := Drive(context.Background(), DriveOptions{
 		Config: testConfig(), Scenario: sc, State: macGateState(), StatePath: statePath,
-		Metrics: m, Exec: &fakeExec{}, Log: io.Discard,
+		Metrics: m, Exec: &fakeExec{}, Log: slog.New(slog.DiscardHandler),
 		SinkDelay: -1, MACLearnTimeout: 2 * time.Second,
 	})
 	if err != nil {
@@ -392,7 +392,7 @@ func TestDrive_MACGatePersistentLookupErrorInTimeout(t *testing.T) {
 	statePath := t.TempDir() + "/state.json"
 	err := Drive(context.Background(), DriveOptions{
 		Config: testConfig(), Scenario: sc, State: macGateState(), StatePath: statePath,
-		Metrics: m, Exec: &fakeExec{}, Log: io.Discard,
+		Metrics: m, Exec: &fakeExec{}, Log: slog.New(slog.DiscardHandler),
 		SinkDelay: -1, MACLearnTimeout: 200 * time.Millisecond,
 	})
 	if err == nil || !strings.Contains(err.Error(), "mac-learn gate") || !strings.Contains(err.Error(), "connection refused") {
@@ -421,7 +421,7 @@ func TestDrive_MACGateSkipsRouterInterfaceRefs(t *testing.T) {
 	statePath := t.TempDir() + "/state.json"
 	err := Drive(context.Background(), DriveOptions{
 		Config: testConfig(), Scenario: sc, State: rs, StatePath: statePath,
-		Metrics: m, Exec: &fakeExec{}, Log: io.Discard,
+		Metrics: m, Exec: &fakeExec{}, Log: slog.New(slog.DiscardHandler),
 		SinkDelay: -1, MACLearnTimeout: 500 * time.Millisecond,
 	})
 	if err != nil {

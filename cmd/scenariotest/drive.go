@@ -26,14 +26,15 @@ func newDriveCmd(opts *rootOptions) *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
+			log := opts.logger()
 			err = scenariotest.Drive(ctx, scenariotest.DriveOptions{
 				Config:    cfg,
 				Scenario:  sc,
 				State:     rs,
 				StatePath: opts.state,
-				Metrics:   scenariotest.NewHTTPMetrics(nil),
-				Exec:      scenariotest.NewSSHExec(cfg.SSH),
-				Log:       os.Stderr,
+				Metrics:   newMetrics(log),
+				Exec:      scenariotest.NewSSHExec(cfg.SSH, log),
+				Log:       log,
 			})
 			if err != nil {
 				return fmt.Errorf("drive: %w", err)

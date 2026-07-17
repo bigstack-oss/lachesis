@@ -21,13 +21,14 @@ func newPreflightCmd(opts *rootOptions) *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
-			cloud, err := newCloud(ctx, cfg)
+			log := opts.logger()
+			cloud, err := newCloud(ctx, cfg, log)
 			if err != nil {
 				return fmt.Errorf("preflight: %w", err)
 			}
-			report := scenariotest.Preflight(ctx, cfg, sc, cloud, scenariotest.NewHTTPMetrics(nil))
-			if err := report.Emit(os.Stdout, opts.output); err != nil {
-				return fmt.Errorf("preflight: %w", err)
+			report := scenariotest.Preflight(ctx, cfg, sc, cloud, newMetrics(log))
+			if err := emitPreflight(os.Stdout, opts.output, report); err != nil {
+				return err
 			}
 			if !report.OK {
 				return errFailed

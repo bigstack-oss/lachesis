@@ -3,7 +3,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -18,7 +18,7 @@ type RealizeOptions struct {
 	StatePath string
 	Cloud     Cloud
 	Metrics   MetricsSource
-	Log       io.Writer
+	Log       *slog.Logger
 
 	// AttachTimeout bounds the attach-ready gate. Zero uses
 	// [DefaultAttachTimeout].
@@ -44,7 +44,7 @@ const (
 // deletes a project. The returned RunState is the realized topology.
 func Realize(ctx context.Context, opts RealizeOptions) (*RunState, error) {
 	if opts.Log == nil {
-		opts.Log = io.Discard
+		opts.Log = slog.New(slog.DiscardHandler)
 	}
 	r := &realizer{
 		ctx:           ctx,
@@ -91,6 +91,9 @@ type realizer struct {
 
 func (r *realizer) run() error {
 	snap := r.opts.Scenario.Builder.Build()
+	r.opts.Log.Info("realizing topology",
+		"networks", len(snap.Networks), "subnets", len(snap.Subnets),
+		"routers", len(snap.Routers), "ports", len(snap.Ports))
 
 	if err := r.resolvePrereqs(); err != nil {
 		return err
@@ -135,7 +138,7 @@ func (r *realizer) run() error {
 	if err := r.attachGate(baseline, len(r.vmOrder)); err != nil {
 		return err
 	}
-	r.logf("up complete: %d VM(s), run-state at %s", len(r.vmOrder), r.opts.StatePath)
+	r.opts.Log.Info("up complete", "vms", len(r.vmOrder), "state", r.opts.StatePath)
 	return nil
 }
 
@@ -188,7 +191,7 @@ func (r *realizer) networks(snap neutron.Snapshot) error {
 		if err := r.save(); err != nil {
 			return err
 		}
-		r.logf("network %s -> %s", n.ID, id)
+		r.opts.Log.Debug("network ready", "dsl", n.ID, "id", id)
 	}
 	return nil
 }
@@ -219,7 +222,7 @@ func (r *realizer) subnets(snap neutron.Snapshot) error {
 		if err := r.save(); err != nil {
 			return err
 		}
-		r.logf("subnet %s -> %s", s.ID, id)
+		r.opts.Log.Debug("subnet ready", "dsl", s.ID, "id", id)
 	}
 	return nil
 }
@@ -247,7 +250,7 @@ func (r *realizer) routers(snap neutron.Snapshot) error {
 		if err := r.save(); err != nil {
 			return err
 		}
-		r.logf("router %s -> %s", rt.ID, id)
+		r.opts.Log.Debug("router ready", "dsl", rt.ID, "id", id)
 	}
 	return nil
 }
@@ -270,7 +273,7 @@ func (r *realizer) routerRoutes(snap neutron.Snapshot) error {
 		if err := r.opts.Cloud.SetRouterRoutes(r.ctx, proj, r.routerLive[rt.ID], routes); err != nil {
 			return err
 		}
-		r.logf("router %s: %d static route(s)", rt.ID, len(routes))
+		r.opts.Log.Debug("router routes set", "dsl", rt.ID, "routes", len(routes))
 	}
 	return nil
 }
@@ -303,7 +306,7 @@ func (r *realizer) routerInterfaces(snap neutron.Snapshot) error {
 			if err := r.opts.Cloud.AddRouterInterface(r.ctx, proj, routerID, subnetID, ""); err != nil {
 				return err
 			}
-			r.logf("router interface %s: router %s ↔ subnet %s (gateway)", p.ID, p.DeviceID, fip.SubnetID)
+			r.opts.Log.Debug("router interface ready", "dsl", p.ID, "router", p.DeviceID, "subnet", fip.SubnetID, "via", "gateway")
 			continue
 		}
 
@@ -328,7 +331,7 @@ func (r *realizer) routerInterfaces(snap neutron.Snapshot) error {
 		if err := r.opts.Cloud.AddRouterInterface(r.ctx, proj, routerID, "", portID); err != nil {
 			return err
 		}
-		r.logf("router interface %s: router %s ↔ port %s @ %s", p.ID, p.DeviceID, portID, fip.IPAddress)
+		r.opts.Log.Debug("router interface ready", "dsl", p.ID, "router", p.DeviceID, "port", portID, "ip", fip.IPAddress)
 	}
 	return nil
 }
@@ -346,7 +349,7 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 		// server, no FIP, no attach-gate slot. A [BootVMStep] creates
 		// them mid-script.
 		if deferred[p.ID] {
-			r.logf("vm %s deferred (booted by a later step)", p.ID)
+			r.opts.Log.Debug("vm deferred (booted by a later step)", "vm", p.ID)
 			continue
 		}
 		proj, err := r.projectID(p.ProjectID)
@@ -377,7 +380,7 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 		if err := r.save(); err != nil {
 			return err
 		}
-		r.logf("vm port %s -> %s @ %s", p.ID, portID, fip.IPAddress)
+		r.opts.Log.Debug("vm port ready", "vm", p.ID, "port", portID, "ip", fip.IPAddress)
 	}
 	return nil
 }
@@ -408,7 +411,7 @@ func (r *realizer) bootServers() error {
 		if err := r.save(); err != nil {
 			return err
 		}
-		r.logf("server %s -> %s booting", vmID, id)
+		r.opts.Log.Info("server booting", "vm", vmID, "id", id)
 	}
 	return nil
 }
@@ -418,7 +421,7 @@ func (r *realizer) waitActive() error {
 		if err := r.waitOneActive(s); err != nil {
 			return err
 		}
-		r.logf("server %s ACTIVE", s.DSLID)
+		r.opts.Log.Info("server active", "vm", s.DSLID)
 	}
 	return nil
 }
@@ -457,7 +460,7 @@ func (r *realizer) allocateFIPs() error {
 		if err := r.save(); err != nil {
 			return err
 		}
-		r.logf("fip %s -> %s for vm %s", id, addr, vmID)
+		r.opts.Log.Debug("fip ready", "id", id, "addr", addr, "vm", vmID)
 	}
 	return nil
 }
@@ -477,7 +480,7 @@ func (r *realizer) attachGate(baseline MetricsSnapshot, expectedTaps int) error 
 		timeout = DefaultAttachTimeout
 	}
 	target := baseline.AttachedInterfaces + float64(expectedTaps)
-	r.logf("attach gate: waiting for attached_interfaces ≥ %.0f (baseline %.0f + %d taps)", target, baseline.AttachedInterfaces, expectedTaps)
+	r.opts.Log.Info("attach gate: waiting", "target", target, "baseline", baseline.AttachedInterfaces, "taps", expectedTaps)
 
 	ctx, cancel := context.WithTimeout(r.ctx, timeout)
 	defer cancel()
@@ -492,7 +495,7 @@ func (r *realizer) attachGate(baseline MetricsSnapshot, expectedTaps int) error 
 			return fmt.Errorf("attach gate: %0.f new TC attach failure(s) since baseline", snap.AttachFailures-baseline.AttachFailures)
 		}
 		if snap.AttachedInterfaces >= target {
-			r.logf("attach gate: green (attached_interfaces %.0f ≥ %.0f)", snap.AttachedInterfaces, target)
+			r.opts.Log.Info("attach gate: green", "attached", snap.AttachedInterfaces, "target", target)
 			// Record the green state so a standalone `drive` can
 			// re-confirm the taps are still attached before traffic.
 			r.rs.Attach = AttachRecord{Target: target, Failures: snap.AttachFailures}
@@ -512,10 +515,6 @@ func (r *realizer) prefix() string { return r.opts.Config.Naming.Prefix }
 
 func (r *realizer) save() error {
 	return r.rs.Save(r.opts.StatePath)
-}
-
-func (r *realizer) logf(format string, args ...any) {
-	fmt.Fprintf(r.opts.Log, format+"\n", args...)
 }
 
 // projectID resolves a DSL project name to its live Keystone ID,
@@ -552,6 +551,10 @@ func (r *realizer) projectID(dslName string) (string, error) {
 	if err := r.save(); err != nil {
 		return "", err
 	}
-	r.logf("project %s -> %s (created=%v)", dslName, id, created)
+	if created {
+		r.opts.Log.Debug("project created", "dsl", dslName, "id", id)
+	} else {
+		r.opts.Log.Debug("project reused (kept across runs by policy)", "dsl", dslName, "id", id)
+	}
 	return id, nil
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"log/slog"
 )
 
 // DownOptions bundles everything `down` needs to tear a realized
@@ -14,7 +14,7 @@ type DownOptions struct {
 	State     *RunState
 	StatePath string
 	Cloud     Cloud
-	Log       io.Writer
+	Log       *slog.Logger
 }
 
 // Down deletes everything the run-state records, in reverse creation
@@ -33,10 +33,13 @@ type DownOptions struct {
 // subnets → networks.
 func Down(ctx context.Context, opts DownOptions) error {
 	if opts.Log == nil {
-		opts.Log = io.Discard
+		opts.Log = slog.New(slog.DiscardHandler)
 	}
 	d := &downer{ctx: ctx, opts: opts}
 	rs := opts.State
+	opts.Log.Info("tearing down",
+		"fips", len(rs.FIPs), "servers", len(rs.Servers), "ports", len(rs.Ports),
+		"routers", len(rs.Routers), "subnets", len(rs.Subnets), "networks", len(rs.Networks))
 
 	for _, f := range rs.FIPs {
 		d.do("fip "+f.Address, func() error { return opts.Cloud.DeleteFIP(ctx, f.ProjectID, f.ID) })
@@ -98,7 +101,7 @@ func Down(ctx context.Context, opts DownOptions) error {
 	if err := rs.Save(opts.StatePath); err != nil {
 		return err
 	}
-	fmt.Fprintf(opts.Log, "down complete: %d project(s) kept by policy; run-state and report files kept\n", len(rs.Projects))
+	opts.Log.Info("down complete: run-state and report files kept", "projects_kept", len(rs.Projects))
 	return nil
 }
 
@@ -113,8 +116,8 @@ type downer struct {
 func (d *downer) do(what string, f func() error) {
 	if err := f(); err != nil {
 		d.errs = append(d.errs, err)
-		fmt.Fprintf(d.opts.Log, "down: %s: %v\n", what, err)
+		d.opts.Log.Warn("down: step failed", "what", what, "err", err)
 		return
 	}
-	fmt.Fprintf(d.opts.Log, "down: %s ok\n", what)
+	d.opts.Log.Debug("down: ok", "what", what)
 }

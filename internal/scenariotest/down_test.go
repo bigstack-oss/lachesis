@@ -2,7 +2,7 @@ package scenariotest
 
 import (
 	"context"
-	"io"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -38,7 +38,7 @@ func runDownFixture(t *testing.T, rs *RunState, cloud *fakeCloud) (string, error
 		State:     rs,
 		StatePath: statePath,
 		Cloud:     cloud,
-		Log:       io.Discard,
+		Log:       slog.New(slog.DiscardHandler),
 	})
 	return statePath, err
 }

@@ -16,7 +16,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"time"
 )
 
@@ -63,7 +63,7 @@ type StepEnv struct {
 	Cloud      Cloud
 	Metrics    MetricsSource
 	Exec       VMExec
-	Log        io.Writer
+	Log        *slog.Logger
 	SinkDelay  time.Duration
 	// MACLearnTimeout passes through to [DriveOptions.MACLearnTimeout];
 	// zero uses the default, tests set a small value.
@@ -89,10 +89,6 @@ func (e *StepEnv) addRow(row AssertRow) {
 		e.Report.OK = false
 	}
 	e.Report.Rows = append(e.Report.Rows, row)
-}
-
-func (e *StepEnv) logf(format string, args ...any) {
-	fmt.Fprintf(e.Log, format+"\n", args...)
 }
 
 // scrape samples all configured agents once.
@@ -206,7 +202,7 @@ func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 	env.captured = sumByTuple(snap.Bytes)
 	env.settledBase = snap.SettledFlows
-	env.logf("capture: %d tuple(s), settled_flows=%.0f", len(env.captured), env.settledBase)
+	env.Log.Info("capture", "tuples", len(env.captured), "settled_flows", env.settledBase)
 	return nil
 }
 
@@ -270,7 +266,7 @@ func (s DeleteVMStep) Run(ctx context.Context, env *StepEnv) error {
 	if err := env.State.Save(env.StatePath); err != nil {
 		return err
 	}
-	env.logf("delete-vm: %s gone (mac %s recorded)", s.VM, mac)
+	env.Log.Info("delete-vm: gone", "vm", s.VM, "mac", mac)
 	return nil
 }
 
@@ -291,7 +287,7 @@ func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
 	if timeout <= 0 {
 		timeout = DefaultSweepTimeout
 	}
-	env.logf("await-sweep: settled_flows > %.0f (timeout %s)", env.settledBase, timeout)
+	env.Log.Info("await-sweep: waiting", "settled_flows_above", env.settledBase, "timeout", timeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for {
@@ -300,7 +296,7 @@ func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
 			return err
 		}
 		if snap.SettledFlows > env.settledBase {
-			env.logf("await-sweep: observed (settled_flows %.0f → %.0f)", env.settledBase, snap.SettledFlows)
+			env.Log.Info("await-sweep: observed", "settled_flows_from", env.settledBase, "settled_flows_to", snap.SettledFlows)
 			return nil
 		}
 		select {
@@ -503,7 +499,7 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 	if err := env.State.Save(env.StatePath); err != nil {
 		return err
 	}
-	env.logf("boot-vm: %s port %s mac=%q server %s fip %s", s.VM, portID, mac, serverID, addr)
+	env.Log.Info("boot-vm: up", "vm", s.VM, "port", portID, "mac", mac, "server", serverID, "fip", addr)
 
 	return s.attachGate(ctx, env, baseline)
 }
@@ -524,7 +520,7 @@ func (s BootVMStep) attachGate(ctx context.Context, env *StepEnv, baseline Metri
 			return fmt.Errorf("attach gate: %.0f new TC attach failure(s)", snap.AttachFailures-baseline.AttachFailures)
 		}
 		if snap.AttachedInterfaces >= target {
-			env.logf("boot-vm: attach gate green (attached_interfaces %.0f ≥ %.0f)", snap.AttachedInterfaces, target)
+			env.Log.Info("boot-vm: attach gate green", "attached", snap.AttachedInterfaces, "target", target)
 			env.State.Attach = AttachRecord{Target: target, Failures: snap.AttachFailures}
 			return env.State.Save(env.StatePath)
 		}
@@ -585,7 +581,7 @@ func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	if err := env.State.Save(env.StatePath); err != nil {
 		return err
 	}
-	env.logf("associate-fip: %s ← %s (%s)", s.VM, addr, s.Network)
+	env.Log.Info("associate-fip", "vm", s.VM, "addr", addr, "network", s.Network)
 	return nil
 }
 
@@ -623,7 +619,7 @@ func (s AddRouteStep) Run(ctx context.Context, env *StepEnv) error {
 	if out, err := env.Exec.Run(ctx, fip, cmd); err != nil {
 		return fmt.Errorf("add-route %s via %s on %s: %w (output: %s)", s.CIDR, s.Via, s.VM, err, out)
 	}
-	env.logf("add-route: %s via %s on %s", s.CIDR, s.Via, s.VM)
+	env.Log.Info("add-route", "cidr", s.CIDR, "via", s.Via, "vm", s.VM)
 	return nil
 }
 
@@ -688,7 +684,7 @@ func (s AssertFlowPeerStep) Run(ctx context.Context, env *StepEnv) error {
 		Pass: total >= float64(s.MinBytes),
 		Note: s.Note,
 	})
-	env.logf("assert-flow-peer: %s@%s (%s) %s bytes=%.0f min=%d", s.Router, s.Via, mac, s.Zone, total, s.MinBytes)
+	env.Log.Info("assert-flow-peer", "router", s.Router, "via", s.Via, "mac", mac, "zone", s.Zone, "bytes", total, "min", s.MinBytes)
 	return nil
 }
 
@@ -714,7 +710,7 @@ func (s DeleteFIPStep) Run(ctx context.Context, env *StepEnv) error {
 			return err
 		}
 		deleted++
-		env.logf("delete-fip: %s (%s) gone", f.Address, s.Network)
+		env.Log.Info("delete-fip: gone", "addr", f.Address, "network", s.Network)
 	}
 	if deleted == 0 {
 		return fmt.Errorf("run-state has no FIP for VM %q from network %q", s.VM, s.Network)
@@ -759,7 +755,7 @@ func (s AssertAnomalyStep) Run(ctx context.Context, env *StepEnv) error {
 	if timeout <= 0 {
 		timeout = DefaultAnomalyTimeout
 	}
-	env.logf("assert-anomaly: %s in [%d, %d] (timeout %s)", s.Class, s.Min, s.Max, timeout)
+	env.Log.Info("assert-anomaly", "class", s.Class, "min", s.Min, "max", s.Max, "timeout", timeout)
 	deadline := time.Now().Add(timeout)
 	var last float64
 	for {
@@ -799,7 +795,7 @@ type SleepStep struct {
 func (SleepStep) Kind() string { return "sleep" }
 
 func (s SleepStep) Run(ctx context.Context, env *StepEnv) error {
-	env.logf("sleep: %s", s.Duration)
+	env.Log.Info("sleep", "duration", s.Duration)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

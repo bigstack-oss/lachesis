@@ -2,7 +2,7 @@ package scenariotest
 
 import (
 	"context"
-	"io"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -55,7 +55,7 @@ func runFixture(t *testing.T, keep bool, exec VMExec) (*fakeCloud, AssertReport,
 		Cloud:      cloud,
 		Metrics:    &runMetrics{env: env},
 		Exec:       exec,
-		Log:        io.Discard,
+		Log:        slog.New(slog.DiscardHandler),
 		Keep:       keep,
 		SinkDelay:  -1,
 	})

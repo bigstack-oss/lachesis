@@ -30,7 +30,8 @@ func newUpCmd(opts *rootOptions) *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
-			cloud, err := newCloud(ctx, cfg)
+			log := opts.logger()
+			cloud, err := newCloud(ctx, cfg, log)
 			if err != nil {
 				return fmt.Errorf("up: %w", err)
 			}
@@ -41,12 +42,12 @@ func newUpCmd(opts *rootOptions) *cobra.Command {
 				RunID:     runID,
 				StatePath: state,
 				Cloud:     cloud,
-				Metrics:   scenariotest.NewHTTPMetrics(nil),
-				Log:       os.Stderr,
+				Metrics:   newMetrics(log),
+				Log:       log,
 			})
 			if err != nil {
 				if rs != nil {
-					fmt.Fprintf(os.Stderr, "partial run-state written to %s; run `down` to clean up\n", state)
+					log.Warn("partial run-state written; run `down` to clean up", "state", state)
 				}
 				return fmt.Errorf("up: %w", err)
 			}

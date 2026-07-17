@@ -2,7 +2,7 @@ package scenariotest
 
 import (
 	"context"
-	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -185,7 +185,7 @@ func stepsFixture(t *testing.T, mm *stepMetrics, sc *Scenario) (*fakeCloud, *str
 		Cloud:      cloud,
 		Metrics:    mm,
 		Exec:       exec,
-		Log:        io.Discard,
+		Log:        slog.New(slog.DiscardHandler),
 		SinkDelay:  -1,
 		// Small gate timeout: with a truthful run-state the MAC-learn
 		// gate resolves instantly against the fake cloud; a stale dead
@@ -524,7 +524,7 @@ func TestSteps_MultiExternalPathFullLoop(t *testing.T) {
 		Cloud:      cloud,
 		Metrics:    mm,
 		Exec:       exec,
-		Log:        io.Discard,
+		Log:        slog.New(slog.DiscardHandler),
 		SinkDelay:  -1,
 	})
 	if err != nil {
