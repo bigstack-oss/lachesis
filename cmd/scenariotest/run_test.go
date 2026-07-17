@@ -10,6 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/bigstack-oss/lachesis/cmd/scenariotest/scenarios"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
 // execRoot runs the real command tree with args and returns the error
@@ -53,6 +56,45 @@ func TestRunArgValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResolveResume(t *testing.T) {
+	sc, err := scenarios.Get("twovms-same-tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.DiscardHandler)
+	dir := t.TempDir()
+	save := func(name, scenario string, torn bool) string {
+		rs := scenariotest.NewRunState("abc123", scenario, "p")
+		rs.TornDown = torn
+		path := dir + "/" + name
+		if err := rs.Save(path); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	if rs, err := resolveResume("", sc, log); rs != nil || err != nil {
+		t.Errorf("empty path: got %v, %v; want fresh", rs, err)
+	}
+	if rs, err := resolveResume(dir+"/missing.json", sc, log); rs != nil || err != nil {
+		t.Errorf("missing file: got %v, %v; want fresh", rs, err)
+	}
+	if rs, err := resolveResume(save("live.json", sc.Name, false), sc, log); err != nil || rs == nil || rs.RunID != "abc123" {
+		t.Errorf("live file: got %v, %v; want resume of abc123", rs, err)
+	}
+	if rs, err := resolveResume(save("torn.json", sc.Name, true), sc, log); rs != nil || err != nil {
+		t.Errorf("torn-down file: got %v, %v; want fresh overwrite", rs, err)
+	}
+	if _, err := resolveResume(save("wrong.json", "other-scenario", false), sc, log); err == nil {
+		t.Error("wrong-scenario file must error, not silently overwrite")
+	}
+	// A directory at the path fails with a non-ENOENT error: that must
+	// surface, never silently fall through to a fresh run.
+	if _, err := resolveResume(dir, sc, log); err == nil {
+		t.Error("unreadable state path must error, not start a fresh run")
 	}
 }
 

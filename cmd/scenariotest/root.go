@@ -89,7 +89,7 @@ func newRoot() *cobra.Command {
 	pf := root.PersistentFlags()
 	pf.StringVar(&opts.config, "config", "", "config file path (required for everything except list)")
 	pf.StringVar(&opts.output, "output", "human", "preflight/assert/run output format: human|json")
-	pf.StringVar(&opts.state, "state", "", "run-state file: written by up/run (default .scenariotest/<prefix>-<runid>.json), required by drive, assert, and down")
+	pf.StringVar(&opts.state, "state", "", "run-state file: written by up/run (default .scenariotest/<prefix>-<runid>.json), required by drive, assert, and down; an existing still-live file makes `run` resume against the kept topology (a torn-down one is overwritten)")
 	pf.StringVar(&opts.report, "report", "", "assert/run report file (default <state>-report.json); survives down")
 	pf.BoolVarP(&opts.debug, "debug", "v", false, "show debug-level progress detail (per-resource realize/teardown lines)")
 	pf.BoolVar(&opts.trace, "trace", false, "show wire-level detail: one line per OpenStack API call, agent scrape, and VM ssh exec (implies --debug)")
