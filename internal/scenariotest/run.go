@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+// teardownTimeout bounds the deferred teardown when it has been
+// detached from an already-cancelled run context (operator interrupt).
+// Live teardown of the largest scenario is ~1 minute (server deletes
+// wait until Nova forgets them); 5 minutes is generous margin without
+// hanging an unattended run forever.
+const teardownTimeout = 5 * time.Minute
+
 // RunOptions bundles everything the composed `run` needs.
 type RunOptions struct {
 	Config     Config
@@ -18,6 +25,12 @@ type RunOptions struct {
 	Metrics    MetricsSource
 	Exec       VMExec
 	Log        *slog.Logger
+
+	// HardStop, when non-nil, aborts even the deferred teardown once
+	// cancelled — the CLI cancels it on a second interrupt. The run
+	// context's own cancellation (first interrupt) stops the scenario
+	// but teardown still runs to completion under [teardownTimeout].
+	HardStop context.Context
 
 	// Keep skips the teardown, leaving the topology up for debugging.
 	// The run-state records everything a later `down` needs.
@@ -87,7 +100,21 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 			opts.Log.Info("--keep set; topology left up", "state", opts.StatePath)
 			return
 		}
-		if err := Down(ctx, DownOptions{
+		// Teardown must survive the run context's cancellation — an
+		// interrupt mid-run would otherwise fail every delete and
+		// strand the topology for a manual `down`. Detach, bounded by
+		// teardownTimeout; a cancelled HardStop still aborts.
+		tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), teardownTimeout)
+		defer cancel()
+		if opts.HardStop != nil {
+			defer context.AfterFunc(opts.HardStop, cancel)()
+			// AfterFunc fires asynchronously — an interrupt that
+			// already arrived must abort before the first delete.
+			if opts.HardStop.Err() != nil {
+				cancel()
+			}
+		}
+		if err := Down(tctx, DownOptions{
 			Config:    opts.Config,
 			State:     rs,
 			StatePath: opts.StatePath,

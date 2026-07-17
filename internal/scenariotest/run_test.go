@@ -100,6 +100,68 @@ func TestRun_KeepSkipsDown(t *testing.T) {
 	}
 }
 
+// cancelExec cancels the run context the moment drive starts pushing
+// traffic — simulating an operator interrupt mid-run.
+type cancelExec struct{ cancel context.CancelFunc }
+
+func (e cancelExec) Run(ctx context.Context, _, cmd string) (string, error) {
+	if strings.Contains(cmd, "dd if=/dev/zero") {
+		e.cancel()
+		return "", context.Canceled
+	}
+	return "", nil
+}
+
+// interruptFixture is runFixture with a cancellable run context and an
+// optional HardStop.
+func interruptFixture(t *testing.T, hardStop context.Context) (*fakeCloud, error) {
+	t.Helper()
+	env := &fakeEnv{baseAttached: 5}
+	cloud := newFakeCloud(env)
+	cloud.preProjects["scenariotest-T1"] = "uuid-t1"
+	statePath := t.TempDir() + "/state.json"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := Run(ctx, RunOptions{
+		Config:     testConfig(),
+		Scenario:   runScenario(),
+		RunID:      "run1",
+		StatePath:  statePath,
+		ReportPath: DefaultReportPath(statePath),
+		Cloud:      cloud,
+		Metrics:    &runMetrics{env: env},
+		Exec:       cancelExec{cancel: cancel},
+		Log:        slog.New(slog.DiscardHandler),
+		HardStop:   hardStop,
+		SinkDelay:  -1,
+	})
+	return cloud, err
+}
+
+func TestRun_InterruptStillTearsDown(t *testing.T) {
+	cloud, err := interruptFixture(t, nil)
+	if err == nil {
+		t.Fatal("interrupted run must return an error")
+	}
+	// The run context is cancelled, but teardown detached from it and
+	// must have deleted everything anyway.
+	if len(cloud.downOps) == 0 {
+		t.Fatal("teardown did not run after interrupt")
+	}
+}
+
+func TestRun_HardStopAbortsTeardown(t *testing.T) {
+	hard, hardCancel := context.WithCancel(context.Background())
+	hardCancel() // second interrupt already fired
+	cloud, err := interruptFixture(t, hard)
+	if err == nil {
+		t.Fatal("interrupted run must return an error")
+	}
+	if len(cloud.downOps) != 0 {
+		t.Errorf("hard stop must abort teardown, got %v", cloud.downOps)
+	}
+}
+
 func TestRun_DriveFailureStillTearsDown(t *testing.T) {
 	cloud, _, _, err := runFixture(t, false, &fakeExec{fail: "dd if=/dev/zero"})
 	if err == nil || !strings.Contains(err.Error(), "run: drive") {
