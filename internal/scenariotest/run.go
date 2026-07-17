@@ -3,7 +3,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"time"
 )
 
@@ -17,7 +17,7 @@ type RunOptions struct {
 	Cloud      Cloud
 	Metrics    MetricsSource
 	Exec       VMExec
-	Log        io.Writer
+	Log        *slog.Logger
 
 	// Keep skips the teardown, leaving the topology up for debugging.
 	// The run-state records everything a later `down` needs.
@@ -47,7 +47,7 @@ type RunOptions struct {
 // error — the script keeps going so the report shows every check.
 func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 	if opts.Log == nil {
-		opts.Log = io.Discard
+		opts.Log = slog.New(slog.DiscardHandler)
 	}
 	if opts.ReportPath == "" {
 		opts.ReportPath = DefaultReportPath(opts.StatePath)
@@ -59,13 +59,17 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 
 	pre := Preflight(ctx, opts.Config, opts.Scenario, opts.Cloud, opts.Metrics)
 	if !pre.OK {
-		_ = pre.Emit(opts.Log, "human")
+		for _, c := range pre.Checks {
+			if !c.OK {
+				opts.Log.Error("preflight check failed", "check", c.Name, "detail", c.Detail)
+			}
+		}
 		return AssertReport{}, fmt.Errorf("run: preflight not ready")
 	}
 	if err := checkStepMetrics(ctx, opts, steps); err != nil {
 		return AssertReport{}, err
 	}
-	fmt.Fprintln(opts.Log, "run: preflight ready")
+	opts.Log.Info("preflight ready")
 
 	rs, upErr := Realize(ctx, RealizeOptions{
 		Config:    opts.Config,
@@ -80,7 +84,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 	// exit path (unless Keep) — including a partial `up`.
 	defer func() {
 		if opts.Keep {
-			fmt.Fprintf(opts.Log, "run: -keep set; topology left up (run-state at %s)\n", opts.StatePath)
+			opts.Log.Info("--keep set; topology left up", "state", opts.StatePath)
 			return
 		}
 		if err := Down(ctx, DownOptions{
@@ -90,7 +94,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 			Cloud:     opts.Cloud,
 			Log:       opts.Log,
 		}); err != nil {
-			fmt.Fprintf(opts.Log, "run: teardown incomplete: %v\n", err)
+			opts.Log.Error("teardown incomplete", "err", err)
 		}
 	}()
 	if upErr != nil {
@@ -113,7 +117,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 		Report:          &report,
 	}
 	for i, st := range steps {
-		fmt.Fprintf(opts.Log, "run: step %d/%d: %s\n", i+1, len(steps), st.Kind())
+		opts.Log.Info("step", "n", i+1, "of", len(steps), "kind", st.Kind())
 		if err := st.Run(ctx, env); err != nil {
 			return report, fmt.Errorf("run: %s: %w", st.Kind(), err)
 		}
@@ -122,7 +126,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 	if err := report.Save(opts.ReportPath); err != nil {
 		return report, err
 	}
-	fmt.Fprintf(opts.Log, "run: report written to %s\n", opts.ReportPath)
+	opts.Log.Info("report written", "path", opts.ReportPath)
 	return report, nil
 }
 

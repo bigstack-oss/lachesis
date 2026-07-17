@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
 
 	"github.com/bigstack-oss/lachesis/cmd/scenariotest/scenarios"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/charmbracelet/lipgloss"
+	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +23,40 @@ type rootOptions struct {
 	output string
 	state  string
 	report string
+	debug  bool
+	trace  bool
+}
+
+// logger builds the stderr logger every subcommand logs through:
+// charmbracelet/log rendering (TTY-aware, NO_COLOR honored, plain text
+// when piped) behind the stdlib slog API the internal packages accept.
+// INFO and above by default; --debug adds the per-resource detail;
+// --trace adds the wire tier (one line per API call / scrape / ssh).
+func (o *rootOptions) logger() *slog.Logger {
+	lvl := charmlog.InfoLevel
+	switch {
+	case o.trace:
+		lvl = charmlog.Level(scenariotest.LevelTrace)
+	case o.debug:
+		lvl = charmlog.DebugLevel
+	}
+	h := charmlog.NewWithOptions(os.Stderr, charmlog.Options{
+		Level:           lvl,
+		ReportTimestamp: true,
+	})
+	styles := charmlog.DefaultStyles()
+	styles.Levels[charmlog.Level(scenariotest.LevelTrace)] = lipgloss.NewStyle().
+		SetString("TRCE").Bold(true).MaxWidth(4).Foreground(lipgloss.Color("245"))
+	h.SetStyles(styles)
+	return slog.New(h)
+}
+
+// newMetrics builds the agent-scrape source with the wire-trace
+// transport installed; the lines only surface under --trace.
+func newMetrics(log *slog.Logger) *scenariotest.HTTPMetrics {
+	return scenariotest.NewHTTPMetrics(&http.Client{
+		Transport: scenariotest.NewTraceTransport(nil, log),
+	})
 }
 
 func newRoot() *cobra.Command {
@@ -52,6 +91,8 @@ func newRoot() *cobra.Command {
 	pf.StringVar(&opts.output, "output", "human", "preflight/assert/run output format: human|json")
 	pf.StringVar(&opts.state, "state", "", "run-state file: written by up/run (default .scenariotest/<prefix>-<runid>.json), required by drive, assert, and down")
 	pf.StringVar(&opts.report, "report", "", "assert/run report file (default <state>-report.json); survives down")
+	pf.BoolVarP(&opts.debug, "debug", "v", false, "show debug-level progress detail (per-resource realize/teardown lines)")
+	pf.BoolVar(&opts.trace, "trace", false, "show wire-level detail: one line per OpenStack API call, agent scrape, and VM ssh exec (implies --debug)")
 
 	root.AddCommand(
 		newListCmd(),
@@ -114,6 +155,6 @@ func loadRunState(statePath string, sc *scenariotest.Scenario, sub string) (*sce
 
 // newCloud authenticates the live OpenStack client (credential
 // resolution happens inside NewOpenStack).
-func newCloud(ctx context.Context, cfg scenariotest.Config) (scenariotest.Cloud, error) {
-	return scenariotest.NewOpenStack(ctx, cfg.OpenStack)
+func newCloud(ctx context.Context, cfg scenariotest.Config, log *slog.Logger) (scenariotest.Cloud, error) {
+	return scenariotest.NewOpenStack(ctx, cfg.OpenStack, log)
 }

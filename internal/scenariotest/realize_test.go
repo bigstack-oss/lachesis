@@ -3,7 +3,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -286,7 +286,7 @@ func realizeFixture(t *testing.T, sc *Scenario) (*fakeCloud, *RunState) {
 		StatePath: t.TempDir() + "/state.json",
 		Cloud:     cloud,
 		Metrics:   &fakeMetrics{env: env},
-		Log:       io.Discard,
+		Log:       slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
 		t.Fatalf("Realize: %v", err)
@@ -456,7 +456,7 @@ func TestRealize_FIPRequiresGatewayedRouter(t *testing.T) {
 	cloud := newFakeCloud(env)
 	_, err := Realize(context.Background(), RealizeOptions{
 		Config: testConfig(), Scenario: sc, RunID: "run1",
-		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: &fakeMetrics{env: env}, Log: io.Discard,
+		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: &fakeMetrics{env: env}, Log: slog.New(slog.DiscardHandler),
 	})
 	if err == nil || !strings.Contains(err.Error(), "not reachable") {
 		t.Fatalf("want FIP reachability error, got %v", err)
@@ -470,7 +470,7 @@ func TestRealize_ReusesExistingProject(t *testing.T) {
 
 	rs, err := Realize(context.Background(), RealizeOptions{
 		Config: testConfig(), Scenario: sameTenantScenario(), RunID: "run1",
-		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: &fakeMetrics{env: env}, Log: io.Discard,
+		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: &fakeMetrics{env: env}, Log: slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -503,7 +503,7 @@ func TestRealize_ForceFreshFailsWhenProjectExists(t *testing.T) {
 
 	_, err := Realize(context.Background(), RealizeOptions{
 		Config: testConfig(), Scenario: sc, RunID: "run1",
-		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: &fakeMetrics{env: env}, Log: io.Discard,
+		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: &fakeMetrics{env: env}, Log: slog.New(slog.DiscardHandler),
 	})
 	if err == nil {
 		t.Fatal("want error for ForceFresh on existing project, got nil")
@@ -518,7 +518,7 @@ func TestRealize_AttachGateTimesOut(t *testing.T) {
 	stuck := stuckMetrics{}
 	_, err := Realize(context.Background(), RealizeOptions{
 		Config: testConfig(), Scenario: sameTenantScenario(), RunID: "run1",
-		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: stuck, Log: io.Discard,
+		StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: stuck, Log: slog.New(slog.DiscardHandler),
 		AttachTimeout: 50 * time.Millisecond,
 	})
 	if err == nil {

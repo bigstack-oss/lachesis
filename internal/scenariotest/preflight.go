@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"text/tabwriter"
 )
 
 // PreflightReport is the outcome of a read-only cluster-readiness
@@ -110,36 +109,13 @@ func requiredMetrics(res ScrapeResult) error {
 	return nil
 }
 
-// Emit writes the report as "human" (a table, with a trailing
-// READY/NOT READY verdict) or "json".
-func (r PreflightReport) Emit(w io.Writer, format string) error {
-	switch format {
-	case "json":
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(r); err != nil {
-			return fmt.Errorf("encode: %w", err)
-		}
-		return nil
-	case "human", "":
-		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(tw, "PREFLIGHT %s\n", r.Scenario)
-		fmt.Fprintln(tw, "CHECK\tRESULT\tDETAIL")
-		for _, c := range r.Checks {
-			result := "ok"
-			if !c.OK {
-				result = "FAIL"
-			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", c.Name, result, c.Detail)
-		}
-		tw.Flush()
-		verdict := "READY"
-		if !r.OK {
-			verdict = "NOT READY"
-		}
-		fmt.Fprintf(w, "\n%s\n", verdict)
-		return nil
-	default:
-		return fmt.Errorf("bad output format %q (want human|json)", format)
+// EmitJSON writes the report as indented JSON. Human rendering is a
+// presentation concern and lives with the CLI, not here.
+func (r PreflightReport) EmitJSON(w io.Writer) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(r); err != nil {
+		return fmt.Errorf("encode: %w", err)
 	}
+	return nil
 }

@@ -3,6 +3,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"time"
@@ -24,11 +25,17 @@ type SSHExec struct {
 	// Timeout bounds each command. Zero means no per-command bound
 	// beyond the caller's ctx.
 	Timeout time.Duration
+	// Log (nil = discard) receives one [LevelTrace] line per command.
+	Log *slog.Logger
 }
 
 // NewSSHExec builds the driver's exec from the config's SSH block.
-func NewSSHExec(cfg SSHConfig) *SSHExec {
-	return &SSHExec{User: cfg.User, KeyPath: expandHome(cfg.KeyPath), Timeout: cfg.Timeout}
+// log (nil = discard) receives one [LevelTrace] line per command.
+func NewSSHExec(cfg SSHConfig, log *slog.Logger) *SSHExec {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &SSHExec{User: cfg.User, KeyPath: expandHome(cfg.KeyPath), Timeout: cfg.Timeout, Log: log}
 }
 
 // sshBaseArgs are the non-negotiable transport options. The two
@@ -57,10 +64,18 @@ func (s *SSHExec) Run(ctx context.Context, addr, command string) (string, error)
 	}
 	args := append([]string{"-i", s.KeyPath}, sshBaseArgs...)
 	args = append(args, fmt.Sprintf("%s@%s", s.User, addr), command)
+	start := time.Now()
 	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	dur := time.Since(start).Round(time.Millisecond)
 	if err != nil {
+		if s.Log != nil {
+			s.Log.Log(ctx, LevelTrace, "ssh", "addr", addr, "cmd", command, "err", err, "dur", dur)
+		}
 		return string(out), fmt.Errorf("ssh %s@%s %q: %w (output: %s)",
 			s.User, addr, command, err, strings.TrimSpace(string(out)))
+	}
+	if s.Log != nil {
+		s.Log.Log(ctx, LevelTrace, "ssh", "addr", addr, "cmd", command, "dur", dur)
 	}
 	return string(out), nil
 }

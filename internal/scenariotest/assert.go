@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 	"time"
 )
 
@@ -24,7 +24,7 @@ type AssertOptions struct {
 	// [DefaultReportPath].
 	ReportPath string
 	Metrics    MetricsSource
-	Log        io.Writer
+	Log        *slog.Logger
 
 	// SettleTimeout bounds the poll-until-pass loop: counters appear
 	// one agent scrape interval after traffic, so assert re-evaluates
@@ -85,7 +85,7 @@ type AssertRow struct {
 // report, not an error.
 func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 	if opts.Log == nil {
-		opts.Log = io.Discard
+		opts.Log = slog.New(slog.DiscardHandler)
 	}
 	rs := opts.State
 	if len(rs.Baseline) == 0 {
@@ -129,7 +129,7 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 		if remaining < wait {
 			wait = remaining
 		}
-		fmt.Fprintf(opts.Log, "assert: not settled yet, retrying (%d/%d rows pass)\n", passCount(report), len(report.Rows))
+		opts.Log.Info("assert: not settled yet, retrying", "pass", passCount(report), "rows", len(report.Rows))
 		select {
 		case <-ctx.Done():
 			return report, ctx.Err()
@@ -144,7 +144,7 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 	if err := report.Save(path); err != nil {
 		return report, err
 	}
-	fmt.Fprintf(opts.Log, "assert: report written to %s\n", path)
+	opts.Log.Info("assert: report written", "path", path)
 	return report, nil
 }
 
@@ -333,47 +333,13 @@ func (r AssertReport) Save(path string) error {
 	return nil
 }
 
-// Emit writes the report as "human" (a table with a PASS/FAIL
-// verdict) or "json".
-func (r AssertReport) Emit(w io.Writer, format string) error {
-	switch format {
-	case "json":
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(r); err != nil {
-			return fmt.Errorf("encode: %w", err)
-		}
-		return nil
-	case "human", "":
-		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(tw, "ASSERT %s (run %s)\n", r.Scenario, r.RunID)
-		fmt.Fprintln(tw, "TENANT\tZONE\tEXT\tVM\tDIR\tBASELINE\tCURRENT\tDELTA\tMIN\tRESULT")
-		for _, row := range r.Rows {
-			result := "pass"
-			if !row.Pass {
-				result = "FAIL"
-			}
-			if row.Note != "" {
-				result += " (" + row.Note + ")"
-			}
-			ext, vm := row.ExternalNetwork, row.VM
-			if ext == "" {
-				ext = "-"
-			}
-			if vm == "" {
-				vm = "-"
-			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%.0f\t%.0f\t%.0f\t%d\t%s\n",
-				row.Tenant, row.Zone, ext, vm, row.Direction, row.Baseline, row.Current, row.Delta, row.MinBytes, result)
-		}
-		tw.Flush()
-		verdict := "PASS"
-		if !r.OK {
-			verdict = "FAIL"
-		}
-		fmt.Fprintf(w, "\n%s\n", verdict)
-		return nil
-	default:
-		return fmt.Errorf("bad output format %q (want human|json)", format)
+// EmitJSON writes the report as indented JSON. Human rendering is a
+// presentation concern and lives with the CLI, not here.
+func (r AssertReport) EmitJSON(w io.Writer) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(r); err != nil {
+		return fmt.Errorf("encode: %w", err)
 	}
+	return nil
 }

@@ -30,19 +30,20 @@ func newAssertCmd(opts *rootOptions) *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
+			log := opts.logger()
 			res, err := scenariotest.Assert(ctx, scenariotest.AssertOptions{
 				Config:     cfg,
 				Scenario:   sc,
 				State:      rs,
 				ReportPath: report,
-				Metrics:    scenariotest.NewHTTPMetrics(nil),
-				Log:        os.Stderr,
+				Metrics:    newMetrics(log),
+				Log:        log,
 			})
 			if err != nil {
 				return fmt.Errorf("assert: %w", err)
 			}
-			if err := res.Emit(os.Stdout, opts.output); err != nil {
-				return fmt.Errorf("assert: %w", err)
+			if err := emitAssert(os.Stdout, opts.output, res); err != nil {
+				return err
 			}
 			if !res.OK {
 				return errFailed

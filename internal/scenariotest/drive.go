@@ -3,7 +3,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
-	"io"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -17,7 +17,7 @@ type DriveOptions struct {
 	StatePath string
 	Metrics   MetricsSource
 	Exec      VMExec
-	Log       io.Writer
+	Log       *slog.Logger
 
 	// SinkDelay is the pause between starting a flow's sink and
 	// streaming into it, giving the listener time to bind. Zero uses
@@ -79,7 +79,7 @@ const (
 //     external/infra scenarios assert.
 func Drive(ctx context.Context, opts DriveOptions) error {
 	if opts.Log == nil {
-		opts.Log = io.Discard
+		opts.Log = slog.New(slog.DiscardHandler)
 	}
 	d := &driver{ctx: ctx, opts: opts}
 
@@ -97,7 +97,7 @@ func Drive(ctx context.Context, opts DriveOptions) error {
 			return fmt.Errorf("flow %d (%s → %s%s): %w", i, f.From, f.To.VMID, f.To.IP, err)
 		}
 	}
-	d.logf("drive complete: %d flow(s) pushed", len(opts.Scenario.Flows))
+	d.opts.Log.Info("drive complete", "flows", len(opts.Scenario.Flows))
 	return nil
 }
 
@@ -119,7 +119,7 @@ func (d *driver) recheckAttach() error {
 	}
 	rec := d.opts.State.Attach
 	if rec.Target == 0 {
-		d.logf("attach recheck: run-state has no attach record; skipping gauge comparison")
+		d.opts.Log.Warn("attach recheck: run-state has no attach record; skipping gauge comparison")
 		return nil
 	}
 	if snap.AttachedInterfaces < rec.Target {
@@ -128,7 +128,7 @@ func (d *driver) recheckAttach() error {
 	if snap.AttachFailures > rec.Failures {
 		return fmt.Errorf("attach recheck: %.0f new TC attach failure(s) since up", snap.AttachFailures-rec.Failures)
 	}
-	d.logf("attach recheck: ok (attached_interfaces %.0f ≥ %.0f)", snap.AttachedInterfaces, rec.Target)
+	d.opts.Log.Info("attach recheck: ok", "attached", snap.AttachedInterfaces, "target", rec.Target)
 	return nil
 }
 
@@ -150,7 +150,7 @@ func (d *driver) waitMACsLearned() error {
 		}
 	}
 	if len(want) == 0 {
-		d.logf("mac-learn gate: run-state records no port MACs; skipping")
+		d.opts.Log.Warn("mac-learn gate: run-state records no port MACs; skipping")
 		return nil
 	}
 	urls := agentURLs(d.opts.Config)
@@ -163,11 +163,12 @@ func (d *driver) waitMACsLearned() error {
 	if interval > timeout/10 {
 		interval = timeout / 10
 	}
+	d.opts.Log.Info("mac-learn gate: waiting", "macs", len(want), "agents", len(urls), "timeout", timeout)
 	deadline := time.Now().Add(timeout)
 	for {
 		missing := d.unresolvedMACs(urls, want)
 		if len(missing) == 0 {
-			d.logf("mac-learn gate: ok (%d MAC(s) resolved on %d agent(s))", len(want), len(urls))
+			d.opts.Log.Info("mac-learn gate: ok", "macs", len(want), "agents", len(urls))
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -223,7 +224,7 @@ func (d *driver) captureBaseline() error {
 	if err := d.opts.State.Save(d.opts.StatePath); err != nil {
 		return err
 	}
-	d.logf("baseline captured: %d series (%d per-server)", len(snap.Bytes), len(snap.Servers))
+	d.opts.Log.Info("baseline captured", "series", len(snap.Bytes), "per_server", len(snap.Servers))
 	return nil
 }
 
@@ -273,7 +274,7 @@ func (d *driver) runVMFlow(i int, f Flow, srcFIP string) error {
 	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, stream); err != nil {
 		return fmt.Errorf("stream: %w", err)
 	}
-	d.logf("flow %d: %s → %s (%s:%d) %d MiB over TCP", i, f.From, f.To.VMID, dstInternal, port, count)
+	d.opts.Log.Info("flow: tcp stream", "flow", i, "from", f.From, "to", f.To.VMID, "dst", dstInternal, "port", port, "mib", count)
 	return nil
 }
 
@@ -289,7 +290,7 @@ func (d *driver) runExternalFlow(f Flow, srcFIP string) error {
 	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, cmd); err != nil {
 		return fmt.Errorf("ping push: %w", err)
 	}
-	d.logf("flow: %s → %s, %d ping(s) × %d B payload", f.From, f.To.IP, count, pingPayloadBytes)
+	d.opts.Log.Info("flow: ping", "from", f.From, "to", f.To.IP, "pings", count, "payload_bytes", pingPayloadBytes)
 	return nil
 }
 
@@ -307,12 +308,13 @@ func (d *driver) waitReady(vmID, addr string) error {
 	if timeout <= 0 {
 		timeout = defaultReadyTimeout
 	}
+	d.opts.Log.Info("waiting for ssh-ready", "vm", vmID, "addr", addr, "timeout", timeout)
 	ctx, cancel := context.WithTimeout(d.ctx, timeout)
 	defer cancel()
 	for {
 		if _, err := d.opts.Exec.Run(ctx, addr, "true"); err == nil {
 			d.ready[vmID] = true
-			d.logf("vm %s ssh-ready at %s", vmID, addr)
+			d.opts.Log.Info("vm ssh-ready", "vm", vmID, "addr", addr)
 			return nil
 		}
 		select {
@@ -340,10 +342,6 @@ func (d *driver) fip(vmID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("run-state has no FIP for VM %q", vmID)
-}
-
-func (d *driver) logf(format string, args ...any) {
-	fmt.Fprintf(d.opts.Log, format+"\n", args...)
 }
 
 // internalIP resolves a VM's fixed IP from the scenario's topology —

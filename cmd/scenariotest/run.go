@@ -39,7 +39,8 @@ ghost sweep, booting a deferred VM with a captured MAC, and so on.`,
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
-			cloud, err := newCloud(ctx, cfg)
+			log := opts.logger()
+			cloud, err := newCloud(ctx, cfg, log)
 			if err != nil {
 				return fmt.Errorf("run: %w", err)
 			}
@@ -50,16 +51,16 @@ ghost sweep, booting a deferred VM with a captured MAC, and so on.`,
 				StatePath:  state,
 				ReportPath: report,
 				Cloud:      cloud,
-				Metrics:    scenariotest.NewHTTPMetrics(nil),
-				Exec:       scenariotest.NewSSHExec(cfg.SSH),
-				Log:        os.Stderr,
+				Metrics:    newMetrics(log),
+				Exec:       scenariotest.NewSSHExec(cfg.SSH, log),
+				Log:        log,
 				Keep:       keep,
 			})
 			if err != nil {
 				return fmt.Errorf("run: %w", err)
 			}
-			if err := res.Emit(os.Stdout, opts.output); err != nil {
-				return fmt.Errorf("run: %w", err)
+			if err := emitAssert(os.Stdout, opts.output, res); err != nil {
+				return err
 			}
 			fmt.Printf("report: %s\n", report)
 			if !res.OK {
