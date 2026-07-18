@@ -91,6 +91,25 @@ func TestAll_CoversFiveZones(t *testing.T) {
 	}
 }
 
+func TestLiveMigrationContinuity_Invariants(t *testing.T) {
+	sc, err := Get("live-migration-continuity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := scenariotest.RequiredNodes(sc); n != 2 {
+		t.Fatalf("RequiredNodes = %d, want 2", n)
+	}
+	migrates := 0
+	for _, st := range sc.Steps {
+		if st.Kind() == "migrate" {
+			migrates++
+		}
+	}
+	if migrates != 1 {
+		t.Errorf("want exactly one migrate step, got %d", migrates)
+	}
+}
+
 func TestCrossHostSameTenant_SkipsOnSingleNode(t *testing.T) {
 	sc, err := Get("cross-host-same-tenant")
 	if err != nil {

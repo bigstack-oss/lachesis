@@ -474,6 +474,43 @@ func (o *OpenStack) WaitServerActive(ctx context.Context, projectID, serverID st
 	}
 }
 
+func (o *OpenStack) ServerHost(ctx context.Context, projectID, serverID string) (string, error) {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	s, err := servers.Get(ctx, sc.compute, serverID).Extract()
+	if err != nil {
+		return "", fmt.Errorf("openstack: get server %s: %w", serverID, err)
+	}
+	if s.Host == "" {
+		return "", fmt.Errorf("openstack: server %s exposes no OS-EXT-SRV-ATTR:host (token lacks admin?)", serverID)
+	}
+	return s.Host, nil
+}
+
+func (o *OpenStack) LiveMigrateServer(ctx context.Context, projectID, serverID, targetHost string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	// At the default compute microversion os-migrateLive REQUIRES
+	// block_migration and disk_over_commit — omitting them is a 400,
+	// not a default (found live). False/false is correct for the
+	// shared-storage (CephFS instances dir) clusters this harness
+	// targets; a block-migration cluster would need a knob nobody has
+	// asked for yet.
+	no := false
+	opts := servers.LiveMigrateOpts{BlockMigration: &no, DiskOverCommit: &no}
+	if targetHost != "" {
+		opts.Host = &targetHost
+	}
+	if err := servers.LiveMigrate(ctx, sc.compute, serverID, opts).ExtractErr(); err != nil {
+		return fmt.Errorf("openstack: live-migrate server %s: %w", serverID, err)
+	}
+	return nil
+}
+
 func (o *OpenStack) CreateFIP(ctx context.Context, projectID string, spec FIPCreateSpec) (string, string, error) {
 	sc, err := o.scopedFor(ctx, projectID)
 	if err != nil {

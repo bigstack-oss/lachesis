@@ -28,6 +28,7 @@ func All() []*scenariotest.Scenario {
 		macReuse(),
 		multiExternalPath(),
 		crossHostSameTenant(),
+		liveMigrationContinuity(),
 	}
 }
 

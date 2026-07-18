@@ -796,6 +796,114 @@ func (s AssertAnomalyStep) Run(ctx context.Context, env *StepEnv) error {
 	return nil
 }
 
+// Migration timing: live migrations on the target clusters complete
+// in well under a minute; five bounds a stuck migration without
+// hanging an unattended run.
+const (
+	DefaultMigrateTimeout = 5 * time.Minute
+	migratePollInterval   = 3 * time.Second
+)
+
+// MigrateStep live-migrates a realized VM and waits until Nova
+// reports it ACTIVE on a different host. Target optionally names the
+// destination — a placement slot ("node:<i>") or a literal configured
+// agent host, the [Scenario.Placement] vocabulary — empty lets the
+// scheduler choose. The completed move is appended to the run-state's
+// Migrations (source and destination hosts), the evidence per-node
+// assertions across the migration are judged against. Node identity
+// in those assertions follows the OBSERVING agent: bytes driven after
+// this step surface on the destination's series.
+type MigrateStep struct {
+	VM     string
+	Target string
+	// Timeout bounds the wait for the migration to land; zero uses
+	// [DefaultMigrateTimeout]. Tests set a small value.
+	Timeout time.Duration
+}
+
+func (MigrateStep) Kind() string { return "migrate" }
+
+func (s MigrateStep) Run(ctx context.Context, env *StepEnv) error {
+	var ref ResourceRef
+	for _, r := range env.State.Servers {
+		if r.DSLID == s.VM {
+			ref = r
+			break
+		}
+	}
+	if ref.ID == "" {
+		return fmt.Errorf("migrate: run-state has no server for VM %q", s.VM)
+	}
+	target := ""
+	if s.Target != "" {
+		host, err := resolveNode(s.Target, env.Config.Cluster.Agents)
+		if err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+		target = host
+	}
+	from, err := env.Cloud.ServerHost(ctx, ref.ProjectID, ref.ID)
+	if err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	if target != "" && target == from {
+		return fmt.Errorf("migrate: VM %q already on %s — a migration that moves nothing proves nothing", s.VM, from)
+	}
+	env.Log.Info("migrate: requested", "vm", s.VM, "server", ref.ID, "from", from, "target", dashEmpty(target))
+	if err := env.Cloud.LiveMigrateServer(ctx, ref.ProjectID, ref.ID, target); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultMigrateTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		host, err := env.Cloud.ServerHost(ctx, ref.ProjectID, ref.ID)
+		if err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+		if host != from && (target == "" || host == target) {
+			if err := env.Cloud.WaitServerActive(ctx, ref.ProjectID, ref.ID); err != nil {
+				return fmt.Errorf("migrate: %w", err)
+			}
+			env.State.Migrations = append(env.State.Migrations, MigrationRecord{VM: s.VM, From: from, To: host})
+			// Re-baseline the attach record: migration legitimately
+			// re-plumbs taps, and the source agent racing its dying tap
+			// increments the failure counter (benign — the link is
+			// gone). Without a fresh baseline the next drive's recheck
+			// reads that noise as taps lost since up.
+			if snap, err := sampleAcross(ctx, env.Metrics, env.Config.Cluster.Agents); err == nil {
+				env.State.Attach.Failures = snap.AttachFailures
+			} else {
+				return fmt.Errorf("migrate: attach re-baseline scrape: %w", err)
+			}
+			if err := env.State.Save(env.StatePath); err != nil {
+				return err
+			}
+			env.Log.Info("migrate: landed", "vm", s.VM, "from", from, "to", host)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("migrate: VM %q still on %s after %s (target %s)", s.VM, host, timeout, dashEmpty(target))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(migratePollInterval):
+		}
+	}
+}
+
+// dashEmpty renders an optional value for logs.
+func dashEmpty(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 // SleepStep pauses the script — the timing primitive for scenarios
 // that must outwait an external cadence no metric signals (agent
 // restart windows, scrape-interval boundaries).

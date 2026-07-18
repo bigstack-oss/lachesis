@@ -25,6 +25,16 @@ func execRoot(args ...string) error {
 	return root.Execute()
 }
 
+// allScenarioNames derives the registry's names so "skip everything"
+// keeps meaning everything as scenarios are added.
+func allScenarioNames() []string {
+	var names []string
+	for _, sc := range scenarios.All() {
+		names = append(names, sc.Name)
+	}
+	return names
+}
+
 func TestRunArgValidation(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -38,7 +48,7 @@ func TestRunArgValidation(t *testing.T) {
 		{"unknown name", []string{"run", "no-such-scenario"}, "no-such-scenario"},
 		{"skip without all", []string{"run", "--skip", "mac-reuse", "vm-to-internet"}, "--skip only applies with --all"},
 		{"skip unknown name", []string{"run", "--all", "--skip", "no-such-scenario"}, "no-such-scenario"},
-		{"skip everything", []string{"run", "--all", "--skip", "twovms-same-tenant,vm-to-gateway,vm-to-internet,cross-tenant-shared,cross-tenant-routed,mac-reuse,multi-external-path"}, "left no scenarios"},
+		{"skip everything", []string{"run", "--all", "--skip", strings.Join(allScenarioNames(), ",")}, "left no scenarios"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
