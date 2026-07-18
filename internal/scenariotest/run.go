@@ -14,6 +14,15 @@ import (
 // hanging an unattended run forever.
 const teardownTimeout = 5 * time.Minute
 
+// SkipError reports that the scenario cannot run on this cluster —
+// its placement slots need more nodes than the config lists. Not a
+// failure: the CLI maps it to a SKIPPED verdict and exit 0, and the
+// suite counts it separately (`--no-skip` tightens both to failures,
+// for clusters that are supposed to satisfy every scenario).
+type SkipError struct{ Reason string }
+
+func (e *SkipError) Error() string { return "skipped: " + e.Reason }
+
 // RunOptions bundles everything the composed `run` needs.
 type RunOptions struct {
 	Config     Config
@@ -89,6 +98,12 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 
 	if opts.State == nil {
 		pre := Preflight(ctx, opts.Config, opts.Scenario, opts.Cloud, opts.Metrics)
+		if pre.Skip != "" {
+			// Nothing was created; there is nothing to tear down. The
+			// resume path never gates: a kept topology already proved
+			// the cluster fits.
+			return AssertReport{}, &SkipError{Reason: pre.Skip}
+		}
 		if !pre.OK {
 			for _, c := range pre.Checks {
 				if !c.OK {

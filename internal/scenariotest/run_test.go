@@ -2,6 +2,7 @@ package scenariotest
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -92,6 +93,26 @@ func TestRun_FullLoop(t *testing.T) {
 	// The report file survives the teardown.
 	if r := mustLoadReport(t, DefaultReportPath(statePath)); !r.OK {
 		t.Errorf("persisted report should pass: %+v", r)
+	}
+}
+
+func TestRun_SkipsWhenClusterTooSmall(t *testing.T) {
+	cloud, opts := baseRunOptions(t)
+	opts.Scenario.Placement = Placement{"vm-a": "node:1"} // testConfig lists one agent
+	_, err := Run(context.Background(), opts)
+	var skip *SkipError
+	if !errors.As(err, &skip) {
+		t.Fatalf("want SkipError, got %v", err)
+	}
+	if skip.Reason == "" {
+		t.Error("skip reason must name why")
+	}
+	// A skip creates nothing and tears down nothing.
+	if len(cloud.servers) != 0 || len(cloud.downOps) != 0 {
+		t.Errorf("skip must not touch the cluster: %d servers, %d down ops", len(cloud.servers), len(cloud.downOps))
+	}
+	if _, err := LoadRunState(opts.StatePath); err == nil {
+		t.Error("no run-state file should be written for a skipped run")
 	}
 }
 

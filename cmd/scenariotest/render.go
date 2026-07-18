@@ -22,6 +22,8 @@ var (
 	failStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
 	passVerdict = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
 	failVerdict = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true).Reverse(true)
+	skipStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	skipVerdict = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
 )
 
 // emitPreflight writes the report in the requested output format.
@@ -52,6 +54,10 @@ func emitAssert(w io.Writer, format string, r scenariotest.AssertReport) error {
 
 func renderPreflight(w io.Writer, r scenariotest.PreflightReport) {
 	fmt.Fprintln(w, titleStyle.Render(fmt.Sprintf("PREFLIGHT %s", r.Scenario)))
+	if r.Skip != "" {
+		fmt.Fprintln(w, skipVerdict.Render("SKIPPED")+" "+r.Skip)
+		return
+	}
 	t := newTable("CHECK", "RESULT", "DETAIL")
 	for _, c := range r.Checks {
 		result := passStyle.Render("ok")
@@ -83,6 +89,26 @@ func renderAssert(w io.Writer, r scenariotest.AssertReport) {
 	fmt.Fprintln(w, verdict(r.OK, "PASS", "FAIL"))
 }
 
+// emitSkip reports a skipped single-scenario run in the requested
+// output format.
+func emitSkip(w io.Writer, format, scenario, reason string) error {
+	switch format {
+	case "json":
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(map[string]string{"scenario": scenario, "skipped": reason}); err != nil {
+			return fmt.Errorf("encode: %w", err)
+		}
+		return nil
+	case "human", "":
+		fmt.Fprintln(w, titleStyle.Render("RUN "+scenario))
+		fmt.Fprintln(w, skipVerdict.Render("SKIPPED")+" "+reason)
+		return nil
+	default:
+		return usageError{fmt.Errorf("bad output format %q (want human|json)", format)}
+	}
+}
+
 // emitSuite writes the multi-scenario summary in the requested output
 // format.
 func emitSuite(w io.Writer, format string, r suiteReport) error {
@@ -108,6 +134,8 @@ func renderSuite(w io.Writer, r suiteReport) {
 	for _, s := range r.Scenarios {
 		result := passStyle.Render("pass")
 		switch {
+		case s.Skipped != "":
+			result = skipStyle.Render("skip") + " (" + s.Skipped + ")"
 		case s.Error != "":
 			result = failStyle.Render("FAIL") + " (error)"
 		case !s.OK:
@@ -117,6 +145,7 @@ func renderSuite(w io.Writer, r suiteReport) {
 		t.Row(s.Scenario, result, dur.String(), dash(s.Report))
 	}
 	fmt.Fprintln(w, t.Render())
+	fmt.Fprintf(w, "%d passed · %d failed · %d skipped\n", r.Pass, r.Fail, r.Skipped)
 	fmt.Fprintln(w, verdict(r.OK, "PASS", "FAIL"))
 }
 

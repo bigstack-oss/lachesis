@@ -16,7 +16,7 @@ import (
 )
 
 func newRunCmd(opts *rootOptions) *cobra.Command {
-	var keep, all bool
+	var keep, all, noSkip bool
 	var skip []string
 	cmd := &cobra.Command{
 		Use:   "run [--all] <scenario>...",
@@ -36,7 +36,12 @@ so --state/--report only apply when running a single scenario.
 With a single scenario, --state pointing at an existing, still-live run-state
 file resumes against that kept topology (the partner of --keep): realize is
 skipped, the attach gate is re-verified, and the step script runs directly. A
-torn-down file (a completed run's leftover) is overwritten by a fresh run.`,
+torn-down file (a completed run's leftover) is overwritten by a fresh run.
+
+A scenario whose placement slots need more nodes than the config lists is
+SKIPPED, not failed: nothing is created, the verdict says why, and the exit
+code stays 0 (the suite summary counts skips separately). --no-skip tightens
+that to a failure, for clusters that are supposed to satisfy every scenario.`,
 		Args: func(_ *cobra.Command, args []string) error {
 			switch {
 			case all && len(args) > 0:
@@ -83,14 +88,15 @@ torn-down file (a completed run's leftover) is overwritten by a fresh run.`,
 			ctx, hardStop, stop := interruptContexts(cmd.Context(), log)
 			defer stop()
 			if len(scs) == 1 {
-				return runOne(ctx, hardStop, opts, log, scs[0], keep)
+				return runOne(ctx, hardStop, opts, log, scs[0], keep, noSkip)
 			}
-			return runSuite(ctx, hardStop, opts, log, scs, keep)
+			return runSuite(ctx, hardStop, opts, log, scs, keep, noSkip)
 		},
 	}
 	cmd.Flags().BoolVar(&keep, "keep", false, "leave each topology up after assert")
 	cmd.Flags().BoolVar(&all, "all", false, "run every registered scenario in registry order")
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "with --all: scenario names to leave out (repeatable or comma-separated); unknown names are an error")
+	cmd.Flags().BoolVar(&noSkip, "no-skip", false, "treat SKIPPED scenarios (cluster smaller than the placement slots need) as failures")
 	return cmd
 }
 
@@ -158,7 +164,7 @@ func resolveResume(statePath string, sc *scenariotest.Scenario, log *slog.Logger
 
 // runOne is the single-scenario path — behavior identical to `run`
 // before multi-scenario support.
-func runOne(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, sc *scenariotest.Scenario, keep bool) error {
+func runOne(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, sc *scenariotest.Scenario, keep, noSkip bool) error {
 	cfg, sc, err := loadConfigAndScenario(opts.config, sc.Name)
 	if err != nil {
 		return err
@@ -202,6 +208,16 @@ func runOne(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, 
 		State:      resume,
 		Keep:       keep,
 	})
+	var skip *scenariotest.SkipError
+	if errors.As(err, &skip) {
+		if err := emitSkip(os.Stdout, opts.output, sc.Name, skip.Reason); err != nil {
+			return err
+		}
+		if noSkip {
+			return errFailed
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
 	}
@@ -222,7 +238,11 @@ type suiteScenario struct {
 	// Error is set for mechanical failures (preflight not ready, a
 	// step unable to run); a failed assertion is OK=false with the
 	// detail in the scenario's own report file.
-	Error           string  `json:"error,omitempty"`
+	Error string `json:"error,omitempty"`
+	// Skipped carries the reason the scenario could not run on this
+	// cluster (placement slots need more nodes than configured).
+	// A skipped row never fails the suite unless --no-skip is set.
+	Skipped         string  `json:"skipped,omitempty"`
 	DurationSeconds float64 `json:"duration_seconds"`
 	State           string  `json:"state"`
 	// Report is empty when a mechanical failure aborted the scenario
@@ -234,13 +254,34 @@ type suiteScenario struct {
 // `run --all -output json`.
 type suiteReport struct {
 	OK        bool            `json:"ok"`
+	Pass      int             `json:"pass"`
+	Fail      int             `json:"fail"`
+	Skipped   int             `json:"skipped"`
 	Scenarios []suiteScenario `json:"scenarios"`
+}
+
+// summarize fills the suite counts and verdict from the rows: skipped
+// rows never fail the suite unless noSkip tightens them.
+func summarize(rows []suiteScenario, noSkip bool) suiteReport {
+	r := suiteReport{Scenarios: rows}
+	for _, s := range rows {
+		switch {
+		case s.Skipped != "":
+			r.Skipped++
+		case s.OK:
+			r.Pass++
+		default:
+			r.Fail++
+		}
+	}
+	r.OK = r.Fail == 0 && (!noSkip || r.Skipped == 0)
+	return r
 }
 
 // runSuite runs the scenarios sequentially, continuing past failures
 // (each scenario tears its own topology down either way, so the next
 // one starts from a clean cluster) and ends with the suite summary.
-func runSuite(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, scs []*scenariotest.Scenario, keep bool) error {
+func runSuite(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, scs []*scenariotest.Scenario, keep, noSkip bool) error {
 	if opts.config == "" {
 		return usageError{errors.New("missing required --config")}
 	}
@@ -253,19 +294,16 @@ func runSuite(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger
 		return fmt.Errorf("run: %w", err)
 	}
 
-	suite := suiteReport{OK: true}
+	var rows []suiteScenario
 	for i, sc := range scs {
 		log.Info("suite: scenario starting", "n", i+1, "of", len(scs), "name", sc.Name)
-		row := runSuiteOne(ctx, hardStop, cfg, cloud, sc, keep, log)
-		suite.Scenarios = append(suite.Scenarios, row)
-		if !row.OK {
-			suite.OK = false
-		}
+		rows = append(rows, runSuiteOne(ctx, hardStop, cfg, cloud, sc, keep, log))
 		if ctx.Err() != nil {
 			log.Warn("suite interrupted", "ran", i+1, "of", len(scs))
 			break
 		}
 	}
+	suite := summarize(rows, noSkip)
 
 	if err := emitSuite(os.Stdout, opts.output, suite); err != nil {
 		return err
@@ -301,7 +339,12 @@ func runSuiteOne(ctx, hardStop context.Context, cfg scenariotest.Config, cloud s
 		Keep:       keep,
 	})
 	row.DurationSeconds = time.Since(start).Seconds()
+	var skip *scenariotest.SkipError
 	switch {
+	case errors.As(err, &skip):
+		// Nothing ran: no state file was written, so don't point at one.
+		row.Skipped, row.State = skip.Reason, ""
+		log.Warn("suite: scenario skipped", "name", sc.Name, "reason", skip.Reason)
 	case err != nil:
 		row.Error = err.Error()
 		log.Error("suite: scenario failed", "name", sc.Name, "err", err)

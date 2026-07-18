@@ -68,17 +68,48 @@ func TestPreflight_PlacementSlotResolves(t *testing.T) {
 	}
 }
 
-func TestPreflight_PlacementSlotBeyondAgents(t *testing.T) {
+func TestPreflight_SlotBeyondAgentsSkips(t *testing.T) {
 	env := &fakeEnv{baseAttached: 1}
 	cloud := newFakeCloud(env)
 	sc := sameTenantScenario()
 	sc.Placement = Placement{"vm-b": "node:1"} // testConfig lists one agent
 	r := Preflight(context.Background(), testConfig(), sc, cloud, &fakeMetrics{env: env})
-	if c, ok := checkByName(r, "placement"); !ok || c.OK {
-		t.Errorf("placement check should fail for an unresolvable slot, got %+v", c)
+	if r.Skip == "" {
+		t.Fatalf("expected a skip reason, report: %+v", r)
 	}
-	if r.OK {
-		t.Error("report should be NOT READY")
+	if !r.OK {
+		t.Error("a skip is not a failure")
+	}
+	if len(r.Checks) != 0 {
+		t.Errorf("no checks should run when skipped, got %d", len(r.Checks))
+	}
+}
+
+func TestPreflight_MalformedSlotFailsPlacement(t *testing.T) {
+	// A malformed slot is a scenario defect, not a too-small cluster:
+	// it must FAIL the placement check, never SKIP — even when a valid
+	// slot beside it would qualify the scenario for a skip (masking the
+	// defect until a big-enough cluster finally ran it).
+	for name, p := range map[string]Placement{
+		"malformed alone":            {"vm-a": "node:one"},
+		"malformed beside skip-size": {"vm-a": "node:5", "vm-b": "node:one"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := &fakeEnv{baseAttached: 1}
+			cloud := newFakeCloud(env)
+			sc := sameTenantScenario()
+			sc.Placement = p
+			r := Preflight(context.Background(), testConfig(), sc, cloud, &fakeMetrics{env: env})
+			if r.Skip != "" {
+				t.Errorf("malformed slot must not skip, got reason %q", r.Skip)
+			}
+			if c, ok := checkByName(r, "placement"); !ok || c.OK {
+				t.Errorf("placement check should fail for a malformed slot, got %+v", c)
+			}
+			if r.OK {
+				t.Error("report should be NOT READY")
+			}
+		})
 	}
 }
 

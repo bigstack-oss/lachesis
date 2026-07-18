@@ -30,6 +30,25 @@ func TestRenderPreflight(t *testing.T) {
 	}
 }
 
+func TestRenderPreflightSkipped(t *testing.T) {
+	r := scenariotest.PreflightReport{
+		Scenario: "cross-host-same-tenant",
+		OK:       true,
+		Skip:     "needs 2 node(s) (placement slots); config lists 1 agent(s)",
+	}
+	var b strings.Builder
+	renderPreflight(&b, r)
+	out := b.String()
+	for _, want := range []string{"PREFLIGHT cross-host-same-tenant", "SKIPPED", "needs 2 node(s)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderPreflight output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "CHECK") {
+		t.Errorf("skipped report must not render the check table:\n%s", out)
+	}
+}
+
 func TestRenderAssert(t *testing.T) {
 	r := scenariotest.AssertReport{
 		Scenario: "vm-to-internet",

@@ -99,24 +99,49 @@ func TestResolveResume(t *testing.T) {
 }
 
 func TestRenderSuite(t *testing.T) {
-	r := suiteReport{
-		OK: false,
-		Scenarios: []suiteScenario{
-			{Scenario: "twovms-same-tenant", OK: true, DurationSeconds: 222.4, Report: ".scenariotest/a-report.json"},
-			{Scenario: "vm-to-internet", OK: false, DurationSeconds: 130, Report: ".scenariotest/b-report.json"},
-			{Scenario: "mac-reuse", OK: false, Error: "run: preflight not ready", DurationSeconds: 3.2},
-		},
-	}
+	r := summarize([]suiteScenario{
+		{Scenario: "twovms-same-tenant", OK: true, DurationSeconds: 222.4, Report: ".scenariotest/a-report.json"},
+		{Scenario: "vm-to-internet", OK: false, DurationSeconds: 130, Report: ".scenariotest/b-report.json"},
+		{Scenario: "mac-reuse", OK: false, Error: "run: preflight not ready", DurationSeconds: 3.2},
+		{Scenario: "cross-host-same-tenant", Skipped: "needs 2 node(s) (placement slots); config lists 1 agent(s)"},
+	}, false)
 	var b strings.Builder
 	renderSuite(&b, r)
 	out := b.String()
-	for _, want := range []string{"SUITE 3 scenario(s)", "twovms-same-tenant", "3m42s", "FAIL (error)", ".scenariotest/b-report.json", "FAIL"} {
+	for _, want := range []string{"SUITE 4 scenario(s)", "twovms-same-tenant", "3m42s", "FAIL (error)",
+		".scenariotest/b-report.json", "FAIL", "skip (needs 2 node(s)", "1 passed · 2 failed · 1 skipped"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("renderSuite output missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Count(out, "pass") != 1 {
+	if strings.Count(out, "pass ") != 1 {
 		t.Errorf("want exactly one pass row:\n%s", out)
+	}
+}
+
+func TestSummarize(t *testing.T) {
+	rows := []suiteScenario{
+		{Scenario: "a", OK: true},
+		{Scenario: "b"},
+		{Scenario: "c", Skipped: "needs 2 node(s)"},
+	}
+	r := summarize(rows, false)
+	if r.Pass != 1 || r.Fail != 1 || r.Skipped != 1 {
+		t.Errorf("counts = %d/%d/%d, want 1/1/1", r.Pass, r.Fail, r.Skipped)
+	}
+	if r.OK {
+		t.Error("a failed row must fail the suite")
+	}
+
+	// Skips alone never fail the suite...
+	r = summarize([]suiteScenario{{Scenario: "a", OK: true}, {Scenario: "c", Skipped: "too small"}}, false)
+	if !r.OK {
+		t.Error("skips must not fail the suite by default")
+	}
+	// ...unless --no-skip tightens them.
+	r = summarize([]suiteScenario{{Scenario: "a", OK: true}, {Scenario: "c", Skipped: "too small"}}, true)
+	if r.OK {
+		t.Error("--no-skip must turn skips into failures")
 	}
 }
 

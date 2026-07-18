@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+func TestRequiredNodes(t *testing.T) {
+	tests := []struct {
+		name string
+		p    Placement
+		want int
+	}{
+		{name: "no placement", p: nil, want: 0},
+		{name: "literals only", p: Placement{"vm-a": "compute-7"}, want: 0},
+		{name: "single slot", p: Placement{"vm-a": "node:0"}, want: 1},
+		{name: "count is max index plus one", p: Placement{"vm-a": "node:0", "vm-b": "node:2"}, want: 3},
+		{name: "malformed slot ignored", p: Placement{"vm-a": "node:one"}, want: 0},
+		{name: "mixed literal and slot", p: Placement{"vm-a": "node:1", "vm-b": "compute-7"}, want: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RequiredNodes(&Scenario{Placement: tt.p}); got != tt.want {
+				t.Errorf("RequiredNodes = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolvePlacement(t *testing.T) {
 	agents := []AgentConfig{
 		{Host: "cc1", MetricsURL: "http://cc1:9100/metrics"},
