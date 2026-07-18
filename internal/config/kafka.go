@@ -25,10 +25,33 @@ type KafkaConfig struct {
 	// "notifications.info" (the INFO-priority topic oslo's Kafka driver
 	// writes); override only for a non-standard notification_topics.
 	Topic string `yaml:"topic"`
-	// GroupID is the consumer-group id. A stable id lets the broker track
-	// the agent's offset across restarts. Delivery is at-least-once,
-	// which is fine: each event only triggers an (idempotent) reconcile.
+	// GroupID is the consumer-group PREFIX; the effective group id is
+	// per-agent-unique (see [KafkaConfig.EffectiveGroupID]). The
+	// notification stream is a fanout — every agent maintains its own
+	// mac_tenant_map for the taps on its node and so must receive every
+	// event — but Kafka delivers each message to only one member of a
+	// group. A shared group therefore starves all but one agent of the
+	// reconcile kick, leaving them on the periodic (5-minute) reconcile.
+	// Suffixing the host keeps per-restart offset tracking while giving
+	// each agent the full stream. Delivery is at-least-once, which is
+	// fine: each event only triggers an (idempotent) reconcile.
 	GroupID string `yaml:"group_id"`
+}
+
+// EffectiveGroupID is the consumer group the agent actually joins:
+// GroupID suffixed with a per-agent token so each agent reads the whole
+// notification stream instead of load-balancing it away from its peers.
+// The token is the agent's hostname (preferred: stable across restarts
+// so offset tracking survives, and readable on the broker). When the
+// hostname is unavailable it falls back to randomFallback — never to the
+// bare GroupID, since a shared group would starve peers of reconcile
+// kicks and reintroduce the fanout bug.
+func (c KafkaConfig) EffectiveGroupID(host, randomFallback string) string {
+	suffix := host
+	if suffix == "" {
+		suffix = randomFallback
+	}
+	return c.GroupID + "-" + suffix
 }
 
 func kafkaDefaults() KafkaConfig {
