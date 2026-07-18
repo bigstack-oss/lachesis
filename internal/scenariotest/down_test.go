@@ -162,6 +162,83 @@ func TestDown_FailedRouteClearLeavesInterfacePinned(t *testing.T) {
 	}
 }
 
+// TestDown_SweepsServerFromCreateSaveRace is the regression for
+// lachesis#212: a server Nova accepted in the window between the boot
+// call returning and the state save is recorded nowhere. Realize boots
+// the VMs (the fake records them live), but the run-state `down` sees
+// predates those boots — it records their ports (saved earlier) yet
+// zero servers, exactly the hard-kill-mid-boot case found on staging.
+// The recorded-server loop can't reach the orphans; only the
+// name-prefix sweep can. Without it, `down` can't even converge: the
+// recorded VM ports refuse to delete while their servers are still
+// bound.
+func TestDown_SweepsServerFromCreateSaveRace(t *testing.T) {
+	cloud, rs := realizeFixture(t, sameTenantScenario())
+	if len(cloud.serverIDs) != 2 {
+		t.Fatalf("fixture booted %d servers, want 2", len(cloud.serverIDs))
+	}
+	// Simulate the create→save race: the on-disk state was written
+	// before any server boot was recorded (the reported live case
+	// recorded zero servers while a VM was ACTIVE). The ports it
+	// recorded stay — that is what makes teardown 409 without the sweep.
+	rs.Servers = nil
+
+	statePath, err := runDownFixture(t, rs, cloud)
+	if err != nil {
+		t.Fatalf("Down must converge by sweeping the unrecorded servers: %v", err)
+	}
+
+	// Every booted server — recorded nowhere — is gone.
+	for _, id := range cloud.serverIDs {
+		if !cloud.deleted["server:"+id] {
+			t.Errorf("orphan server %s survived down", id)
+		}
+	}
+	// The sweep runs before the port teardown: a server's tap must
+	// vanish before `down` deletes the (recorded) port it sat on.
+	firstPort, lastServer := -1, -1
+	for i, o := range cloud.downOps {
+		if strings.HasPrefix(o, "server:") {
+			lastServer = i
+		}
+		if strings.HasPrefix(o, "port:") && firstPort == -1 {
+			firstPort = i
+		}
+	}
+	if firstPort == -1 {
+		t.Fatalf("no port was torn down: %v", cloud.downOps)
+	}
+	if lastServer > firstPort {
+		t.Errorf("server sweep must precede port teardown: %v", cloud.downOps)
+	}
+	saved, lerr := LoadRunState(statePath)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if !saved.TornDown {
+		t.Error("TornDown not persisted after the sweep converged")
+	}
+}
+
+// TestDown_ServerSweepScopedToRunPrefix guards the collision-safety
+// discipline: the sweep deletes only servers whose name carries this
+// run's mangled prefix, never a sibling run's server sharing the reused
+// project (projects are run-id-free and kept across runs).
+func TestDown_ServerSweepScopedToRunPrefix(t *testing.T) {
+	cloud, rs := realizeFixture(t, sameTenantScenario())
+	rs.Servers = nil
+	// A server from another run, live in the same (reused) project.
+	proj := rs.Projects["T1"].ID
+	other, _ := cloud.CreateServer(context.Background(), proj, ServerSpec{Name: "scenariotest-other9-vm-z"})
+
+	if _, err := runDownFixture(t, rs, cloud); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+	if cloud.deleted["server:"+other] {
+		t.Errorf("sweep deleted a sibling run's server %s — must match only this run's prefix", other)
+	}
+}
+
 func TestDown_Idempotent(t *testing.T) {
 	cloud := newFakeCloud(&fakeEnv{})
 	cloud.residualPorts["net-1"] = []string{"port-mgr"}
