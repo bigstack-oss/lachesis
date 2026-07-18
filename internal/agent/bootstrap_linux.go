@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 
 	"github.com/cilium/ebpf"
@@ -328,10 +329,24 @@ func (b *bootstrapper) wireKafka() error {
 			"component", componentKafka)
 		return nil
 	}
+	// Per-agent group so every agent gets every notification (the stream
+	// is a fanout, not a work queue). Prefer the hostname (stable across
+	// restarts, readable on the broker); if it's unavailable fall back to
+	// a random token — never to the shared group, which would starve the
+	// peers of reconcile kicks.
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		slog.Warn("hostname unavailable; using a random kafka consumer-group suffix to keep it per-agent",
+			"component", componentKafka, "err", err)
+	}
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers: b.cfg.Kafka.Brokers,
-		GroupID: b.cfg.Kafka.GroupID,
+		GroupID: b.cfg.Kafka.EffectiveGroupID(host, fmt.Sprintf("%08x", rand.Uint32())),
 		Topic:   b.cfg.Kafka.Topic,
+		// A fresh per-host group has no committed offset; start from the
+		// newest event, not the topic's history — cold-start Sync already
+		// loaded current state, so only new events need a kick.
+		StartOffset: kafkago.LastOffset,
 	})
 	b.ag.kafkaConsumer = kafka.New(kafka.Options{
 		Reader:  reader,
