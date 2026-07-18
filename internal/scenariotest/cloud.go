@@ -124,6 +124,14 @@ type Cloud interface {
 	// ports (e.g. CubeCOS `cube:mgr`) that block subnet/network
 	// deletion and appear in no run-state.
 	ListNetworkPorts(ctx context.Context, networkID string) ([]string, error)
+	// ListProjectServers returns the ID and name of every Nova server
+	// in projectID (through a project-scoped token, so only that
+	// project's servers are visible). It backs the residual server
+	// sweep: a server Nova accepted in the create→save window is
+	// recorded nowhere, and `down` recognises it by its exact mangled
+	// name. The name comes back so `down` can match the run's own
+	// prefix and never touch a sibling run reusing the same project.
+	ListProjectServers(ctx context.Context, projectID string) ([]ServerRef, error)
 	// DeleteSubnet deletes a subnet.
 	DeleteSubnet(ctx context.Context, projectID, id string) error
 	// DeleteNetwork deletes a network.
@@ -200,4 +208,13 @@ type FIPCreateSpec struct {
 type RouteSpec struct {
 	Destination string
 	Nexthop     string
+}
+
+// ServerRef is one live Nova server seen by [Cloud.ListProjectServers]:
+// its ID (to delete by) and Name (to match against the run's mangled
+// prefix). Deliberately minimal — the residual server sweep needs
+// nothing more.
+type ServerRef struct {
+	ID   string
+	Name string
 }

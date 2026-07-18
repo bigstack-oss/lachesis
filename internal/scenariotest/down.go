@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // DownOptions bundles everything `down` needs to tear a realized
@@ -52,6 +53,39 @@ func Down(ctx context.Context, opts DownOptions) error {
 			}
 			return opts.Cloud.WaitServerGone(ctx, s.ProjectID, s.ID)
 		})
+	}
+	// Residual server sweep: a server Nova accepted in the create→save
+	// window (the process died after the boot call returned, before the
+	// state save) is recorded nowhere, so the loop above can't reach it
+	// and the port/network sweeps below would strand it — the port sweep
+	// frees its network out from under it, leaving a live VM on no
+	// network that survives every `down`. Mirror the residual-port
+	// sweep, but scope it to the run's own projects AND to servers whose
+	// name carries this exact run id: the mangled prefix
+	// "<prefix>-<runID>-" is collision-free by construction, so the
+	// listing can never reach a sibling run reusing the same project
+	// (projects are shared across runs) or another tenant. This runs
+	// before the port teardown so a swept server's tap vanishes before
+	// `down` deletes the (recorded) port it sat on — Neutron 409s a
+	// bound-port delete otherwise.
+	runPrefix := Mangle(rs.Prefix, rs.RunID, "")
+	for _, proj := range rs.Projects {
+		found, err := opts.Cloud.ListProjectServers(ctx, proj.ID)
+		if err != nil {
+			d.errs = append(d.errs, err)
+			continue
+		}
+		for _, srv := range found {
+			if !strings.HasPrefix(srv.Name, runPrefix) {
+				continue
+			}
+			d.do("residual server "+srv.ID+" in "+proj.Name, func() error {
+				if err := opts.Cloud.DeleteServer(ctx, proj.ID, srv.ID); err != nil {
+					return err
+				}
+				return opts.Cloud.WaitServerGone(ctx, proj.ID, srv.ID)
+			})
+		}
 	}
 	// Routes clear before any interface detach: a static route pins the
 	// interface its next-hop sits on, so Neutron 409s the detach with

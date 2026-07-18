@@ -658,6 +658,32 @@ func (o *OpenStack) ListNetworkPorts(ctx context.Context, networkID string) ([]s
 	return ids, nil
 }
 
+// ListProjectServers lists servers through a token scoped to
+// projectID, so the returned set is exactly that project's servers —
+// never another tenant's. It does no name filtering: `down` owns the
+// exact-prefix match, keeping the collision-safety discipline in one
+// place. Backs the residual server sweep for a boot Nova accepted in
+// the create→save window.
+func (o *OpenStack) ListProjectServers(ctx context.Context, projectID string) ([]ServerRef, error) {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	pages, err := servers.List(sc.compute, servers.ListOpts{}).AllPages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("openstack: list servers in project %s: %w", projectID, err)
+	}
+	all, err := servers.ExtractServers(pages)
+	if err != nil {
+		return nil, fmt.Errorf("openstack: extract servers: %w", err)
+	}
+	refs := make([]ServerRef, 0, len(all))
+	for _, s := range all {
+		refs = append(refs, ServerRef{ID: s.ID, Name: s.Name})
+	}
+	return refs, nil
+}
+
 func (o *OpenStack) DeleteSubnet(ctx context.Context, projectID, id string) error {
 	sc, err := o.scopedFor(ctx, projectID)
 	if err != nil {

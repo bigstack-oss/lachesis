@@ -49,8 +49,14 @@ type fakeCloud struct {
 	serverIDs       []string
 	serverHost      map[string]string // server id → current compute host
 	migrations      []string          // "srv:from→to" in call order
-	fips            []FIPCreateSpec
-	fipIDs          []string
+	// live-server model: CreateServer records these so the residual
+	// sweep can list a project's servers by name and DeletePort can
+	// refuse a still-bound port (both keyed by server id).
+	serverName    map[string]string // id → mangled name
+	serverProject map[string]string // id → project it booted in
+	serverPort    map[string]string // id → port it sits on
+	fips          []FIPCreateSpec
+	fipIDs        []string
 
 	// reachability model (live IDs)
 	portSubnet    map[string]string          // port id → subnet id
@@ -91,8 +97,10 @@ func newFakeCloud(env *fakeEnv) *fakeCloud {
 		routerSubnets: map[string]map[string]bool{},
 		routerRoutes:  map[string][]RouteSpec{},
 		portMAC:       map[string]string{}, portNet: map[string]string{},
-		portName:      map[string]string{},
-		portProject:   map[string]string{},
+		portName:    map[string]string{},
+		portProject: map[string]string{},
+		serverName:  map[string]string{}, serverProject: map[string]string{},
+		serverPort:    map[string]string{},
 		residualPorts: map[string][]string{}, deleted: map[string]bool{},
 		serverHost: map[string]string{},
 	}
@@ -194,7 +202,7 @@ func (c *fakeCloud) SetRouterRoutes(_ context.Context, _, routerID string, route
 // CreateServer models placement the way Nova does: an AZ host pin
 // ("nova:<host>") lands the server there; unpinned servers go to the
 // first hypervisor (a deterministic stand-in for the scheduler).
-func (c *fakeCloud) CreateServer(_ context.Context, _ string, spec ServerSpec) (string, error) {
+func (c *fakeCloud) CreateServer(_ context.Context, proj string, spec ServerSpec) (string, error) {
 	c.servers = append(c.servers, spec)
 	c.env.booted++
 	id := c.id("srv")
@@ -207,6 +215,9 @@ func (c *fakeCloud) CreateServer(_ context.Context, _ string, spec ServerSpec) (
 		}
 	}
 	c.serverHost[id] = host
+	c.serverName[id] = spec.Name
+	c.serverProject[id] = proj
+	c.serverPort[id] = spec.PortID
 	return id, nil
 }
 func (c *fakeCloud) WaitServerActive(context.Context, string, string) error { return nil }
@@ -304,6 +315,15 @@ func (c *fakeCloud) WaitServerGone(context.Context, string, string) error {
 	return nil
 }
 func (c *fakeCloud) DeletePort(ctx context.Context, _, id string) error {
+	// Neutron refuses (PortInUse) to delete a port a live server still
+	// sits on. Models the create→save-race case: the VM's port is
+	// recorded, so `down` reaches it in the port loop — and must fail
+	// there unless the residual server sweep tore the VM down first.
+	for sid, pid := range c.serverPort {
+		if pid == id && !c.deleted["server:"+sid] {
+			return fmt.Errorf("fake neutron: port %s in use by server %s", id, sid)
+		}
+	}
 	return c.down(ctx, "port", id)
 }
 
@@ -336,6 +356,15 @@ func (c *fakeCloud) ListNetworkPorts(_ context.Context, networkID string) ([]str
 	for _, id := range c.residualPorts[networkID] {
 		if !c.deleted["port:"+id] {
 			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+func (c *fakeCloud) ListProjectServers(_ context.Context, projectID string) ([]ServerRef, error) {
+	var out []ServerRef
+	for _, id := range c.serverIDs {
+		if c.serverProject[id] == projectID && !c.deleted["server:"+id] {
+			out = append(out, ServerRef{ID: id, Name: c.serverName[id]})
 		}
 	}
 	return out, nil
