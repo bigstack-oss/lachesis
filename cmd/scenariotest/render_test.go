@@ -30,6 +30,24 @@ func TestRenderPreflight(t *testing.T) {
 	}
 }
 
+func TestRenderAssertNodeColumn(t *testing.T) {
+	r := scenariotest.AssertReport{
+		Scenario: "cross-host-same-tenant", RunID: "abc", OK: true,
+		Rows: []scenariotest.AssertRow{
+			{Tenant: "T1", Zone: "same_tenant", Node: "cc2", Direction: "rx", Delta: 1 << 20, MinBytes: 1 << 20, Pass: true},
+			{Tenant: "T1", Zone: "same_tenant", Direction: "tx", Delta: 1 << 20, MinBytes: 1 << 20, Pass: true},
+		},
+	}
+	var b strings.Builder
+	renderAssert(&b, r)
+	out := b.String()
+	for _, want := range []string{"NODE", "cc2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderAssert output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderPreflightSkipped(t *testing.T) {
 	r := scenariotest.PreflightReport{
 		Scenario: "cross-host-same-tenant",

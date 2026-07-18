@@ -50,6 +50,11 @@ type BytesSample struct {
 	ExternalNetwork string  `json:"external_network,omitempty"`
 	Direction       string  `json:"direction"`
 	Value           float64 `json:"value"`
+	// Node is the configured host of the agent that exposed this
+	// series, stamped by [sampleAcross] — what lets a node-targeted
+	// [Expect] evaluate one agent's tap instead of the cluster sum.
+	// Empty on samples from run-states predating per-node capture.
+	Node string `json:"node,omitempty"`
 }
 
 // ServerSample is one lachesis_server_bytes_total series — the mortal
@@ -63,6 +68,8 @@ type ServerSample struct {
 	ExternalNetwork string  `json:"external_network,omitempty"`
 	Direction       string  `json:"direction"`
 	Value           float64 `json:"value"`
+	// Node mirrors [BytesSample.Node].
+	Node string `json:"node,omitempty"`
 }
 
 // ScrapeResult is one agent's /metrics scrape: which of the metrics
@@ -232,20 +239,28 @@ func (h *HTTPMetrics) LookupFlows(ctx context.Context, metricsURL, mac string) (
 	return body.Rows, nil
 }
 
-// sampleAcross scrapes every agent URL and aggregates the health
-// gauges (each compute node exposes its own) plus the bytes series.
-func sampleAcross(ctx context.Context, src MetricsSource, urls []string) (MetricsSnapshot, error) {
+// sampleAcross scrapes every configured agent and aggregates the
+// health gauges (each compute node exposes its own) plus the bytes
+// series, stamping each sample with its agent's host so node-targeted
+// expectations can tell the taps apart.
+func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) (MetricsSnapshot, error) {
 	var snap MetricsSnapshot
-	for _, u := range urls {
-		r, err := src.Scrape(ctx, u)
+	for _, a := range agents {
+		r, err := src.Scrape(ctx, a.MetricsURL)
 		if err != nil {
 			return MetricsSnapshot{}, err
 		}
 		snap.AttachedInterfaces += r.AttachedInterfaces
 		snap.AttachFailures += r.AttachFailures
 		snap.SettledFlows += r.SettledFlows
-		snap.Bytes = append(snap.Bytes, r.Bytes...)
-		snap.Servers = append(snap.Servers, r.Servers...)
+		for _, s := range r.Bytes {
+			s.Node = a.Host
+			snap.Bytes = append(snap.Bytes, s)
+		}
+		for _, s := range r.Servers {
+			s.Node = a.Host
+			snap.Servers = append(snap.Servers, s)
+		}
 		for class, v := range r.Anomalies {
 			if snap.Anomalies == nil {
 				snap.Anomalies = map[string]float64{}

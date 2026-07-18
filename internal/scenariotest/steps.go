@@ -93,7 +93,7 @@ func (e *StepEnv) addRow(row AssertRow) {
 
 // scrape samples all configured agents once.
 func (e *StepEnv) scrape(ctx context.Context) (MetricsSnapshot, error) {
-	return sampleAcross(ctx, e.Metrics, agentURLs(e.Config))
+	return sampleAcross(ctx, e.Metrics, e.Config.Cluster.Agents)
 }
 
 // project resolves a DSL project name via the run-state.
@@ -467,10 +467,15 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 		return err
 	}
 
-	// Deferred VMs honor Scenario.Placement like up-time boots do.
-	placement, err := resolvePlacement(env.Scenario.Placement, env.Config.Cluster.Agents)
-	if err != nil {
-		return err
+	// Deferred VMs honor Scenario.Placement like up-time boots do,
+	// reusing realize's recorded resolution; run-states predating
+	// placement persistence resolve fresh.
+	placement := env.State.Placement
+	if placement == nil {
+		var perr error
+		if placement, perr = resolvePlacement(env.Scenario.Placement, env.Config.Cluster.Agents); perr != nil {
+			return perr
+		}
 	}
 	serverID, err := env.Cloud.CreateServer(ctx, proj.ID, ServerSpec{
 		Name:             name,

@@ -73,6 +73,30 @@ func skipReason(sc *Scenario, cfg Config) string {
 	return ""
 }
 
+// resolveNode maps an [Expect.Node] target to the configured agent
+// host whose samples the assertion must match: a "node:<i>" slot
+// resolves like Placement does; a literal value must name a
+// configured agent host (anything else would silently sum zero
+// samples — an error beats a mute FAIL).
+func resolveNode(val string, agents []AgentConfig) (string, error) {
+	idx, isSlot, err := slotIndex(val)
+	if isSlot {
+		if err != nil {
+			return "", fmt.Errorf("node target %q: %w", val, err)
+		}
+		if idx >= len(agents) {
+			return "", fmt.Errorf("node target %q: config lists %d agent(s)", val, len(agents))
+		}
+		return agents[idx].Host, nil
+	}
+	for _, a := range agents {
+		if a.Host == val {
+			return val, nil
+		}
+	}
+	return "", fmt.Errorf("node target %q is not a configured agent host", val)
+}
+
 // placementAZ returns the Nova availability-zone pin ("nova:<host>")
 // for vm, or "" when vm is unpinned. Both boot paths (realize-time
 // and deferred BootVMStep) go through here so the AZ scheme has one

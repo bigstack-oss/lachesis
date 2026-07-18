@@ -332,3 +332,146 @@ func TestResolveExternalNetwork(t *testing.T) {
 		}
 	}
 }
+
+// perNodeMetrics serves a different scrape per agent URL — the fake
+// for tests where the two taps must be distinguishable.
+type perNodeMetrics struct {
+	instantMACs
+	byURL map[string]ScrapeResult
+}
+
+func (m perNodeMetrics) Scrape(_ context.Context, url string) (ScrapeResult, error) {
+	return m.byURL[url], nil
+}
+
+// twoAgentNodeFixture: compute-0 carries the driven 1 MiB, compute-1
+// stays flat — the divergence only a node-targeted expectation can see.
+func twoAgentNodeFixture() (Config, *RunState, MetricsSource) {
+	cfg := testConfig()
+	cfg.Cluster.Agents = append(cfg.Cluster.Agents, AgentConfig{Host: "compute-1", MetricsURL: "http://compute-1:9100/metrics"})
+	rs := assertState()
+	rs.Baseline = []BytesSample{
+		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50, Node: "compute-0"},
+		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50, Node: "compute-1"},
+	}
+	m := perNodeMetrics{byURL: map[string]ScrapeResult{
+		cfg.Cluster.Agents[0].MetricsURL: {
+			Present: map[string]bool{metricBytesTotal: true},
+			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50 + 1<<20}},
+		},
+		cfg.Cluster.Agents[1].MetricsURL: {
+			Present: map[string]bool{metricBytesTotal: true},
+			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50}},
+		},
+	}}
+	return cfg, rs, m
+}
+
+func TestAssert_NodeTargetSplitsAgents(t *testing.T) {
+	cfg, rs, m := twoAgentNodeFixture()
+	sc := assertScenario()
+	sc.Expect = []Expect{
+		// The driving node's tap carries the delta...
+		{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: "node:0", MinBytes: 1 << 20},
+		// ...the flat node's does not — a literal host target resolves too.
+		{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: "compute-1", MinBytes: 1},
+	}
+	rep, err := Assert(context.Background(), AssertOptions{
+		Config: cfg, Scenario: sc, State: rs, ReportPath: t.TempDir() + "/report.json",
+		// Short: the failing row makes the settle loop exhaust the
+		// timeout by design; there is nothing to wait for.
+		Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.OK {
+		t.Fatal("flat node's expectation should fail the report")
+	}
+	if r := rep.Rows[0]; !r.Pass || r.Node != "compute-0" || r.Delta != float64(1<<20) {
+		t.Errorf("node:0 row wrong: %+v", r)
+	}
+	if r := rep.Rows[1]; r.Pass || r.Node != "compute-1" || r.Delta != 0 {
+		t.Errorf("compute-1 row wrong: %+v", r)
+	}
+}
+
+func TestAssert_CollectiveUnchangedByNodes(t *testing.T) {
+	// The same divergent cluster, asserted without a node target: the
+	// cluster-wide sum sees the delta exactly as before per-node capture.
+	cfg, rs, m := twoAgentNodeFixture()
+	sc := assertScenario()
+	sc.Expect = []Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20}}
+	rep, err := Assert(context.Background(), AssertOptions{
+		Config: cfg, Scenario: sc, State: rs, ReportPath: t.TempDir() + "/report.json",
+		Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.OK || rep.Rows[0].Node != "" {
+		t.Fatalf("collective row wrong: %+v", rep.Rows[0])
+	}
+}
+
+func TestAssert_NodeTargetErrors(t *testing.T) {
+	cfg, rs, m := twoAgentNodeFixture()
+	for name, tc := range map[string]struct {
+		node    string
+		rs      *RunState
+		wantErr string
+	}{
+		"unknown literal host": {node: "compute-9", rs: rs, wantErr: "not a configured agent host"},
+		"slot beyond agents":   {node: "node:5", rs: rs, wantErr: "config lists 2 agent(s)"},
+		"malformed slot":       {node: "node:one", rs: rs, wantErr: "want node:<index>"},
+		"baseline has no node": {node: "node:0", rs: assertState(), wantErr: "re-run drive"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sc := assertScenario()
+			sc.Expect = []Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: tc.node, MinBytes: 1}}
+			_, err := Assert(context.Background(), AssertOptions{
+				Config: cfg, Scenario: sc, State: tc.rs, ReportPath: t.TempDir() + "/report.json",
+				Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: time.Second,
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestAssert_NodeWithVMTarget(t *testing.T) {
+	// Node combines with the per-server family: only the target node's
+	// server series count.
+	cfg, rs, _ := twoAgentNodeFixture()
+	rs.Servers = []ResourceRef{{DSLID: "vm-a", ID: "srv-1"}}
+	rs.BaselineServers = []ServerSample{
+		{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10, Node: "compute-0"},
+		{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10, Node: "compute-1"},
+	}
+	m := perNodeMetrics{byURL: map[string]ScrapeResult{
+		cfg.Cluster.Agents[0].MetricsURL: {
+			Present: map[string]bool{metricBytesTotal: true, metricServerBytesTotal: true},
+			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50 + 1<<20}},
+			Servers: []ServerSample{{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10 + 1<<20}},
+		},
+		cfg.Cluster.Agents[1].MetricsURL: {
+			Present: map[string]bool{metricBytesTotal: true, metricServerBytesTotal: true},
+			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50}},
+			Servers: []ServerSample{{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10}},
+		},
+	}}
+	sc := assertScenario()
+	sc.Expect = []Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", Node: "node:0", MinBytes: 1 << 20}}
+	rep, err := Assert(context.Background(), AssertOptions{
+		Config: cfg, Scenario: sc, State: rs, ReportPath: t.TempDir() + "/report.json",
+		Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rep.Rows[0]
+	if !r.Pass || r.Node != "compute-0" || r.ServerID != "srv-1" || r.Delta != float64(1<<20) {
+		t.Fatalf("node+VM row wrong: %+v", r)
+	}
+}

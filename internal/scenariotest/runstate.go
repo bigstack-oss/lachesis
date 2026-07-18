@@ -34,6 +34,14 @@ type RunState struct {
 	// attached before pushing traffic.
 	Attach AttachRecord `json:"attach"`
 
+	// Placement is Scenario.Placement with its "node:<i>" slots
+	// resolved to configured agent hosts, recorded at realize so the
+	// run-state stands alone as evidence of where each VM was pinned
+	// and so deferred boots ([BootVMStep]) reuse the same resolution
+	// instead of re-deriving it. Absent when the scenario pins
+	// nothing (and in run-states predating per-node placement).
+	Placement Placement `json:"placement,omitempty"`
+
 	// Baseline is the pre-drive lachesis_bytes_total snapshot across
 	// all agents, captured by `drive` immediately before it pushes
 	// traffic; `assert` diffs against it. BaselineServers is the

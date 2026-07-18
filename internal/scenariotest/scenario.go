@@ -207,6 +207,19 @@ type Expect struct {
 	// tenant family. Combines with ExternalNetwork.
 	VM string
 
+	// Node optionally narrows the assertion to the series one agent's
+	// tap exposed, instead of the cluster-wide sum: a placement slot
+	// ("node:<i>", the same vocabulary as [Scenario.Placement]) or a
+	// literal configured agent host. This is what makes a cross-host
+	// assertion mean something — "tx at the sender's node AND rx at
+	// the receiver's node" — where the collective sum could not tell
+	// the taps apart. Combines with ExternalNetwork and VM. Node means
+	// "the agent that OBSERVED the bytes", not "where the VM was
+	// booted": after a live migration a server's new bytes surface on
+	// the destination node's agent, which is exactly what a migration
+	// scenario asserts.
+	Node string
+
 	// MinBytes is the lower bound on the delta of
 	// lachesis_bytes_total (or lachesis_server_bytes_total when VM is
 	// set) for this tuple over the drive window.
