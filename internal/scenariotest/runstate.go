@@ -42,6 +42,11 @@ type RunState struct {
 	// nothing (and in run-states predating per-node placement).
 	Placement Placement `json:"placement,omitempty"`
 
+	// Migrations records every [MigrateStep] move: which VM went from
+	// which host to which, in step order — the evidence per-node
+	// assertions across a migration are judged against.
+	Migrations []MigrationRecord `json:"migrations,omitempty"`
+
 	// Baseline is the pre-drive lachesis_bytes_total snapshot across
 	// all agents, captured by `drive` immediately before it pushes
 	// traffic; `assert` diffs against it. BaselineServers is the
@@ -103,6 +108,14 @@ type FIPRef struct {
 	Address   string `json:"address"`
 	ProjectID string `json:"project_id"`
 	Network   string `json:"network,omitempty"`
+}
+
+// MigrationRecord is one completed live migration: the DSL VM id and
+// the compute hosts it moved between.
+type MigrationRecord struct {
+	VM   string `json:"vm"`
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 // NewRunState returns an empty run-state for a scenario run.

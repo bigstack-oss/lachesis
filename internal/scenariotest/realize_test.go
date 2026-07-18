@@ -47,6 +47,8 @@ type fakeCloud struct {
 	ports           []PortSpec
 	servers         []ServerSpec
 	serverIDs       []string
+	serverHost      map[string]string // server id → current compute host
+	migrations      []string          // "srv:from→to" in call order
 	fips            []FIPCreateSpec
 	fipIDs          []string
 
@@ -92,6 +94,7 @@ func newFakeCloud(env *fakeEnv) *fakeCloud {
 		portName:      map[string]string{},
 		portProject:   map[string]string{},
 		residualPorts: map[string][]string{}, deleted: map[string]bool{},
+		serverHost: map[string]string{},
 	}
 }
 
@@ -187,14 +190,70 @@ func (c *fakeCloud) SetRouterRoutes(_ context.Context, _, routerID string, route
 	c.routerRoutes[routerID] = routes
 	return nil
 }
+
+// CreateServer models placement the way Nova does: an AZ host pin
+// ("nova:<host>") lands the server there; unpinned servers go to the
+// first hypervisor (a deterministic stand-in for the scheduler).
 func (c *fakeCloud) CreateServer(_ context.Context, _ string, spec ServerSpec) (string, error) {
 	c.servers = append(c.servers, spec)
 	c.env.booted++
 	id := c.id("srv")
 	c.serverIDs = append(c.serverIDs, id)
+	host := strings.TrimPrefix(spec.AvailabilityZone, "nova:")
+	if host == spec.AvailabilityZone { // no pin
+		host = ""
+		if len(c.hyps) > 0 {
+			host = c.hyps[0]
+		}
+	}
+	c.serverHost[id] = host
 	return id, nil
 }
 func (c *fakeCloud) WaitServerActive(context.Context, string, string) error { return nil }
+
+func (c *fakeCloud) ServerHost(_ context.Context, _, serverID string) (string, error) {
+	host, ok := c.serverHost[serverID]
+	if !ok {
+		return "", fmt.Errorf("fake nova: no server %s", serverID)
+	}
+	return host, nil
+}
+
+// LiveMigrateServer mirrors Nova's contract: an explicit target must
+// be a known hypervisor; no target lets the "scheduler" pick the
+// first hypervisor that differs from the current host.
+func (c *fakeCloud) LiveMigrateServer(_ context.Context, _, serverID, targetHost string) error {
+	from, ok := c.serverHost[serverID]
+	if !ok {
+		return fmt.Errorf("fake nova: no server %s", serverID)
+	}
+	to := targetHost
+	if to == "" {
+		for _, h := range c.hyps {
+			if h != from {
+				to = h
+				break
+			}
+		}
+		if to == "" {
+			return fmt.Errorf("fake nova: no other hypervisor to migrate %s to", serverID)
+		}
+	} else {
+		known := false
+		for _, h := range c.hyps {
+			if h == to {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return fmt.Errorf("fake nova: no hypervisor %q", to)
+		}
+	}
+	c.serverHost[serverID] = to
+	c.migrations = append(c.migrations, serverID+":"+from+"→"+to)
+	return nil
+}
 
 // CreateFIP enforces the same reachability rule as Neutron: the FIP's
 // external network must be the gateway of a router that also has an

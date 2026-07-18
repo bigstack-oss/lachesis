@@ -75,6 +75,19 @@ type Cloud interface {
 	// it, returning the allocation ID and the assigned address.
 	CreateFIP(ctx context.Context, projectID string, spec FIPCreateSpec) (id, addr string, err error)
 
+	// --- live migration ([MigrateStep]) ---
+
+	// ServerHost returns the compute host currently running the server
+	// (OS-EXT-SRV-ATTR:host — the same name the hypervisor list and
+	// [Scenario.Placement] use). Needs the admin role the scoped token
+	// carries.
+	ServerHost(ctx context.Context, projectID, serverID string) (host string, err error)
+	// LiveMigrateServer asks Nova to live-migrate the server; empty
+	// targetHost lets the scheduler choose. Returns once Nova accepts
+	// the action — callers poll [Cloud.ServerHost] /
+	// [Cloud.WaitServerActive] for completion.
+	LiveMigrateServer(ctx context.Context, projectID, serverID, targetHost string) error
+
 	// --- teardown (every delete is 404-tolerant: removing the
 	// already-gone succeeds, so `down` re-runs converge) ---
 	//
