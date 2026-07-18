@@ -140,6 +140,28 @@ func TestDown_ClearsRoutesBeforeDetach(t *testing.T) {
 	}
 }
 
+func TestDown_FailedRouteClearLeavesInterfacePinned(t *testing.T) {
+	// A clear that never reached the server must not unpin anything:
+	// the routes stand, so the detach still refuses. Guards the fake
+	// against unpinning before the call it models has succeeded — which
+	// would let a broken teardown order pass under a cancelled context.
+	cloud := newFakeCloud(&fakeEnv{})
+	cloud.routerRoutes["rtr-1"] = []RouteSpec{{Destination: "10.50.0.0/24", Nexthop: "192.168.100.20"}}
+	cloud.failDown = map[string]bool{"routes:rtr-1": true}
+
+	if _, err := runDownFixture(t, downState(), cloud); err == nil {
+		t.Fatal("Down must report failure when the route clear fails")
+	}
+	if len(cloud.routerRoutes["rtr-1"]) == 0 {
+		t.Error("a failed clear must leave the routes, and their pin, intact")
+	}
+	for _, o := range cloud.downOps {
+		if strings.HasPrefix(o, "detach:rtr-1/") {
+			t.Errorf("interface detached despite a failed route clear: %v", cloud.downOps)
+		}
+	}
+}
+
 func TestDown_Idempotent(t *testing.T) {
 	cloud := newFakeCloud(&fakeEnv{})
 	cloud.residualPorts["net-1"] = []string{"port-mgr"}
