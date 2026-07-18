@@ -565,6 +565,9 @@ func (o *OpenStack) ClearRouterRoutes(ctx context.Context, projectID, routerID s
 	if err != nil {
 		return err
 	}
+	// Must be a non-nil empty slice: it marshals to "routes": [], which
+	// clears. A nil slice would send "routes": null and leave them —
+	// and that only ever surfaces live, as a 409 on the next detach.
 	empty := []routers.Route{}
 	_, err = routers.Update(ctx, sc.network, routerID, routers.UpdateOpts{Routes: &empty}).Extract()
 	if err := ignoreNotFound(err); err != nil {

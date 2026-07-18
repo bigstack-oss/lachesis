@@ -55,8 +55,8 @@ type fakeCloud struct {
 	routerExt     map[string]string          // router id → ext network id
 	routerSubnets map[string]map[string]bool // router id → attached subnet ids
 	// routerRoutes is the router's live static routes; a non-empty set
-	// makes RemoveRouterInterface fail like Neutron's
-	// RouterInterfaceInUseByRoute, so teardown must clear routes first.
+	// makes RemoveRouterInterface refuse (see there), so teardown must
+	// clear routes first.
 	routerRoutes map[string][]RouteSpec // router id → current extra routes
 
 	// MAC model: every port gets a MAC (explicit from the spec, or a
@@ -247,13 +247,23 @@ func (c *fakeCloud) WaitServerGone(context.Context, string, string) error {
 func (c *fakeCloud) DeletePort(ctx context.Context, _, id string) error {
 	return c.down(ctx, "port", id)
 }
+
+// ClearRouterRoutes unpins only once the call itself succeeds: a
+// failed clear (cancelled ctx, injected failure) never reached the
+// server, so the routes — and the pin they hold — must survive it.
 func (c *fakeCloud) ClearRouterRoutes(ctx context.Context, _, routerID string) error {
+	if err := c.down(ctx, "routes", routerID); err != nil {
+		return err
+	}
 	delete(c.routerRoutes, routerID)
-	return c.down(ctx, "routes", routerID)
+	return nil
 }
 func (c *fakeCloud) RemoveRouterInterface(ctx context.Context, _, routerID, subnetID, portID string) error {
 	// Neutron refuses (RouterInterfaceInUseByRoute) while a static
-	// route pins an interface of this router.
+	// route pins an interface. Over-approximated on purpose: any route
+	// blocks every interface of the router, where Neutron pins only the
+	// one its next-hop sits on. Stricter than live, so it can demand a
+	// clear the cluster wouldn't — never hide one it would.
 	if len(c.routerRoutes[routerID]) > 0 {
 		return fmt.Errorf("fake neutron: router %s interface in use by route", routerID)
 	}
