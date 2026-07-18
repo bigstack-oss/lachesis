@@ -25,8 +25,11 @@ jobs:
       # to materialize them before plain `go build`/`go test` can compile.
       - run: task setup
       - run: task generate UID=0 GID=0
-      - run: go build ./internal/...
-      - run: go test ./internal/...
+      # ./... not ./internal/... — cmd/'s tests (scenariotest CLI,
+      # scenario registry invariants) never ran in CI and a stale
+      # hardcoded test slipped through a green build once.
+      - run: go build ./...
+      - run: go test ./...
 
   integration:
     name: integration (linux, privileged docker)
