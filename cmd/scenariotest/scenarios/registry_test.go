@@ -90,3 +90,18 @@ func TestAll_CoversFiveZones(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossHostSameTenant_SkipsOnSingleNode(t *testing.T) {
+	sc, err := Get("cross-host-same-tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := scenariotest.RequiredNodes(sc); n != 2 {
+		t.Fatalf("RequiredNodes = %d, want 2", n)
+	}
+	for _, e := range sc.Expect {
+		if e.Node == "" {
+			t.Errorf("expectation %+v must target a node — the collective sum can't tell the taps apart", e)
+		}
+	}
+}
