@@ -61,19 +61,22 @@ type AssertReport struct {
 // set only on expectations that declared them (ExternalNetwork already
 // resolved to the label value matched).
 type AssertRow struct {
-	Tenant          string  `json:"tenant"`
-	TenantID        string  `json:"tenant_id"`
-	Zone            string  `json:"zone"`
-	ExternalNetwork string  `json:"external_network,omitempty"`
-	VM              string  `json:"vm,omitempty"`
-	ServerID        string  `json:"server_id,omitempty"`
-	Direction       string  `json:"direction"`
-	Baseline        float64 `json:"baseline"`
-	Current         float64 `json:"current"`
-	Delta           float64 `json:"delta"`
-	MinBytes        int64   `json:"min_bytes"`
-	Pass            bool    `json:"pass"`
-	Note            string  `json:"note,omitempty"`
+	Tenant          string `json:"tenant"`
+	TenantID        string `json:"tenant_id"`
+	Zone            string `json:"zone"`
+	ExternalNetwork string `json:"external_network,omitempty"`
+	VM              string `json:"vm,omitempty"`
+	ServerID        string `json:"server_id,omitempty"`
+	// Node is the resolved agent host a node-targeted expectation
+	// evaluated against; empty for cluster-wide rows.
+	Node      string  `json:"node,omitempty"`
+	Direction string  `json:"direction"`
+	Baseline  float64 `json:"baseline"`
+	Current   float64 `json:"current"`
+	Delta     float64 `json:"delta"`
+	MinBytes  int64   `json:"min_bytes"`
+	Pass      bool    `json:"pass"`
+	Note      string  `json:"note,omitempty"`
 }
 
 // Assert evaluates every declared expectation as a MinBytes lower
@@ -92,9 +95,11 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 		return AssertReport{}, fmt.Errorf("assert: run-state has no baseline — run drive first")
 	}
 	base := baselines{
-		tuples:  sumByTuple(rs.Baseline),
-		ext:     sumByExtTuple(rs.Baseline),
-		servers: sumByServerTuple(rs.BaselineServers),
+		tuples:     sumByTuple(rs.Baseline),
+		ext:        sumByExtTuple(rs.Baseline),
+		servers:    sumByServerTuple(rs.BaselineServers),
+		rawBytes:   rs.Baseline,
+		rawServers: rs.BaselineServers,
 	}
 
 	timeout := opts.SettleTimeout
@@ -105,14 +110,16 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 
 	var report AssertReport
 	for {
-		snap, err := sampleAcross(ctx, opts.Metrics, agentURLs(opts.Config))
+		snap, err := sampleAcross(ctx, opts.Metrics, opts.Config.Cluster.Agents)
 		if err != nil {
 			return AssertReport{}, fmt.Errorf("assert: scrape: %w", err)
 		}
 		cur := baselines{
-			tuples:  sumByTuple(snap.Bytes),
-			ext:     sumByExtTuple(snap.Bytes),
-			servers: sumByServerTuple(snap.Servers),
+			tuples:     sumByTuple(snap.Bytes),
+			ext:        sumByExtTuple(snap.Bytes),
+			servers:    sumByServerTuple(snap.Servers),
+			rawBytes:   snap.Bytes,
+			rawServers: snap.Servers,
 		}
 		report, err = evaluate(opts.Scenario, opts.Config, rs, base, cur, len(snap.Servers) > 0)
 		if err != nil {
@@ -152,11 +159,14 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 // coarse {tenant, zone, direction} sums (the pre-label behavior, used
 // by expectations with no ExternalNetwork/VM and by the step
 // executor), the external_network-refined sums, and the per-server
-// family's sums.
+// family's sums — plus the raw samples, which node-targeted
+// expectations filter directly (the aggregations sum across nodes).
 type baselines struct {
-	tuples  map[tuple]float64
-	ext     map[extTuple]float64
-	servers map[serverTuple]float64
+	tuples     map[tuple]float64
+	ext        map[extTuple]float64
+	servers    map[serverTuple]float64
+	rawBytes   []BytesSample
+	rawServers []ServerSample
 }
 
 // evaluate builds one report from a pair of aggregated snapshots.
@@ -165,6 +175,7 @@ type baselines struct {
 // predating it is an evaluation error, not a silent zero-delta fail.
 func evaluate(sc *Scenario, cfg Config, rs *RunState, base, cur baselines, haveServers bool) (AssertReport, error) {
 	report := AssertReport{Scenario: rs.Scenario, RunID: rs.RunID, OK: true}
+	baselineHasNodes := hasNodeInfo(base.rawBytes, base.rawServers)
 	for _, e := range sc.Expect {
 		ref, ok := rs.Projects[e.TenantID]
 		if !ok {
@@ -176,6 +187,17 @@ func evaluate(sc *Scenario, cfg Config, rs *RunState, base, cur baselines, haveS
 			Zone: e.Zone, ExternalNetwork: ext, Direction: e.Direction,
 			MinBytes: e.MinBytes,
 		}
+		node := ""
+		if e.Node != "" {
+			host, err := resolveNode(e.Node, cfg.Cluster.Agents)
+			if err != nil {
+				return AssertReport{}, fmt.Errorf("assert: %w", err)
+			}
+			if !baselineHasNodes {
+				return AssertReport{}, fmt.Errorf("assert: expectation targets node %q but the baseline carries no node identity — re-run drive with this scenariotest build", e.Node)
+			}
+			node, row.Node = host, host
+		}
 		switch {
 		case e.VM != "":
 			if !haveServers {
@@ -186,8 +208,16 @@ func evaluate(sc *Scenario, cfg Config, rs *RunState, base, cur baselines, haveS
 				return AssertReport{}, fmt.Errorf("assert: expectation references VM %q but run-state has no such server", e.VM)
 			}
 			row.VM, row.ServerID = e.VM, serverID
-			row.Baseline = sumServer(base.servers, serverID, e.Zone, ext, e.Direction)
-			row.Current = sumServer(cur.servers, serverID, e.Zone, ext, e.Direction)
+			if node != "" {
+				row.Baseline = sumServersOnNode(base.rawServers, node, serverID, e.Zone, ext, e.Direction)
+				row.Current = sumServersOnNode(cur.rawServers, node, serverID, e.Zone, ext, e.Direction)
+			} else {
+				row.Baseline = sumServer(base.servers, serverID, e.Zone, ext, e.Direction)
+				row.Current = sumServer(cur.servers, serverID, e.Zone, ext, e.Direction)
+			}
+		case node != "":
+			row.Baseline = sumBytesOnNode(base.rawBytes, node, ref.ID, e.Zone, ext, e.Direction)
+			row.Current = sumBytesOnNode(cur.rawBytes, node, ref.ID, e.Zone, ext, e.Direction)
 		case ext != "":
 			k := extTuple{ref.ID, e.Zone, ext, e.Direction}
 			row.Baseline, row.Current = base.ext[k], cur.ext[k]
@@ -281,6 +311,56 @@ func sumByServerTuple(samples []ServerSample) map[serverTuple]float64 {
 		m[serverTuple{s.ServerID, s.Zone, s.ExternalNetwork, s.Direction}] += s.Value
 	}
 	return m
+}
+
+// hasNodeInfo reports whether any sample carries node identity — a
+// baseline captured before per-node stamping can't back a
+// node-targeted expectation.
+func hasNodeInfo(bytes []BytesSample, servers []ServerSample) bool {
+	for _, s := range bytes {
+		if s.Node != "" {
+			return true
+		}
+	}
+	for _, s := range servers {
+		if s.Node != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// sumBytesOnNode totals one node's tenant-family series for the
+// tuple; ext "" matches any external_network (the same wildcard rule
+// as the collective default path).
+func sumBytesOnNode(samples []BytesSample, node, tenant, zone, ext, direction string) float64 {
+	var total float64
+	for _, s := range samples {
+		if s.Node != node || s.TenantID != tenant || s.Zone != zone || s.Direction != direction {
+			continue
+		}
+		if ext != "" && s.ExternalNetwork != ext {
+			continue
+		}
+		total += s.Value
+	}
+	return total
+}
+
+// sumServersOnNode totals one node's per-server series; ext "" matches
+// any external_network.
+func sumServersOnNode(samples []ServerSample, node, server, zone, ext, direction string) float64 {
+	var total float64
+	for _, s := range samples {
+		if s.Node != node || s.ServerID != server || s.Zone != zone || s.Direction != direction {
+			continue
+		}
+		if ext != "" && s.ExternalNetwork != ext {
+			continue
+		}
+		total += s.Value
+	}
+	return total
 }
 
 // sumServer totals a server's series for (zone, direction), across all

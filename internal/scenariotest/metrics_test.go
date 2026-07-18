@@ -158,3 +158,29 @@ func TestHTTPMetrics_LookupMACRejectsUnexpectedURL(t *testing.T) {
 		t.Fatalf("want config-pointing derivation error, got %v", err)
 	}
 }
+
+func TestSampleAcross_StampsNode(t *testing.T) {
+	agents := []AgentConfig{
+		{Host: "cc1", MetricsURL: "http://cc1:9100/metrics"},
+		{Host: "cc2", MetricsURL: "http://cc2:9100/metrics"},
+	}
+	src := perNodeMetrics{byURL: map[string]ScrapeResult{
+		agents[0].MetricsURL: {
+			Bytes:   []BytesSample{{TenantID: "t", Zone: "same_tenant", Direction: "tx", Value: 1}},
+			Servers: []ServerSample{{ServerID: "s", Zone: "same_tenant", Direction: "tx", Value: 1}},
+		},
+		agents[1].MetricsURL: {
+			Bytes: []BytesSample{{TenantID: "t", Zone: "same_tenant", Direction: "tx", Value: 2}},
+		},
+	}}
+	snap, err := sampleAcross(context.Background(), src, agents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Bytes) != 2 || snap.Bytes[0].Node != "cc1" || snap.Bytes[1].Node != "cc2" {
+		t.Errorf("bytes samples not node-stamped: %+v", snap.Bytes)
+	}
+	if len(snap.Servers) != 1 || snap.Servers[0].Node != "cc1" {
+		t.Errorf("server samples not node-stamped: %+v", snap.Servers)
+	}
+}

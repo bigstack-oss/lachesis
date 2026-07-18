@@ -106,6 +106,10 @@ func (r *realizer) run() error {
 		return err
 	}
 	r.placement = placement
+	// Recorded in the run-state (saved with the first create) so the
+	// file stands alone as placement evidence and deferred boots reuse
+	// the resolution.
+	r.rs.Placement = placement
 
 	if err := r.resolvePrereqs(); err != nil {
 		return err
@@ -133,7 +137,7 @@ func (r *realizer) run() error {
 
 	// Capture the attach baseline now: VM ports exist but are unbound,
 	// so no taps yet. Booting binds them and taps appear.
-	baseline, err := sampleAcross(r.ctx, r.opts.Metrics, agentURLs(r.opts.Config))
+	baseline, err := sampleAcross(r.ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
 	if err != nil {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
@@ -495,7 +499,7 @@ func (r *realizer) attachGate(baseline MetricsSnapshot, expectedTaps int) error 
 	ticker := time.NewTicker(attachPollInterval)
 	defer ticker.Stop()
 	for {
-		snap, err := sampleAcross(ctx, r.opts.Metrics, agentURLs(r.opts.Config))
+		snap, err := sampleAcross(ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
 		if err != nil {
 			return fmt.Errorf("attach gate scrape: %w", err)
 		}

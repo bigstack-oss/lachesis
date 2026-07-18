@@ -403,6 +403,17 @@ func TestRealize_PlacementSlotPinsAZ(t *testing.T) {
 	}
 }
 
+func TestRealize_PersistsResolvedPlacement(t *testing.T) {
+	sc := sameTenantScenario()
+	sc.Placement = Placement{"vm-a": "node:0", "vm-b": "compute-9"}
+	_, rs := realizeFixture(t, sc)
+	// The run-state records the RESOLVED map — slots already hosts — so
+	// it stands alone as evidence and deferred boots reuse it.
+	if rs.Placement["vm-a"] != "compute-0" || rs.Placement["vm-b"] != "compute-9" {
+		t.Errorf("run-state placement = %v, want resolved hosts", rs.Placement)
+	}
+}
+
 func TestRealize_PlacementSlotBeyondAgents_CreatesNothing(t *testing.T) {
 	env := &fakeEnv{baseAttached: 5}
 	cloud := newFakeCloud(env)

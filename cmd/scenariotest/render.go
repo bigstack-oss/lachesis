@@ -72,7 +72,7 @@ func renderPreflight(w io.Writer, r scenariotest.PreflightReport) {
 
 func renderAssert(w io.Writer, r scenariotest.AssertReport) {
 	fmt.Fprintln(w, titleStyle.Render(fmt.Sprintf("ASSERT %s (run %s)", r.Scenario, r.RunID)))
-	t := newTable("TENANT", "ZONE", "EXT", "VM", "DIR", "BASELINE", "CURRENT", "DELTA", "MIN", "RESULT")
+	t := newTable("TENANT", "ZONE", "EXT", "VM", "NODE", "DIR", "BASELINE", "CURRENT", "DELTA", "MIN", "RESULT")
 	for _, row := range r.Rows {
 		result := passStyle.Render("pass")
 		if !row.Pass {
@@ -81,7 +81,7 @@ func renderAssert(w io.Writer, r scenariotest.AssertReport) {
 		if row.Note != "" {
 			result += " (" + row.Note + ")"
 		}
-		t.Row(row.Tenant, row.Zone, dash(row.ExternalNetwork), dash(row.VM), row.Direction,
+		t.Row(row.Tenant, row.Zone, dash(row.ExternalNetwork), dash(row.VM), dash(row.Node), row.Direction,
 			humanBytes(row.Baseline), humanBytes(row.Current),
 			humanBytes(row.Delta), humanBytes(float64(row.MinBytes)), result)
 	}
