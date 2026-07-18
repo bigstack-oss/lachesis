@@ -10,7 +10,8 @@ import (
 )
 
 func newPreflightCmd(opts *rootOptions) *cobra.Command {
-	return &cobra.Command{
+	var noSkip bool
+	cmd := &cobra.Command{
 		Use:   "preflight <scenario>",
 		Short: "Check cluster readiness (read-only).",
 		Args:  scenarioNameArg,
@@ -30,10 +31,15 @@ func newPreflightCmd(opts *rootOptions) *cobra.Command {
 			if err := emitPreflight(os.Stdout, opts.output, report); err != nil {
 				return err
 			}
+			if report.Skip != "" && noSkip {
+				return errFailed
+			}
 			if !report.OK {
 				return errFailed
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&noSkip, "no-skip", false, "treat a SKIPPED scenario (cluster smaller than the placement slots need) as a failure")
+	return cmd
 }

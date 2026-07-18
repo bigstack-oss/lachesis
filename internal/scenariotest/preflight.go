@@ -10,9 +10,15 @@ import (
 // PreflightReport is the outcome of a read-only cluster-readiness
 // check. OK is true only when every Check passed.
 type PreflightReport struct {
-	Scenario string  `json:"scenario"`
-	OK       bool    `json:"ok"`
-	Checks   []Check `json:"checks"`
+	Scenario string `json:"scenario"`
+	OK       bool   `json:"ok"`
+	// Skip, when non-empty, means the scenario cannot run on this
+	// cluster (its placement slots need more nodes than the config
+	// lists) and should be SKIPPED rather than failed. No checks run:
+	// the answer is in the config, and probing a cluster the scenario
+	// won't use only muddies the report.
+	Skip   string  `json:"skip,omitempty"`
+	Checks []Check `json:"checks"`
 }
 
 // Check is one readiness probe and its result.
@@ -30,6 +36,9 @@ type Check struct {
 // failure is captured as a failed [Check] so the report shows the
 // full picture in one pass.
 func Preflight(ctx context.Context, cfg Config, sc *Scenario, cloud Cloud, src MetricsSource) PreflightReport {
+	if reason := skipReason(sc, cfg); reason != "" {
+		return PreflightReport{Scenario: sc.Name, OK: true, Skip: reason}
+	}
 	r := PreflightReport{Scenario: sc.Name, OK: true}
 	add := func(name string, err error, ok string) {
 		c := Check{Name: name, OK: err == nil, Detail: ok}

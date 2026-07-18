@@ -19,6 +19,60 @@ const slotPrefix = "node:"
 // through unchanged. A malformed or out-of-range slot is an error —
 // callers resolve before creating anything, so a scenario asking for
 // more nodes than the config lists fails with nothing to clean up.
+// slotIndex parses a Placement value: isSlot reports whether val uses
+// the "node:<i>" syntax at all (false = literal hypervisor name), and
+// a non-nil err means the slot's index is malformed. The one owner of
+// the parse for [resolvePlacement], [RequiredNodes], and [skipReason].
+func slotIndex(val string) (idx int, isSlot bool, err error) {
+	if !strings.HasPrefix(val, slotPrefix) {
+		return 0, false, nil
+	}
+	idx, aerr := strconv.Atoi(val[len(slotPrefix):])
+	if aerr != nil || idx < 0 {
+		return 0, true, fmt.Errorf("want %s<index>", slotPrefix)
+	}
+	return idx, true, nil
+}
+
+// RequiredNodes returns how many cluster nodes sc needs: the highest
+// "node:<i>" slot index its Placement references plus one, or zero
+// when no slots are used. Literal hypervisor pins don't count — they
+// are cluster-specific one-offs, not a portable node requirement.
+// Malformed slots contribute nothing; [resolvePlacement] owns
+// rejecting them.
+func RequiredNodes(sc *Scenario) int {
+	req := 0
+	for _, val := range sc.Placement {
+		idx, isSlot, err := slotIndex(val)
+		if !isSlot || err != nil {
+			continue
+		}
+		if idx+1 > req {
+			req = idx + 1
+		}
+	}
+	return req
+}
+
+// skipReason returns why sc cannot run against cfg's cluster — a
+// non-empty reason means SKIPPED, not FAILED: the scenario's slots
+// need more nodes than the config lists, which is a property of the
+// cluster, not a defect in it. Empty means runnable. A Placement
+// carrying any malformed slot never skips: that is a scenario defect
+// the placement check must FAIL on every cluster size — skipping
+// would mask it until a big-enough cluster finally ran the scenario.
+func skipReason(sc *Scenario, cfg Config) string {
+	for _, val := range sc.Placement {
+		if _, isSlot, err := slotIndex(val); isSlot && err != nil {
+			return ""
+		}
+	}
+	if req := RequiredNodes(sc); req > len(cfg.Cluster.Agents) {
+		return fmt.Sprintf("needs %d node(s) (placement slots); config lists %d agent(s)", req, len(cfg.Cluster.Agents))
+	}
+	return ""
+}
+
 // placementAZ returns the Nova availability-zone pin ("nova:<host>")
 // for vm, or "" when vm is unpinned. Both boot paths (realize-time
 // and deferred BootVMStep) go through here so the AZ scheme has one
@@ -36,13 +90,13 @@ func resolvePlacement(p Placement, agents []AgentConfig) (Placement, error) {
 	}
 	resolved := make(Placement, len(p))
 	for vm, val := range p {
-		if !strings.HasPrefix(val, slotPrefix) {
+		idx, isSlot, err := slotIndex(val)
+		if !isSlot {
 			resolved[vm] = val
 			continue
 		}
-		idx, err := strconv.Atoi(val[len(slotPrefix):])
-		if err != nil || idx < 0 {
-			return nil, fmt.Errorf("placement slot %q (VM %q): want %s<index>", val, vm, slotPrefix)
+		if err != nil {
+			return nil, fmt.Errorf("placement slot %q (VM %q): %w", val, vm, err)
 		}
 		if idx >= len(agents) {
 			return nil, fmt.Errorf("placement slot %q (VM %q): config lists %d agent(s)", val, vm, len(agents))

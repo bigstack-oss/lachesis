@@ -29,14 +29,20 @@ func runList(out io.Writer) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tFLOWS\tEXPECT\tSTEPS\tPLACEMENT\tDESC")
+	fmt.Fprintln(tw, "NAME\tFLOWS\tEXPECT\tSTEPS\tPLACEMENT\tNODES\tDESC")
 	for _, s := range all {
 		placement := "(scheduler)"
 		if len(s.Placement) > 0 {
 			placement = fmt.Sprintf("%d pinned", len(s.Placement))
 		}
+		// NODES is the slot-derived requirement: scenarios needing more
+		// nodes than the config lists are SKIPPED by preflight/run.
+		nodes := "-"
+		if n := scenariotest.RequiredNodes(s); n > 0 {
+			nodes = fmt.Sprintf("%d", n)
+		}
 		flows, expects := countDeclared(s)
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\t%s\n", s.Name, flows, expects, len(s.Steps), placement, s.Desc)
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\t%s\t%s\n", s.Name, flows, expects, len(s.Steps), placement, nodes, s.Desc)
 	}
 	tw.Flush()
 	return nil
