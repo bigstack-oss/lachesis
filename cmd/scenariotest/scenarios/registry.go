@@ -27,6 +27,7 @@ func All() []*scenariotest.Scenario {
 		crossTenantRouted(),
 		macReuse(),
 		multiExternalPath(),
+		crossHostSameTenant(),
 	}
 }
 
