@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 
@@ -26,6 +28,9 @@ func newUpCmd(opts *rootOptions) *cobra.Command {
 			state := opts.state
 			if state == "" {
 				state = scenariotest.DefaultStatePath(cfg.Naming.Prefix, runID)
+			}
+			if err := refuseLiveState(state); err != nil {
+				return err
 			}
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
@@ -56,4 +61,21 @@ func newUpCmd(opts *rootOptions) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// refuseLiveState guards `up` against overwriting a run-state that
+// still records a live topology: down only ever deletes exact
+// recorded IDs, so clobbering the file orphans those resources. A
+// torn-down file is a completed run's leftover and fine to overwrite;
+// any read error other than not-exist surfaces rather than being
+// treated as a green light.
+func refuseLiveState(state string) error {
+	rs, err := scenariotest.LoadRunState(state)
+	switch {
+	case err == nil && !rs.TornDown:
+		return fmt.Errorf("up: run-state %s records a live topology (run %s, scenario %s) — run `down` first, or delete the file", state, rs.RunID, rs.Scenario)
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("up: %w", err)
+	}
+	return nil
 }
