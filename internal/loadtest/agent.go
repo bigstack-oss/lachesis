@@ -33,6 +33,13 @@ func writeAgentConfig(iface, httpAddr string) (string, error) {
 	cfg.Logging.Level = "warn"
 	cfg.Logging.Format = "text"
 	cfg.WAL.Enabled = false
+	// The harness runs without Neutron, so no VM MAC ever resolves to a
+	// tenant: every flow lands in the UnresolvedBuffer and only reaches
+	// GlobalState (and thus lachesis_bytes_total) once its TTL expires and
+	// it folds to "unknown". The default 60s TTL outlives the load window,
+	// so the liveness read would see zero bytes. Shorten it well under the
+	// window so folds happen mid-run and the observed-bytes floor is real.
+	cfg.Unresolved.TTL = 2 * time.Second
 
 	body, err := yaml.Marshal(cfg)
 	if err != nil {
