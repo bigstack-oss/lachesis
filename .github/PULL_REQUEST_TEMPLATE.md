@@ -23,7 +23,7 @@ Closes #
 
 ## Notes
 <!-- Optional — reviewer notes, risk / rollback, follow-ups.
-     Touches billing / packet / boot / GC? Say which DESIGN §13.1 contract(s) it
+     Touches billing / packet / boot / GC? Say which contract(s) in docs/architecture/contracts.md it
      affects and how this PR preserves them. -->
 
 ## DoD
