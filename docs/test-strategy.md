@@ -57,7 +57,7 @@ The infrastructure was built in Sprint 0.5 specifically so Sprints 1–10 plug i
 
 `internal/perfbench.Run` loads the real classifier (`tc_telemetry_in`) and drives it through `BPF_PROG_TEST_RUN`, reporting kernel-measured time. The maps load empty, so every packet takes the lookup-miss path — the number covers the parse plus the full lookup chain. There is no standalone binary; the measurement is driven only by the gate below.
 
-DESIGN §11 target: **~150 ns/packet**. `TestPerfbench_PerPacketCeiling` (build tag `integration`, package `internal/perfbench`) runs on the `integration` CI job and fails above an absolute `PerRunNs` ceiling — a generous 2–3× bound that catches a new map lookup or classification branch, not a 10% drift detector. The ceiling is uncalibrated (records a baseline only) until the first CI run on the shared runner sets it.
+DESIGN §11 target: **~150 ns/packet**. `TestPerfbench_PerPacketCeiling` (build tag `integration`, package `internal/perfbench`) runs on the `integration` CI job and fails above an absolute `PerRunNs` ceiling — a generous bound that catches a new map lookup or classification branch, not a 10% drift detector. The ceiling is **300 ns**, ~2× the 135 ns amd64-runner baseline.
 
 To read the number on real hardware, run the gate with `-v` on a native x86 OVN node (macOS/Rosetta reports near-zero ns):
 
@@ -88,7 +88,7 @@ iperf3-measured BPF overhead is documented in DESIGN §12 ("Demo Workflow"). Not
 
 **Question.** Does the long-running agent stay inside its RSS/CPU budget under sustained load?
 
-`cmd/loadtest` forks the agent as a subprocess, drives sustained TCP traffic through a netns + veth, samples `/proc/<pid>/{stat,status}`, and exits non-zero if peak RSS or average CPU exceeds the configured budget (defaults: 250 MiB, 1% CPU over a 15s window). It runs as its own `loadtest` CI job (privileged Docker: builds the agent, then loads it) — `continue-on-error` while the thresholds are calibrated against the shared-runner baseline, since the 1% CPU limit is runner-sensitive.
+`cmd/loadtest` forks the agent as a subprocess, drives sustained TCP traffic through a netns + veth, samples `/proc/<pid>/{stat,status}`, and exits non-zero if peak RSS or average CPU exceeds the configured budget (defaults: 250 MiB, 1% CPU over a 15s window). It runs as its own **blocking** `loadtest` CI job (privileged Docker: builds the agent, then loads it); the budget was validated on the shared runner (~29 MiB RSS, 0% CPU). The harness runs the agent without Neutron, so no VM MAC resolves — it sets a short `Unresolved.TTL` so buffered flows fold to the "unknown" tenant within the window, making the observed-bytes liveness floor meaningful.
 
 ```sh
 task loadtest                                           # default: 15s window, 4 workers
@@ -139,7 +139,7 @@ task loadtest                                           # default: 15s window, 4
 | `integration` | Ubuntu, privileged Docker | Full kernel/network pipeline; also runs the `perfbench` per-packet ceiling gate and the integration-tagged hot-path alloc gate |
 | `bench-gate` | Ubuntu | Zero-alloc enforcement for `BenchmarkHotpath_*` |
 | `lint` | Ubuntu | `golangci-lint` (with `--build-tags=integration`) |
-| `loadtest` | Ubuntu, privileged Docker | Agent RSS/CPU budget under sustained load; `continue-on-error` during threshold calibration |
+| `loadtest` | Ubuntu, privileged Docker | Agent RSS/CPU budget under sustained load (blocking; validated on the shared runner) |
 
 Local equivalent: `task ci` runs unit + bench-gate (skips integration because it requires Docker setup). Run this before pushing.
 
