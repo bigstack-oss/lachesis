@@ -103,6 +103,8 @@ Four layers, one binary per compute node:
 
 The **boot order is strict and sync-pointed** (out-of-order startup silently misclassifies flows, so it isn't left to chance): clean up orphaned TC filters → load eBPF objects → Neutron cold-start populates metadata *before any packet* → subscribe netlink then sweep existing taps → restore state from the WAL → start workers.
 
+The full design narrative — data structures, the classification algorithm, the billing contract, and every decision record — lives in [docs/architecture](./docs/architecture/README.md).
+
 ## 🩺 Operability at a glance
 
 Health and internals are visible without attaching a debugger:
@@ -143,8 +145,8 @@ See [Test strategy] for the full picture.
 Licensed under the [Apache License 2.0](./LICENSE). Copyright © 2026 [Bigstack co., ltd](https://bigstack.co/).
 
 <!-- LINKS -->
-[Operating]: ./docs/runtime.md
-[Test strategy]: ./docs/test-strategy.md
+[Operating]: ./docs/operations/runtime.md
+[Test strategy]: ./docs/development/testing.md
 [Contributing]: ./CONTRIBUTING.md
 [License-Url]: https://www.apache.org/licenses/LICENSE-2.0
 [License-Image]: https://img.shields.io/badge/License-Apache2-blue.svg
