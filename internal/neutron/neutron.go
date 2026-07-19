@@ -2,7 +2,7 @@
 // v3 authentication (via gophercloud), the Neutron v2.0 API client,
 // the trie builder that turns a resource snapshot into kernel LPM
 // rows, and the [Neutron] struct that carries one sync's outputs for
-// the rest of the agent. See docs/DESIGN.md §5.
+// the rest of the agent. See docs/architecture/trie-construction.md.
 //
 // # Composition
 //

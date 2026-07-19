@@ -71,7 +71,7 @@ type SyncResult struct {
 }
 
 // AmbiguityHit records a Step C ambiguity-after-scoping incident
-// (docs/DESIGN.md §5.6): the resolver reached a router where
+// (docs/architecture/trie-construction.md#ambiguity-after-scoping): the resolver reached a router where
 // multiple candidate networks with distinct owners cover the same
 // destination CIDR, so no single zone can be picked honestly. The
 // resolver returns ZoneExternal and surfaces this struct to its
@@ -215,7 +215,7 @@ const defaultInterface = "internal"
 // maxStaticRouteHops bounds the multi-hop trace. Real OpenStack
 // deployments rarely exceed 3–4 hops; 16 is generous and an
 // exceedance almost certainly indicates a routing misconfig (per
-// docs/DESIGN.md §5.3).
+// docs/architecture/trie-construction.md#the-static-route-resolver).
 const maxStaticRouteHops = 16
 
 // Neutron device_owner vocabulary. deviceOwnerNetworkPrefix is the
@@ -249,7 +249,7 @@ const (
 )
 
 // metadataPrefix is the cloud-init / Nova metadata service IP. Always
-// INFRA from every tenant's perspective (docs/DESIGN.md §5.2 Step 4).
+// INFRA from every tenant's perspective (docs/architecture/trie-construction.md#the-five-step-algorithm Step 4).
 var metadataPrefix = netip.MustParsePrefix("169.254.169.254/32")
 
 // catchall is the 0.0.0.0/0 → EXTERNAL Step-1 entry. Every uncovered

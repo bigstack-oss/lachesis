@@ -5,7 +5,7 @@ import "errors"
 // KafkaConfig groups settings for the Kafka consumer that delivers live
 // OpenStack notifications (Neutron port/subnet/router events) so the
 // agent refreshes metadata within one reconcile pass instead of waiting
-// for the periodic safety net (docs/DESIGN.md §5.7, §9). CubeCOS
+// for the periodic safety net (docs/architecture/trie-construction.md#incremental-updates, docs/architecture/boot-and-recovery.md#boot-sequence). CubeCOS
 // publishes oslo.messaging notifications to Kafka (driver messagingv2);
 // the agent consumes the committed events and kicks a reconcile.
 //

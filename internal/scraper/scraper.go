@@ -35,7 +35,7 @@ type MapReader interface {
 // Evictor relieves kernel telemetry_map pressure. [Scraper.Tick] calls
 // Relieve once per tick, after the drained readings have been applied
 // to GlobalState — so every byte is accounted before any kernel entry
-// is removed (docs/DESIGN.md §3.1). The argument is the scraper's
+// is removed (docs/architecture/data-structures.md#kernel-side-bpf-maps). The argument is the scraper's
 // just-drained buffer: its key count is the current kernel population
 // and each value's LastSeenNs is the eviction key. Implementations must
 // only read it. nil (the default) disables pressure relief, which is
@@ -45,8 +45,8 @@ type Evictor interface {
 }
 
 // FlowSink classifies each drained reading: known VM-MAC flows go to
-// GlobalState, unknown ones to the UnresolvedBuffer (docs/DESIGN.md
-// §3.2). When set, it replaces the scraper's default straight-to-
+// GlobalState, unknown ones to the UnresolvedBuffer
+// (docs/architecture/data-structures.md#userspace-structures). When set, it replaces the scraper's default straight-to-
 // GlobalState [state.GlobalState.ApplyDelta] for every entry. [Sweep]
 // runs once per tick to age out buffered entries; force=true on the
 // shutdown final tick folds the whole buffer so no unknown bytes are
@@ -180,7 +180,7 @@ func (s *Scraper) Tick() error {
 	s.lastOK.Store(time.Now().Unix())
 	// Relieve telemetry_map pressure after the flush: every byte in buf
 	// is now in GlobalState, so evicting the oldest kernel entries loses
-	// nothing (docs/DESIGN.md §3.1).
+	// nothing (docs/architecture/data-structures.md#kernel-side-bpf-maps).
 	if s.evictor != nil {
 		s.evictor.Relieve(s.buf)
 	}

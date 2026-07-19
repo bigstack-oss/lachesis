@@ -2,8 +2,8 @@
 // metadata-update paths (the periodic Neutron reconcile and the Kafka
 // consumer). Where [WriteSubnetZoneTrie] rewrites the whole map at
 // cold-start, [ApplyTrieDelta] pushes only the rows that changed
-// between two snapshots — and pushes them in the order docs/DESIGN.md
-// §5.7 requires.
+// between two snapshots — and pushes them in the order
+// docs/architecture/trie-construction.md#incremental-updates requires.
 
 package kernelwriter
 
@@ -54,7 +54,7 @@ type trieRowKey struct {
 
 // ApplyTrieDelta brings trieMap from the oldEntries state to the
 // newEntries state with the minimum set of kernel writes, in the
-// strict order docs/DESIGN.md §5.7 mandates: **all upserts first, then
+// strict order docs/architecture/trie-construction.md#incremental-updates mandates: **all upserts first, then
 // all deletes.** Deleting an obsolete row before its replacement is in
 // place would briefly leave the destination CIDR unmatched, and a
 // packet that falls through to the catchall during that window is
@@ -76,7 +76,7 @@ type trieRowKey struct {
 // Each per-row failure is logged; the first is returned. If any upsert
 // fails, the delete phase is skipped entirely — deleting an old row
 // whose replacement may not have landed is exactly the miskey window
-// §5.7 warns about, and a stale-but-present row is harmless under LPM
+// docs/architecture/trie-construction.md#incremental-updates warns about, and a stale-but-present row is harmless under LPM
 // longest-match. The next reconcile (or Kafka event) retries. The
 // returned [TrieDelta] reflects the writes that actually succeeded.
 func ApplyTrieDelta(
@@ -138,7 +138,7 @@ func ApplyTrieDelta(
 	}
 
 	// An upsert failure means a replacement row may be missing; deleting
-	// now could open the §5.7 miskey window. Keep the stale rows (LPM
+	// now could open the docs/architecture/trie-construction.md#incremental-updates miskey window. Keep the stale rows (LPM
 	// longest-match tolerates them) and let the next pass retry.
 	if firstErr != nil {
 		return delta, firstErr

@@ -69,7 +69,7 @@ func TestApplyTrieDelta_AddChangeRemoveSkip(t *testing.T) {
 	}
 }
 
-// TestApplyTrieDelta_UpsertBeforeDelete locks the docs/DESIGN.md §5.7
+// TestApplyTrieDelta_UpsertBeforeDelete locks the docs/architecture/trie-construction.md#incremental-updates
 // ordering contract: every upsert must precede every delete. A
 // regression that interleaves or reverses them fails here.
 func TestApplyTrieDelta_UpsertBeforeDelete(t *testing.T) {
@@ -102,7 +102,7 @@ func TestApplyTrieDelta_UpsertBeforeDelete(t *testing.T) {
 		}
 	}
 	if lastUpdate > firstDelete {
-		t.Errorf("a delete at op[%d] preceded an upsert at op[%d]: §5.7 ordering violated", firstDelete, lastUpdate)
+		t.Errorf("a delete at op[%d] preceded an upsert at op[%d]: docs/architecture/trie-construction.md#incremental-updates ordering violated", firstDelete, lastUpdate)
 	}
 }
 

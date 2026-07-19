@@ -67,7 +67,7 @@ func newResolveIndex(snap Snapshot) *resolveIndex {
 }
 
 // resolveStaticRouteZone implements the multi-hop trace of
-// docs/DESIGN.md §5.3 for one (destination, nexthop) pair on
+// docs/architecture/trie-construction.md#the-static-route-resolver for one (destination, nexthop) pair on
 // router r. Returns the zone code to record in the trie, plus
 // up to two structured incident reports:
 //
@@ -157,7 +157,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 			// relative to the source tenant on the iface network. The
 			// destination beyond the appliance is opaque to Neutron, so
 			// the trace stops here. Double-billing at the appliance's own
-			// tap is documented in DESIGN.md §8 Tier 4 and Scenario L.
+			// tap is documented in docs/architecture/edge-cases.md#tier-4--subtle-correctness and Scenario L.
 			ifaceNetwork, ok := ri.networks[ifaceSubnet.NetworkID]
 			if !ok {
 				return bpf.ZoneExternal, nil, nil
@@ -315,7 +315,7 @@ func containsString(s []string, v string) bool {
 }
 
 // zoneFor classifies a destination network from the source tenant's
-// perspective. Per docs/DESIGN.md §5.3.
+// perspective. Per docs/architecture/trie-construction.md#the-static-route-resolver.
 //
 // The check order is significant: external first, then shared, then
 // the owner comparison. External wins over shared because some

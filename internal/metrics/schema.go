@@ -16,7 +16,7 @@ import "github.com/bigstack-oss/lachesis/internal/bpf"
 const MetricBytesTotal = "lachesis_bytes_total"
 
 // MetricServerBytesTotal is the per-server billing-export family
-// (docs/DESIGN.md §11.5). Unlike the tenant family it is MORTAL: a
+// (docs/architecture/billing.md). Unlike the tenant family it is MORTAL: a
 // series ends when its VM's attribution dies (ghost sweep) — there is no
 // per-server settled accumulator, deliberately. Consumers do period
 // subtraction over range queries, never increase()/rate() for money.

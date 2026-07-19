@@ -2,7 +2,7 @@
 // map against a fresh Neutron snapshot — the MAC-side counterpart of the
 // subnet_zone_trie reconcile in reconcile.go. Where the trie diff is a
 // pure kernel write, the MAC reconcile drives the lingering-ghost
-// lifecycle (docs/DESIGN.md §3.3/§3.4): insertions go userspace→kernel,
+// lifecycle (docs/architecture/data-structures.md#lingering-ghost/docs/architecture/data-structures.md#map-lifecycle-invariants): insertions go userspace→kernel,
 // removals are delayed via MarkDelete rather than deleted outright.
 
 package reconcile
@@ -22,7 +22,7 @@ import (
 // mac_tenant_map. The reconcile worker inserts learned MACs through it;
 // removals are deliberately NOT its job — a gone MAC becomes a lingering
 // ghost (userspace MarkDelete) and the GC sweeps the kernel entry after
-// the grace window (docs/DESIGN.md §3.3). The agent wires an *ebpf.Map
+// the grace window (docs/architecture/data-structures.md#lingering-ghost). The agent wires an *ebpf.Map
 // adapter; tests wire a recording mock.
 type MacWriter interface {
 	Update(mac uint64, tenantID uint32) error
@@ -59,7 +59,7 @@ func (r *Reconciler) reconcileMACs(snap *neutron.Snapshot, now time.Time) macDel
 // cold-start's job and a persistently malformed port must not log every
 // pass. ServerID and ExternalNetwork ride along so the per-server export
 // and the external_network label stay current between cold starts
-// (docs/DESIGN.md §11.5).
+// (docs/architecture/billing.md).
 func desiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
 	extByPort := neutron.ExternalNetworkByPort(snap)
 	desired := make(map[uint64]metadata.TenantMeta, len(snap.Ports))
@@ -83,8 +83,8 @@ func desiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
 }
 
 // learnMACs inserts every desired MAC that is absent, ghosted, or whose
-// attribution changed — userspace first, then kernel (docs/DESIGN.md
-// §3.4). Learning a previously-unknown MAC is what lets the next scrape
+// attribution changed — userspace first, then kernel
+// (docs/architecture/data-structures.md#map-lifecycle-invariants). Learning a previously-unknown MAC is what lets the next scrape
 // resolve its buffered flows. Returns (inserted, changed); an entry
 // already live with the same attribution is left untouched.
 //
@@ -93,11 +93,11 @@ func desiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
 // the binding is replaced: the Collector late-binds all three labels per
 // scrape, so without the fold the MAC's whole history would re-attribute
 // at the next scrape — the tenant case re-bills another project
-// (docs/DESIGN.md §3.5), the external-network case teleports bytes
+// (docs/architecture/data-structures.md#settled-bytes), the external-network case teleports bytes
 // between external_network series (breaking their monotonicity), and the
 // server case re-mints the old server's cumulative under the new
 // server_id (over-billing it in the per-server export's born-series
-// rule, §11.5). A ghost resurrected with identical attribution does not
+// rule, docs/architecture/billing.md). A ghost resurrected with identical attribution does not
 // fold — its history still belongs where it is.
 func (r *Reconciler) learnMACs(desired map[uint64]metadata.TenantMeta) (inserted, changed int) {
 	for mac, want := range desired {
@@ -155,8 +155,8 @@ func (r *Reconciler) settleAttributionChange(mac uint64, old *metadata.TenantMet
 	}
 }
 
-// insertMAC writes one binding userspace-first then kernel (docs/DESIGN.md
-// §3.4). The TenantMeta is replaced whole, never mutated (the immutable
+// insertMAC writes one binding userspace-first then kernel
+// (docs/architecture/data-structures.md#map-lifecycle-invariants). The TenantMeta is replaced whole, never mutated (the immutable
 // invariant). A kernel write failure is logged, not fatal — userspace
 // already reflects the binding and the next pass retries the kernel side.
 func (r *Reconciler) insertMAC(mac uint64, meta metadata.TenantMeta) {
@@ -170,8 +170,8 @@ func (r *Reconciler) insertMAC(mac uint64, meta metadata.TenantMeta) {
 }
 
 // ghostGoneMACs MarkDeletes every live metadata entry whose MAC is no
-// longer in desired, starting its lingering-ghost grace (docs/DESIGN.md
-// §3.3) — the agent's first production MarkDelete caller. It collects
+// longer in desired, starting its lingering-ghost grace
+// (docs/architecture/data-structures.md#lingering-ghost) — the agent's first production MarkDelete caller. It collects
 // under Range and marks afterwards: MarkDelete takes a shard write lock
 // that Range holds as a read lock. Already-ghosted entries are left alone
 // so their original grace keeps running.

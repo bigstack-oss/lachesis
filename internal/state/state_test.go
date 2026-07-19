@@ -25,7 +25,7 @@ func keyB() bpf.FlowKey {
 }
 
 // TestResolve_WriteBackNoDoubleCount locks the late-binding write-back
-// (docs/DESIGN.md §3.2): Resolve credits the buffered cumulative AND
+// (docs/architecture/data-structures.md#userspace-structures): Resolve credits the buffered cumulative AND
 // sets LastEbpfRaw, so the next ApplyDelta adds only the post-hand-off
 // delta. A buggy Resolve that left LastEbpfRaw zero would re-count the
 // full kernel cumulative (1500 + 1800 = 3300 here).

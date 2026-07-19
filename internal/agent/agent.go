@@ -115,7 +115,7 @@ type Agent struct {
 	meta *metadata.ShardedMetadataMap
 	// routers is the router-interface-MAC → external-network store the
 	// Resolver reads per flow; cold start seeds it, the reconciler
-	// swaps it per pass (docs/DESIGN.md §11.5).
+	// swaps it per pass (docs/architecture/billing.md).
 	routers *metadata.RouterMACs
 	// tun is the hot-reloadable knob snapshot every cadence loop and
 	// bound reads live; the runtime Manager swaps it on SIGHUP.

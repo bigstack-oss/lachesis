@@ -33,7 +33,7 @@ func benchCollectKeys(n int) []bpf.FlowKey {
 // reuses buffers (zero-alloc), but the per-(tenant,zone,direction)
 // emission via prometheus.MustNewConstMetric allocates per emitted
 // series each scrape — accepted at the 10s scrape cadence (see the
-// collector.go package doc and docs/DESIGN.md §11). This benchmark is
+// collector.go package doc and docs/architecture/performance.md). This benchmark is
 // therefore deliberately NOT named BenchmarkHotpath_* (which the
 // zero-alloc bench-gate would fail); its job is to surface the
 // per-scrape alloc count so a regression that made Collect allocate

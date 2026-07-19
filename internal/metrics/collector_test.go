@@ -305,7 +305,7 @@ lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a"
 # HELP lachesis_state_flows Distinct flow keys currently tracked in GlobalState.
 # TYPE lachesis_state_flows gauge
 lachesis_state_flows 0
-# HELP lachesis_state_settled_tuples Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/DESIGN.md §3.5).
+# HELP lachesis_state_settled_tuples Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/architecture/data-structures.md#settled-bytes).
 # TYPE lachesis_state_settled_tuples gauge
 lachesis_state_settled_tuples 1
 `
@@ -423,7 +423,7 @@ lachesis_state_flows 1
 // TestCollect_ExternalNetworkLabelRouting: a VM with a resolved
 // external network carries its label ONLY on external-zone series;
 // its other zones stay on the "none" sentinel — the cardinality gate
-// the label contract promises (docs/DESIGN.md §11.4).
+// the label contract promises (docs/architecture/metrics.md).
 func TestCollect_ExternalNetworkLabelRouting(t *testing.T) {
 	meta := metadata.New()
 	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
@@ -456,7 +456,7 @@ lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a"
 }
 
 // TestCollect_ServerFamilyEmitsLiveRowsOnly pins the per-server family
-// (docs/DESIGN.md §11.5): live rows of a resolved server emit under the
+// (docs/architecture/billing.md): live rows of a resolved server emit under the
 // full 5-label tuple; rows whose MAC doesn't resolve to a server (an
 // unknown MAC here) never enter the family; and settled buckets don't
 // either — the family is live-only by construction.
@@ -487,7 +487,7 @@ func TestCollect_ServerFamilyEmitsLiveRowsOnly(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/DESIGN.md §11.5).
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
 lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
 `
@@ -520,7 +520,7 @@ func TestCollect_ServerFamilyMortalAcrossSweep(t *testing.T) {
 
 	// Alive: both families expose the bytes.
 	expected := `
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/DESIGN.md §11.5).
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
 lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 1000
 `
@@ -556,7 +556,7 @@ lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenan
 // TestCollect_PerFlowRouterSplitsExternalNetworks: one VM pushing
 // through two routers emits per-network series on BOTH families — the
 // per-flow attribution that dissolves the multi-path ambiguity
-// (docs/DESIGN.md §11.5) — with the per-VM label covering only the
+// (docs/architecture/billing.md) — with the per-VM label covering only the
 // router-map miss.
 func TestCollect_PerFlowRouterSplitsExternalNetworks(t *testing.T) {
 	meta := metadata.New()
@@ -589,7 +589,7 @@ func TestCollect_PerFlowRouterSplitsExternalNetworks(t *testing.T) {
 # TYPE lachesis_bytes_total counter
 lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 700
 lachesis_bytes_total{direction="tx",external_network="public-2",tenant_id="tenant-a",zone="external"} 300
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/DESIGN.md §11.5).
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
 lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
 lachesis_server_bytes_total{direction="tx",external_network="public-2",server_id="srv-1",tenant_id="tenant-a",zone="external"} 300

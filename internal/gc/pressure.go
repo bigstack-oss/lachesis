@@ -21,8 +21,8 @@ type FlowEvictor interface {
 // own (a silent byte loss). It runs inside the scraper's drain
 // goroutine, once per tick, after the drained readings have been
 // applied to GlobalState — every evicted entry's bytes are therefore
-// already accounted before the kernel entry is removed (docs/DESIGN.md
-// §3.1, "flush before evict").
+// already accounted before the kernel entry is removed
+// (docs/architecture/data-structures.md#kernel-side-bpf-maps, "flush before evict").
 //
 // Eviction uses a high/low watermark hysteresis: a relief cycle begins
 // when fill crosses the high watermark and continues every tick,
@@ -115,7 +115,7 @@ func (p *PressureReliever) Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics) {
 
 // selectOldest returns the k flow keys with the smallest LastSeenNs,
 // found in a single O(N log k) pass using a size-k heap — never a full
-// O(N log N) sort of the whole map (docs/DESIGN.md §3.1). The heap is
+// O(N log N) sort of the whole map (docs/architecture/data-structures.md#kernel-side-bpf-maps). The heap is
 // ordered max-by-LastSeenNs at its root so the newest of the k
 // candidates kept so far can be replaced when an older flow is seen.
 func selectOldest(drained map[bpf.FlowKey]bpf.FlowMetrics, k int) []bpf.FlowKey {

@@ -9,7 +9,7 @@
 // Run `scenariotest help` for the command reference; per-subcommand
 // detail is under `scenariotest help <subcommand>`.
 //
-// See docs/test-strategy.md (Tier 4) for where scenariotest sits
+// See docs/development/testing.md (Tier 4) for where scenariotest sits
 // relative to the unit and integration tiers.
 package main
 

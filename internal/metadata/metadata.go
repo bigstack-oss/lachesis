@@ -1,8 +1,7 @@
 // Package metadata is the userspace mirror of the kernel
 // `mac_tenant_map`. It maps a VM MAC to a [*TenantMeta] carrying the
 // richer attributes the kernel cannot store (project UUID, VM name,
-// LB-Amphora flag, deletion grace timestamp). See docs/DESIGN.md
-// §3.2.
+// LB-Amphora flag, deletion grace timestamp). See docs/architecture/data-structures.md#userspace-structures.
 //
 // # Invariants
 //
@@ -15,7 +14,7 @@
 // (2) [ShardedMetadataMap] is a strict superset of the kernel
 // `mac_tenant_map`. Insertions go userspace-first, then kernel.
 // Deletions go kernel-first (after the 60 s Lingering Ghost in
-// docs/DESIGN.md §3.3), then userspace. The ordering is the caller's
+// docs/architecture/data-structures.md#lingering-ghost), then userspace. The ordering is the caller's
 // responsibility; this package only enforces the data-structure
 // invariants and provides the [MarkDelete] hook the GC drives.
 //
@@ -84,7 +83,7 @@ func (s *ShardedMetadataMap) Insert(mac uint64, meta *TenantMeta) {
 
 // Delete unconditionally removes mac. Intended for the GC after the
 // Lingering Ghost window has expired and the kernel `mac_tenant_map`
-// entry has already been removed (docs/DESIGN.md §3.4). Most call
+// entry has already been removed (docs/architecture/data-structures.md#map-lifecycle-invariants). Most call
 // sites that observe a Neutron deletion event should call
 // [ShardedMetadataMap.MarkDelete] instead.
 func (s *ShardedMetadataMap) Delete(mac uint64) {

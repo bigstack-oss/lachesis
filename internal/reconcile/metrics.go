@@ -4,7 +4,7 @@ import "github.com/prometheus/client_golang/prometheus"
 
 // Metrics holds the Prometheus instruments for the reconcile subsystem.
 // It is the dedicated error sink for the runtime incremental-update path
-// that docs/DESIGN.md §11.4 anticipated: a kernel trie-write failure
+// that docs/architecture/metrics.md anticipated: a kernel trie-write failure
 // during a reconcile surfaces as lachesis_reconcile_runs_total{result="apply_error"}
 // rather than a generic counter.
 //

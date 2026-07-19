@@ -309,7 +309,7 @@ func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
 }
 
 // MonotoneStep asserts every captured tuple of Tenant is still at or
-// above its captured value — the live form of the §13.1 Contract 7
+// above its captured value — the live form of the docs/architecture/contracts.md#required-contracts Contract 7
 // series-monotonicity guarantee. One row per tuple.
 type MonotoneStep struct {
 	Tenant string

@@ -13,7 +13,7 @@
 // What belongs here: pure cadences, grace windows, and bounded-buffer
 // thresholds — values whose change needs no resource re-binding.
 // What never belongs here: listen addresses, file paths, credentials,
-// BPF map sizes, or anything that is a DESIGN §13.1 contract.
+// BPF map sizes, or anything that is a docs/architecture/contracts.md#required-contracts contract.
 //
 // The Store is a REQUIRED dependency of every consumer — never nil, no
 // per-package fallback values (the Archaius/dynamic-property rule:
@@ -36,7 +36,7 @@ import (
 type Values struct {
 	// GhostGrace is the Lingering-Ghost TTL: how long a deleted port's
 	// metadata survives so dying FIN/RST packets still attribute
-	// (docs/DESIGN.md §3.4). Applies to ghosts marked AFTER a change;
+	// (docs/architecture/data-structures.md#map-lifecycle-invariants). Applies to ghosts marked AFTER a change;
 	// in-flight ghosts keep the deadline they were marked with.
 	GhostGrace time.Duration `knob:"gc.ghost_grace"`
 	// GhostSweepInterval is the ghost-sweep cadence.
@@ -48,15 +48,17 @@ type Values struct {
 	// ScrapeInterval is the kernel-drain cadence. Safe to retune live:
 	// the delta math is interval-agnostic by design.
 	ScrapeInterval time.Duration `knob:"scrape.interval"`
-	// WALFlushInterval bounds the crash-loss window (§3.2).
+	// WALFlushInterval bounds the crash-loss window
+	// (docs/architecture/data-structures.md#userspace-structures).
 	WALFlushInterval time.Duration `knob:"wal.flush_interval"`
 	// UnresolvedTTL is the late-binding window before buffered
 	// unknown-MAC flows fold to the "unknown" tenant.
 	UnresolvedTTL time.Duration `knob:"unresolved.ttl"`
-	// UnresolvedCap bounds the UnresolvedBuffer (DESIGN Contract 1 —
+	// UnresolvedCap bounds the UnresolvedBuffer (Contract 1 —
 	// the cap's existence is a contract; only its value is tunable).
 	UnresolvedCap int `knob:"unresolved.cap"`
-	// Pressure* are the pressure-relief GC thresholds (§3.6).
+	// Pressure* are the pressure-relief GC thresholds
+	// (docs/architecture/data-structures.md#kernel-side-bpf-maps).
 	PressureHighWatermark float64 `knob:"gc.pressure_high_watermark"`
 	PressureLowWatermark  float64 `knob:"gc.pressure_low_watermark"`
 	PressureMaxPerPass    int     `knob:"gc.pressure_max_per_pass"`

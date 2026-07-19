@@ -7,7 +7,7 @@ import (
 
 // vmToGateway exercises the infra zone. One VM on a routed subnet; the
 // router interface and the Nova metadata service (169.254.169.254) are
-// both /32 INFRA rows (DESIGN §5.2 Step 4). The flow targets the
+// both /32 INFRA rows (docs/architecture/trie-construction.md#the-five-step-algorithm Step 4). The flow targets the
 // metadata service, which — unlike the bare gateway — runs a real
 // HTTP responder, so infra traffic is generatable.
 //

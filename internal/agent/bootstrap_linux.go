@@ -40,7 +40,7 @@ import (
 // list here for the order; read the individual step methods for what
 // each one guarantees.
 //
-// Phases (see [boot.Phase] and docs/DESIGN.md §9):
+// Phases (see [boot.Phase] and docs/architecture/boot-and-recovery.md#boot-sequence):
 //
 //  1. [boot.PhaseBPFLoaded]      — collection loaded + map-size validated
 //  2. [boot.PhaseMetadataReady]  — Neutron cold-start populated the
@@ -141,7 +141,7 @@ func (b *bootstrapper) prepareProcess() error {
 }
 
 // huntZombies removes TC filters orphaned by a previous crash, before
-// any program is loaded (docs/DESIGN.md §9 step 1). Hunt errors are
+// any program is loaded (docs/architecture/boot-and-recovery.md#boot-sequence step 1). Hunt errors are
 // non-fatal — a partial cleanup still leaves a working agent — so the
 // count is stashed for [buildAgent] to record once the metrics exist.
 func (b *bootstrapper) huntZombies() error {
@@ -401,7 +401,7 @@ func (e telemetryFlowEvictor) Delete(key bpf.FlowKey) error {
 // telemetryMacFlowEvictor adapts the kernel telemetry_map [*ebpf.Map] to
 // the [gc.MacFlowEvictor] seam: it deletes the residual flow counters of
 // a swept VM's MAC set so they are not re-drained as "unknown" after the
-// MAC leaves mac_tenant_map (docs/DESIGN.md §3.3). telemetry_map is a
+// MAC leaves mac_tenant_map (docs/architecture/data-structures.md#lingering-ghost). telemetry_map is a
 // PERCPU_HASH keyed by [bpf.FlowKey]; the VM-side MAC of each flow is
 // [metadata.VMMAC]. Keys are collected during the single Iterate pass
 // and deleted after it — deleting mid-iteration can skip or repeat
@@ -456,7 +456,7 @@ func (b *bootstrapper) prepareWALDir() error {
 // to [boot.PhaseStateRestored]. Most restore failures are handled
 // inside restoreFromWAL (warn, quarantine the unreadable primary,
 // start empty); the one fatal class — a snapshot written by a newer
-// build — propagates here and aborts the boot (docs/DESIGN.md §3.2
+// build — propagates here and aborts the boot (docs/architecture/data-structures.md#userspace-structures
 // migration policy).
 func (b *bootstrapper) restoreWAL() error {
 	if err := restoreFromWAL(b.ag, b.cfg.WAL); err != nil {

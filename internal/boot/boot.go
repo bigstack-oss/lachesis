@@ -1,6 +1,6 @@
 // Package boot tracks the agent's startup phases as a single
 // monotonically advancing sequence. The phases formalise
-// docs/DESIGN.md §9: BPF loaded, Neutron metadata pushed to the
+// docs/architecture/boot-and-recovery.md#boot-sequence: BPF loaded, Neutron metadata pushed to the
 // kernel maps, TC clsact attached, WAL restored. Each phase records
 // that an externally observable guarantee now holds — once
 // [Sequencer.Advance] returns, the previous phase's invariant is

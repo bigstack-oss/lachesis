@@ -50,7 +50,7 @@ func (o Options) validate() error {
 // telemetry programs to every link whose name matches the
 // configured allowlist. It writes a single value through the
 // netlink.LinkSubscribeWithOptions(ListExisting: true) stream so
-// the "subscribe before initial sweep" race from docs/DESIGN.md §9
+// the "subscribe before initial sweep" race from docs/architecture/boot-and-recovery.md#boot-sequence
 // is closed by construction — the kernel itself replays existing
 // links as NEWLINK events on the same socket.
 type linuxSubscriber struct {

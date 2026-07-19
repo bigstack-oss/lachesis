@@ -27,7 +27,7 @@ import "strings"
 //
 // # Why prefix-match, not an allow-list
 //
-// docs/DESIGN.md §5.2 Step 4 lists five infra owners by name. The
+// docs/architecture/trie-construction.md#the-five-step-algorithm Step 4 lists five infra owners by name. The
 // prefix rule captures those plus future and deployment-specific
 // values without code change:
 //
@@ -110,7 +110,7 @@ func IsComputePort(deviceOwner string) bool {
 // a VLAN-aware VM. Subports admit as VM-like ([IsVMPort] and
 // [IsKnownVMOwner] both accept them), but the data plane cannot count
 // their traffic: 802.1Q-tagged frames on the trunk parent fail the
-// ethertype gate and pass uncounted (docs/DESIGN.md §8 Tier 1). The
+// ethertype gate and pass uncounted (docs/architecture/edge-cases.md#tier-1--hard-limits). The
 // cold-start path uses this predicate to warn when a snapshot
 // contains trunk subports.
 func IsTrunkSubport(deviceOwner string) bool {

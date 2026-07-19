@@ -12,7 +12,7 @@ import (
 const rebornNoiseBudget = 256 << 10
 
 // macReuse is the live regression for the ghost-sweep settled-bytes
-// fold (DESIGN §3.5) and its hardest consequence, MAC reuse: tenant A
+// fold (docs/architecture/data-structures.md#settled-bytes) and its hardest consequence, MAC reuse: tenant A
 // drives traffic and its VM is deleted; after the agent's ghost sweep,
 // tenant A's series must hold — monotone, nothing re-bucketed to
 // "unknown" — and when the VM's MAC is reborn on tenant B's port,

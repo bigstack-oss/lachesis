@@ -12,7 +12,7 @@ import "sync"
 // # Restart safety
 //
 // The mapping is in-memory only and rebuilt on every agent boot.
-// docs/DESIGN.md §9 specifies that the kernel maps are freshly
+// docs/architecture/boot-and-recovery.md#boot-sequence specifies that the kernel maps are freshly
 // loaded at every boot, so any prior u32 assignment would be
 // replaced anyway. This is correctness-safe because no u32 leaks
 // outside the kernel maps — [bpf.FlowKey] and [state.Record] are

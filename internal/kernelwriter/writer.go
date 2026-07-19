@@ -11,8 +11,8 @@
 // log every per-entry failure (so an operator can see which row
 // went wrong) and return the FIRST error encountered. The caller
 // is expected to treat any non-nil error as a boot-fatal condition
-// — the next agent boot rebuilds the maps from scratch (docs/DESIGN.md
-// §9), so a partially-written map from a failed boot does no harm.
+// — the next agent boot rebuilds the maps from scratch
+// (docs/architecture/boot-and-recovery.md#boot-sequence), so a partially-written map from a failed boot does no harm.
 //
 // # Update mode
 //

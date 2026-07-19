@@ -12,7 +12,7 @@ import (
 // [Save] and to the boot loader. nil is acceptable everywhere
 // observations land — the Observe* helpers handle it.
 //
-// The five instruments mirror docs/DESIGN.md §11.4:
+// The five instruments mirror docs/architecture/metrics.md:
 //
 //   - lachesis_wal_snapshot_copy_seconds        copy-under-lock phase
 //   - lachesis_wal_marshal_seconds              JSON marshal phase

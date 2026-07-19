@@ -555,7 +555,7 @@ func sampleSettled() []state.SettledRecord {
 
 // TestSaveLoad_RoundTripsSettled: the v2 settled section survives a
 // Save/Load cycle bit-exact — the restart-safety half of the
-// settled-bytes fold (docs/DESIGN.md §3.5).
+// settled-bytes fold (docs/architecture/data-structures.md#settled-bytes).
 func TestSaveLoad_RoundTripsSettled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.json")
 	want := sampleSettled()

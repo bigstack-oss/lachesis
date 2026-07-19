@@ -8,7 +8,7 @@
  * userspace agent populates mac_tenant_map and subnet_zone_trie; this
  * program only reads them.
  *
- * Design: docs/DESIGN.md §3 (data structures) and §4 (classification).
+ * Design: docs/architecture/data-structures.md (data structures) and §4 (classification).
  */
 
 #include "vmlinux.h"
@@ -105,7 +105,7 @@ struct {
  * catchall, SHARED, INFRA /32s, and the Nova metadata /32 —
  * exactly once with tenant_id=0; only SAME_TENANT subnets and
  * per-tenant extraroutes scale with tenant count. Per
- * docs/DESIGN.md §3.1 cardinality is O(G + Σ O_t), where G is
+ * docs/architecture/data-structures.md#kernel-side-bpf-maps cardinality is O(G + Σ O_t), where G is
  * the global-row count and O_t the per-tenant SAME_TENANT rows.
  *
  * # Sizing
@@ -218,7 +218,7 @@ static __always_inline __u64 mac_to_u64(const __u8 mac[6])
  *      (cold-start race) or a bug, not a normal miss.
  *
  * Userspace contract: see internal/neutron.BuildTrie (per-tenant
- * vs TenantID="" emission rules) and docs/DESIGN.md §3.1.
+ * vs TenantID="" emission rules) and docs/architecture/data-structures.md#kernel-side-bpf-maps.
  */
 static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
 					const __u8 peer_mac[6],
@@ -362,7 +362,7 @@ static __always_inline int handle_packet(struct __sk_buff *skb,
 		 *
 		 * A nonzero return means the map is full (-E2BIG) and this
 		 * flow's bytes are lost until space frees up. Count the loss
-		 * — billing-path errors are never silent (docs/DESIGN.md §8
+		 * — billing-path errors are never silent (docs/architecture/edge-cases.md
 		 * Tier 2 #4).
 		 */
 		if (bpf_map_update_elem(&telemetry_map, &key, &init, BPF_ANY) != 0)

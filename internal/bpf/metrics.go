@@ -87,7 +87,7 @@ func (m *Metrics) SetUpdateFailures(c StatCounts) {
 // Collector rather than a CounterVec because the kernel value is the
 // cumulative truth and counters cannot be set to an absolute value —
 // the same emit-from-source rationale as the billing Collector
-// (docs/DESIGN.md §11.4). Collect always emits every [StatReason]
+// (docs/architecture/metrics.md). Collect always emits every [StatReason]
 // series, so both reason labels are zero-seeded from the first scrape.
 type statsCollector struct {
 	desc *prometheus.Desc

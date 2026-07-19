@@ -34,11 +34,11 @@ func NewMetrics() *Metrics {
 		}, []string{labelReason}),
 		pressureReliefRun: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lachesis_gc_pressure_relief_runs_total",
-			Help: "Pressure-relief passes run after a scrape drain found telemetry_map above the configured fill high watermark (docs/DESIGN.md §3.1).",
+			Help: "Pressure-relief passes run after a scrape drain found telemetry_map above the configured fill high watermark (docs/architecture/data-structures.md#kernel-side-bpf-maps).",
 		}),
 		settledFlows: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lachesis_gc_settled_flows_total",
-			Help: "GlobalState flow rows folded into the settled-bytes accumulator by the ghost sweep, keeping deleted VMs' bytes attributed to their tenant (docs/DESIGN.md §3.5).",
+			Help: "GlobalState flow rows folded into the settled-bytes accumulator by the ghost sweep, keeping deleted VMs' bytes attributed to their tenant (docs/architecture/data-structures.md#settled-bytes).",
 		}),
 		ghostsActive: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lachesis_lingering_ghosts_active",

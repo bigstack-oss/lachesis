@@ -6,7 +6,7 @@ import "github.com/prometheus/client_golang/prometheus"
 // Construct with [NewMetrics], register the slice from
 // [Metrics.Collectors] with the agent's registry.
 //
-// The two instruments are cataloged in docs/DESIGN.md §11.4
+// The two instruments are cataloged in docs/architecture/metrics.md
 // (health metrics):
 //
 //   - lachesis_tc_attach_failures_total{iface_kind}  per-attempt

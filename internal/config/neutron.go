@@ -78,7 +78,7 @@ type NeutronConfig struct {
 
 	// UnsafeAllowAmbiguousRoutes, when true, lets the agent boot
 	// even if BuildTrie surfaced one or more static-route Step C
-	// ambiguities (DESIGN §5.6). Each such route classifies as
+	// ambiguities (docs/architecture/trie-construction.md#ambiguity-after-scoping). Each such route classifies as
 	// EXTERNAL with a warn-level log. The default (false) is strict
 	// mode: any ambiguity refuses to start. Set true only with an
 	// operator's informed consent — ambiguous routes systematically

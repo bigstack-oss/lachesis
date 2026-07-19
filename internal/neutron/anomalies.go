@@ -44,7 +44,7 @@ type Anomalies struct {
 	// per-server export dimension are the deterministic pick, not
 	// necessarily where every byte really egressed — per-network
 	// external billing for these VMs is approximate (the documented
-	// first-cut limitation of docs/DESIGN.md §11.5 attribution).
+	// first-cut limitation of docs/architecture/billing.md attribution).
 	MultiExternalPaths []MultiExternalPathHit
 }
 

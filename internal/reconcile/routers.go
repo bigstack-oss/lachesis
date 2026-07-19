@@ -1,5 +1,5 @@
 // routers.go reconciles the router-interface-MAC → external-network
-// map behind the per-flow external attribution (docs/DESIGN.md §11.5).
+// map behind the per-flow external attribution (docs/architecture/billing.md).
 // Like the MAC reconcile, any attribution change settles the affected
 // flows under the OLD label before the new state is published, so the
 // exposed external_network series stay monotone through router

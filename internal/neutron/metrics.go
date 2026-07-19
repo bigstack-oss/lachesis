@@ -58,7 +58,7 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 		}, []string{"owner"}),
 		builderStep: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lachesis_neutron_builder_step_duration_seconds",
-			Help:    "BuildTrie per-step duration (DESIGN §5.2 steps 1-5), in seconds.",
+			Help:    "BuildTrie per-step duration (docs/architecture/trie-construction.md#the-five-step-algorithm steps 1-5), in seconds.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"step"}),
 		anomalies: prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -67,7 +67,7 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 		}, []string{"class"}),
 		trunkSubports: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lachesis_neutron_trunk_subports",
-			Help: "Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).",
+			Help: "Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (docs/architecture/edge-cases.md).",
 		}),
 	}
 	m.syncAge = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
@@ -133,7 +133,7 @@ func (m *Metrics) RecordUnknownOwner(deviceOwner string) {
 // cold-start or resync admitted to mac_tenant_map. Gauge semantics —
 // every sync replaces the previous count, so deleting the last trunk
 // drops the gauge back to 0 on the next pass. The data plane cannot
-// count 802.1Q-tagged subport traffic (docs/DESIGN.md §8 Tier 1), so
+// count 802.1Q-tagged subport traffic (docs/architecture/edge-cases.md#tier-1--hard-limits), so
 // a nonzero value flags a billing blind spot. nil receivers no-op.
 func (m *Metrics) SetTrunkSubports(n int) {
 	if m == nil {

@@ -5,7 +5,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// crossHostSameTenant is the canonical two-node scenario (DESIGN §7
+// crossHostSameTenant is the canonical two-node scenario (docs/architecture/scenarios.md
 // case J): the same twovms topology, but the VMs are pinned to
 // different hypervisors via placement slots, so the flow crosses the
 // Geneve overlay. Each side is asserted on its own node's agent —

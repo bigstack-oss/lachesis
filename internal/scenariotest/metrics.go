@@ -22,13 +22,13 @@ const (
 	metricAttachedInterfaces = "lachesis_attached_interfaces"
 	metricAttachFailures     = "lachesis_tc_attach_failures_total"
 	// metricSettledFlows counts GlobalState rows the agent's ghost sweep
-	// folded into the settled-bytes accumulator (DESIGN §3.5). The
+	// folded into the settled-bytes accumulator (docs/architecture/data-structures.md#settled-bytes). The
 	// mac-reuse scenario polls it to know the sweep has processed a
 	// deleted VM. Absent on pre-fold agents — the scenario checks
 	// presence and refuses to run rather than hanging on the poll.
 	metricSettledFlows = "lachesis_gc_settled_flows_total"
 	// metricServerBytesTotal is the mortal per-server billing family
-	// (DESIGN §11.5). Absent on agents predating the per-server export;
+	// (docs/architecture/billing.md). Absent on agents predating the per-server export;
 	// only expectations with a VM target need it, and assert refuses
 	// those against agents that don't expose it.
 	metricServerBytesTotal = "lachesis_server_bytes_total"
@@ -58,7 +58,7 @@ type BytesSample struct {
 }
 
 // ServerSample is one lachesis_server_bytes_total series — the mortal
-// per-server billing family (DESIGN §11.5). Captured alongside
+// per-server billing family (docs/architecture/billing.md). Captured alongside
 // BytesSample so Expect entries with a VM target can lower-bound a
 // specific server's delta.
 type ServerSample struct {
