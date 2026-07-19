@@ -51,6 +51,12 @@ jobs:
         run: task generate UID=0 GID=0
       - name: run integration tests
         run: task test-integration
+      # The kernel hot-path benches (BenchmarkHotpath_Lpm*) are
+      # //go:build integration, so the non-privileged bench-gate job can't
+      # run them. Gate their zero-alloc contract here, where privileged
+      # Docker + BPF_PROG_TEST_RUN are available.
+      - name: gate integration hot-path allocations
+        run: task bench-gate-integration UID=0 GID=0
 
   bench-gate:
     name: bench-gate (zero-allocation check)

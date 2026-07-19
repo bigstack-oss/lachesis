@@ -75,7 +75,10 @@ Hot-path code (`Collect()`, scraper, packet handlers) must allocate zero memory 
 - `BenchmarkHotpath_<Name>` → gated; must report `0 allocs/op`. CI fails the PR if violated.
 - `Benchmark_<Name>` → informational, no gate.
 
-**Status:** live, not dormant. The `bench-gate` CI job (`task bench-gate`) runs `go test -bench=^BenchmarkHotpath_ -benchmem` and fails the PR on any non-zero `allocs/op`. It gates `internal/state`'s `BenchmarkHotpath_ApplyDelta` and `BenchmarkHotpath_Snapshot`. The `internal/kernelwriter` LPM hot-path benchmarks (`BenchmarkHotpath_LpmHit`, `BenchmarkHotpath_LpmFallback`) are `//go:build integration` (kernel-only), so they run under the privileged `-bench` harness — see that file's header — not the default gate.
+**Status:** live, not dormant. Both `BenchmarkHotpath_*` families are alloc-gated at `0 allocs/op`, split by build tag:
+
+- The untagged pure-Go hot paths — `internal/state`'s `BenchmarkHotpath_ApplyDelta` and `BenchmarkHotpath_Snapshot` — run in the `bench-gate` CI job (`task bench-gate` → `go test -bench=^BenchmarkHotpath_ -benchmem`).
+- The kernel hot paths — `internal/kernelwriter`'s `BenchmarkHotpath_LpmHit` and `BenchmarkHotpath_LpmFallback` — are `//go:build integration` (they drive `BPF_PROG_TEST_RUN`), so the non-privileged bench-gate job can't build them. They are gated in the `integration` job via `task bench-gate-integration` (`bench-gate.sh integration` under privileged Docker).
 
 ### Throughput delta (manual, today)
 
@@ -133,7 +136,7 @@ task loadtest                                           # default: 15s window, 4
 | Job | Where | Why |
 |---|---|---|
 | `unit` | Ubuntu | `go build ./...` + non-integration tests across every package |
-| `integration` | Ubuntu, privileged Docker | Full kernel/network pipeline; also runs the `perfbench` per-packet ceiling gate |
+| `integration` | Ubuntu, privileged Docker | Full kernel/network pipeline; also runs the `perfbench` per-packet ceiling gate and the integration-tagged hot-path alloc gate |
 | `bench-gate` | Ubuntu | Zero-alloc enforcement for `BenchmarkHotpath_*` |
 | `lint` | Ubuntu | `golangci-lint` (with `--build-tags=integration`) |
 | `loadtest` | Ubuntu, privileged Docker | Agent RSS/CPU budget under sustained load; `continue-on-error` during threshold calibration |
