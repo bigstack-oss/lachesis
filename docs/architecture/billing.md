@@ -62,7 +62,7 @@ Platform-L2 multicast (mDNS/SSDP on provider-attached taps) *was* the dominant s
 
 ## Per-server usage export
 
-The tenant-family contract above is deliberately **aggregate** — `tenant_id × zone × external_network × direction`, all low-cardinality, every series immortal. Per-server billing detail is a **second metric family on the same `/metrics` endpoint** with a deliberately different lifecycle promise — not a dedicated endpoint, and not a message bus:
+The tenant-family contract above is deliberately **aggregate** — `tenant_id × zone × external_network × direction`, all low-cardinality, every series immortal. Per-server billing detail is a **second metric family on the same `/metrics` endpoint** with a deliberately different lifecycle promise — not a dedicated endpoint, and not a message bus (pull-over-push is a deliberate decision: [ADR 0013](../adr/0013-pull-metrics-over-push-export.md)):
 
 `lachesis_server_bytes_total{server_id, tenant_id, zone, external_network, direction}` — cumulative, emitted from the same GlobalState (WAL-backed, restart-surviving) as the tenant family. `server_id` is the Neutron port `device_id` (Nova instance UUID), stable across live migration; `user` is not emitted (Neutron ports don't carry it) — the billing consumer derives ownership from `server_id`.
 
