@@ -113,12 +113,9 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: task setup
       - run: task generate UID=0 GID=0
-      # continue-on-error on the load step only (not the whole job) so a
-      # threshold miss leaves the check green while RSS/CPU are calibrated
-      # against the shared-runner baseline — the 1% CPU limit is runner-
-      # sensitive. setup/generate failures still surface. Drop this once the
-      # thresholds are validated to make the budget blocking.
-      # UID=0/GID=0 so the in-container build can write build/ on the
-      # runner-owned checkout; the load run itself is --privileged -u 0.
+      # Blocking: the RSS/CPU budget is validated on the shared runner
+      # (observed RSS ~29 MiB « 250, CPU 0.00% « 1%, 66 GiB pushed), so a
+      # threshold breach now fails the PR. UID=0/GID=0 so the in-container
+      # build can write build/ on the runner-owned checkout; the load run
+      # itself is --privileged -u 0.
       - run: task loadtest UID=0 GID=0
-        continue-on-error: true
