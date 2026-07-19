@@ -75,7 +75,7 @@ Hot-path code (`Collect()`, scraper, packet handlers) must allocate zero memory 
 - `BenchmarkHotpath_<Name>` → gated; must report `0 allocs/op`. CI fails the PR if violated.
 - `Benchmark_<Name>` → informational, no gate.
 
-**Status:** live. Four gated benchmarks enforce the contract — `BenchmarkHotpath_ApplyDelta` and `BenchmarkHotpath_Snapshot` (`internal/state`), `BenchmarkHotpath_LpmHit` and `BenchmarkHotpath_LpmFallback` (`internal/kernelwriter`) — each asserted at `0 allocs/op` by the `bench-gate` CI job. Run locally via `task bench-gate`.
+**Status:** live, not dormant. The `bench-gate` CI job (`task bench-gate`) runs `go test -bench=^BenchmarkHotpath_ -benchmem` and fails the PR on any non-zero `allocs/op`. It gates `internal/state`'s `BenchmarkHotpath_ApplyDelta` and `BenchmarkHotpath_Snapshot`. The `internal/kernelwriter` LPM hot-path benchmarks (`BenchmarkHotpath_LpmHit`, `BenchmarkHotpath_LpmFallback`) are `//go:build integration` (kernel-only), so they run under the privileged `-bench` harness — see that file's header — not the default gate.
 
 ### Throughput delta (manual, today)
 

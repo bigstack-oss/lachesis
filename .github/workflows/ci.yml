@@ -95,11 +95,6 @@ jobs:
   loadtest:
     name: loadtest (agent resource budget, privileged docker)
     runs-on: ubuntu-latest
-    # loadtest forks the agent under sustained traffic and asserts RSS/CPU
-    # budgets. Non-blocking until the thresholds are calibrated against the
-    # shared-runner baseline — the 1% CPU limit in particular is runner-
-    # sensitive. Flip to blocking once the CPU limit is validated.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -112,6 +107,12 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - run: task setup
       - run: task generate UID=0 GID=0
+      # continue-on-error on the load step only (not the whole job) so a
+      # threshold miss leaves the check green while RSS/CPU are calibrated
+      # against the shared-runner baseline — the 1% CPU limit is runner-
+      # sensitive. setup/generate failures still surface. Drop this once the
+      # thresholds are validated to make the budget blocking.
       # UID=0/GID=0 so the in-container build can write build/ on the
       # runner-owned checkout; the load run itself is --privileged -u 0.
       - run: task loadtest UID=0 GID=0
+        continue-on-error: true

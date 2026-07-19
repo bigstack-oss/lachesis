@@ -47,10 +47,13 @@ func (d *Driver) Run(progName string, frame []byte) (verdict uint32, err error) 
 }
 
 // RunRepeat executes progName count times in a single syscall and reports
-// total kernel-measured runtime plus per-run average.
+// per-run kernel-measured runtime plus the extrapolated total.
 //
 // The kernel times only program execution (excludes the syscall boundary),
-// making this the right primitive for ns/packet benchmarks.
+// making this the right primitive for ns/packet benchmarks. cilium/ebpf's
+// Benchmark already returns the time *per iteration* (the kernel averages
+// over count internally), so perRun is that value directly — do not divide
+// by count again — and total is perRun reconstructed across the run.
 func (d *Driver) RunRepeat(progName string, frame []byte, count uint32) (total, perRun time.Duration, err error) {
 	if count == 0 {
 		return 0, 0, fmt.Errorf("bpfunit: count must be > 0")
@@ -59,11 +62,11 @@ func (d *Driver) RunRepeat(progName string, frame []byte, count uint32) (total, 
 	if !ok {
 		return 0, 0, fmt.Errorf("bpfunit: program %q not in collection", progName)
 	}
-	_, dur, err := prog.Benchmark(frame, int(count), nil)
+	_, perRun, err = prog.Benchmark(frame, int(count), nil)
 	if err != nil {
 		return 0, 0, fmt.Errorf("bpfunit: prog %q benchmark: %w", progName, err)
 	}
-	return dur, dur / time.Duration(count), nil
+	return perRun * time.Duration(count), perRun, nil
 }
 
 // Map returns the named BPF map, or nil if not loaded.
