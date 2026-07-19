@@ -64,20 +64,6 @@ tasks:
         {{.UID}}:{{.GID}} -e GOOS=linux -e GOARCH=amd64 -e GOWORK=off
         {{.BUILDER_IMAGE}} go build -o {{.BUILD_DIR}}/agent ./cmd/agent
 
-  perfbench:
-    desc: Build and run perfbench inside privileged Docker. Pass args after --
-    deps: [ generate ]
-    cmds:
-      - mkdir -p {{.BUILD_DIR}}
-      - >
-        docker run --rm --platform linux/amd64 -v "$(pwd)":/app -u
-        {{.UID}}:{{.GID}} -e GOOS=linux -e GOARCH=amd64 -e GOWORK=off
-        {{.BUILDER_IMAGE}} go build -o {{.BUILD_DIR}}/perfbench ./cmd/perfbench
-      - >
-        docker run --rm --platform linux/amd64 --privileged -u 0
-        -v "$(pwd)":/app -w /app {{.BUILDER_IMAGE}}
-        ./build/perfbench {{.CLI_ARGS}}
-
   test:
     desc: Run unit tests on the host (no integration tag; no privileges needed)
     cmd: GOWORK=off go test ./internal/...

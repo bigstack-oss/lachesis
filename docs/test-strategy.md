@@ -8,6 +8,8 @@ The infrastructure was built in Sprint 0.5 specifically so Sprints 1–10 plug i
 
 ## Tier 1 — Unit tests
 
+**Question.** Is each unit of Go logic and each BPF path correct in isolation?
+
 **Goal.** Verify pure-Go logic and BPF kernel paths in isolation, no real network.
 
 **Where.**
@@ -23,6 +25,8 @@ The infrastructure was built in Sprint 0.5 specifically so Sprints 1–10 plug i
 ---
 
 ## Tier 2 — Integration / e2e tests
+
+**Question.** Does the full kernel↔userspace pipeline behave against real Linux semantics?
 
 **Goal.** Verify the full kernel↔userspace pipeline against real Linux semantics: real namespaces, real veth interfaces, real TCP connections, real BPF TC attach.
 
@@ -47,18 +51,23 @@ The infrastructure was built in Sprint 0.5 specifically so Sprints 1–10 plug i
 
 **Goal.** Verify CPU and memory budgets from DESIGN §11.
 
-### ns/packet via `perfbench`
+### ns/packet via the per-packet ceiling gate
 
-`cmd/perfbench` drives `BPF_PROG_TEST_RUN` with a configurable repeat count and reports kernel-measured time.
+**Question.** How much CPU does the classifier burn per packet?
+
+`internal/perfbench.Run` loads the real classifier (`tc_telemetry_in`) and drives it through `BPF_PROG_TEST_RUN`, reporting kernel-measured time. The maps load empty, so every packet takes the lookup-miss path — the number covers the parse plus the full lookup chain. There is no standalone binary; the measurement is driven only by the gate below.
+
+DESIGN §11 target: **~150 ns/packet**. `TestPerfbench_PerPacketCeiling` (build tag `integration`, package `internal/perfbench`) runs on the `integration` CI job and fails above an absolute `PerRunNs` ceiling — a generous 2–3× bound that catches a new map lookup or classification branch, not a 10% drift detector. The ceiling is uncalibrated (records a baseline only) until the first CI run on the shared runner sets it.
+
+To read the number on real hardware, run the gate with `-v` on a native x86 OVN node (macOS/Rosetta reports near-zero ns):
 
 ```sh
-task perfbench                                          # default: 1M repeats, human output
-task perfbench -- -output json -repeat 100000000        # JSON for CI ingestion
+go test -tags integration -run TestPerfbench_PerPacketCeiling -v ./internal/perfbench
 ```
 
-DESIGN §11 target: **~150 ns/packet**. Sprint 1 produces the first real number on a real OVN compute node.
-
 ### Zero-allocation gate
+
+**Question.** Does the hot path allocate on the scrape/packet path?
 
 Hot-path code (`Collect()`, scraper, packet handlers) must allocate zero memory per call to keep GC pressure off the 15s scrape rate.
 
@@ -66,19 +75,27 @@ Hot-path code (`Collect()`, scraper, packet handlers) must allocate zero memory 
 - `BenchmarkHotpath_<Name>` → gated; must report `0 allocs/op`. CI fails the PR if violated.
 - `Benchmark_<Name>` → informational, no gate.
 
-**Status:** currently dormant. Sprint 2 lands the first `BenchmarkHotpath_*` benchmarks (`Collect`, `BatchLookupAndProcess`). Run via `task bench-gate`.
+**Status:** live. Four gated benchmarks enforce the contract — `BenchmarkHotpath_ApplyDelta` and `BenchmarkHotpath_Snapshot` (`internal/state`), `BenchmarkHotpath_LpmHit` and `BenchmarkHotpath_LpmFallback` (`internal/kernelwriter`) — each asserted at `0 allocs/op` by the `bench-gate` CI job. Run locally via `task bench-gate`.
 
 ### Throughput delta (manual, today)
 
 iperf3-measured BPF overhead is documented in DESIGN §12 ("Demo Workflow"). Not automated; Sprint 9 may wrap as a Taskfile target.
 
-### Load test (deferred to Sprint 2)
+### Load test via `loadtest`
 
-`cmd/loadtest` — synthesizes sustained traffic, samples `/proc/<pid>/{stat,status}`, asserts RSS/CPU thresholds — was originally planned for Sprint 0.5 but moved to Sprint 2 where the agent binary first lands. Building load-test infrastructure without an agent to load-test is infra for absent code.
+**Question.** Does the long-running agent stay inside its RSS/CPU budget under sustained load?
+
+`cmd/loadtest` forks the agent as a subprocess, drives sustained TCP traffic through a netns + veth, samples `/proc/<pid>/{stat,status}`, and exits non-zero if peak RSS or average CPU exceeds the configured budget (defaults: 250 MiB, 1% CPU over a 15s window). It runs as its own `loadtest` CI job (privileged Docker: builds the agent, then loads it) — `continue-on-error` while the thresholds are calibrated against the shared-runner baseline, since the 1% CPU limit is runner-sensitive.
+
+```sh
+task loadtest                                           # default: 15s window, 4 workers
+```
 
 ---
 
 ## Tier 4 — Live-cluster validation
+
+**Question.** Is per-tenant / zone / direction byte attribution correct end to end against live OpenStack?
 
 **Goal.** Verify per-tenant / zone / direction byte attribution end to end against a **real OVN cluster** — the automated form of the deploy → traffic → scrape → assert → teardown loop previously run by hand on staging every sprint. Tiers 1–3 prove the pipeline in isolation; Tier 4 proves it against live OpenStack, and de-risks the Octavia billing path by giving it a repeatable live-assertion harness.
 
@@ -111,13 +128,15 @@ iperf3-measured BPF overhead is documented in DESIGN §12 ("Demo Workflow"). Not
 
 ## CI
 
-`.github/workflows/ci.yml` runs three jobs on every push to `develop`/`main` and on every PR:
+`.github/workflows/ci.yml` runs on every push to `develop`/`main` and on every PR:
 
 | Job | Where | Why |
 |---|---|---|
-| `unit` | macOS + Ubuntu | Cross-platform compile + non-integration tests |
-| `integration` | Ubuntu, privileged Docker | Full kernel/network pipeline; `continue-on-error: true` until Sprint 9 hardens |
+| `unit` | Ubuntu | `go build ./...` + non-integration tests across every package |
+| `integration` | Ubuntu, privileged Docker | Full kernel/network pipeline; also runs the `perfbench` per-packet ceiling gate |
 | `bench-gate` | Ubuntu | Zero-alloc enforcement for `BenchmarkHotpath_*` |
+| `lint` | Ubuntu | `golangci-lint` (with `--build-tags=integration`) |
+| `loadtest` | Ubuntu, privileged Docker | Agent RSS/CPU budget under sustained load; `continue-on-error` during threshold calibration |
 
 Local equivalent: `task ci` runs unit + bench-gate (skips integration because it requires Docker setup). Run this before pushing.
 
@@ -142,4 +161,4 @@ Local equivalent: `task ci` runs unit + bench-gate (skips integration because it
 
 ---
 
-*Last updated: 2026-06-29 (Tier 4 — live-cluster validation added).*
+*Last updated: 2026-07-19 (perfbench benches the real classifier + CI ceiling gate; loadtest CI job; bench gate documented live).*

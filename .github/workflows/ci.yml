@@ -91,3 +91,27 @@ jobs:
         with:
           version: v2.12.2
           args: --build-tags=integration
+
+  loadtest:
+    name: loadtest (agent resource budget, privileged docker)
+    runs-on: ubuntu-latest
+    # loadtest forks the agent under sustained traffic and asserts RSS/CPU
+    # budgets. Non-blocking until the thresholds are calibrated against the
+    # shared-runner baseline — the 1% CPU limit in particular is runner-
+    # sensitive. Flip to blocking once the CPU limit is validated.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: arduino/setup-task@b91d5d2c96a56797b48ac1e0e89220bf64044611 # v2.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: task setup
+      - run: task generate UID=0 GID=0
+      # UID=0/GID=0 so the in-container build can write build/ on the
+      # runner-owned checkout; the load run itself is --privileged -u 0.
+      - run: task loadtest UID=0 GID=0
