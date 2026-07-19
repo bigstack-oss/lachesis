@@ -2,7 +2,7 @@
 
 > Living document. Each sprint = one PR. PRs are reviewable by a single engineer in one sitting, land a working slice that demonstrates new capability, and unblock the next sprint.
 
-This plan is scoped against [DESIGN.md](./DESIGN.md). When the design changes, update this plan; the design remains the source of truth.
+This plan is scoped against the design document — since restructured into [architecture/](./architecture/README.md) (section references below use the original DESIGN.md numbering). This file is a historical planning record.
 
 ## How to read it
 
@@ -79,7 +79,7 @@ The test rig every later sprint composes on top of. Built in five groups, all gr
 **Decisions cemented:**
 - All BPF C source lives under `bpf/` (production at top level, test fixtures in `bpf/test_fixtures/`). Cilium convention.
 - All test infrastructure lives under `internal/testenv/`.
-- BPF integration tests run via Docker with `--privileged -u 0 -e GOWORK=off`. See [test-strategy.md §Environmental gotchas](./test-strategy.md#environmental-gotchas).
+- BPF integration tests run via Docker with `--privileged -u 0 -e GOWORK=off`. See [testing.md, environmental gotchas](./development/testing.md#environmental-gotchas).
 - Hot-path benchmarks named `BenchmarkHotpath_*` are gated to zero allocations (`task bench-gate`).
 
 ---
