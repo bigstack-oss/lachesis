@@ -32,7 +32,7 @@ type populateStats struct {
 // push into the kernel maps, then commit the sync outputs so the
 // /debug pages and sync-age gauge see them. Must run BEFORE TC
 // attach so the very first packet sees a populated trie
-// (docs/DESIGN.md §9 step 3 → 4).
+// (docs/architecture/boot-and-recovery.md#boot-sequence step 3 → 4).
 //
 // When `cfg.Enabled == false` it is a no-op — every flow's
 // `tenant_id` label resolves to "unknown" until an operator enables
@@ -62,7 +62,7 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	}
 	stats := populateMetadataFromPorts(ag.meta, &result.Snapshot, ag.mx.neutron)
 	// Seed the per-flow router map in the same before-any-packet step:
-	// the Resolver reads it from the first scrape (docs/DESIGN.md §11.5).
+	// the Resolver reads it from the first scrape (docs/architecture/billing.md).
 	ag.routers.Replace(neutron.RouterExtMACs(&result.Snapshot))
 	nMac, nTrie, err := pushToKernel(ag, coll, result.Entries)
 	if err != nil {
@@ -91,12 +91,12 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 // IsVMPort blacklist, parses MACs, and inserts (mac → *TenantMeta) into
 // the userspace shard map — each entry carrying the port's full
 // attribution (project, server_id, external_network) for the metric
-// labels and per-server export (docs/DESIGN.md §11.5). Logs every port
+// labels and per-server export (docs/architecture/billing.md). Logs every port
 // admitted with an unknown device_owner (the IsKnownVMOwner allowlist
 // miss) so operators notice when a vendor / plugin string slipped past
 // the broad blacklist, and emits one summary warning when the snapshot
 // contains trunk subports — their MACs admit here but the data plane
-// passes 802.1Q-tagged frames uncounted (docs/DESIGN.md §8 Tier 1).
+// passes 802.1Q-tagged frames uncounted (docs/architecture/edge-cases.md#tier-1--hard-limits).
 func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, snap *neutron.Snapshot, mx *neutron.Metrics) populateStats {
 	var s populateStats
 	trunkSubports := 0
@@ -135,7 +135,7 @@ func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, snap *neutron.
 		s.inserted++
 	}
 	if trunkSubports > 0 {
-		slog.Warn("trunk subports present; 802.1Q-tagged traffic on trunk parents is not counted (docs/DESIGN.md §8)",
+		slog.Warn("trunk subports present; 802.1Q-tagged traffic on trunk parents is not counted (docs/architecture/edge-cases.md)",
 			"component", componentNeutron,
 			"trunk_subports", trunkSubports)
 	}

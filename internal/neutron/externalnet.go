@@ -1,6 +1,6 @@
 // externalnet.go resolves each VM port's external-network attribution —
 // the source of the `external_network` metric label and the per-server
-// export dimension (docs/DESIGN.md §11.5). Pure functions over a
+// export dimension (docs/architecture/billing.md). Pure functions over a
 // Snapshot, mirroring the trie builder's style: no I/O, no retention.
 
 package neutron
@@ -117,7 +117,7 @@ func externalCandidatesByPort(snap *Snapshot) map[string]portCandidates {
 	// routers (anyExt) count only when no gateway-owning router has
 	// an external gateway — they can carry traffic solely via
 	// in-guest static routes, the documented-unsolvable case
-	// (docs/DESIGN.md §8 Tier 4 #9).
+	// (docs/architecture/edge-cases.md#tier-4--subtle-correctness row 9).
 	routerExt := make(map[string]string) // routerID → ext label
 	for _, r := range snap.Routers {
 		if r.ExternalNetworkID != "" {
@@ -201,7 +201,7 @@ func dedupe(in []string) []string {
 // RouterExtMACs maps each router-interface port's MAC (as a
 // [bpf.MACKey] u64) to the label of the external network its router
 // gateways to — the per-flow attribution source for routed external
-// traffic (docs/DESIGN.md §11.5): a routed external flow's peer MAC is
+// traffic (docs/architecture/billing.md): a routed external flow's peer MAC is
 // a router interface's MAC, unique per logical router interface on OVN
 // (the duplicate_router_mac anomaly asserts exactly this), so the map
 // identifies which exit network actually carried each flow. Interfaces

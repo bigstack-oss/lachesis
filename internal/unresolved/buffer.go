@@ -1,12 +1,12 @@
 // Package unresolved implements the UnresolvedBuffer: the late-binding
 // holding area for flows whose VM-side MAC is not (yet) in the metadata
-// map (docs/DESIGN.md §3.2). A single owner — the scrape goroutine, via
+// map (docs/architecture/data-structures.md#userspace-structures). A single owner — the scrape goroutine, via
 // the [Classifier] — sequences its Capture/Sweep verbs; it runs no
 // goroutine of its own and is never touched concurrently, so it needs
 // no internal locking. It does reset a flow's kernel telemetry_map
 // entry on eviction, but only through the injected [FlowEvictor] seam.
 // That makes it a Driven subsystem in the package-anatomy sense
-// (docs/DESIGN.md §13.4) — not a Store, which is IO-free.
+// (docs/development/conventions.md#package-anatomy) — not a Store, which is IO-free.
 //
 // # Why divert at all
 //
@@ -214,7 +214,7 @@ func (b *Buffer) evictOverCap() {
 // the key cannot collide with a real flow, and it resolves to
 // [metadata.UnknownTenantID] at scrape time — collapsing all unknown
 // traffic into at most a handful of monotonic (unknown, zone,
-// direction) series (docs/DESIGN.md §3.2).
+// direction) series (docs/architecture/data-structures.md#userspace-structures).
 func (b *Buffer) foldToUnknown(key bpf.FlowKey, total bpf.FlowMetrics) {
 	b.state.Add(bpf.FlowKey{
 		EthProto:  key.EthProto,

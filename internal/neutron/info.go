@@ -1,8 +1,8 @@
 // info.go implements the identity info-metric families that let
 // dashboards render human names next to UUIDs — the kube-state-metrics
 // kube_pod_info pattern (an additive `<entity>_info{id, name} 1` series
-// joined onto the billing families with group_left). See docs/DESIGN.md
-// §11.4.
+// joined onto the billing families with group_left). See docs/architecture/metrics.md.
+//
 
 package neutron
 
@@ -12,7 +12,7 @@ import "github.com/prometheus/client_golang/prometheus"
 // recently committed [Snapshot], read lock-free at scrape time:
 //
 //   - lachesis_tenant_info{tenant_id, name} 1 — one series per Keystone
-//     project (docs/DESIGN.md §11.4). Free: the project list is already
+//     project (docs/architecture/metrics.md). Free: the project list is already
 //     fetched for the /debug pages.
 //   - lachesis_server_info{server_id, name, tenant_id} 1 — one series per
 //     Nova server, from the best-effort server list.

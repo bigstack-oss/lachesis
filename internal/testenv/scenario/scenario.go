@@ -6,7 +6,7 @@
 // production builder consumes.
 //
 // The package is intentionally minimal — just enough to express
-// scenarios A through L from docs/DESIGN.md §B. Callers that need
+// scenarios A through L from docs/architecture/primer.md. Callers that need
 // fields the DSL doesn't expose (MAC addresses, OVN-specific
 // device_owner strings, IPv6 ports) should build the Snapshot
 // struct directly rather than grow the DSL.
@@ -170,7 +170,7 @@ func (r *RouterRef) ExternalGateway(externalNetworkID string) *RouterRef {
 }
 
 // ExtraRoute appends a static route to this router. The resolver
-// walks (destinationCIDR, nexthopIP) at cold-start (DESIGN §5.3).
+// walks (destinationCIDR, nexthopIP) at cold-start (docs/architecture/trie-construction.md#the-static-route-resolver).
 func (r *RouterRef) ExtraRoute(destinationCIDR, nexthopIP string) *RouterRef {
 	rp := r.b.findRouterPtr(r.routerID)
 	rp.Routes = append(rp.Routes, neutron.Route{Destination: destinationCIDR, Nexthop: nexthopIP})

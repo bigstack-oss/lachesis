@@ -6,7 +6,7 @@ import (
 )
 
 // GCConfig groups the tunables for pressure-relief eviction of the
-// kernel telemetry_map (docs/DESIGN.md §3.1). All three are
+// kernel telemetry_map (docs/architecture/data-structures.md#kernel-side-bpf-maps). All three are
 // hot-reloadable on SIGHUP: the GC reads them through an atomic
 // snapshot, so an operator can retune eviction without an agent restart
 // (a restart briefly stops counting and re-derives the kernel maps).
@@ -33,7 +33,7 @@ type GCConfig struct {
 	// successive scrapes rather than one long pause. Raising it drains
 	// faster at the cost of a longer stall on each scrape that evicts.
 	PressureMaxPerPass int `yaml:"pressure_max_per_pass"`
-	// GhostGrace is the Lingering-Ghost TTL (docs/DESIGN.md §3.4): how
+	// GhostGrace is the Lingering-Ghost TTL (docs/architecture/data-structures.md#map-lifecycle-invariants): how
 	// long a deleted port's metadata survives so dying FIN/RST packets
 	// still attribute. Shorter = less MAC-reuse exposure; longer =
 	// better teardown-tail attribution. Hot-reloadable; applies to
@@ -44,8 +44,8 @@ type GCConfig struct {
 	GhostSweepInterval time.Duration `yaml:"ghost_sweep_interval"`
 }
 
-// gcDefaults returns the pressure-relief baseline from docs/DESIGN.md
-// §3.1: trigger at 80% fill, drain to the 75% floor, 1000 entries per
+// gcDefaults returns the pressure-relief baseline from
+// docs/architecture/data-structures.md#kernel-side-bpf-maps: trigger at 80% fill, drain to the 75% floor, 1000 entries per
 // pass (≈50 ms stall). This package is the single source of truth for
 // those default values.
 func gcDefaults() GCConfig {
@@ -71,7 +71,7 @@ func (c GCConfig) Validate() error {
 		return fmt.Errorf("pressure_low_watermark %v must be in (0, pressure_high_watermark=%v)", c.PressureLowWatermark, c.PressureHighWatermark)
 	}
 	if c.GhostGrace <= 0 {
-		return fmt.Errorf("ghost_grace %v must be > 0 — zero grace kills dying-flow attribution (docs/DESIGN.md §3.4)", c.GhostGrace)
+		return fmt.Errorf("ghost_grace %v must be > 0 — zero grace kills dying-flow attribution (docs/architecture/data-structures.md#map-lifecycle-invariants)", c.GhostGrace)
 	}
 	if c.GhostSweepInterval <= 0 {
 		return fmt.Errorf("ghost_sweep_interval %v must be > 0", c.GhostSweepInterval)

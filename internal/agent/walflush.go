@@ -72,7 +72,7 @@ func (a *Agent) flushWAL() error {
 // so the first ApplyDelta computes deltas against restored
 // LastEbpfRaw values rather than re-baselining.
 //
-// Load failures split into two classes (docs/DESIGN.md §3.2):
+// Load failures split into two classes (docs/architecture/data-structures.md#userspace-structures):
 //
 //   - A snapshot from a newer build ([wal.ErrSchemaNewer]) is
 //     returned so boot refuses to start. Starting anyway would let

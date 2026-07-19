@@ -1,7 +1,7 @@
 //go:build integration
 
 // Package classifier_test exercises the production telemetry BPF program
-// through BPF_PROG_TEST_RUN with table-driven cases. Verifies §4.3 hybrid
+// through BPF_PROG_TEST_RUN with table-driven cases. Verifies the docs/architecture/packet-classification.md#the-hybrid-lookup-explained hybrid
 // MAC-first / LPM-fallback zone lookup. No real interfaces, no real
 // traffic; see internal/testenv/e2e for that.
 package classifier_test

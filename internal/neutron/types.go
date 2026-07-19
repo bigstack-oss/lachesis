@@ -20,7 +20,7 @@ type Network struct {
 	ProjectID string
 	Name      string
 	// Shared indicates the network can be attached to by any
-	// project. Used by §5.2 Step 3 of the trie builder (shared
+	// project. Used by docs/architecture/trie-construction.md#the-five-step-algorithm Step 3 of the trie builder (shared
 	// networks contribute OTHER_TENANT entries rather than per-tenant
 	// entries) — except when also flagged IsExternal, in which case
 	// the catchall handles them as EXTERNAL.
@@ -31,7 +31,7 @@ type Network struct {
 	// Subnets on external networks are intentionally omitted from
 	// the trie's Step 2 / Step 3 — they should classify as EXTERNAL,
 	// which is what the Step-1 catchall returns by default. See
-	// docs/DESIGN.md §5.3 `zone_for`.
+	// docs/architecture/trie-construction.md#the-static-route-resolver `zone_for`.
 	IsExternal bool
 }
 
@@ -56,7 +56,7 @@ type Port struct {
 	MACAddress string
 	// DeviceOwner classifies the port's role: "compute:nova" for
 	// VMs, "network:router_interface" / "network:router_gateway" /
-	// "network:distributed" for OVN router ports, etc. §5.2 Step 4
+	// "network:distributed" for OVN router ports, etc. docs/architecture/trie-construction.md#the-five-step-algorithm Step 4
 	// inspects this to decide whether a port belongs to a VM or to
 	// infrastructure.
 	DeviceOwner string
@@ -127,7 +127,7 @@ type Router struct {
 	ExternalNetworkID string
 	// Routes are operator-configured static routes. Empty on most
 	// routers. BuildTrie walks these through the multi-hop
-	// static-route resolver (DESIGN §5.3), emitting one trie row per
+	// static-route resolver (docs/architecture/trie-construction.md#the-static-route-resolver), emitting one trie row per
 	// route (EXTERNAL when the next hop cannot be resolved).
 	Routes []Route
 }

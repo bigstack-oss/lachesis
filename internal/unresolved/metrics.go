@@ -3,7 +3,7 @@ package unresolved
 import "github.com/prometheus/client_golang/prometheus"
 
 // Metrics holds the Prometheus instruments for the UnresolvedBuffer
-// (docs/DESIGN.md §11.4). The instruments are:
+// (docs/architecture/metrics.md). The instruments are:
 //
 //   - lachesis_unresolved_buffer_depth              gauge
 //   - lachesis_unresolved_buffer_evictions_total{reason}  counter

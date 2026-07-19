@@ -1,8 +1,8 @@
 // Package kafka consumes OpenStack oslo.messaging notifications and kicks
 // a Neutron reconcile on every committed metadata change, so the trie and
 // mac_tenant_map refresh within one pass instead of waiting for the
-// periodic safety net (docs/DESIGN.md §5.7, §9). It is a Service in the
-// package-anatomy sense (docs/DESIGN.md §13.4): the [Consumer] owns a
+// periodic safety net (docs/architecture/trie-construction.md#incremental-updates, docs/architecture/boot-and-recovery.md#boot-sequence). It is a Service in the
+// package-anatomy sense (docs/development/conventions.md#package-anatomy): the [Consumer] owns a
 // long-running loop started by the agent's worker table.
 //
 // # Why kick instead of apply

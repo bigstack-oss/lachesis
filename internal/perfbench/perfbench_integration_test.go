@@ -12,12 +12,12 @@ import (
 // perPacketCeilingNs is the absolute upper bound, in nanoseconds, on the
 // telemetry classifier's per-packet cost measured via BPF_PROG_TEST_RUN.
 //
-// Calibrated from the first amd64 CI baseline of 135 ns/packet (DESIGN §11
+// Calibrated from the first amd64 CI baseline of 135 ns/packet (docs/architecture/performance.md
 // target ~150). Set generously at ~2× to catch a gross regression — a new
 // map lookup or classification branch in bpf/telemetry.c that doubles or
 // triples the cost — while tolerating shared-runner noise. It is deliberately
 // not a 10% drift detector. A zero value would disarm the gate (record a
-// baseline and skip); see docs/test-strategy.md. Native x86 only: macOS /
+// baseline and skip); see docs/development/testing.md. Native x86 only: macOS /
 // Rosetta rounds the kernel clock toward 0.
 var perPacketCeilingNs int64 = 300
 

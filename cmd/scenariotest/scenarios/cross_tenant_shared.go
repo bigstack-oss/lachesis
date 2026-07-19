@@ -10,7 +10,7 @@ import (
 // router routes vm-a's traffic onto the shared subnet. Because the hop
 // is L3 (the peer MAC is the router, not vm-b), the classifier falls
 // back to the LPM trie, which carries one global ("", 10.10.0.0/24) →
-// SHARED row for the shared subnet (DESIGN §5.2 Step 3,
+// SHARED row for the shared subnet (docs/architecture/trie-construction.md#the-five-step-algorithm Step 3,
 // scenarios_test.go Scenario C). So vm-a → vm-b classifies as shared.
 //
 // This is the subtlest zone to drive deterministically (it depends on

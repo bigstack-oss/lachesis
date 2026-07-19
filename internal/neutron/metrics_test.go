@@ -171,7 +171,7 @@ func TestMetrics_SetTrunkSubports(t *testing.T) {
 	m.SetTrunkSubports(2)
 
 	const want = `
-# HELP lachesis_neutron_trunk_subports Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).
+# HELP lachesis_neutron_trunk_subports Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (docs/architecture/edge-cases.md).
 # TYPE lachesis_neutron_trunk_subports gauge
 lachesis_neutron_trunk_subports 2
 `

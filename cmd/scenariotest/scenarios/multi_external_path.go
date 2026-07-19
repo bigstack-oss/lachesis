@@ -12,8 +12,8 @@ import (
 // lachesis_neutron_anomalies{class="multi_external_path"} — retained
 // as a cross-check even though per-flow attribution resolves it
 // exactly, (b) bill each flow under the network that ACTUALLY carried
-// it, resolved per flow from the peer router-interface MAC (DESIGN
-// §11.5) — asserted separately for the default route AND for an
+// it, resolved per flow from the peer router-interface MAC
+// (docs/architecture/billing.md) — asserted separately for the default route AND for an
 // in-guest route riding the second router — on the tenant AND
 // per-server families, and (c) clear the anomaly without disturbing
 // the series once the second path is removed.

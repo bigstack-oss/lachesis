@@ -20,7 +20,7 @@ import (
 )
 
 // TestPopulateMetadataFromPorts_TrunkSubportWarning pins the trunk
-// blind-spot detection (docs/DESIGN.md §8 Tier 1): a snapshot
+// blind-spot detection (docs/architecture/edge-cases.md#tier-1--hard-limits): a snapshot
 // containing trunk subports admits their MACs (the metadata layer
 // accepts them) but emits exactly one summary warning and sets the
 // lachesis_neutron_trunk_subports gauge, while a trunk-free snapshot
@@ -77,7 +77,7 @@ func TestPopulateMetadataFromPorts_TrunkSubportWarning(t *testing.T) {
 				}
 			}
 			want := fmt.Sprintf(`
-# HELP lachesis_neutron_trunk_subports Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (DESIGN §8).
+# HELP lachesis_neutron_trunk_subports Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (docs/architecture/edge-cases.md).
 # TYPE lachesis_neutron_trunk_subports gauge
 lachesis_neutron_trunk_subports %d
 `, tc.wantGauge)
@@ -91,8 +91,8 @@ lachesis_neutron_trunk_subports %d
 
 // TestPopulateMetadataFromPorts_CarriesAttribution: cold-start inserts
 // carry the full attribution — server_id from the port's device_id and
-// the external network resolved from the snapshot's FIPs (docs/DESIGN.md
-// §11.5) — so the very first scrape after boot labels correctly.
+// the external network resolved from the snapshot's FIPs
+// (docs/architecture/billing.md) — so the very first scrape after boot labels correctly.
 func TestPopulateMetadataFromPorts_CarriesAttribution(t *testing.T) {
 	var buf bytes.Buffer
 	if _, err := logging.Init(config.LoggingConfig{Level: "info", Format: "json"}, &buf); err != nil {

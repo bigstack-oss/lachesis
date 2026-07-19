@@ -38,7 +38,7 @@ type Client struct {
 // On Neutron 401 responses, gophercloud transparently re-auths and
 // retries the call once; the caller sees a successful response or
 // a final error. This is gophercloud's standard AllowReauth model;
-// see docs/DESIGN.md §5.1 for the broader cold-start flow.
+// see docs/architecture/trie-construction.md#data-sources for the broader cold-start flow.
 func NewClient(ctx context.Context, creds Credentials) (*Client, error) {
 	eo, err := creds.EndpointOpts(defaultInterface)
 	if err != nil {
@@ -59,7 +59,7 @@ func NewClient(ctx context.Context, creds Credentials) (*Client, error) {
 	// Compute is best-effort: the agent needs it only for the optional
 	// lachesis_server_info family, so a catalog without a Compute
 	// endpoint leaves the client nil and logs rather than failing the
-	// whole cold-start (docs/DESIGN.md §11.4 info metrics).
+	// whole cold-start (docs/architecture/metrics.md info metrics).
 	compute, err := openstack.NewComputeV2(provider, eo)
 	if err != nil {
 		slog.Warn("compute endpoint discovery failed; lachesis_server_info will be absent",

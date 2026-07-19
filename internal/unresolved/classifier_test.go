@@ -113,7 +113,7 @@ func TestClassifier_KnownToStateUnknownToBuffer(t *testing.T) {
 }
 
 // TestClassifier_GhostRoutesToStateNotBuffer pins the ghost-precedence
-// invariant (docs/DESIGN.md §3.3): a MAC marked for deletion is still a
+// invariant (docs/architecture/data-structures.md#lingering-ghost): a MAC marked for deletion is still a
 // metadata hit until the GC sweeps it, so its dying-tail traffic must
 // attribute to the ghosted tenant via GlobalState — never the
 // UnresolvedBuffer. The test fails if the classifier's branches are

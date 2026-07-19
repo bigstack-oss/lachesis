@@ -19,7 +19,7 @@ type ReconcileConfig struct {
 }
 
 // reconcileDefaults returns the 5-minute baseline documented as the
-// no-Kafka ceiling throughout docs/DESIGN.md.
+// no-Kafka staleness ceiling in docs/architecture/boot-and-recovery.md.
 func reconcileDefaults() ReconcileConfig {
 	return ReconcileConfig{Interval: 5 * time.Minute}
 }

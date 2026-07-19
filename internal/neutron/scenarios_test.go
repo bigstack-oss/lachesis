@@ -2,7 +2,7 @@ package neutron_test
 
 // Golden-file scenario tests for BuildTrie. Each test reconstructs
 // the Neutron snapshot that corresponds to a documented scenario
-// (docs/DESIGN.md §B Scenarios A–L) and asserts the trie rows the
+// (docs/architecture/primer.md Scenarios A–L) and asserts the trie rows the
 // builder emits.
 //
 // Lives in `neutron_test` (external test package) so it can import
@@ -123,7 +123,7 @@ func scenarioB() neutron.Snapshot {
 // T1 and T2 each own their own subnets; an admin-owned shared
 // network is visible to both. The shared CIDR is SHARED — never
 // OTHER_TENANT — for every tenant; the trie cannot resolve per-VM
-// ownership inside a shared /24 (DESIGN §5.2 Step 3).
+// ownership inside a shared /24 (docs/architecture/trie-construction.md#the-five-step-algorithm Step 3).
 func TestScenario_C_CrossTenantViaShared(t *testing.T) {
 	got := runScenario(scenarioC())
 	expects(t, got, []neutron.TrieEntry{
@@ -289,7 +289,7 @@ func TestScenario_J_CrossHostSameTenant(t *testing.T) {
 	})
 }
 
-// ----- Scenario K — Multi-hop chain (5 routers, DESIGN §5.5) -----
+// ----- Scenario K — Multi-hop chain (5 routers, docs/architecture/trie-construction.md#worked-example--multi-hop-chain) -----
 
 // Verbatim from the worked example: T1's R1 routes 10.99.0.0/16
 // via R2 in transit-A; each Ri.routes forwards onward through
@@ -355,7 +355,7 @@ func scenarioK() neutron.Snapshot {
 // T1's R1 routes 172.16.99.0/24 via a VM at 10.0.1.50 on T1's own
 // net-T1. The resolver's Step B compute:nova branch returns
 // zone_for(T1, T1, net-T1) → SAME_TENANT. Double-billing at the
-// appliance's own tap is documented in DESIGN.md §8 Tier 4 but is
+// appliance's own tap is documented in docs/architecture/edge-cases.md#tier-4--subtle-correctness but is
 // not the trie builder's concern.
 func TestScenario_L_VMApplianceNexthop(t *testing.T) {
 	got := runScenario(scenarioL())
@@ -401,7 +401,7 @@ func scenarioLNamedAZ() neutron.Snapshot {
 
 // TestBuildTrie_SurfacesAmbiguityHit asserts BuildTrie's second
 // return aggregates every Step C ambiguity-after-scoping incident
-// (DESIGN §5.6). R1 (T1) routes 10.99.50.0/24 via R2, which has
+// (docs/architecture/trie-construction.md#ambiguity-after-scoping). R1 (T1) routes 10.99.50.0/24 via R2, which has
 // two attached networks both covering the destination but owned
 // by different tenants — the resolver returns EXTERNAL and emits
 // an AmbiguityHit; BuildTrie collects it for the caller's strict-

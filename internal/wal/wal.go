@@ -5,7 +5,7 @@
 //
 // The on-disk format is JSON rather than an append-only log; the
 // trade-off (≤60 s data loss on hard reboot for a 1–2 MB single-
-// file write) is the design choice in docs/DESIGN.md §B.11. JSON
+// file write) is the design choice in docs/architecture/primer.md#write-ahead-log. JSON
 // numbers can't represent uint64 above 2^53 without precision loss,
 // so byte counters and timestamps cross the wire as decimal strings
 // via the encoding/json `,string` tag.

@@ -1,7 +1,7 @@
 // Package gc owns the agent's eviction work: the lingering-ghost sweep
 // of deleted metadata (this file) and the metrics for both that sweep
 // and the scraper-driven pressure-relief eviction (metrics.go). It is a
-// Service in the package-anatomy sense (docs/DESIGN.md §13.4): the
+// Service in the package-anatomy sense (docs/development/conventions.md#package-anatomy): the
 // [GhostSweeper] owns a long-running loop started by the agent's worker
 // table.
 //
@@ -18,7 +18,7 @@
 // # Deletion ordering
 //
 // Expired entries are deleted kernel-first, then userspace
-// (docs/DESIGN.md §3.4). The kernel mac_tenant_map is a strict subset
+// (docs/architecture/data-structures.md#map-lifecycle-invariants). The kernel mac_tenant_map is a strict subset
 // of the userspace ShardedMetadataMap; deleting the kernel side first
 // preserves that invariant at every instant, so a packet that races
 // the sweep either still classifies (kernel entry present) or misses
@@ -60,7 +60,7 @@ type MacEvictor interface {
 // belong to a set of VM MACs — the residual flows of a deleted VM, which
 // outlive the MAC (the sweep removes mac_tenant_map, not telemetry_map)
 // and would otherwise be re-drained as "unknown" once the MAC leaves the
-// metadata map (docs/DESIGN.md §3.3). The agent wires a telemetry_map
+// metadata map (docs/architecture/data-structures.md#lingering-ghost). The agent wires a telemetry_map
 // adapter that scans by [metadata.VMMAC]; tests wire a recording mock.
 // Optional: a nil evictor skips residual-flow cleanup. Returns the count
 // deleted and the first error encountered (best-effort — a failure just
@@ -70,7 +70,7 @@ type MacFlowEvictor interface {
 }
 
 // FlowSettler folds userspace flow rows into the settled-bytes
-// accumulator (docs/DESIGN.md §3.5). The sweep calls it just before
+// accumulator (docs/architecture/data-structures.md#settled-bytes). The sweep calls it just before
 // deleting a dead MAC's userspace metadata — the last moment the MAC
 // still resolves to its tenant — so the VM's lifetime bytes stay
 // attributed instead of re-bucketing to "unknown" at the next scrape.
@@ -177,7 +177,7 @@ func (g *GhostSweeper) Run(ctx context.Context) {
 // which is exactly the sequence of calls below.
 //
 //  1. [GhostSweeper.deleteKernelMACs]  — mac_tenant_map, kernel-first for
-//     the kernel ⊆ userspace invariant (docs/DESIGN.md §3.4).
+//     the kernel ⊆ userspace invariant (docs/architecture/data-structures.md#map-lifecycle-invariants).
 //  2. [GhostSweeper.evictResidualFlows] — the swept MACs' telemetry_map
 //     flows, BEFORE phases 3–4.
 //  3. [GhostSweeper.settleSwept]       — fold the swept MACs' GlobalState
@@ -189,13 +189,13 @@ func (g *GhostSweeper) Run(ctx context.Context) {
 // present there a concurrent scrape classifies its flows as known
 // (harmless). Removing the residual flows first means that once the MAC
 // becomes unknown there is nothing left to re-bill as "unknown"
-// (docs/DESIGN.md §3.3).
+// (docs/architecture/data-structures.md#lingering-ghost).
 //
 // Phase 3 precedes phase 4 because settling needs the tenant, and the
 // userspace metadata entry is the last place the swept MAC still
 // resolves. Its position after phase 2 matters too: the kernel flows
 // are gone, so [state.SettleEvict] (fold + delete the row) is safe —
-// nothing will feed the evicted rows again (docs/DESIGN.md §3.5).
+// nothing will feed the evicted rows again (docs/architecture/data-structures.md#settled-bytes).
 func (g *GhostSweeper) sweep(now time.Time) {
 	expired, active := g.classify(now)
 	swept := g.deleteKernelMACs(expired)
@@ -278,7 +278,7 @@ func (g *GhostSweeper) evictResidualFlows(swept map[uint64]struct{}) int {
 // fold with [state.SettleEvict]: their kernel counters were removed in
 // phase 2, so the rows are dead and deleting them is what stops
 // GlobalState (and the WAL) growing with every VM that ever lived
-// (docs/DESIGN.md §3.5). The per-row external_network label resolves
+// (docs/architecture/data-structures.md#settled-bytes). The per-row external_network label resolves
 // per flow exactly as the Collector does ([metadata.FlowExternalLabel]:
 // peer router-interface MAC first, per-VM fallback behind the zone
 // gate), so each fold lands in exactly the series its live flow
@@ -305,8 +305,8 @@ func (g *GhostSweeper) settleSwept(swept map[uint64]struct{}) int {
 
 // deleteUserspace drops the swept MACs from the userspace metadata map.
 // Runs last so a MAC never becomes unknown while its residual flows still
-// exist (docs/DESIGN.md §3.3) and so settleSwept could still resolve the
-// tenant (docs/DESIGN.md §3.5).
+// exist (docs/architecture/data-structures.md#lingering-ghost) and so settleSwept could still resolve the
+// tenant (docs/architecture/data-structures.md#settled-bytes).
 func (g *GhostSweeper) deleteUserspace(swept map[uint64]struct{}) {
 	for mac := range swept {
 		g.meta.Delete(mac)

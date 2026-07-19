@@ -12,7 +12,7 @@ import (
 // never lands in the buffer) go straight to GlobalState; unknown flows
 // divert into the [Buffer]. It satisfies the scraper's FlowSink seam.
 //
-// Ghost precedence over the UnresolvedBuffer (docs/DESIGN.md §3.3) is
+// Ghost precedence over the UnresolvedBuffer (docs/architecture/data-structures.md#lingering-ghost) is
 // exactly this Lookup-first ordering: a ghosted MAC is a hit, so Absorb
 // takes the GlobalState branch and never the buffer. The ordering is
 // pinned by a test that fails if the branches are inverted.

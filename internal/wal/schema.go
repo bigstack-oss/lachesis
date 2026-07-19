@@ -18,11 +18,11 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 //
 // History:
 //   - v1: global_state flow records only.
-//   - v2: adds the settled section (docs/DESIGN.md §3.5). Purely
+//   - v2: adds the settled section (docs/architecture/data-structures.md#settled-bytes). Purely
 //     additive — a v1 file is a valid v2 file with no settled buckets,
 //     so Load reads both without migration.
-//   - v3: adds external_network to settled buckets (docs/DESIGN.md
-//     §11.5). Purely additive — a v2 settled entry decodes with the
+//   - v3: adds external_network to settled buckets
+//     (docs/architecture/billing.md). Purely additive — a v2 settled entry decodes with the
 //     field absent, which Load maps to the metadata.NoExternalNetwork
 //     sentinel; a pre-external-network bucket IS a "none" bucket, so no
 //     migration is needed.

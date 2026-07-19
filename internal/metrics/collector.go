@@ -2,14 +2,14 @@
 // agent. Collect() holds the [state.GlobalState] RLock for the full
 // iteration — without it the Prometheus scrape would race the
 // scraper writer and the Go runtime would fatal on concurrent map
-// iteration. See docs/DESIGN.md §13.1.
+// iteration. See docs/architecture/contracts.md#required-contracts.
 //
 // # Why a custom Collector, not CounterVec
 //
 // CounterVec resets to zero on process restart. The agent restores
 // [state.GlobalState] from its WAL on boot; emitting from
 // GlobalState directly preserves cumulative continuity across
-// restarts so `rate()` does not go negative. See docs/DESIGN.md §C.7.
+// restarts so `rate()` does not go negative. See docs/adr/0007-custom-collector-over-countervec.md.
 //
 // # Per-flow vs per-label aggregation
 //
@@ -77,7 +77,7 @@ type Collector struct {
 	scrapeLastOKDesc *prometheus.Desc
 
 	// collectDuration times each Collect pass (snapshot + aggregate +
-	// emit). DESIGN §11 sizes the per-scrape cost by N_CPU and flow
+	// emit). docs/architecture/performance.md sizes the per-scrape cost by N_CPU and flow
 	// count (~5 ms at 32-core/10k flows up to 100+ ms at 128-core/50k);
 	// this histogram surfaces the actual cost per node so an
 	// outgrown scrape budget is visible before it stalls the
@@ -128,7 +128,7 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		),
 		serverBytesDesc: prometheus.NewDesc(
 			MetricServerBytesTotal,
-			"Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/DESIGN.md §11.5).",
+			"Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).",
 			[]string{"server_id", "tenant_id", "zone", "external_network", "direction"}, nil,
 		),
 		flowsDesc: prometheus.NewDesc(
@@ -138,7 +138,7 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		),
 		settledDesc: prometheus.NewDesc(
 			"lachesis_state_settled_tuples",
-			"Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/DESIGN.md §3.5).",
+			"Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/architecture/data-structures.md#settled-bytes).",
 			nil, nil,
 		),
 		scrapeErrorsDesc: prometheus.NewDesc(
@@ -182,8 +182,8 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 // The emitted value per (tenant, zone, direction) is live + settled:
 // live flows resolve their tenant at scrape time; settled buckets
 // carry the tenants of flows whose binding is gone (deleted VMs,
-// reassigned ports). The sum is what stays monotonic (docs/DESIGN.md
-// §3.5, §13.1 Contract 7).
+// reassigned ports). The sum is what stays monotonic
+// (docs/architecture/data-structures.md#settled-bytes, docs/architecture/contracts.md#required-contracts Contract 7).
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectMu.Lock()
 	defer c.collectMu.Unlock()
@@ -215,7 +215,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		c.aggBuf[k] = v
 		// The mortal per-server family aggregates LIVE rows only —
 		// settled buckets have deliberately dropped the server
-		// dimension (docs/DESIGN.md §11.5) — and only rows whose MAC
+		// dimension (docs/architecture/billing.md) — and only rows whose MAC
 		// resolves to a server: unattributable traffic has no
 		// server_id by definition.
 		if a.ServerID != "" {

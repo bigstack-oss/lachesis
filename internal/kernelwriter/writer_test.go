@@ -16,7 +16,7 @@ import (
 // failAt, when non-empty, makes the N-th update (1-indexed) return that
 // error so tests can exercise the partial-failure path; failDeleteAt
 // does the same for deletes. ops is the interleaved operation log the
-// delta tests use to assert the §5.7 upsert-before-delete ordering.
+// delta tests use to assert the docs/architecture/trie-construction.md#incremental-updates upsert-before-delete ordering.
 type fakeMap struct {
 	updates      []update
 	deletes      []any

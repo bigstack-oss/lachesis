@@ -29,7 +29,7 @@ import "strconv"
 // The zone code already encodes the *classification* (SAME / OTHER
 // / INFRA / EXTERNAL / SHARED) without referencing the specific
 // tenant identifier, which is what makes restart-merge work. See
-// docs/DESIGN.md §3.1 for the broader rationale.
+// docs/architecture/data-structures.md#kernel-side-bpf-maps for the broader rationale.
 type FlowKey = telemetryFlowKey
 
 // FlowMetrics is the Go-side mirror of the BPF flow_metrics map value.
@@ -57,14 +57,14 @@ type Direction = telemetryTcDirection
 // ownership inside a shared-network /24. Rather than guess SAME vs
 // OTHER for the trie-fallback path on shared networks, the
 // cold-start builder emits a distinct ZoneShared row; the billing
-// engine treats it as its own category. See docs/DESIGN.md §5.2
+// engine treats it as its own category. See docs/architecture/trie-construction.md#the-five-step-algorithm
 // Step 3.
 //
 // ZoneMulticast is assigned by the kernel classifier to any frame
 // whose destination MAC has the multicast/broadcast bit set (platform-
 // L2 chatter: mDNS, SSDP, DHCP broadcast). It is counted for
 // transparency but never billed, and is excluded from the revenue-leak
-// SLO — see docs/DESIGN.md §11.5.
+// SLO — see docs/architecture/billing.md.
 const (
 	ZoneExternal    = telemetryZoneCodeZONE_EXTERNAL
 	ZoneSameTenant  = telemetryZoneCodeZONE_SAME_TENANT
@@ -123,7 +123,7 @@ const (
 // NIC-conventional, not the raw hook names: the tap hooks are
 // host-side, so exporting "ingress"/"egress" would invert the
 // cloud-billing convention where egress means data leaving the VM
-// (see docs/DESIGN.md §11.4). Unknown values fall back to the numeric
+// (see docs/architecture/metrics.md). Unknown values fall back to the numeric
 // encoding. Returns constant strings for all known values — safe
 // inside the zero-allocation Collect() hot path.
 func (d Direction) String() string {
@@ -212,8 +212,8 @@ const (
 // Sizing rationale lives in bpf/telemetry.c above each map decl.
 //
 // MapTelemetryMaxEntries mirrors telemetry_map's max_entries. It is
-// the denominator for the pressure-relief GC fill-ratio (docs/DESIGN.md
-// §3.1), so a stale `.o` that changed it would skew the >80% eviction
+// the denominator for the pressure-relief GC fill-ratio
+// (docs/architecture/data-structures.md#kernel-side-bpf-maps), so a stale `.o` that changed it would skew the >80% eviction
 // trigger — hence it is drift-checked alongside the other two.
 //
 // MapTelemetryStatsMaxEntries mirrors STAT_REASON_MAX: one slot per

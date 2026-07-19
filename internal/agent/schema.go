@@ -78,7 +78,7 @@ const shutdownTimeout = 5 * time.Second
 
 // neutronBackoffInitial / neutronBackoffMax bound the exponential
 // backoff used while waiting for Neutron at cold-start.
-// docs/DESIGN.md §9 specifies "fail-closed" — the agent must not
+// docs/architecture/boot-and-recovery.md#boot-sequence specifies "fail-closed" — the agent must not
 // start without metadata — so the loop never times out on its own;
 // only ctx cancellation breaks it.
 const (

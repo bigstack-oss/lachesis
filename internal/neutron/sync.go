@@ -22,8 +22,8 @@ import (
 // Sync retains nothing — the returned [SyncResult] becomes visible
 // to the read accessors only when the caller hands it to
 // [Neutron.Commit]. The split exists because the kernel maps must
-// acknowledge the new state between the two calls (docs/DESIGN.md
-// §9 step 3): a fresh sync timestamp must never describe state the
+// acknowledge the new state between the two calls
+// (docs/architecture/boot-and-recovery.md#boot-sequence step 3): a fresh sync timestamp must never describe state the
 // kernel has not seen.
 //
 // Sync is single-shot; retry/backoff policy belongs to the caller
@@ -87,7 +87,7 @@ func (n *Neutron) fetchAll(ctx context.Context) (Snapshot, error) {
 	// lachesis_server_info family. Unlike the lists above it is
 	// non-fatal: a fetch failure records the API error, leaves
 	// Servers empty (info series absent), and lets the sync complete
-	// so the billing path is unaffected (docs/DESIGN.md §11.4).
+	// so the billing path is unaffected (docs/architecture/metrics.md).
 	if s.Servers, err = n.client.ListServers(ctx); err != nil {
 		n.metrics.RecordAPIError(endpointServers, err)
 		slog.Warn("list servers failed; lachesis_server_info absent until the next sync succeeds",

@@ -10,7 +10,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
-// Test tuning values mirror the config defaults (docs/DESIGN.md §3.1).
+// Test tuning values mirror the config defaults (docs/architecture/data-structures.md#kernel-side-bpf-maps).
 const (
 	testHigh = 0.80
 	testLow  = 0.75

@@ -12,7 +12,7 @@ import (
 const migrationNoiseBudget = 256 << 10
 
 // liveMigrationContinuity proves billing survives a live migration
-// (DESIGN §8 case 16): the source tap disappears (DELLINK), the
+// (docs/architecture/edge-cases.md case 16): the source tap disappears (DELLINK), the
 // destination tap appears (NEWLINK) and the agent there re-attaches —
 // and through all of it the tenant's series stays monotone, nothing
 // re-buckets to "unknown", and bytes driven AFTER the move are

@@ -9,7 +9,7 @@ import (
 // subnet behind a router whose external gateway is the real provider
 // external network; the VM egresses to a public IP, which misses every
 // specific trie prefix and matches the (T1, 0.0.0.0/0) → EXTERNAL
-// catchall (DESIGN §5.2 Step 1, scenarios_test.go Scenario D).
+// catchall (docs/architecture/trie-construction.md#the-five-step-algorithm Step 1, scenarios_test.go Scenario D).
 //
 // The DSL ExternalNetwork is a marker: realize binds the router's
 // external gateway to the configured provider external network
@@ -37,11 +37,11 @@ func vmToInternet() *scenariotest.Scenario {
 			// The same egress must carry the provider network's
 			// external_network label ("net-ext" resolves to the bound
 			// provider network, like TenantID → UUID) — pinning the
-			// zone-gated label live (DESIGN §11.4)...
+			// zone-gated label live (docs/architecture/metrics.md)...
 			{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
 				ExternalNetwork: "net-ext"},
 			// ...and the mortal per-server family must attribute it to
-			// the driving VM's Nova UUID on the same tuple (DESIGN §11.5).
+			// the driving VM's Nova UUID on the same tuple (docs/architecture/billing.md).
 			{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
 				ExternalNetwork: "net-ext", VM: "vm-a"},
 		},

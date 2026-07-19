@@ -88,7 +88,7 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics, neutronInfo *neutron.InfoCo
 // The drained key set IS the kernel map's current population
 // (read-don't-clear; only GC evicts), so len(dst) after a full
 // BatchLookup is the fill numerator the pressure-relief threshold
-// (docs/DESIGN.md §3.1, >80%) is defined against. Errors skip the
+// (docs/architecture/data-structures.md#kernel-side-bpf-maps, >80%) is defined against. Errors skip the
 // gauge update — a partial drain would understate fill.
 //
 // The same successful drain also reads the kernel telemetry_stats

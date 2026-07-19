@@ -48,7 +48,7 @@ func TestSweep_RefreshesMacGauge(t *testing.T) {
 // recordingEvictor mocks the kernel mac_tenant_map. It records each
 // deleted MAC and — crucially — checks at delete time that the
 // userspace entry still exists, so an inverted (userspace-first)
-// deletion order is caught (docs/DESIGN.md §3.4). MACs in failOn return
+// deletion order is caught (docs/architecture/data-structures.md#map-lifecycle-invariants). MACs in failOn return
 // an error to model a kernel delete that fails.
 type recordingEvictor struct {
 	meta              *metadata.ShardedMetadataMap
@@ -103,8 +103,8 @@ func (e *recordingFlowEvictor) DeleteFlowsForMACs(macs map[uint64]struct{}) (int
 // TestSweep_EvictsResidualFlowsBeforeUserspaceDelete locks the
 // known→unknown residual-flow fix: a swept MAC's telemetry_map flows are
 // evicted (for exactly the expired MACs) before the userspace entry is
-// dropped, so they can never be re-billed as "unknown" (docs/DESIGN.md
-// §3.3).
+// dropped, so they can never be re-billed as "unknown"
+// (docs/architecture/data-structures.md#lingering-ghost).
 func TestSweep_EvictsResidualFlowsBeforeUserspaceDelete(t *testing.T) {
 	meta := metadata.New()
 	now := time.Now()
@@ -145,7 +145,7 @@ func TestSweep_EvictsResidualFlowsBeforeUserspaceDelete(t *testing.T) {
 }
 
 // TestSweep_SettlesFlowsToTenantBeforeUserspaceDelete locks the
-// settled-bytes fold (docs/DESIGN.md §3.5): the swept MAC's GlobalState
+// settled-bytes fold (docs/architecture/data-structures.md#settled-bytes): the swept MAC's GlobalState
 // rows fold into the settled accumulator under the tenant its metadata
 // still resolves to — proving the fold runs before the userspace
 // delete, since afterwards the tenant would be unknowable — with the
@@ -238,7 +238,7 @@ func TestSweep_DeletesExpiredKernelFirst(t *testing.T) {
 	g.sweep(now)
 
 	if ev.sawUserspaceFirst {
-		t.Error("sweep deleted the userspace entry before the kernel entry (inverts DESIGN §3.4)")
+		t.Error("sweep deleted the userspace entry before the kernel entry (inverts docs/architecture/data-structures.md#map-lifecycle-invariants)")
 	}
 	if len(ev.deleted) != 1 || ev.deleted[0] != expired {
 		t.Errorf("kernel deletes = %#x, want exactly [%#x]", ev.deleted, expired)

@@ -11,7 +11,7 @@ import "time"
 // MAC. Once stored in a [ShardedMetadataMap] it must be treated as
 // immutable — see the package doc, invariant (1).
 //
-// docs/DESIGN.md §3.2 also enumerates a `VMName` field for log /
+// docs/architecture/data-structures.md#userspace-structures also enumerates a `VMName` field for log /
 // dashboard enrichment. It is omitted here until a consumer arrives
 // (likely a `/debug` endpoint), to keep the set of immutable fields
 // minimal.
@@ -22,7 +22,7 @@ type TenantMeta struct {
 	ProjectID string
 	// ServerID is the Neutron port's device_id — the Nova instance
 	// UUID for VM ports. Emitted as the `server_id` label on the
-	// per-server metric family (docs/DESIGN.md §11.5); empty when the
+	// per-server metric family (docs/architecture/billing.md); empty when the
 	// port carries no device binding.
 	ServerID string
 	// ExternalNetwork is the human-facing label of the external
@@ -35,10 +35,10 @@ type TenantMeta struct {
 	// IsAmphora marks an Octavia load-balancer Amphora port. The
 	// per-packet hot path branches on this flag to attribute LB
 	// traffic to the load-balancer owner rather than the admin
-	// project that owns the Amphora itself (docs/DESIGN.md §7).
+	// project that owns the Amphora itself (docs/architecture/scenarios.md).
 	IsAmphora bool
 	// DeleteAt is zero for live entries. The Lingering Ghost window
-	// (docs/DESIGN.md §3.3) sets it on a Neutron `port.deleted` /
+	// (docs/architecture/data-structures.md#lingering-ghost) sets it on a Neutron `port.deleted` /
 	// `subnet.deleted` event: MarkDelete callers use now + the live
 	// `gc.ghost_grace` tunable (default 60s — internal/tunables), and
 	// the GC drops the entry once `DeleteAt < now`.

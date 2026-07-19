@@ -163,7 +163,7 @@ func TestReconcileMACs_TenantChangeIsPointerReplace(t *testing.T) {
 	m2 := mac(t, "dd:00:00:00:00:02")
 	shared := &metadata.TenantMeta{ProjectID: "old"}
 	meta.Insert(m1, shared)
-	meta.Insert(m2, shared) // one VM, two ports → one shared pointer (DESIGN §3.2)
+	meta.Insert(m2, shared) // one VM, two ports → one shared pointer (docs/architecture/data-structures.md#userspace-structures)
 
 	captured, _ := meta.Lookup(m1) // a scrape holding the pointer
 
@@ -189,7 +189,7 @@ func TestReconcileMACs_TenantChangeIsPointerReplace(t *testing.T) {
 }
 
 // TestReconcileMACs_TenantChangeSettlesOldTenant locks the tenant-change
-// half of the settled-bytes fold (docs/DESIGN.md §3.5): re-pointing a
+// half of the settled-bytes fold (docs/architecture/data-structures.md#settled-bytes): re-pointing a
 // live MAC at a new tenant first settles the MAC's accumulated flows
 // under the OLD tenant, and — because the port's kernel counters keep
 // running — the rows survive with their delta watermark intact, so the

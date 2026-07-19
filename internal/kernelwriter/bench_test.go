@@ -47,7 +47,7 @@ func BenchmarkHotpath_LpmHit(b *testing.B) {
 //
 // Delta(LpmFallback - LpmHit) is the cost of the extra
 // bpf_map_lookup_elem on the sentinel rekey. Budget: <50 ns
-// (docs/DESIGN.md §11, per-packet cost).
+// (docs/architecture/performance.md, per-packet cost).
 func BenchmarkHotpath_LpmFallback(b *testing.B) {
 	runLookupBench(b, net.IPv4(8, 8, 8, 8))
 }

@@ -1,7 +1,7 @@
 // Package reconcile owns the periodic Neutron reconcile: a 5-minute
 // safety net that re-fetches the full OpenStack snapshot, diffs it
 // against the kernel trie, and applies only the rows that changed. It
-// is a Service in the package-anatomy sense (docs/DESIGN.md §13.4) —
+// is a Service in the package-anatomy sense (docs/development/conventions.md#package-anatomy) —
 // the [Reconciler] owns a long-running loop started by the agent's
 // worker table.
 //
@@ -12,9 +12,9 @@
 // unboundedly. This periodic reconcile bounds that drift: every
 // interval it does a full [MetadataSource.Sync] and applies the
 // difference as if Kafka had delivered it, so metadata staleness never
-// exceeds one interval regardless of Kafka availability (docs/DESIGN.md
-// §9). It shares the incremental write path — [kernelwriter.ApplyTrieDelta],
-// with its docs/DESIGN.md §5.7 insert-then-delete ordering — that the
+// exceeds one interval regardless of Kafka availability
+// (docs/architecture/boot-and-recovery.md#boot-sequence). It shares the incremental write path — [kernelwriter.ApplyTrieDelta],
+// with its docs/architecture/trie-construction.md#incremental-updates insert-then-delete ordering — that the
 // Kafka consumer will also use.
 //
 // # Scope
@@ -49,7 +49,7 @@ type MapGauge interface {
 }
 
 // FlowSettler folds userspace flow rows into the settled-bytes
-// accumulator (docs/DESIGN.md §3.5). The MAC reconcile calls it just
+// accumulator (docs/architecture/data-structures.md#settled-bytes). The MAC reconcile calls it just
 // before re-pointing a live MAC at a different attribution (tenant or
 // external network), so the bytes accumulated under the old attribution
 // settle there instead of re-binding wholesale to the new one at the
@@ -114,7 +114,7 @@ type Options struct {
 	Metrics  *Metrics
 	// Routers is the router-interface-MAC → external-network map the
 	// pass rebuilds and swaps (per-flow external attribution,
-	// docs/DESIGN.md §11.5). Optional (nil skips — trie-only unit
+	// docs/architecture/billing.md). Optional (nil skips — trie-only unit
 	// tests); the agent wires the store its Resolver reads.
 	Routers *metadata.RouterMACs
 	// BPFGauge refreshes the kernel map-fill gauges after each pass.

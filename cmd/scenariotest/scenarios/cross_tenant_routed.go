@@ -8,7 +8,7 @@ import (
 // crossTenantRouted exercises the other_tenant zone. T1 and T2 each
 // own a subnet and a router; the routers meet on an admin transit
 // subnet, and a static route on each carries traffic to the other
-// tenant's CIDR (DESIGN §5.2 Step 5, scenarios_test.go Scenario G).
+// tenant's CIDR (docs/architecture/trie-construction.md#the-five-step-algorithm Step 5, scenarios_test.go Scenario G).
 // The cold-start resolver walks T1's static route to T2's router,
 // finds T2 owns 10.50.0.0/24, and bakes (T1, 10.50.0.0/24) →
 // OTHER_TENANT (and symmetrically for T2). So vm-a (T1) → vm-b (T2)

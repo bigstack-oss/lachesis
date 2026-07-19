@@ -3,7 +3,7 @@ package kafka
 import "github.com/prometheus/client_golang/prometheus"
 
 // Metrics holds the Kafka consumer's Prometheus instruments
-// (docs/DESIGN.md §11.4):
+// (docs/architecture/metrics.md):
 //
 //   - lachesis_kafka_lag_messages{topic}          gauge
 //   - lachesis_kafka_consume_errors_total{topic}  counter

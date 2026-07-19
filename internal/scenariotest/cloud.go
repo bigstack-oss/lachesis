@@ -204,7 +204,7 @@ type FIPCreateSpec struct {
 	FloatingIP        string
 }
 
-// RouteSpec is one static route on a router (DESIGN §5.3 extraroute).
+// RouteSpec is one static route on a router (docs/architecture/trie-construction.md#the-static-route-resolver extraroute).
 type RouteSpec struct {
 	Destination string
 	Nexthop     string

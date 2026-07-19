@@ -304,8 +304,8 @@ func TestBuildTrie_MalformedCIDRSkipped(t *testing.T) {
 }
 
 // TestBuildTrie_Step5EmitsExtraroute asserts BuildTrie wires the
-// multi-hop static-route resolver (DESIGN §5.3) into Step 5 of
-// docs/DESIGN.md §5.2: a router's extraroute reaches the trie as
+// multi-hop static-route resolver (docs/architecture/trie-construction.md#the-static-route-resolver) into Step 5 of
+// docs/architecture/trie-construction.md#the-five-step-algorithm: a router's extraroute reaches the trie as
 // a (tenant, destination) entry with the zone the resolver picks.
 //
 // The setup is the minimal VM-appliance case: R1 (T1) has an

@@ -1,5 +1,5 @@
 // trie.go owns the trie builder: the 5-step algorithm of
-// docs/DESIGN.md §5.2 that turns a [Snapshot] into the [TrieEntry]
+// docs/architecture/trie-construction.md#the-five-step-algorithm that turns a [Snapshot] into the [TrieEntry]
 // rows destined for the kernel `subnet_zone_trie`. Each step is one
 // emit* method on [trieBuilder], executed in documented order by
 // [buildTrie]. The multi-hop static-route resolver Step 5 delegates
@@ -18,8 +18,8 @@ import (
 )
 
 // BuildTrie runs the cold-start 5-step algorithm of
-// docs/DESIGN.md §5.2 (Step 5 delegates to the multi-hop static-
-// route resolver of §5.3) and returns a flat slice of [TrieEntry]
+// docs/architecture/trie-construction.md#the-five-step-algorithm (Step 5 delegates to the multi-hop static-
+// route resolver of docs/architecture/trie-construction.md#the-static-route-resolver) and returns a flat slice of [TrieEntry]
 // in two shapes:
 //
 //   - Global rows (Steps 1, 3, 4): catchall, shared subnets,
@@ -28,7 +28,7 @@ import (
 //     [metadata.TenantIDUnset], the kernel sentinel u32 = 0).
 //     The kernel `lookup_zone` consults these rows on first-
 //     lookup miss using `tenant_id=0` as the fallback key — see
-//     `bpf/telemetry.c` and `docs/DESIGN.md` §3.1.
+//     `bpf/telemetry.c` and docs/architecture/data-structures.md#kernel-side-bpf-maps.
 //   - Per-tenant rows (Steps 2, 5): owned subnets and extraroutes
 //     emit one [TrieEntry] per (owning-tenant, prefix). These are
 //     the only entries that scale with tenant count, so total
@@ -40,7 +40,7 @@ import (
 // writing them would waste trie capacity.
 //
 // The second return aggregates every Step C ambiguity-after-scoping
-// incident encountered while resolving extraroutes (DESIGN §5.6).
+// incident encountered while resolving extraroutes (docs/architecture/trie-construction.md#ambiguity-after-scoping).
 // Callers running in strict mode (the default) refuse to start when
 // the slice is non-empty; callers running with
 // --unsafe-allow-ambiguous-routes log + accept the EXTERNAL
@@ -66,13 +66,13 @@ import (
 //     /24; the MAC-first hot path classifies L2 traffic
 //     correctly, and SHARED labels the L3-routed-fallback
 //     case honestly rather than guessing. See
-//     docs/DESIGN.md §5.2 Step 3.
+//     docs/architecture/trie-construction.md#the-five-step-algorithm Step 3.
 //  4. Infra:      router / DHCP / metadata port IPs + subnet gateway
 //     IPs + 169.254.169.254 → INFRA, emitted once with
 //     TenantID="".
 //  5. Extraroutes: for each router R owned by the tenant, walk
 //     every (destination, nexthop) entry in R.Routes through
-//     [resolveStaticRouteZone] (docs/DESIGN.md §5.3). The resolver
+//     [resolveStaticRouteZone] (docs/architecture/trie-construction.md#the-static-route-resolver). The resolver
 //     iterates router-interface peers until it lands on a directly-
 //     attached subnet or a compute:nova appliance, then classifies
 //     via [zoneFor]. Misconfig (Step A miss), cycle, MAX_HOPS
@@ -83,7 +83,7 @@ import (
 //
 // Subnets and fixed-IP entries with IPv6 addresses are skipped:
 // the kernel `subnet_zone_trie` is keyed on u32 IPv4. IPv6 zone
-// resolution is deferred (docs/DESIGN.md §13.2).
+// resolution is deferred (docs/architecture/contracts.md#deferred-work).
 //
 // # Error handling
 //
@@ -107,7 +107,7 @@ func BuildTrie(snap Snapshot) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
 // per-step durations observed on m's
 // `lachesis_neutron_builder_step_duration_seconds` histogram (m may
 // be nil — every [Metrics] helper no-ops on nil receivers). The body
-// is a literal transcription of the §5.2 step order; each step's
+// is a literal transcription of the docs/architecture/trie-construction.md#the-five-step-algorithm step order; each step's
 // logic lives on its [trieBuilder] emit* method.
 func buildTrie(snap Snapshot, m *Metrics) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
 	b := newTrieBuilder(snap, m)
@@ -238,7 +238,7 @@ func (b *trieBuilder) emitInfraPrefixes() {
 
 // emitExtraRoutes is Step 5: walk every (destination, nexthop) entry
 // on each tenant's routers through [resolveStaticRouteZone]
-// (docs/DESIGN.md §5.3) and emit one per-tenant row per route. The
+// (docs/architecture/trie-construction.md#the-static-route-resolver) and emit one per-tenant row per route. The
 // resolver traces router-interface peers until it lands on a
 // directly-attached subnet or a compute:nova appliance; its
 // ambiguity / cycle hits accumulate on the builder for the caller.
@@ -264,7 +264,7 @@ func (b *trieBuilder) emitExtraRoutes() {
 					continue
 				}
 				if !nh.Is4() {
-					continue // IPv6 nexthops deferred (DESIGN §13.2).
+					continue // IPv6 nexthops deferred (docs/architecture/contracts.md#deferred-work).
 				}
 				zone, ambHit, cycHit := b.ri.resolveStaticRouteZone(r, destination, nh)
 				b.entries = append(b.entries, TrieEntry{tenant, destination, zone})

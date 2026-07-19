@@ -16,7 +16,7 @@
 // wraparound guard treating current<lastRaw as a kernel-side reset
 // (kernel reboot or post-eviction re-creation). Total += delta;
 // LastEbpfRaw = current. See [GlobalState.ApplyDelta] and
-// docs/DESIGN.md §13.1.
+// docs/architecture/contracts.md#required-contracts.
 //
 // # Settled bytes
 //
@@ -28,7 +28,7 @@
 // per-(tenant, zone, direction) settled accumulator that the Collector
 // adds to its emission forever after. Settled buckets only grow; they
 // are what keeps a tenant's exposed series monotonic across VM churn
-// (docs/DESIGN.md §3.5, §13.1 Contract 7).
+// (docs/architecture/data-structures.md#settled-bytes, docs/architecture/contracts.md#required-contracts Contract 7).
 //
 // # Concurrency
 //
@@ -48,8 +48,8 @@ import (
 
 // GlobalState is the agent's authoritative flow-keyed counter store,
 // plus the settled-bytes accumulator that keeps a tenant's exposed
-// series monotonic after its flows stop resolving (docs/DESIGN.md
-// §3.5). See the package doc for invariants.
+// series monotonic after its flows stop resolving
+// (docs/architecture/data-structures.md#settled-bytes). See the package doc for invariants.
 //
 // Both maps live under the one mutex deliberately: [GlobalState.Settle]
 // moves value between them, and every reader (the Collector's combined
@@ -106,7 +106,7 @@ func (g *GlobalState) ApplyDelta(key bpf.FlowKey, raw bpf.FlowMetrics) {
 // Total grows by m's bytes/packets and tracks the max LastSeenNs. It is
 // the entry point for already-computed deltas — the UnresolvedBuffer
 // folds an expired flow's accumulated total into a synthetic
-// "unknown"-tenant key this way (docs/DESIGN.md §3.2). Unlike
+// "unknown"-tenant key this way (docs/architecture/data-structures.md#userspace-structures). Unlike
 // [GlobalState.ApplyDelta] it never reads or writes LastEbpfRaw, so a
 // key only ever touched by Add stays monotonic: its series can only
 // rise, so rate() never goes negative. Callers must not mix Add and
@@ -134,7 +134,7 @@ func (g *GlobalState) Add(key bpf.FlowKey, m bpf.FlowMetrics) {
 // [GlobalState.ApplyDelta] for this key then counts only bytes that
 // arrive after the hand-off (current − lastRaw), never re-counting what
 // total already captured. Omitting the LastEbpfRaw write-back is the
-// classic double-count documented in docs/DESIGN.md §3.2.
+// classic double-count documented in docs/architecture/data-structures.md#userspace-structures.
 //
 // First sight of the key is the expected case — a buffered flow is, by
 // the Classifier's known/unknown split, never simultaneously in
@@ -190,7 +190,7 @@ func AddDelta(total, lastRaw *uint64, current uint64) {
 // metadata, the reconciler just before it re-points a live MAC at a new
 // tenant or external network. The exposed per-tenant aggregate is
 // unchanged by the fold (value moves between the two maps inside one
-// critical section), which is exactly the §13.1 Contract 7 monotonicity
+// critical section), which is exactly the docs/architecture/contracts.md#required-contracts Contract 7 monotonicity
 // guarantee.
 func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int {
 	g.mu.Lock()
