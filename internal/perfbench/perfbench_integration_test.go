@@ -12,13 +12,14 @@ import (
 // perPacketCeilingNs is the absolute upper bound, in nanoseconds, on the
 // telemetry classifier's per-packet cost measured via BPF_PROG_TEST_RUN.
 //
-// Zero means uncalibrated: the gate records the measured cost and does not
-// fail, so the first CI run on the shared runner establishes a baseline
-// without reddening the build. Arm the gate by setting this to ~2–3× that
-// baseline — a generous bound that catches a doubling or tripling from a new
-// map lookup or classification branch in bpf/telemetry.c, deliberately not a
-// 10% drift detector. See docs/test-strategy.md.
-var perPacketCeilingNs int64
+// Calibrated from the first amd64 CI baseline of 135 ns/packet (DESIGN §11
+// target ~150). Set generously at ~2× to catch a gross regression — a new
+// map lookup or classification branch in bpf/telemetry.c that doubles or
+// triples the cost — while tolerating shared-runner noise. It is deliberately
+// not a 10% drift detector. A zero value would disarm the gate (record a
+// baseline and skip); see docs/test-strategy.md. Native x86 only: macOS /
+// Rosetta rounds the kernel clock toward 0.
+var perPacketCeilingNs int64 = 300
 
 // TestPerfbench_PerPacketCeiling fails the build when the classifier's
 // per-packet cost exceeds perPacketCeilingNs. It rides the integration job
