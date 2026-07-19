@@ -1663,7 +1663,7 @@ The tenant-family contract above is deliberately **aggregate** — `tenant_id ×
 
 ## 12. Demo Workflow [HISTORICAL — pre-Sprint 1 baseline]
 
-> This section describes the *demo* agent that existed prior to Sprint 1 (now replaced). Kept as a reference pattern for manual `iperf3` overhead measurement against the production classifier. The production performance number is captured by `cmd/perfbench` (see Sprint 0.5 / `docs/test-strategy.md`).
+> This section describes the *demo* agent that existed prior to Sprint 1 (now replaced). Kept as a reference pattern for manual `iperf3` overhead measurement against the production classifier. The production performance number is captured by the per-packet ceiling gate (`internal/perfbench`; see `docs/test-strategy.md`).
 
 The demo measures eBPF overhead by attaching/detaching the TC program around iperf3 runs.
 

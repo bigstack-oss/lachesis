@@ -1,8 +1,7 @@
-// Package perfbench measures the per-packet runtime of a BPF
-// classifier program via BPF_PROG_TEST_RUN. cmd/perfbench is the
-// CLI surface; this package owns the measurement + output formats
-// so it can also be driven from CI ingestion or future Go-side
-// benchmarks.
+// Package perfbench measures the per-packet runtime of the telemetry
+// classifier via BPF_PROG_TEST_RUN. It is driven by the per-packet
+// ceiling gate in the package's integration test; there is no
+// standalone binary.
 //
 // Linux + CAP_BPF are required at runtime (BPF_PROG_TEST_RUN is a
 // kernel syscall). The package itself is cross-platform — the
@@ -10,28 +9,28 @@
 package perfbench
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 
 	"github.com/cilium/ebpf/rlimit"
 
+	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit"
-	"github.com/bigstack-oss/lachesis/internal/testenv/bpfunit/fixtures"
 )
 
-// Run lifts the memlock rlimit, loads the noop fixture, and runs
-// cfg.Program through BPF_PROG_TEST_RUN cfg.Repeat times. Returns
-// the kernel-measured timing.
+// Run lifts the memlock rlimit, loads the telemetry classifier, and
+// runs cfg.Program through BPF_PROG_TEST_RUN cfg.Repeat times. Returns
+// the kernel-measured timing. The maps load empty, so every packet
+// takes the lookup-miss path — the measurement covers the parse plus
+// the full lookup chain, not the mac-hit fast path.
 func Run(cfg Config) (Result, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return Result{}, fmt.Errorf("rlimit: %w", err)
 	}
 
-	spec, err := fixtures.LoadNoop()
+	spec, err := bpf.LoadTelemetry()
 	if err != nil {
-		return Result{}, fmt.Errorf("load noop fixture: %w", err)
+		return Result{}, fmt.Errorf("load telemetry spec: %w", err)
 	}
 	drv, err := bpfunit.New(spec)
 	if err != nil {
@@ -58,44 +57,4 @@ func Run(cfg Config) (Result, error) {
 		TotalNs:   total.Nanoseconds(),
 		PerRunNs:  perRun.Nanoseconds(),
 	}, nil
-}
-
-// Emit writes r to w in the named format. Unknown formats return
-// an error rather than falling back to a default — CI parsers want
-// a hard signal.
-func Emit(w io.Writer, format string, r Result) error {
-	switch format {
-	case formatJSON:
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(r); err != nil {
-			return fmt.Errorf("encode: %w", err)
-		}
-		return nil
-	case formatHuman:
-		return writeHuman(w, r)
-	default:
-		return fmt.Errorf("bad output format %q (want human|json)", format)
-	}
-}
-
-// writeHuman writes r to w as a multi-line summary, including an
-// extrapolated packets-per-second figure when per-run latency is
-// measurable.
-func writeHuman(w io.Writer, r Result) error {
-	if _, err := fmt.Fprintf(w, "perfbench v0.1\n"); err != nil {
-		return err
-	}
-	fmt.Fprintf(w, "  program:     %s\n", r.Program)
-	fmt.Fprintf(w, "  frame size:  %d bytes\n", r.FrameSize)
-	fmt.Fprintf(w, "  repeat:      %d\n", r.Repeat)
-	fmt.Fprintf(w, "  total:       %d ns\n", r.TotalNs)
-	if r.PerRunNs > 0 {
-		fmt.Fprintf(w, "  per-run:     %d ns\n", r.PerRunNs)
-		fmt.Fprintf(w, "  packets/sec: %.0f (extrapolated)\n", 1e9/float64(r.PerRunNs))
-	} else {
-		fmt.Fprintf(w, "  per-run:     0 ns — kernel clock resolution exceeds program runtime.\n")
-		fmt.Fprintf(w, "               Increase Repeat (try 100_000_000) or run on native Linux.\n")
-	}
-	return nil
 }
