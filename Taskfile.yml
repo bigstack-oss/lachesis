@@ -80,6 +80,15 @@ tasks:
     desc: Enforce zero-allocation contract on BenchmarkHotpath_* benchmarks
     cmd: ./scripts/bench-gate.sh
 
+  bench-gate-integration:
+    desc: Enforce zero-allocation contract on integration-tagged
+      BenchmarkHotpath_* (kernel BPF_PROG_TEST_RUN benches) in privileged Docker
+    deps: [ generate ]
+    cmd: >
+      docker run --rm --platform linux/amd64 --privileged -u 0
+      -v "$(pwd)":/app -w /app -e GOWORK=off {{.BUILDER_IMAGE}}
+      ./scripts/bench-gate.sh integration
+
   loadtest:
     desc: Build the agent + loadtest binaries, then exercise the agent under
       sustained traffic and verify resource budgets (RSS, CPU). Extra args
