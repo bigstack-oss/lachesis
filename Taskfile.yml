@@ -90,11 +90,11 @@ tasks:
       - >
         docker run --rm --platform linux/amd64 -v "$(pwd)":/app -u
         {{.UID}}:{{.GID}} -e GOOS=linux -e GOARCH=amd64 -e GOWORK=off
-        {{.BUILDER_IMAGE}} go build -o {{.BUILD_DIR}}/agent ./cmd/agent
+        {{.BUILDER_IMAGE}} go build -buildvcs=false -o {{.BUILD_DIR}}/agent ./cmd/agent
       - >
         docker run --rm --platform linux/amd64 -v "$(pwd)":/app -u
         {{.UID}}:{{.GID}} -e GOOS=linux -e GOARCH=amd64 -e GOWORK=off
-        {{.BUILDER_IMAGE}} go build -o {{.BUILD_DIR}}/loadtest ./cmd/loadtest
+        {{.BUILDER_IMAGE}} go build -buildvcs=false -o {{.BUILD_DIR}}/loadtest ./cmd/loadtest
       - >
         docker run --rm --platform linux/amd64 --privileged -u 0
         -v "$(pwd)":/app -w /app {{.BUILDER_IMAGE}}
