@@ -104,41 +104,46 @@ func checkTarget(t *testing.T, root, source, absPath, fragment string, anchorCac
 	}
 }
 
-// TestCodeDocReferences walks every Go and C source file and validates each
-// repo-relative docs/... citation.
+// TestCodeDocReferences walks our own Go and C source trees and validates
+// each repo-relative docs/... citation. The walk is pinned to the source
+// roots we author — a whole-repo walk would sweep up vendored material like
+// the .include/ kernel headers task generate drops, whose comments mention
+// external documentation paths (e.g. docs/gcc/...) that look like citations
+// but aren't ours.
 func TestCodeDocReferences(t *testing.T) {
 	root := repoRoot(t)
 	ref := regexp.MustCompile(`docs/[A-Za-z0-9_./-]+\.(?:md|html)(?:#[A-Za-z0-9_-]+)?`)
 	anchorCache := map[string]map[string]bool{}
 	seen := 0
 
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if d.IsDir() {
-			if name == ".git" || name == ".claude" || name == "vendor" || name == "build" {
-				return filepath.SkipDir
+	for _, top := range []string{"internal", "cmd", "bpf"} {
+		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if strings.HasPrefix(d.Name(), ".") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if ext := filepath.Ext(d.Name()); ext != ".go" && ext != ".c" && ext != ".h" {
+				return nil
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for _, m := range ref.FindAllString(string(raw), -1) {
+				seen++
+				rel, frag := splitFragment(m)
+				checkTarget(t, root, path, filepath.Join(root, rel), frag, anchorCache)
 			}
 			return nil
-		}
-		if ext := filepath.Ext(name); ext != ".go" && ext != ".c" && ext != ".h" {
-			return nil
-		}
-		raw, err := os.ReadFile(path)
+		})
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		for _, m := range ref.FindAllString(string(raw), -1) {
-			seen++
-			rel, frag := splitFragment(m)
-			checkTarget(t, root, path, filepath.Join(root, rel), frag, anchorCache)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	if seen == 0 {
 		t.Fatal("no docs references found in any source file — the scanner is broken")
