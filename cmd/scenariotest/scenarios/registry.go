@@ -30,6 +30,10 @@ func All() []*scenariotest.Scenario {
 		crossHostSameTenant(),
 		liveMigrationContinuity(),
 		walRestartContinuity(),
+		liveMigrateRoundTrip(),
+		multiPortPartialDelete(),
+		portRecreateSameServer(),
+		interfaceDetachReattach(),
 	}
 }
 
