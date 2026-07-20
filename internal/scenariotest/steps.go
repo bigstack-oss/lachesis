@@ -17,6 +17,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -29,6 +31,11 @@ const (
 	DefaultSweepTimeout = 8 * time.Minute
 	// sweepPollInterval is the pause between [AwaitSweepStep] scrapes.
 	sweepPollInterval = 5 * time.Second
+	// DefaultAgentReadyTimeout bounds [RestartAgentStep]'s wait for the
+	// agent to answer /metrics and re-attach its taps after a restart.
+	DefaultAgentReadyTimeout = 90 * time.Second
+	// agentReadyPollInterval is the pause between readiness scrapes.
+	agentReadyPollInterval = 2 * time.Second
 )
 
 // Step is one instruction in a scripted scenario. Run performs the
@@ -63,8 +70,12 @@ type StepEnv struct {
 	Cloud      Cloud
 	Metrics    MetricsSource
 	Exec       VMExec
-	Log        *slog.Logger
-	SinkDelay  time.Duration
+	// AgentExec runs commands on the agent HOSTS (not the VMs) —
+	// [RestartAgentStep]'s SSH transport, built from
+	// [Config.AgentControl]. Nil unless a scenario restarts an agent.
+	AgentExec VMExec
+	Log       *slog.Logger
+	SinkDelay time.Duration
 	// MACLearnTimeout passes through to [DriveOptions.MACLearnTimeout];
 	// zero uses the default, tests set a small value.
 	MACLearnTimeout time.Duration
@@ -921,6 +932,198 @@ func (s SleepStep) Run(ctx context.Context, env *StepEnv) error {
 	case <-time.After(s.Duration):
 		return nil
 	}
+}
+
+// RestartAgentStep restarts the telemetry agent on one compute host
+// over SSH and waits for it to come back on /metrics with its taps
+// re-attached — the prerequisite behind WAL-restart continuity,
+// zombie-hunter verification, pressure-GC, and fault-injection
+// scenarios. It restarts the agent; the billing-continuity assertions
+// (monotone, no reset) are the scenario's own steps after it.
+//
+// With AltConfig set (a path already staged on the agent host) the
+// step copies it over the configured agent config before restarting,
+// bringing the agent back under different tunables; the original is
+// backed up to <config>.scenariotest.bak on the host. Restoring it is
+// the scenario's concern (a later RestartAgentStep, or teardown) —
+// deliberately not automatic, since a step has no post-hook.
+type RestartAgentStep struct {
+	// Node selects the agent: a placement slot ("node:0") or a literal
+	// agent host. Empty means the sole agent (errors if more than one).
+	Node string
+	// AltConfig is an optional agent-host path to install as the agent
+	// config before the restart.
+	AltConfig string
+	// Timeout overrides [AgentControlConfig.ReadyTimeout] for the
+	// post-restart readiness wait.
+	Timeout time.Duration
+}
+
+func (RestartAgentStep) Kind() string { return "restart-agent" }
+
+// requiredMetrics declares both families the readiness gate checks
+// ([requiredMetrics]), so the pre-create step-metric gate refuses up
+// front on an agent missing either — not just the one this step reads
+// for the tap baseline.
+func (RestartAgentStep) requiredMetrics() []string {
+	return []string{metricBytesTotal, metricAttachedInterfaces}
+}
+
+func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
+	if env.AgentExec == nil {
+		return fmt.Errorf("restart-agent: no agent-host SSH transport — set agent_control in the config")
+	}
+	ac := env.Config.AgentControl
+	if ac.KeyPath == "" || ac.User == "" {
+		return fmt.Errorf("restart-agent: agent_control.user and agent_control.key_path are required")
+	}
+	agent, err := agentForNode(env.Config, s.Node)
+	if err != nil {
+		return fmt.Errorf("restart-agent: %w", err)
+	}
+	unit := ac.Unit
+	if unit == "" {
+		unit = "lachesis-agent"
+	}
+	// The unit and any config paths are interpolated into an SSH command
+	// line; reject shell-unsafe values (operator/scenario-controlled, but
+	// a stray metacharacter would misexecute as root).
+	if err := shellSafe("agent_control.unit", unit); err != nil {
+		return fmt.Errorf("restart-agent: %w", err)
+	}
+
+	// Baseline THIS agent's tap count so readiness can wait for the
+	// re-attach (the boot zombie-hunt drops filters, then re-attaches).
+	base, err := env.Metrics.Scrape(ctx, agent.MetricsURL)
+	if err != nil {
+		return fmt.Errorf("restart-agent: baseline scrape %s: %w", agent.MetricsURL, err)
+	}
+
+	host := agent.sshHost()
+	// Restart evidence: the unit's MainPID before the restart. Readiness
+	// then requires a DIFFERENT, running PID — proof the process actually
+	// cycled, not that a level happens to match on the old one. Best
+	// effort: if the agent is down (or the read fails) oldPID is empty
+	// and any running new PID counts as evidence.
+	oldPID, _ := agentMainPID(ctx, env, host, unit)
+
+	if s.AltConfig != "" {
+		if ac.ConfigPath == "" {
+			return fmt.Errorf("restart-agent: AltConfig set but agent_control.config_path is empty")
+		}
+		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+			return fmt.Errorf("restart-agent: %w", err)
+		}
+		if err := shellSafe("AltConfig", s.AltConfig); err != nil {
+			return fmt.Errorf("restart-agent: %w", err)
+		}
+		swap := fmt.Sprintf("sudo cp -f %s %s.scenariotest.bak && sudo cp -f %s %s",
+			ac.ConfigPath, ac.ConfigPath, s.AltConfig, ac.ConfigPath)
+		if out, err := env.AgentExec.Run(ctx, host, swap); err != nil {
+			return fmt.Errorf("restart-agent: install alt config on %s: %w (output: %s)", host, err, out)
+		}
+		env.Log.Info("restart-agent: alt config installed", "host", host, "alt", s.AltConfig, "path", ac.ConfigPath)
+	}
+
+	if out, err := env.AgentExec.Run(ctx, host, "sudo systemctl restart "+unit); err != nil {
+		return fmt.Errorf("restart-agent: systemctl restart %s on %s: %w (output: %s)", unit, host, err, out)
+	}
+	env.Log.Info("restart-agent: restart issued", "host", host, "unit", unit, "old_pid", oldPID)
+
+	return s.awaitReady(ctx, env, agent, host, unit, oldPID, base.AttachedInterfaces)
+}
+
+// awaitReady blocks until the restart is confirmed AND the agent is
+// serving again: the unit reports a running MainPID different from
+// oldPID (the process cycled), and /metrics answers with the required
+// families and a tap count back at the pre-restart baseline (re-attach
+// complete). Fires an error on timeout.
+func (s RestartAgentStep) awaitReady(ctx context.Context, env *StepEnv, agent AgentConfig, host, unit, oldPID string, baseTaps float64) error {
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = env.Config.AgentControl.ReadyTimeout
+	}
+	if timeout <= 0 {
+		timeout = DefaultAgentReadyTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	restarted := false
+	for {
+		// First confirm the process cycled: a running MainPID (not 0/empty)
+		// that differs from the pre-restart one.
+		if !restarted {
+			pid, err := agentMainPID(ctx, env, host, unit)
+			if err == nil && pid != "" && pid != "0" && pid != oldPID {
+				restarted = true
+				env.Log.Info("restart-agent: process cycled", "host", host, "old_pid", oldPID, "new_pid", pid)
+			}
+		}
+		if restarted {
+			res, err := env.Metrics.Scrape(ctx, agent.MetricsURL)
+			if err == nil && requiredMetrics(res) == nil && res.AttachedInterfaces >= baseTaps {
+				env.Log.Info("restart-agent: ready", "host", host,
+					"attached", res.AttachedInterfaces, "baseline", baseTaps)
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if !restarted {
+				return fmt.Errorf("restart-agent: %s MainPID never changed from %q within %s — restart not confirmed: %w", unit, oldPID, timeout, ctx.Err())
+			}
+			return fmt.Errorf("restart-agent: %s not ready within %s: %w", agent.MetricsURL, timeout, ctx.Err())
+		case <-time.After(agentReadyPollInterval):
+		}
+	}
+}
+
+// agentMainPID reads the systemd MainPID of unit on host — the restart
+// evidence [RestartAgentStep] gates on. Returns the bare PID string
+// ("0" when the unit is stopped).
+func agentMainPID(ctx context.Context, env *StepEnv, host, unit string) (string, error) {
+	out, err := env.AgentExec.Run(ctx, host, "systemctl show -p MainPID "+unit)
+	if err != nil {
+		return "", err
+	}
+	// Output is "MainPID=<n>" (possibly with surrounding whitespace).
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "MainPID=")), nil
+}
+
+// shellSafe rejects a value with characters outside a conservative set
+// (alphanumerics and common path/unit punctuation), so config- and
+// scenario-supplied tokens interpolated into an SSH command line cannot
+// inject shell syntax. Real unit names and file paths use only these.
+func shellSafe(field, v string) error {
+	if v == "" || !shellSafeToken.MatchString(v) {
+		return fmt.Errorf("%s %q contains characters unsafe for a shell command", field, v)
+	}
+	return nil
+}
+
+var shellSafeToken = regexp.MustCompile(`^[A-Za-z0-9@%.:_/+-]+$`)
+
+// agentForNode resolves a RestartAgentStep's Node to its AgentConfig: a
+// placement slot or literal host, or the sole agent when Node is empty.
+func agentForNode(cfg Config, node string) (AgentConfig, error) {
+	if node == "" {
+		if len(cfg.Cluster.Agents) != 1 {
+			return AgentConfig{}, fmt.Errorf("node is required when the cluster has %d agents", len(cfg.Cluster.Agents))
+		}
+		return cfg.Cluster.Agents[0], nil
+	}
+	host, err := resolveNode(node, cfg.Cluster.Agents)
+	if err != nil {
+		return AgentConfig{}, err
+	}
+	for _, a := range cfg.Cluster.Agents {
+		if a.Host == host {
+			return a, nil
+		}
+	}
+	// resolveNode only returns a configured host, so this is a safety
+	// net, not a reachable path.
+	return AgentConfig{}, fmt.Errorf("resolved host %q has no agent entry", host)
 }
 
 // liveID resolves a DSL id to the live resource id recorded by

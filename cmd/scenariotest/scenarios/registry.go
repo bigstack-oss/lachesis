@@ -29,6 +29,7 @@ func All() []*scenariotest.Scenario {
 		multiExternalPath(),
 		crossHostSameTenant(),
 		liveMigrationContinuity(),
+		walRestartContinuity(),
 	}
 }
 

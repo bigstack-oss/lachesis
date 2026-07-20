@@ -70,7 +70,26 @@ func skipReason(sc *Scenario, cfg Config) string {
 	if req := RequiredNodes(sc); req > len(cfg.Cluster.Agents) {
 		return fmt.Sprintf("needs %d node(s) (placement slots); config lists %d agent(s)", req, len(cfg.Cluster.Agents))
 	}
+	// A scenario that restarts an agent can't run without agent-host SSH
+	// creds; that is a property of the environment (creds not staged),
+	// not a defect, so skip rather than fail — same rationale as the
+	// node-count skip above.
+	if needsAgentControl(sc) && cfg.AgentControl.KeyPath == "" {
+		return "restarts an agent but agent_control.key_path is unset"
+	}
 	return ""
+}
+
+// needsAgentControl reports whether any of sc's steps drives the agent
+// host over SSH (a [RestartAgentStep]), which requires agent_control
+// creds to be configured.
+func needsAgentControl(sc *Scenario) bool {
+	for _, st := range sc.Steps {
+		if _, ok := st.(RestartAgentStep); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveNode maps an [Expect.Node] target to the configured agent

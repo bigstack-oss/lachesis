@@ -33,7 +33,10 @@ type RunOptions struct {
 	Cloud      Cloud
 	Metrics    MetricsSource
 	Exec       VMExec
-	Log        *slog.Logger
+	// AgentExec is the agent-host SSH transport for [RestartAgentStep];
+	// nil is fine unless a scenario restarts an agent.
+	AgentExec VMExec
+	Log       *slog.Logger
 
 	// HardStop, when non-nil, aborts even the deferred teardown once
 	// cancelled — the CLI cancels it on a second interrupt. The run
@@ -180,6 +183,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 		Cloud:           opts.Cloud,
 		Metrics:         opts.Metrics,
 		Exec:            opts.Exec,
+		AgentExec:       opts.AgentExec,
 		Log:             opts.Log,
 		SinkDelay:       opts.SinkDelay,
 		MACLearnTimeout: opts.MACLearnTimeout,

@@ -2,6 +2,7 @@ package scenariotest
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -676,5 +677,203 @@ func TestSteps_MigrateErrors(t *testing.T) {
 	}
 	if len(rs.Migrations) != 0 {
 		t.Errorf("failed steps must record nothing: %+v", rs.Migrations)
+	}
+}
+
+// restartMetrics is a minimal agent /metrics. attached is the tap
+// count; when notReadyPolls > 0 the readiness scrapes (every call after
+// the pre-restart baseline, call #1) report one tap short for that many
+// polls before recovering — modelling the boot re-attach window.
+type restartMetrics struct {
+	instantMACs
+	attached      float64
+	notReadyPolls int
+	scrapes       int
+}
+
+func (m *restartMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+	m.scrapes++
+	a := m.attached
+	if m.scrapes >= 2 && m.scrapes <= 1+m.notReadyPolls {
+		a = m.attached - 1 // still re-attaching
+	}
+	return ScrapeResult{
+		Present: map[string]bool{
+			metricBytesTotal: true, metricAttachedInterfaces: true,
+			metricSettledFlows: true, metricServerBytesTotal: true,
+		},
+		AttachedInterfaces: a,
+	}, nil
+}
+
+// restartExec models the agent host: it records commands, reports the
+// unit's MainPID (bumping it once a restart is issued, so awaitReady's
+// PID-change evidence fires), and can be told to never cycle (the
+// restart-didn't-take case) or to fail a command matching failOn.
+type restartExec struct {
+	calls     []execCall
+	restarted bool
+	noCycle   bool   // MainPID never changes — restart did not take
+	failOn    string // a command substring that returns an error
+}
+
+func (e *restartExec) Run(_ context.Context, addr, command string) (string, error) {
+	e.calls = append(e.calls, execCall{addr, command})
+	if e.failOn != "" && strings.Contains(command, e.failOn) {
+		return "", fmt.Errorf("fake ssh: command failed: %s", command)
+	}
+	switch {
+	case strings.Contains(command, "systemctl restart"):
+		e.restarted = true
+		return "", nil
+	case strings.Contains(command, "MainPID"):
+		if e.restarted && !e.noCycle {
+			return "MainPID=2222\n", nil
+		}
+		return "MainPID=1111\n", nil
+	}
+	return "", nil
+}
+
+func (e *restartExec) has(substr string) bool {
+	for _, c := range e.calls {
+		if strings.Contains(c.command, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func restartEnv(t *testing.T, agents []AgentConfig, ac AgentControlConfig, exec VMExec, m MetricsSource) *StepEnv {
+	t.Helper()
+	cfg := testConfig()
+	cfg.Cluster.Agents = agents
+	cfg.AgentControl = ac
+	if m == nil {
+		m = &restartMetrics{attached: 5}
+	}
+	return &StepEnv{
+		Config:    cfg,
+		Scenario:  &Scenario{Name: "restart"},
+		State:     &RunState{RunID: "run1"},
+		StatePath: t.TempDir() + "/s.json",
+		Metrics:   m,
+		AgentExec: exec,
+		Log:       slog.New(slog.DiscardHandler),
+		Report:    &AssertReport{OK: true},
+	}
+}
+
+func TestSteps_RestartAgent(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://compute-0:9100/metrics", SSHHost: "10.0.0.10"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis-agent", ReadyTimeout: time.Second}
+	exec := &restartExec{}
+
+	if err := (RestartAgentStep{}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil)); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if !exec.has("systemctl restart lachesis-agent") {
+		t.Errorf("no restart command issued: %+v", exec.calls)
+	}
+	if !exec.has("MainPID") {
+		t.Errorf("no MainPID read (restart evidence) issued: %+v", exec.calls)
+	}
+	for _, c := range exec.calls {
+		if c.addr != "10.0.0.10" {
+			t.Errorf("SSHed to %q, want the agent's ssh_host 10.0.0.10", c.addr)
+		}
+	}
+}
+
+func TestSteps_RestartAgentAltConfig(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", ConfigPath: "/etc/lachesis/agent.yaml", ReadyTimeout: time.Second}
+	exec := &restartExec{}
+
+	if err := (RestartAgentStep{AltConfig: "/tmp/shrunk.yaml"}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil)); err != nil {
+		t.Fatalf("restart alt: %v", err)
+	}
+	if !exec.has("/etc/lachesis/agent.yaml.scenariotest.bak") || !exec.has("cp -f /tmp/shrunk.yaml /etc/lachesis/agent.yaml") {
+		t.Errorf("alt-config swap not issued (backup + copy): %+v", exec.calls)
+	}
+	if !exec.has("systemctl restart") {
+		t.Errorf("restart not issued after swap: %+v", exec.calls)
+	}
+
+	// AltConfig without a config_path is a usage error, before any SSH.
+	acNoPath := AgentControlConfig{User: "root", KeyPath: "/k", ReadyTimeout: time.Second}
+	exec2 := &restartExec{}
+	if err := (RestartAgentStep{AltConfig: "/tmp/x.yaml"}).Run(context.Background(), restartEnv(t, agents, acNoPath, exec2, nil)); err == nil {
+		t.Error("AltConfig with no config_path must error")
+	}
+	if exec2.has("systemctl restart") {
+		t.Error("must not restart when config is invalid")
+	}
+}
+
+// TestSteps_RestartAgentAwaitsReattach: the step must keep polling until
+// the taps have re-attached, not return on the boot re-attach dip.
+func TestSteps_RestartAgentAwaitsReattach(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", ReadyTimeout: 5 * time.Second}
+	m := &restartMetrics{attached: 5, notReadyPolls: 2} // two short polls, then recovered
+	if err := (RestartAgentStep{}).Run(context.Background(), restartEnv(t, agents, ac, &restartExec{}, m)); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if m.scrapes < 4 {
+		t.Errorf("expected several readiness polls awaiting re-attach, got %d scrapes", m.scrapes)
+	}
+}
+
+// TestSteps_RestartAgentTimeout: when the unit never cycles (MainPID
+// unchanged) the restart is not confirmed and the step times out with a
+// clear message, rather than passing on the still-running old process.
+func TestSteps_RestartAgentTimeout(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", ReadyTimeout: 150 * time.Millisecond}
+	exec := &restartExec{noCycle: true}
+	err := (RestartAgentStep{}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil))
+	if err == nil || !strings.Contains(err.Error(), "restart not confirmed") {
+		t.Fatalf("want a 'restart not confirmed' timeout, got %v", err)
+	}
+}
+
+func TestSteps_RestartAgentErrors(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", ReadyTimeout: time.Second}
+	twoAgents := []AgentConfig{agents[0], {Host: "compute-1", MetricsURL: "http://c1/m"}}
+
+	cases := map[string]struct {
+		agents  []AgentConfig
+		ac      AgentControlConfig
+		exec    VMExec
+		step    RestartAgentStep
+		wantErr string
+	}{
+		"no agent exec": {agents, ac, nil, RestartAgentStep{}, "no agent-host SSH transport"},
+		"missing creds": {agents, AgentControlConfig{ReadyTimeout: time.Second}, &restartExec{}, RestartAgentStep{}, "user and agent_control.key_path"},
+		"node needed":   {twoAgents, ac, &restartExec{}, RestartAgentStep{}, "node is required"},
+		"unknown host":  {agents, ac, &restartExec{}, RestartAgentStep{Node: "ghost"}, "not a configured agent host"},
+		"unsafe unit":   {agents, AgentControlConfig{User: "root", KeyPath: "/k", Unit: "agent; rm -rf /", ReadyTimeout: time.Second}, &restartExec{}, RestartAgentStep{}, "unsafe for a shell command"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := tc.step.Run(context.Background(), restartEnv(t, tc.agents, tc.ac, tc.exec, nil))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestSkip_AgentControlUnconfigured(t *testing.T) {
+	sc := &Scenario{Name: "r", Steps: []Step{RestartAgentStep{}}}
+	cfg := testConfig() // no agent_control creds
+	if r := skipReason(sc, cfg); r == "" {
+		t.Error("a restart scenario must SKIP when agent_control.key_path is unset")
+	}
+	cfg.AgentControl.KeyPath = "/k"
+	if r := skipReason(sc, cfg); r != "" {
+		t.Errorf("with creds set it must run, got skip %q", r)
 	}
 }
