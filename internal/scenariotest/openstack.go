@@ -9,6 +9,7 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/attachinterfaces"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/hypervisors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/keypairs"
@@ -511,6 +512,29 @@ func (o *OpenStack) LiveMigrateServer(ctx context.Context, projectID, serverID, 
 	}
 	if err := servers.LiveMigrate(ctx, sc.compute, serverID, opts).ExtractErr(); err != nil {
 		return fmt.Errorf("openstack: live-migrate server %s: %w", serverID, err)
+	}
+	return nil
+}
+
+func (o *OpenStack) AttachInterface(ctx context.Context, projectID, serverID, portID string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	opts := attachinterfaces.CreateOpts{PortID: portID}
+	if _, err := attachinterfaces.Create(ctx, sc.compute, serverID, opts).Extract(); err != nil {
+		return fmt.Errorf("openstack: attach port %s to server %s: %w", portID, serverID, err)
+	}
+	return nil
+}
+
+func (o *OpenStack) DetachInterface(ctx context.Context, projectID, serverID, portID string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := attachinterfaces.Delete(ctx, sc.compute, serverID, portID).ExtractErr(); err != nil {
+		return fmt.Errorf("openstack: detach port %s from server %s: %w", portID, serverID, err)
 	}
 	return nil
 }

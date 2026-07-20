@@ -88,6 +88,19 @@ type Cloud interface {
 	// [Cloud.WaitServerActive] for completion.
 	LiveMigrateServer(ctx context.Context, projectID, serverID, targetHost string) error
 
+	// --- server NIC hot-plug ([AttachPortStep] / [ReattachPortStep] /
+	// [DetachPortStep]) ---
+
+	// AttachInterface hot-plugs a pre-created, unbound port onto a
+	// running server (Nova os-interface attach). The kernel-side tap
+	// appears asynchronously — callers gate on the agents'
+	// attached-interfaces gauge, exactly like a boot.
+	AttachInterface(ctx context.Context, projectID, serverID, portID string) error
+	// DetachInterface unplugs a port from a server (Nova os-interface
+	// detach), leaving the port alive and unbound — reattachable or
+	// deletable by the caller.
+	DetachInterface(ctx context.Context, projectID, serverID, portID string) error
+
 	// --- teardown (every delete is 404-tolerant: removing the
 	// already-gone succeeds, so `down` re-runs converge) ---
 	//
