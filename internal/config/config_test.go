@@ -154,7 +154,7 @@ http:
 	if cfg.HTTP.Listen != ":9500" {
 		t.Errorf("HTTP.Listen = %q", cfg.HTTP.Listen)
 	}
-	if cfg.BPF.PinPath != "/sys/fs/bpf/telemetry" {
+	if cfg.BPF.PinPath != "/sys/fs/bpf/lachesis" {
 		t.Errorf("BPF.PinPath = %q, expected default", cfg.BPF.PinPath)
 	}
 	if cfg.Scrape.Interval != 10*time.Second {

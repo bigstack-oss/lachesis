@@ -1,4 +1,4 @@
-# CubeCOS Network Telemetry agent — example configuration.
+# Lachesis - example configuration
 #
 # Every key in this file is optional. The agent ships with a complete
 # set of built-in defaults (see internal/config/*.go); any key omitted
@@ -25,7 +25,7 @@ bpf:
   # Directory under /sys/fs/bpf for pinned maps and programs.
   # Must be absolute.
   # Env: LACHESIS_BPF_PIN_PATH   Flag: -bpf-pin-path
-  pin_path: "/sys/fs/bpf/telemetry"
+  pin_path: "/sys/fs/bpf/lachesis"
 
   # Interface-name prefixes the netlink subscriber treats as eligible
   # for telemetry attach. A new link matches when its name starts
