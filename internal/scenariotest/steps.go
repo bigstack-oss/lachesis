@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -85,11 +86,13 @@ type StepEnv struct {
 	Report *AssertReport
 
 	// captured is the per-tuple counter snapshot taken by the most
-	// recent [CaptureStep]; settledBase is the summed settled-flows
-	// counter at the same instant. Monotone/growth assertions and the
-	// sweep wait diff against them.
-	captured    map[tuple]float64
-	settledBase float64
+	// recent [CaptureStep]; capturedServers is the per-server family's
+	// counterpart; settledBase is the summed settled-flows counter at
+	// the same instant. Monotone/growth assertions and the sweep wait
+	// diff against them.
+	captured        map[tuple]float64
+	capturedServers map[serverTuple]float64
+	settledBase     float64
 	// macs records each deleted VM's MAC ([DeleteVMStep] captures it
 	// just before the delete) for a later BootVMStep's MACFrom.
 	macs map[string]string
@@ -212,8 +215,10 @@ func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
 		return err
 	}
 	env.captured = sumByTuple(snap.Bytes)
+	env.capturedServers = sumByServerTuple(snap.Servers)
 	env.settledBase = snap.SettledFlows
-	env.Log.Info("capture", "tuples", len(env.captured), "settled_flows", env.settledBase)
+	env.Log.Info("capture", "tuples", len(env.captured),
+		"server_tuples", len(env.capturedServers), "settled_flows", env.settledBase)
 	return nil
 }
 
@@ -530,6 +535,15 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 // + no-new-failures rule as realize, then refreshes the run-state's
 // attach record so a later DriveStep's recheck expects the new count.
 func (s BootVMStep) attachGate(ctx context.Context, env *StepEnv, baseline MetricsSnapshot) error {
+	return awaitAttachRise(ctx, env, baseline, "boot-vm")
+}
+
+// awaitAttachRise blocks until the agents' summed attached-interfaces
+// gauge rises one above baseline with no new attach failures, then
+// refreshes the run-state's attach record so a later DriveStep's
+// recheck expects the new count. Shared by every step that plugs one
+// new tap in ([BootVMStep], [AttachPortStep], [ReattachPortStep]).
+func awaitAttachRise(ctx context.Context, env *StepEnv, baseline MetricsSnapshot, kind string) error {
 	target := baseline.AttachedInterfaces + 1
 	ctx, cancel := context.WithTimeout(ctx, DefaultAttachTimeout)
 	defer cancel()
@@ -542,7 +556,7 @@ func (s BootVMStep) attachGate(ctx context.Context, env *StepEnv, baseline Metri
 			return fmt.Errorf("attach gate: %.0f new TC attach failure(s)", snap.AttachFailures-baseline.AttachFailures)
 		}
 		if snap.AttachedInterfaces >= target {
-			env.Log.Info("boot-vm: attach gate green", "attached", snap.AttachedInterfaces, "target", target)
+			env.Log.Info(kind+": attach gate green", "attached", snap.AttachedInterfaces, "target", target)
 			env.State.Attach = AttachRecord{Target: target, Failures: snap.AttachFailures}
 			return env.State.Save(env.StatePath)
 		}
@@ -1101,6 +1115,292 @@ func shellSafe(field, v string) error {
 	return nil
 }
 
+// AttachPortStep hot-plugs a second NIC onto a live VM: it creates a
+// fresh port on a DSL network (the NIC is deliberately NOT a DSL VM —
+// the DSL models one port per VM, and the whole point of a hot-plugged
+// NIC is that it shares the VM's server_id) and attaches it via Nova
+// os-interface. The port is recorded in the run-state under ID (with
+// its MAC, so the MAC-learn gate covers it) and gated on the same
+// attached-interfaces rise as a boot. Pair with [ConfigureNICStep] —
+// the guest does not configure a hot-plugged NIC by itself.
+type AttachPortStep struct {
+	VM string // DSL VM to plug into
+	// ID names the NIC's run-state ref (e.g. "vm-a-nic2") — the handle
+	// a later [DetachPortStep]/[ReattachPortStep] targets.
+	ID      string
+	Network string // DSL network the port lands on
+	Subnet  string // DSL subnet for the fixed IP
+	IP      string // fixed IP (must be free in the subnet)
+}
+
+func (AttachPortStep) Kind() string { return "attach-port" }
+
+func (s AttachPortStep) Run(ctx context.Context, env *StepEnv) error {
+	snap := env.Scenario.Builder.Build()
+	project := ""
+	for _, p := range snap.Ports {
+		if p.ID == s.VM {
+			project = p.ProjectID
+			break
+		}
+	}
+	if project == "" {
+		return fmt.Errorf("scenario declares no VM %q", s.VM)
+	}
+	proj, err := env.project(project)
+	if err != nil {
+		return err
+	}
+	serverID, ok := serverIDFor(env.State, s.VM)
+	if !ok {
+		return fmt.Errorf("run-state has no server for VM %q", s.VM)
+	}
+	netID := liveID(env.State.Networks, s.Network)
+	subnetID := liveID(env.State.Subnets, s.Subnet)
+	if netID == "" || subnetID == "" {
+		return fmt.Errorf("run-state has no live ids for %s/%s", s.Network, s.Subnet)
+	}
+	secGroupID, err := env.Cloud.FindSecGroup(ctx, env.Config.Prerequisites.SecGroupName)
+	if err != nil {
+		return err
+	}
+
+	baseline, err := env.scrape(ctx)
+	if err != nil {
+		return fmt.Errorf("attach baseline scrape: %w", err)
+	}
+
+	name := Mangle(env.Config.Naming.Prefix, env.State.RunID, s.ID)
+	portID, err := env.Cloud.CreatePort(ctx, proj.ID, PortSpec{
+		Name:       name,
+		NetworkID:  netID,
+		SubnetID:   subnetID,
+		FixedIP:    s.IP,
+		SecGroupID: secGroupID,
+	})
+	if err != nil {
+		return err
+	}
+	mac, err := env.Cloud.PortMAC(ctx, portID)
+	if err != nil {
+		return err
+	}
+	env.State.Ports = append(env.State.Ports, ResourceRef{DSLID: s.ID, ID: portID, Name: name, ProjectID: proj.ID, MAC: mac})
+	if err := env.State.Save(env.StatePath); err != nil {
+		return err
+	}
+	if err := env.Cloud.AttachInterface(ctx, proj.ID, serverID, portID); err != nil {
+		return err
+	}
+	env.Log.Info("attach-port: plugged", "vm", s.VM, "nic", s.ID, "port", portID, "mac", mac, "ip", s.IP)
+	return awaitAttachRise(ctx, env, baseline, "attach-port")
+}
+
+// ReattachPortStep plugs a previously-detached NIC (its port kept
+// alive by [DetachPortStep] with Delete false) back into its VM — the
+// same Neutron port, same MAC, new tap. Gated like any attach.
+type ReattachPortStep struct {
+	VM   string
+	Port string // the [AttachPortStep.ID] of the detached NIC
+}
+
+func (ReattachPortStep) Kind() string { return "reattach-port" }
+
+func (s ReattachPortStep) Run(ctx context.Context, env *StepEnv) error {
+	var ref ResourceRef
+	for _, p := range env.State.Ports {
+		if p.DSLID == s.Port {
+			ref = p
+			break
+		}
+	}
+	if ref.ID == "" {
+		return fmt.Errorf("run-state has no port %q", s.Port)
+	}
+	serverID, ok := serverIDFor(env.State, s.VM)
+	if !ok {
+		return fmt.Errorf("run-state has no server for VM %q", s.VM)
+	}
+	baseline, err := env.scrape(ctx)
+	if err != nil {
+		return fmt.Errorf("attach baseline scrape: %w", err)
+	}
+	if err := env.Cloud.AttachInterface(ctx, ref.ProjectID, serverID, ref.ID); err != nil {
+		return err
+	}
+	env.Log.Info("reattach-port: plugged", "vm", s.VM, "nic", s.Port, "port", ref.ID, "mac", ref.MAC)
+	return awaitAttachRise(ctx, env, baseline, "reattach-port")
+}
+
+// DetachPortStep unplugs a hot-plugged NIC (Nova os-interface detach)
+// and re-baselines the run-state's attach record — the tap
+// legitimately disappears, and the source agent racing its dying tap
+// may increment the failure counter (benign, same race as a live
+// migration's). With Delete set the port is then deleted outright:
+// the MAC leaves Neutron, the agent's ghost lifecycle takes over, and
+// the ref leaves the run-state (truthful-inventory rule, as
+// [DeleteVMStep]). Without Delete the port survives unbound for a
+// later [ReattachPortStep] — but reattach it before the next
+// DriveStep: after the ghost sweep its MAC is gone from the agents'
+// maps and the MAC-learn gate would wait on it forever.
+type DetachPortStep struct {
+	VM     string
+	Port   string // the [AttachPortStep.ID] of the NIC
+	Delete bool
+}
+
+func (DetachPortStep) Kind() string { return "detach-port" }
+
+func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
+	var ref ResourceRef
+	for _, p := range env.State.Ports {
+		if p.DSLID == s.Port {
+			ref = p
+			break
+		}
+	}
+	if ref.ID == "" {
+		return fmt.Errorf("run-state has no port %q", s.Port)
+	}
+	serverID, ok := serverIDFor(env.State, s.VM)
+	if !ok {
+		return fmt.Errorf("run-state has no server for VM %q", s.VM)
+	}
+	baseline, err := env.scrape(ctx)
+	if err != nil {
+		return fmt.Errorf("detach baseline scrape: %w", err)
+	}
+	if err := env.Cloud.DetachInterface(ctx, ref.ProjectID, serverID, ref.ID); err != nil {
+		return err
+	}
+
+	// Wait for the tap to actually drop, then re-baseline: the next
+	// drive's recheck must expect one tap fewer and must not read the
+	// dying-tap failure blip as taps lost since up.
+	waitCtx, cancel := context.WithTimeout(ctx, DefaultAttachTimeout)
+	defer cancel()
+	for {
+		snap, err := env.scrape(waitCtx)
+		if err != nil {
+			return fmt.Errorf("detach gate scrape: %w", err)
+		}
+		if snap.AttachedInterfaces <= baseline.AttachedInterfaces-1 {
+			env.State.Attach = AttachRecord{Target: snap.AttachedInterfaces, Failures: snap.AttachFailures}
+			if err := env.State.Save(env.StatePath); err != nil {
+				return err
+			}
+			env.Log.Info("detach-port: unplugged", "vm", s.VM, "nic", s.Port, "attached", snap.AttachedInterfaces)
+			break
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("detach gate: attached_interfaces still %.0f (want ≤ %.0f): %w",
+				snap.AttachedInterfaces, baseline.AttachedInterfaces-1, waitCtx.Err())
+		case <-time.After(attachPollInterval):
+		}
+	}
+
+	if !s.Delete {
+		return nil
+	}
+	if err := env.Cloud.DeletePort(ctx, ref.ProjectID, ref.ID); err != nil {
+		return err
+	}
+	kept := make([]ResourceRef, 0, len(env.State.Ports))
+	for _, p := range env.State.Ports {
+		if p.DSLID != s.Port {
+			kept = append(kept, p)
+		}
+	}
+	env.State.Ports = kept
+	if err := env.State.Save(env.StatePath); err != nil {
+		return err
+	}
+	env.Log.Info("detach-port: port deleted", "nic", s.Port, "mac", ref.MAC)
+	return nil
+}
+
+// ConfigureNICStep brings a hot-plugged NIC up inside the guest — the
+// platform attaches the port, but nothing configures the interface in
+// a cirros image. Same absolute-path + busybox-fallback spelling as
+// [AddRouteStep], over the VM's provider SSH FIP.
+type ConfigureNICStep struct {
+	VM   string
+	Dev  string // guest device, e.g. "eth1"
+	CIDR string // address to assign, e.g. "10.0.22.9/24"
+}
+
+func (ConfigureNICStep) Kind() string { return "configure-nic" }
+
+func (s ConfigureNICStep) Run(ctx context.Context, env *StepEnv) error {
+	fip := ""
+	for _, f := range env.State.FIPs {
+		if f.VMID == s.VM && f.Network == "" { // the provider SSH FIP
+			fip = f.Address
+		}
+	}
+	if fip == "" {
+		return fmt.Errorf("run-state has no SSH FIP for VM %q", s.VM)
+	}
+	ip, ipnet, err := net.ParseCIDR(s.CIDR)
+	if err != nil {
+		return fmt.Errorf("configure-nic %s: %w", s.CIDR, err)
+	}
+	mask := net.IP(ipnet.Mask).String()
+	cmd := fmt.Sprintf(
+		"sudo /sbin/ip addr add %s dev %s 2>/dev/null || sudo ifconfig %s %s netmask %s; sudo /sbin/ip link set %s up 2>/dev/null || sudo ifconfig %s up",
+		s.CIDR, s.Dev, s.Dev, ip, mask, s.Dev, s.Dev)
+	if out, err := env.Exec.Run(ctx, fip, cmd); err != nil {
+		return fmt.Errorf("configure-nic %s on %s: %w (output: %s)", s.Dev, s.VM, err, out)
+	}
+	env.Log.Info("configure-nic", "vm", s.VM, "dev", s.Dev, "cidr", s.CIDR)
+	return nil
+}
+
+// ServerMonotoneStep asserts every captured per-server tuple of VM is
+// still at or above its captured value — [MonotoneStep]'s counterpart
+// on the mortal lachesis_server_bytes_total family, and the live form
+// of the mortal-series monotonicity invariant (lachesis#226/#227): a
+// fold must never make a server's series observable below an earlier
+// observation. One row per tuple.
+type ServerMonotoneStep struct {
+	VM   string
+	Note string
+}
+
+func (ServerMonotoneStep) Kind() string { return "assert-server-monotone" }
+
+func (ServerMonotoneStep) requiredMetrics() []string { return []string{metricServerBytesTotal} }
+
+func (s ServerMonotoneStep) Run(ctx context.Context, env *StepEnv) error {
+	serverID, ok := serverIDFor(env.State, s.VM)
+	if !ok {
+		return fmt.Errorf("run-state has no server for VM %q", s.VM)
+	}
+	snap, err := env.scrape(ctx)
+	if err != nil {
+		return err
+	}
+	cur := sumByServerTuple(snap.Servers)
+	rows := 0
+	for k, base := range env.capturedServers {
+		if k.server != serverID {
+			continue
+		}
+		rows++
+		env.addRow(AssertRow{
+			Tenant: s.VM, VM: s.VM, ServerID: serverID,
+			Zone: k.zone, ExternalNetwork: k.ext, Direction: k.direction,
+			Baseline: base, Current: cur[k], Delta: cur[k] - base,
+			Pass: cur[k] >= base, Note: s.Note,
+		})
+	}
+	if rows == 0 {
+		return fmt.Errorf("assert-server-monotone: no captured server tuples for VM %q — capture after its traffic was driven", s.VM)
+	}
+	return nil
+}
+
 var shellSafeToken = regexp.MustCompile(`^[A-Za-z0-9@%.:_/+-]+$`)
 
 // agentForNode resolves a RestartAgentStep's Node to its AgentConfig: a
@@ -1124,6 +1424,35 @@ func agentForNode(cfg Config, node string) (AgentConfig, error) {
 	// resolveNode only returns a configured host, so this is a safety
 	// net, not a reachable path.
 	return AgentConfig{}, fmt.Errorf("resolved host %q has no agent entry", host)
+}
+
+// MaxSettledStep asserts the agents' settled-flows counter has grown
+// by at most Budget rows since the most recent [CaptureStep] — the
+// "nothing folded" gate. Budget 0 (the useful case) pins an operation
+// that must not settle anything: a live migration never removes the
+// port from the snapshot, so a fold across one is a defect, not noise
+// (lachesis#235).
+type MaxSettledStep struct {
+	Budget int64
+	Note   string
+}
+
+func (MaxSettledStep) Kind() string { return "assert-max-settled" }
+
+func (MaxSettledStep) requiredMetrics() []string { return []string{metricSettledFlows} }
+
+func (s MaxSettledStep) Run(ctx context.Context, env *StepEnv) error {
+	snap, err := env.scrape(ctx)
+	if err != nil {
+		return err
+	}
+	delta := snap.SettledFlows - env.settledBase
+	env.addRow(AssertRow{
+		Tenant: "settled-flows", Zone: "-", Direction: "-",
+		Baseline: env.settledBase, Current: snap.SettledFlows, Delta: delta,
+		Pass: delta <= float64(s.Budget), Note: s.Note,
+	})
+	return nil
 }
 
 // liveID resolves a DSL id to the live resource id recorded by

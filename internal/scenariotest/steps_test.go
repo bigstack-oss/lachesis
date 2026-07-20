@@ -877,3 +877,233 @@ func TestSkip_AgentControlUnconfigured(t *testing.T) {
 		t.Errorf("with creds set it must run, got skip %q", r)
 	}
 }
+
+// nicMetrics reports the attach gauge from the fake cloud's live
+// state: boots plus hot-plugged NICs, minus deleted servers — so the
+// attach/detach gates in the NIC lifecycle steps resolve instantly and
+// truthfully against what the step just did.
+type nicMetrics struct {
+	instantMACs
+	env   *fakeEnv
+	cloud *fakeCloud
+
+	servers []ServerSample
+	settled float64
+}
+
+func (m *nicMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+	deleted := 0
+	for k := range m.cloud.deleted {
+		if strings.HasPrefix(k, "server:") {
+			deleted++
+		}
+	}
+	return ScrapeResult{
+		Present: map[string]bool{
+			metricBytesTotal: true, metricAttachedInterfaces: true,
+			metricAttachFailures: true, metricSettledFlows: true,
+			metricServerBytesTotal: true,
+		},
+		AttachedInterfaces: m.env.baseAttached + float64(m.env.booted) + float64(len(m.cloud.hotAttached)) - float64(deleted),
+		AttachFailures:     m.env.failures,
+		SettledFlows:       m.settled,
+		Servers:            m.servers,
+	}, nil
+}
+
+// nicFixture is a live vm-a (booted through the fake cloud so the
+// server binding is real) with a second DSL network for hot-plugging.
+func nicFixture(t *testing.T) (*fakeCloud, *nicMetrics, *StepEnv) {
+	t.Helper()
+	b := scenario.New()
+	b.Network("net-a", "T1").Subnet("sub-a", "10.0.30.0/24", "10.0.30.1").VM("vm-a", "T1", "10.0.30.5")
+	b.Network("net-b", "T1").Subnet("sub-b", "10.0.31.0/24", "10.0.31.1")
+	sc := &Scenario{Name: "nic-lifecycle", Builder: b}
+
+	env := &fakeEnv{baseAttached: 3}
+	cloud := newFakeCloud(env)
+	bootPort, err := cloud.CreatePort(context.Background(), "uuid-t1", PortSpec{Name: "boot", NetworkID: "net-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvID, err := cloud.CreateServer(context.Background(), "uuid-t1", ServerSpec{Name: "vm-a", PortID: bootPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := &RunState{
+		RunID:    "run1",
+		Projects: map[string]ProjectRef{"T1": {Name: "T1", ID: "uuid-t1"}},
+		Networks: []ResourceRef{{DSLID: "net-b", ID: "net-2"}},
+		Subnets:  []ResourceRef{{DSLID: "sub-b", ID: "sub-2"}},
+		Servers:  []ResourceRef{{DSLID: "vm-a", ID: srvID, ProjectID: "uuid-t1"}},
+		FIPs:     []FIPRef{{VMID: "vm-a", Address: "203.0.113.9", ProjectID: "uuid-t1"}},
+	}
+	nm := &nicMetrics{env: env, cloud: cloud}
+	senv := &StepEnv{
+		Config: testConfig(), Scenario: sc, State: rs,
+		StatePath: t.TempDir() + "/s.json",
+		Cloud:     cloud, Metrics: nm, Exec: &fakeExec{},
+		Log:    slog.New(slog.DiscardHandler),
+		Report: &AssertReport{OK: true},
+	}
+	return cloud, nm, senv
+}
+
+func TestSteps_NICLifecycle(t *testing.T) {
+	cloud, _, senv := nicFixture(t)
+	ctx := context.Background()
+
+	// Attach: fresh port on net-b, recorded with MAC, gate target +1.
+	if err := (AttachPortStep{VM: "vm-a", ID: "vm-a-nic2", Network: "net-b", Subnet: "sub-b", IP: "10.0.31.9"}).Run(ctx, senv); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	nicID := liveID(senv.State.Ports, "vm-a-nic2")
+	if nicID == "" {
+		t.Fatal("attach recorded no nic ref")
+	}
+	var ref ResourceRef
+	for _, p := range senv.State.Ports {
+		if p.DSLID == "vm-a-nic2" {
+			ref = p
+		}
+	}
+	if ref.MAC == "" {
+		t.Error("nic ref carries no MAC — the MAC-learn gate would skip it")
+	}
+	if got, want := senv.State.Attach.Target, senv.Metrics.(*nicMetrics).env.baseAttached+1+1; got != want {
+		t.Errorf("attach gate target = %v, want %v", got, want)
+	}
+	if len(cloud.ifaceOps) != 1 || !strings.HasPrefix(cloud.ifaceOps[0], "attach:") {
+		t.Fatalf("ifaceOps = %v, want one attach", cloud.ifaceOps)
+	}
+
+	// A bound port must refuse deletion until detached.
+	if err := cloud.DeletePort(ctx, "uuid-t1", nicID); err == nil {
+		t.Error("DeletePort on an attached port must fail")
+	}
+
+	// Detach (keep the port): ref stays, attach record re-baselined down.
+	if err := (DetachPortStep{VM: "vm-a", Port: "vm-a-nic2"}).Run(ctx, senv); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if liveID(senv.State.Ports, "vm-a-nic2") == "" {
+		t.Error("detach without Delete must keep the ref")
+	}
+	if got, want := senv.State.Attach.Target, senv.Metrics.(*nicMetrics).env.baseAttached+1; got != want {
+		t.Errorf("post-detach attach target = %v, want %v", got, want)
+	}
+
+	// Reattach the same port, then detach+delete it.
+	if err := (ReattachPortStep{VM: "vm-a", Port: "vm-a-nic2"}).Run(ctx, senv); err != nil {
+		t.Fatalf("reattach: %v", err)
+	}
+	if err := (DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true}).Run(ctx, senv); err != nil {
+		t.Fatalf("detach+delete: %v", err)
+	}
+	if liveID(senv.State.Ports, "vm-a-nic2") != "" {
+		t.Error("detach with Delete must drop the ref (truthful inventory)")
+	}
+	if !cloud.deleted["port:"+nicID] {
+		t.Error("detach with Delete must delete the Neutron port")
+	}
+	if len(cloud.ifaceOps) != 4 {
+		t.Errorf("ifaceOps = %v, want attach/detach/attach/detach", cloud.ifaceOps)
+	}
+}
+
+func TestSteps_ConfigureNIC(t *testing.T) {
+	_, _, senv := nicFixture(t)
+	exec := senv.Exec.(*fakeExec)
+	if err := (ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.31.9/24"}).Run(context.Background(), senv); err != nil {
+		t.Fatalf("configure-nic: %v", err)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("exec calls = %d, want 1", len(exec.calls))
+	}
+	call := exec.calls[0]
+	if call.addr != "203.0.113.9" {
+		t.Errorf("configured over %s, want the SSH FIP", call.addr)
+	}
+	for _, want := range []string{"ip addr add 10.0.31.9/24 dev eth1", "netmask 255.255.255.0", "link set eth1 up"} {
+		if !strings.Contains(call.command, want) {
+			t.Errorf("command lacks %q: %s", want, call.command)
+		}
+	}
+	// Malformed CIDR fails before any SSH.
+	if err := (ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "not-a-cidr"}).Run(context.Background(), senv); err == nil {
+		t.Error("bad CIDR must error")
+	}
+}
+
+func TestSteps_ServerMonotone(t *testing.T) {
+	_, nm, senv := nicFixture(t)
+	ctx := context.Background()
+	srvID := senv.State.Servers[0].ID
+
+	nm.servers = []ServerSample{
+		{ServerID: srvID, Zone: "same_tenant", Direction: "tx", Value: 100},
+		{ServerID: srvID, Zone: "external", Direction: "tx", Value: 40},
+	}
+	if err := (CaptureStep{}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+
+	// One tuple dips (the partial-fold shape), one keeps growing.
+	nm.servers = []ServerSample{
+		{ServerID: srvID, Zone: "same_tenant", Direction: "tx", Value: 60},
+		{ServerID: srvID, Zone: "external", Direction: "tx", Value: 41},
+	}
+	if err := (ServerMonotoneStep{VM: "vm-a", Note: "dip"}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+	if senv.Report.OK {
+		t.Error("a dipped server tuple must fail the report")
+	}
+	var fails, passes int
+	for _, r := range senv.Report.Rows {
+		if r.Pass {
+			passes++
+		} else {
+			fails++
+			if r.Zone != "same_tenant" {
+				t.Errorf("failing row zone = %s, want same_tenant", r.Zone)
+			}
+		}
+	}
+	if fails != 1 || passes != 1 {
+		t.Errorf("rows = %d fail / %d pass, want 1/1", fails, passes)
+	}
+
+	// No captured tuples for the VM is a scenario bug, not a pass.
+	senv.capturedServers = map[serverTuple]float64{}
+	if err := (ServerMonotoneStep{VM: "vm-a"}).Run(ctx, senv); err == nil {
+		t.Error("no captured tuples must error")
+	}
+}
+
+func TestSteps_MaxSettled(t *testing.T) {
+	_, nm, senv := nicFixture(t)
+	ctx := context.Background()
+
+	nm.settled = 7
+	if err := (CaptureStep{}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unchanged counter passes a zero budget.
+	if err := (MaxSettledStep{Note: "none"}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+	if !senv.Report.OK {
+		t.Fatalf("no growth must pass: %+v", senv.Report.Rows)
+	}
+
+	// Any fold beyond budget fails.
+	nm.settled = 9
+	if err := (MaxSettledStep{Budget: 1, Note: "folded"}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+	if senv.Report.OK {
+		t.Error("growth beyond budget must fail the report")
+	}
+}

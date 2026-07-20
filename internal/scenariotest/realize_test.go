@@ -56,8 +56,13 @@ type fakeCloud struct {
 	serverProject    map[string]string   // id → project it booted in
 	serverPort       map[string]string   // id → primary port it sits on
 	serverExtraPorts map[string][]string // id → extra NIC ports (multi-homed VMs)
-	fips             []FIPCreateSpec
-	fipIDs           []string
+	// hotAttached models Nova os-interface state: port id → server id
+	// for ports hot-plugged after boot ([Cloud.AttachInterface]); a
+	// bound port refuses deletion exactly like a boot port.
+	hotAttached map[string]string
+	ifaceOps    []string // "attach:<srv>:<port>" / "detach:<srv>:<port>" in call order
+	fips        []FIPCreateSpec
+	fipIDs      []string
 
 	// reachability model (live IDs)
 	portSubnet    map[string]string          // port id → subnet id
@@ -104,7 +109,8 @@ func newFakeCloud(env *fakeEnv) *fakeCloud {
 		serverPort:       map[string]string{},
 		serverExtraPorts: map[string][]string{},
 		residualPorts:    map[string][]string{}, deleted: map[string]bool{},
-		serverHost: map[string]string{},
+		serverHost:  map[string]string{},
+		hotAttached: map[string]string{},
 	}
 }
 
@@ -342,7 +348,44 @@ func (c *fakeCloud) DeletePort(ctx context.Context, _, id string) error {
 			}
 		}
 	}
+	// A hot-plugged port is just as bound; it must be detached first.
+	if sid, ok := c.hotAttached[id]; ok && !c.deleted["server:"+sid] {
+		return fmt.Errorf("fake neutron: port %s in use by server %s (hot-attached)", id, sid)
+	}
 	return c.down(ctx, "port", id)
+}
+
+// AttachInterface mirrors Nova os-interface attach: the server and
+// port must exist and the port must be unbound.
+func (c *fakeCloud) AttachInterface(_ context.Context, _, serverID, portID string) error {
+	if _, ok := c.serverHost[serverID]; !ok || c.deleted["server:"+serverID] {
+		return fmt.Errorf("fake nova: no server %s", serverID)
+	}
+	if _, ok := c.portMAC[portID]; !ok || c.deleted["port:"+portID] {
+		return fmt.Errorf("fake nova: no port %s", portID)
+	}
+	if _, bound := c.hotAttached[portID]; bound {
+		return fmt.Errorf("fake nova: port %s already attached", portID)
+	}
+	for sid, pid := range c.serverPort {
+		if pid == portID && !c.deleted["server:"+sid] {
+			return fmt.Errorf("fake nova: port %s already attached (boot port of %s)", portID, sid)
+		}
+	}
+	c.hotAttached[portID] = serverID
+	c.ifaceOps = append(c.ifaceOps, "attach:"+serverID+":"+portID)
+	return nil
+}
+
+// DetachInterface mirrors Nova os-interface detach: the binding must
+// exist; the port survives, unbound.
+func (c *fakeCloud) DetachInterface(_ context.Context, _, serverID, portID string) error {
+	if c.hotAttached[portID] != serverID {
+		return fmt.Errorf("fake nova: port %s is not attached to server %s", portID, serverID)
+	}
+	delete(c.hotAttached, portID)
+	c.ifaceOps = append(c.ifaceOps, "detach:"+serverID+":"+portID)
+	return nil
 }
 
 // ClearRouterRoutes unpins only once the call itself succeeds: a
