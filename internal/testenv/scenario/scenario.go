@@ -23,6 +23,7 @@ package scenario
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bigstack-oss/lachesis/internal/neutron"
 )
@@ -36,6 +37,7 @@ type Builder struct {
 	routers  []neutron.Router
 
 	rifSeq int // sequence for auto-generated router_interface port IDs
+	nicSeq int // sequence for auto-generated extra-NIC port IDs
 }
 
 // New returns an empty scenario builder.
@@ -113,6 +115,41 @@ func (n *NetRef) VM(id, project, ip string) *NetRef {
 // default AZ's name.
 func (n *NetRef) VMInAZ(id, project, az, ip string) *NetRef {
 	return n.attachPort(id, project, "compute:"+az, id+"-instance", ip)
+}
+
+// NIC adds an additional compute:nova port to an already-declared VM
+// on subnetID, sharing the VM's server identity (the same DeviceID) so
+// realize boots ONE Nova server carrying every NIC. This is the
+// static, boot-time form of a multi-homed VM; the runtime form (plug a
+// NIC into a live VM) is the attach/detach step family. The VM must be
+// declared first — its primary port supplies the owning project and
+// device_owner. Returns the Builder for further top-level chaining.
+//
+// Cursorless by design: a NIC usually lands on a different network
+// than the VM's, so it references the target subnet by id (like
+// [RouterRef.Attach]) rather than riding a network cursor.
+func (b *Builder) NIC(vmID, subnetID, ip string) *Builder {
+	sub := b.findSubnet(subnetID)
+	var owner, project string
+	for _, p := range b.ports {
+		if p.ID == vmID && strings.HasPrefix(p.DeviceOwner, "compute:") {
+			owner, project = p.DeviceOwner, p.ProjectID
+			break
+		}
+	}
+	if owner == "" {
+		panic(fmt.Sprintf("scenario: NIC references unknown VM %q (declare it with VM() first)", vmID))
+	}
+	b.nicSeq++
+	b.ports = append(b.ports, neutron.Port{
+		ID:          fmt.Sprintf("%s-nic-%d", vmID, b.nicSeq),
+		NetworkID:   sub.NetworkID,
+		ProjectID:   project,
+		DeviceOwner: owner,
+		DeviceID:    vmID + "-instance",
+		FixedIPs:    []neutron.FixedIP{{SubnetID: subnetID, IPAddress: ip}},
+	})
+	return b
 }
 
 // Octavia adds an Octavia management port (device_owner="Octavia").

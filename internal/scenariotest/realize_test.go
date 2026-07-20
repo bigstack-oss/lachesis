@@ -52,11 +52,12 @@ type fakeCloud struct {
 	// live-server model: CreateServer records these so the residual
 	// sweep can list a project's servers by name and DeletePort can
 	// refuse a still-bound port (both keyed by server id).
-	serverName    map[string]string // id → mangled name
-	serverProject map[string]string // id → project it booted in
-	serverPort    map[string]string // id → port it sits on
-	fips          []FIPCreateSpec
-	fipIDs        []string
+	serverName       map[string]string   // id → mangled name
+	serverProject    map[string]string   // id → project it booted in
+	serverPort       map[string]string   // id → primary port it sits on
+	serverExtraPorts map[string][]string // id → extra NIC ports (multi-homed VMs)
+	fips             []FIPCreateSpec
+	fipIDs           []string
 
 	// reachability model (live IDs)
 	portSubnet    map[string]string          // port id → subnet id
@@ -100,8 +101,9 @@ func newFakeCloud(env *fakeEnv) *fakeCloud {
 		portName:    map[string]string{},
 		portProject: map[string]string{},
 		serverName:  map[string]string{}, serverProject: map[string]string{},
-		serverPort:    map[string]string{},
-		residualPorts: map[string][]string{}, deleted: map[string]bool{},
+		serverPort:       map[string]string{},
+		serverExtraPorts: map[string][]string{},
+		residualPorts:    map[string][]string{}, deleted: map[string]bool{},
 		serverHost: map[string]string{},
 	}
 }
@@ -204,7 +206,10 @@ func (c *fakeCloud) SetRouterRoutes(_ context.Context, _, routerID string, route
 // first hypervisor (a deterministic stand-in for the scheduler).
 func (c *fakeCloud) CreateServer(_ context.Context, proj string, spec ServerSpec) (string, error) {
 	c.servers = append(c.servers, spec)
-	c.env.booted++
+	// One tap per bound port: a single-NIC boot is +1 (unchanged); a
+	// multi-homed boot adds one per extra NIC, so the attach gauge the
+	// metrics fake derives from this matches the gate's per-tap target.
+	c.env.booted += 1 + len(spec.ExtraPortIDs)
 	id := c.id("srv")
 	c.serverIDs = append(c.serverIDs, id)
 	host := strings.TrimPrefix(spec.AvailabilityZone, "nova:")
@@ -218,6 +223,9 @@ func (c *fakeCloud) CreateServer(_ context.Context, proj string, spec ServerSpec
 	c.serverName[id] = spec.Name
 	c.serverProject[id] = proj
 	c.serverPort[id] = spec.PortID
+	// Extra NICs bind to this server too — a bound port refuses
+	// deletion until the server is gone, same as the primary.
+	c.serverExtraPorts[id] = append(c.serverExtraPorts[id], spec.ExtraPortIDs...)
 	return id, nil
 }
 func (c *fakeCloud) WaitServerActive(context.Context, string, string) error { return nil }
@@ -322,6 +330,16 @@ func (c *fakeCloud) DeletePort(ctx context.Context, _, id string) error {
 	for sid, pid := range c.serverPort {
 		if pid == id && !c.deleted["server:"+sid] {
 			return fmt.Errorf("fake neutron: port %s in use by server %s", id, sid)
+		}
+	}
+	for sid, extras := range c.serverExtraPorts {
+		if c.deleted["server:"+sid] {
+			continue
+		}
+		for _, pid := range extras {
+			if pid == id {
+				return fmt.Errorf("fake neutron: port %s in use by server %s (extra NIC)", id, sid)
+			}
 		}
 	}
 	return c.down(ctx, "port", id)
@@ -480,6 +498,110 @@ func TestRealize_SameTenant(t *testing.T) {
 	// Name mangling reaches the live resource names.
 	if cloud.nets[0].Name != "scenariotest-run1-net-T1" {
 		t.Errorf("network name not mangled: %q", cloud.nets[0].Name)
+	}
+}
+
+// multiNICScenario is a two-NIC VM (vm-a): a primary port on net-T1 and
+// an extra NIC on net-T1b, both under one server identity.
+func multiNICScenario() *Scenario {
+	b := scenario.New()
+	b.Network("net-T1", "T1").
+		Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
+		VM("vm-a", "T1", "10.0.1.5").
+		VM("vm-b", "T1", "10.0.1.6")
+	b.Network("net-T1b", "T1").
+		Subnet("sub-T1b", "10.0.2.0/24", "10.0.2.1")
+	b.NIC("vm-a", "sub-T1b", "10.0.2.9")
+	b.ExternalNetwork("net-ext", "admin")
+	b.Router("r-T1", "T1").
+		Attach("sub-T1", "10.0.1.1").
+		Attach("sub-T1b", "10.0.2.1").
+		ExternalGateway("net-ext")
+	return &Scenario{Name: "multi-nic", Builder: b}
+}
+
+func TestRealize_MultiNIC(t *testing.T) {
+	cloud, rs := realizeFixture(t, multiNICScenario())
+
+	// Two VMs, three VM ports (vm-a primary + vm-a NIC + vm-b), but only
+	// TWO servers — the extra NIC shares vm-a's server, not its own.
+	if len(cloud.servers) != 2 {
+		t.Fatalf("servers: got %d, want 2 (vm-a with 2 NICs is one server)", len(cloud.servers))
+	}
+	if len(cloud.ports) != 3 {
+		t.Errorf("VM ports: got %d, want 3 (vm-a primary + vm-a nic + vm-b)", len(cloud.ports))
+	}
+	// vm-a's boot carries the extra NIC; vm-b's does not.
+	var vmA ServerSpec
+	extraCounts := map[int]int{}
+	for _, s := range cloud.servers {
+		extraCounts[len(s.ExtraPortIDs)]++
+		if len(s.ExtraPortIDs) == 1 {
+			vmA = s
+		}
+	}
+	if extraCounts[1] != 1 || extraCounts[0] != 1 {
+		t.Fatalf("want exactly one 2-NIC server and one 1-NIC server, got extra-port counts %v", extraCounts)
+	}
+	if vmA.PortID == "" || vmA.PortID == vmA.ExtraPortIDs[0] {
+		t.Errorf("multi-NIC server must have a distinct primary and extra port: %+v", vmA)
+	}
+	// One FIP per SERVER (on the primary), not per port.
+	if len(cloud.fips) != 2 {
+		t.Errorf("fips: got %d, want 2 (one per server, on the primary NIC)", len(cloud.fips))
+	}
+	// Attach gate counts taps (3), not servers: baseline 5 + 3.
+	if rs.Attach.Target != 8 {
+		t.Errorf("attach record target = %v, want 8 (5 baseline + 3 taps)", rs.Attach.Target)
+	}
+	// All three VM ports are recorded, and the extra NIC's ref carries a
+	// MAC (so the MAC-learn gate covers it) and shares vm-a's project.
+	vmPortRefs := 0
+	for _, p := range rs.Ports {
+		if p.RouterInterface {
+			continue
+		}
+		vmPortRefs++
+		if p.MAC == "" {
+			t.Errorf("VM port ref %q carries no MAC", p.DSLID)
+		}
+	}
+	if vmPortRefs != 3 {
+		t.Errorf("VM port refs in run-state: got %d, want 3", vmPortRefs)
+	}
+	// serverIDFor resolves vm-a to its one server across both NICs.
+	if _, ok := serverIDFor(rs, "vm-a"); !ok {
+		t.Error("serverIDFor(vm-a) not resolvable")
+	}
+}
+
+// TestRealize_DeferredMultiNICRejected: a Deferred VM with an extra NIC
+// must fail at realize — BootVMStep boots only the primary port, so the
+// extra would vanish silently.
+func TestRealize_DeferredMultiNICRejected(t *testing.T) {
+	b := scenario.New()
+	b.Network("net-T1", "T1").
+		Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
+		VM("vm-a", "T1", "10.0.1.5").
+		VM("vm-d", "T1", "10.0.1.9")
+	b.Network("net-T1b", "T1").Subnet("sub-T1b", "10.0.2.0/24", "10.0.2.1")
+	b.NIC("vm-d", "sub-T1b", "10.0.2.9") // extra NIC on the deferred VM
+	b.ExternalNetwork("net-ext", "admin")
+	b.Router("r-T1", "T1").Attach("sub-T1", "10.0.1.1").Attach("sub-T1b", "10.0.2.1").ExternalGateway("net-ext")
+	sc := &Scenario{Name: "deferred-multinic", Builder: b, Deferred: []string{"vm-d"}}
+
+	env := &fakeEnv{baseAttached: 5}
+	_, err := Realize(context.Background(), RealizeOptions{
+		Config:    testConfig(),
+		Scenario:  sc,
+		RunID:     "run1",
+		StatePath: t.TempDir() + "/state.json",
+		Cloud:     newFakeCloud(env),
+		Metrics:   &fakeMetrics{env: env},
+		Log:       slog.New(slog.DiscardHandler),
+	})
+	if err == nil || !strings.Contains(err.Error(), "single-NIC") {
+		t.Fatalf("want a deferred-multi-NIC rejection, got %v", err)
 	}
 }
 
