@@ -40,7 +40,7 @@ type BPFConfig struct {
 
 func bpfDefaults() BPFConfig {
 	return BPFConfig{
-		PinPath:        "/sys/fs/bpf/telemetry",
+		PinPath:        "/sys/fs/bpf/lachesis",
 		AttachPrefixes: []string{"tap"},
 		// Explicit empty (not nil) so the shipped example YAML, which
 		// lists `attach_interfaces: []`, round-trips equal to Defaults
