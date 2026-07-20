@@ -13,6 +13,10 @@ survives each kind of crash.
 
 2. Load eBPF objects
    → including subnet_zone_trie and mac_tenant_map specs
+   → the counter-bearing maps (telemetry_map, telemetry_stats) are
+     pinned under bpf.pin_path and reused when a compatible pin
+     survives (agent-crash zero-loss recovery below); the metadata
+     maps are rebuilt by cold-start, so they are not pinned
 
 3. Cold-start metadata via Neutron API
    → populate ShardedMetadataMap
@@ -95,13 +99,15 @@ are separate goroutines. This is [Contract 4](./contracts.md#required-contracts)
 
 ### Agent crash (process killed, kernel intact)
 
-**Designed (requires map pinning — [deferred item 7](./contracts.md#deferred-work)):**
-- Kernel map pinned under `bpf.pin_path` → survives the process.
-- New agent reads the [WAL](./primer.md#write-ahead-log) → restores GlobalState (cumulative counters and the settled-bytes accumulator).
-- BatchLookup reads the surviving kernel map → merges since last WAL checkpoint.
+**Zero-loss (map pinning, implemented):**
+- The counter-bearing maps (`telemetry_map`, `telemetry_stats`) are pinned under `bpf.pin_path` → they survive the process. The two metadata maps are deliberately *not* pinned; cold-start (step 3) rebuilds them before attach, so pinning them would buy no billing continuity.
+- Across the crash gap the orphaned TC filters keep the old program counting into the pinned `telemetry_map`; the boot-time Zombie Hunter (step 1) then detaches them, but the bpffs pin holds the map alive independently of any filter/program refcount — so hunt-then-reuse cannot destroy it, and the two steps need no ordering constraint between them.
+- The new agent reuses the pinned maps, reads the [WAL](./primer.md#write-ahead-log) → restores GlobalState (cumulative counters and the settled-bytes accumulator), and the first BatchLookup merges the surviving kernel counters against the WAL-restored `LastEbpfRaw` (`current ≥ lastRaw`, so the delta is exact).
 - **Net data loss: 0.**
 
-**Implemented today (no pinning):** the orphaned TC filters do keep the old program + maps alive across the crash, but a restarted agent cannot reach an unpinned map — and the boot-time Zombie Hunter (step 1) deletes those filters, dropping the last references. The old counters are gone; the agent loads a fresh collection and recovers from the WAL exactly like the hard-reboot path below (the `current < lastRaw` delta guard absorbs the empty map). **Net data loss today: ≤60s (the WAL flush window).** Pinning upgrades this to zero; until it lands, agent crash and hard reboot share one recovery path.
+**Stale pin after a map-ABI change:** a pinned map whose sizing/type no longer matches the current build is never adopted (`MapSpec.Compatible` rejects it) — it is removed and recreated fresh, self-healing across the bump. That boot's crash recovery is skipped, but classification stays correct.
+
+**Fallback (unpinned):** if pinning cannot be established — e.g. `bpf.pin_path` is not on a mounted bpf filesystem — the agent **refuses to boot** unless `bpf.unsafe_allow_unpinned_maps=true`, in which case it loads fresh unpinned maps and recovers from the WAL exactly like the hard-reboot path below (the `current < lastRaw` delta guard absorbs the empty map). **Net data loss then: ≤60s (the WAL flush window)** — agent crash and hard reboot share one recovery path. The `lachesis_bpf_maps_pinned` gauge (1 = pinned/zero-loss, 0 = unpinned/degraded) surfaces which path is live.
 
 ### Hard reboot (kernel destroyed)
 

@@ -108,6 +108,41 @@ logging:
 	}
 }
 
+// TestReload_WarnsOnUnpinnedToggleChange: bpf.unsafe_allow_unpinned_maps
+// is a load-time sibling of bpf.pin_path (pinning is a one-shot boot
+// action), so flipping it on SIGHUP warns rather than taking effect.
+func TestReload_WarnsOnUnpinnedToggleChange(t *testing.T) {
+	var buf bytes.Buffer
+	path, initial := setup(t, "info")
+	logHandle, _ := logging.Init(initial.Logging, &buf)
+	mgr := runtime.New(path, initial, logHandle)
+
+	// Only bpf.unsafe_allow_unpinned_maps differs from the initial YAML.
+	updated := `
+version: "1"
+http:
+  listen: ":9090"
+bpf:
+  pin_path: /sys/fs/bpf/telemetry
+  unsafe_allow_unpinned_maps: true
+scrape:
+  interval: 10s
+logging:
+  level: info
+  format: json
+`
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	if err := mgr.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !strings.Contains(buf.String(), "load-time field change ignored") ||
+		!strings.Contains(buf.String(), "bpf.unsafe_allow_unpinned_maps") {
+		t.Errorf("expected a load-time warning naming bpf.unsafe_allow_unpinned_maps, got: %s", buf.String())
+	}
+}
+
 func TestDebugHandler_GetConfig(t *testing.T) {
 	path, initial := setup(t, "info")
 	logHandle, _ := logging.Init(initial.Logging, &bytes.Buffer{})

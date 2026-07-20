@@ -374,6 +374,40 @@ func TestLoadAttachAllowlistFromEnvAndFlags(t *testing.T) {
 	}
 }
 
+func TestLoadUnsafeAllowUnpinnedMaps(t *testing.T) {
+	clearEnv(t)
+	// Default is strict (false).
+	cfg, err := config.Load(config.Options{}, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BPF.UnsafeAllowUnpinnedMaps {
+		t.Errorf("default UnsafeAllowUnpinnedMaps = true, want false (strict)")
+	}
+
+	// Env sets it true (accepts YAML-style "yes" like the other bools).
+	clearEnv(t)
+	t.Setenv("LACHESIS_BPF_UNSAFE_ALLOW_UNPINNED_MAPS", "true")
+	cfg, err = config.Load(config.Options{}, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.BPF.UnsafeAllowUnpinnedMaps {
+		t.Errorf("env-set UnsafeAllowUnpinnedMaps = false, want true")
+	}
+
+	// Flag wins over env.
+	clearEnv(t)
+	t.Setenv("LACHESIS_BPF_UNSAFE_ALLOW_UNPINNED_MAPS", "false")
+	cfg, err = config.Load(config.Options{}, []string{"-unsafe-allow-unpinned-maps"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.BPF.UnsafeAllowUnpinnedMaps {
+		t.Errorf("flag should win: UnsafeAllowUnpinnedMaps = false, want true")
+	}
+}
+
 // clearEnv removes any LACHESIS_* env vars set by the host or earlier tests
 // so each test sees a clean slate.
 func clearEnv(t *testing.T) {
@@ -384,6 +418,7 @@ func clearEnv(t *testing.T) {
 		"LACHESIS_BPF_PIN_PATH",
 		"LACHESIS_BPF_ATTACH_PREFIXES",
 		"LACHESIS_BPF_ATTACH_INTERFACES",
+		"LACHESIS_BPF_UNSAFE_ALLOW_UNPINNED_MAPS",
 		"LACHESIS_SCRAPE_INTERVAL",
 		"LACHESIS_LOG_LEVEL",
 		"LACHESIS_LOG_FORMAT",

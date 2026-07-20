@@ -38,6 +38,16 @@ bpf:
   # that does not match any prefix. Empty by default.
   attach_interfaces: []
 
+  # When true, boot continues with UNPINNED maps if pinning cannot be
+  # established under pin_path (e.g. /sys/fs/bpf is not mounted as a
+  # bpf filesystem). Agent-crash recovery then degrades from zero-loss
+  # to the ≤60s WAL-bounded path. The default (false) is strict: if
+  # pinning fails the agent refuses to start. This never adopts an
+  # incompatible (wrong-sized) pin — a stale pin is recreated fresh.
+  # Env: LACHESIS_BPF_UNSAFE_ALLOW_UNPINNED_MAPS
+  # Flag: -unsafe-allow-unpinned-maps
+  unsafe_allow_unpinned_maps: false
+
 scrape:
   # Cadence at which the scraper drains the BPF map and applies
   # deltas to GlobalState. Minimum 1s.

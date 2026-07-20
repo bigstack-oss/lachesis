@@ -12,10 +12,11 @@ that keep attribution correct while metadata churns.
 ```
 Type:        BPF_MAP_TYPE_PERCPU_HASH    ← see primer, PERCPU_HASH
 Max entries: 65,536  (compile-time constant, internal/bpf/schema.go)
-Pinning:     none yet — map lifetime is tied to the loaded collection
-             and the attached TC filters; pinning under bpf.pin_path
-             for zero-loss agent-crash recovery is deferred
-             (contracts.md, deferred item 7)
+Pinning:     PinByName under bpf.pin_path — the counter-bearing maps
+             (telemetry_map, telemetry_stats) are pinned so they survive
+             an agent crash and a restarted agent reuses them for
+             zero-loss recovery (contracts.md, deferred item 7 — shipped;
+             boot-and-recovery.md#agent-crash-process-killed-kernel-intact)
 
 KEY:   struct flow_key  (16 bytes, packed)
    ┌──────────────────────────────────────────────────────────────────┐
