@@ -181,15 +181,20 @@ type PortSpec struct {
 	MACAddress string
 }
 
-// ServerSpec describes a Nova boot on a pre-created port.
+// ServerSpec describes a Nova boot on one or more pre-created ports.
 // AvailabilityZone carries the optional "nova:<host>" host pin.
 // There is no security-group field: the port already carries it, and
 // Nova ignores boot-time secgroups for pre-existing ports.
 type ServerSpec struct {
-	Name             string
-	FlavorID         string
-	ImageID          string
-	PortID           string
+	Name     string
+	FlavorID string
+	ImageID  string
+	// PortID is the primary NIC (eth0), the one a FIP fronts.
+	PortID string
+	// ExtraPortIDs are additional NICs for a multi-homed VM, attached
+	// in order after the primary (eth1, eth2…). Nil for the common
+	// single-NIC boot, which is byte-identical to before.
+	ExtraPortIDs     []string
 	KeypairName      string
 	AvailabilityZone string
 }

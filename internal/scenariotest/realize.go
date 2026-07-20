@@ -56,6 +56,7 @@ func Realize(ctx context.Context, opts RealizeOptions) (*RunState, error) {
 		subnetGateway: map[string]string{},
 		routerLive:    map[string]string{},
 		vmPort:        map[string]string{},
+		vmExtraPorts:  map[string][]string{},
 		vmProject:     map[string]string{},
 		vmInternalIP:  map[string]string{},
 	}
@@ -83,10 +84,12 @@ type realizer struct {
 	subnetGateway map[string]string // DSL subnet id → its DSL gateway IP
 	routerLive    map[string]string
 
-	vmPort       map[string]string // VM DSL id → live port id
-	vmProject    map[string]string // VM DSL id → project id
+	vmPort       map[string]string   // VM DSL id → primary live port id (eth0, FIP-fronted)
+	vmExtraPorts map[string][]string // VM DSL id → additional NIC live port ids (eth1…)
+	vmProject    map[string]string   // VM DSL id → project id
 	vmInternalIP map[string]string
-	vmOrder      []string // VM DSL ids in creation order
+	vmOrder      []string // VM DSL ids (one per server) in creation order
+	taps         int      // total VM ports created — one tap each, the attach-gate target
 
 	// placement is Scenario.Placement with "node:<i>" slots resolved
 	// to configured agent hosts; set before any resource is created.
@@ -151,10 +154,10 @@ func (r *realizer) run() error {
 	if err := r.allocateFIPs(); err != nil {
 		return err
 	}
-	if err := r.attachGate(baseline, len(r.vmOrder)); err != nil {
+	if err := r.attachGate(baseline, r.taps); err != nil {
 		return err
 	}
-	r.opts.Log.Info("up complete", "vms", len(r.vmOrder), "state", r.opts.StatePath)
+	r.opts.Log.Info("up complete", "vms", len(r.vmOrder), "taps", r.taps, "state", r.opts.StatePath)
 	return nil
 }
 
@@ -352,6 +355,13 @@ func (r *realizer) routerInterfaces(snap neutron.Snapshot) error {
 	return nil
 }
 
+// vmPorts creates a Neutron port for every non-deferred compute port
+// and groups them by server identity (the shared DeviceID) so a
+// multi-homed VM — one [Builder.NIC] call per extra NIC — becomes ONE
+// server carrying several ports. The primary port (DSL id == the VM
+// id, i.e. DeviceID without its "-instance" suffix) is eth0, the one
+// [allocateFIPs] fronts; the rest are extras. Single-NIC VMs (the
+// common case) take the primary path exactly as before.
 func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 	deferred := make(map[string]bool, len(r.opts.Scenario.Deferred))
 	for _, id := range r.opts.Scenario.Deferred {
@@ -361,11 +371,20 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 		if !strings.HasPrefix(p.DeviceOwner, "compute:") {
 			continue
 		}
+		vmID := strings.TrimSuffix(p.DeviceID, "-instance")
+		// A deferred VM with extra NICs is unsupported: BootVMStep boots
+		// only the primary port, so the extras would vanish silently.
+		// Fail loudly at realize instead (docs: deferred VMs are
+		// single-NIC).
+		if deferred[vmID] && p.ID != vmID {
+			return fmt.Errorf("vm %q is Deferred but declares an extra NIC (%s); deferred VMs are single-NIC (BootVMStep boots only the primary port)", vmID, p.ID)
+		}
 		// Deferred VMs are declared but not realized: no port, no
 		// server, no FIP, no attach-gate slot. A [BootVMStep] creates
-		// them mid-script.
-		if deferred[p.ID] {
-			r.opts.Log.Debug("vm deferred (booted by a later step)", "vm", p.ID)
+		// them mid-script. Keyed by the VM id, so a NIC on a deferred VM
+		// is deferred with it.
+		if deferred[vmID] {
+			r.opts.Log.Debug("vm deferred (booted by a later step)", "vm", vmID, "port", p.ID)
 			continue
 		}
 		proj, err := r.projectID(p.ProjectID)
@@ -388,15 +407,21 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 		if err != nil {
 			return err
 		}
-		r.vmPort[p.ID] = portID
-		r.vmProject[p.ID] = proj
-		r.vmInternalIP[p.ID] = fip.IPAddress
-		r.vmOrder = append(r.vmOrder, p.ID)
+		r.taps++
 		r.rs.Ports = append(r.rs.Ports, ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj, MAC: mac})
+		if p.ID == vmID {
+			// Primary NIC: this is the server, tracked for boot + FIP.
+			r.vmPort[vmID] = portID
+			r.vmProject[vmID] = proj
+			r.vmInternalIP[vmID] = fip.IPAddress
+			r.vmOrder = append(r.vmOrder, vmID)
+		} else {
+			r.vmExtraPorts[vmID] = append(r.vmExtraPorts[vmID], portID)
+		}
 		if err := r.save(); err != nil {
 			return err
 		}
-		r.opts.Log.Debug("vm port ready", "vm", p.ID, "port", portID, "ip", fip.IPAddress)
+		r.opts.Log.Debug("vm port ready", "vm", vmID, "port", portID, "ip", fip.IPAddress, "primary", p.ID == vmID)
 	}
 	return nil
 }
@@ -413,6 +438,7 @@ func (r *realizer) bootServers() error {
 			FlavorID:         r.flavorID,
 			ImageID:          r.imageID,
 			PortID:           r.vmPort[vmID],
+			ExtraPortIDs:     r.vmExtraPorts[vmID],
 			KeypairName:      r.opts.Config.Prerequisites.KeypairName,
 			AvailabilityZone: placementAZ(r.placement, vmID),
 		})

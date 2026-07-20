@@ -43,6 +43,44 @@ func runDownFixture(t *testing.T, rs *RunState, cloud *fakeCloud) (string, error
 	return statePath, err
 }
 
+// TestDown_MultiNIC: a multi-homed VM's extra NIC port is bound to its
+// server (refuses deletion while the server lives) and both ports are
+// torn down after the server — the server-before-ports ordering holds
+// with more than one port per server.
+func TestDown_MultiNIC(t *testing.T) {
+	rs := downState()
+	// vm-a gains a second NIC port; vm-b stays single-NIC.
+	rs.Ports = append(rs.Ports, ResourceRef{DSLID: "vm-a-nic-1", ID: "port-a2", ProjectID: "uuid-t1"})
+
+	cloud := newFakeCloud(&fakeEnv{})
+	// Prime the live-server model: srv-a carries port-a (primary) and
+	// port-a2 (extra) — so port-a2 refuses deletion until srv-a is gone.
+	cloud.serverPort["srv-a"] = "port-a"
+	cloud.serverExtraPorts["srv-a"] = []string{"port-a2"}
+
+	// While the server lives, deleting its extra NIC must be refused.
+	if err := cloud.DeletePort(context.Background(), "uuid-t1", "port-a2"); err == nil {
+		t.Error("deleting a bound extra NIC must be refused while its server lives")
+	}
+
+	if _, err := runDownFixture(t, rs, cloud); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+	idx := func(op string) int {
+		for i, o := range cloud.downOps {
+			if o == op {
+				return i
+			}
+		}
+		t.Fatalf("op %q missing from %v", op, cloud.downOps)
+		return -1
+	}
+	// Both of vm-a's ports come down, and after the server.
+	if !(idx("server:srv-a") < idx("port:port-a") && idx("server:srv-a") < idx("port:port-a2")) {
+		t.Errorf("multi-NIC teardown order wrong (server must precede both its ports): %v", cloud.downOps)
+	}
+}
+
 func TestDown_OrderAndSweep(t *testing.T) {
 	cloud := newFakeCloud(&fakeEnv{})
 	// A platform port (cube:mgr) sits on the network — in no

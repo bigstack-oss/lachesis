@@ -424,11 +424,15 @@ func (o *OpenStack) CreateServer(ctx context.Context, projectID string, spec Ser
 	if err != nil {
 		return "", err
 	}
+	nics := []servers.Network{{Port: spec.PortID}}
+	for _, extra := range spec.ExtraPortIDs {
+		nics = append(nics, servers.Network{Port: extra})
+	}
 	base := servers.CreateOpts{
 		Name:             spec.Name,
 		FlavorRef:        spec.FlavorID,
 		ImageRef:         spec.ImageID,
-		Networks:         []servers.Network{{Port: spec.PortID}},
+		Networks:         nics,
 		AvailabilityZone: spec.AvailabilityZone,
 	}
 	var opts servers.CreateOptsBuilder = base
