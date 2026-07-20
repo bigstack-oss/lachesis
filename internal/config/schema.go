@@ -31,6 +31,7 @@ const (
 	envBPFPinPath                        = "BPF_PIN_PATH"
 	envBPFAttachPrefixes                 = "BPF_ATTACH_PREFIXES"
 	envBPFAttachInterfaces               = "BPF_ATTACH_INTERFACES"
+	envBPFUnsafeAllowUnpinnedMaps        = "BPF_UNSAFE_ALLOW_UNPINNED_MAPS"
 	envScrapeInterval                    = "SCRAPE_INTERVAL"
 	envLogLevel                          = "LOG_LEVEL"
 	envLogFormat                         = "LOG_FORMAT"

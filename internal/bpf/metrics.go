@@ -22,10 +22,12 @@ import (
 //   - lachesis_bpf_map_max_entries{map}        gauge (static capacity)
 //   - lachesis_bpf_map_current_entries{map}    gauge (last-written count)
 //   - lachesis_bpf_update_failures_total{reason} counter (kernel telemetry_stats)
+//   - lachesis_bpf_maps_pinned                 gauge (crash-recovery mode)
 type Metrics struct {
 	maxEntries     *prometheus.GaugeVec
 	currentEntries *prometheus.GaugeVec
 	updateFailures *statsCollector
+	mapsPinned     prometheus.Gauge
 }
 
 // NewMetrics constructs the bundle. Callers populate static max
@@ -44,12 +46,16 @@ func NewMetrics() *Metrics {
 			Help: "Userspace-tracked entry count of each BPF map after the most recent push.",
 		}, []string{labelMap}),
 		updateFailures: newStatsCollector(),
+		mapsPinned: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lachesis_bpf_maps_pinned",
+			Help: "1 when the counter-bearing BPF maps are pinned (zero-loss agent-crash recovery); 0 when running unpinned (recovery degraded to the ≤60s WAL-bounded path).",
+		}),
 	}
 }
 
 // Collectors returns the underlying prometheus.Collector values.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.maxEntries, m.currentEntries, m.updateFailures}
+	return []prometheus.Collector{m.maxEntries, m.currentEntries, m.updateFailures, m.mapsPinned}
 }
 
 // SetMax records the static capacity of mapName.
@@ -68,6 +74,21 @@ func (m *Metrics) SetCurrent(mapName string, current float64) {
 		return
 	}
 	m.currentEntries.WithLabelValues(mapName).Set(current)
+}
+
+// SetMapsPinned records whether the counter-bearing maps were pinned
+// at boot: true → the agent-crash path is zero-loss; false → it
+// degraded to the ≤60s WAL-bounded path (bpf.unsafe_allow_unpinned_maps).
+// Set once during boot.
+func (m *Metrics) SetMapsPinned(pinned bool) {
+	if m == nil {
+		return
+	}
+	if pinned {
+		m.mapsPinned.Set(1)
+		return
+	}
+	m.mapsPinned.Set(0)
 }
 
 // SetUpdateFailures records the most recent telemetry_stats drain.

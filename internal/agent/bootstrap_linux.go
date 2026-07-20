@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
@@ -104,6 +105,7 @@ type bootstrapper struct {
 	ag   *Agent
 
 	zombiesCleaned int
+	mapsPinned     bool
 }
 
 // run executes steps in order, stopping at the first failure. On any
@@ -158,14 +160,18 @@ func (b *bootstrapper) huntZombies() error {
 	return nil
 }
 
-// loadBPF loads and validates the embedded BPF collection, then
-// advances to [boot.PhaseBPFLoaded].
+// loadBPF loads and validates the embedded BPF collection — pinning
+// the counter-bearing maps for zero-loss agent-crash recovery — then
+// advances to [boot.PhaseBPFLoaded]. It records whether pinning
+// succeeded so [buildAgent] can surface the recovery mode on the BPF
+// metrics once they exist.
 func (b *bootstrapper) loadBPF() error {
-	coll, err := loadCollection()
+	coll, pinned, err := loadCollection(b.cfg.BPF)
 	if err != nil {
 		return err
 	}
 	b.coll = coll
+	b.mapsPinned = pinned
 	return b.seq.Advance(boot.PhaseBPFLoaded)
 }
 
@@ -194,6 +200,7 @@ func (b *bootstrapper) buildAgent() error {
 		return err
 	}
 	ag.mx.zombie.RecordCleaned(b.zombiesCleaned)
+	ag.mx.bpf.SetMapsPinned(b.mapsPinned)
 	b.ag = ag
 	return nil
 }
@@ -473,27 +480,154 @@ func (b *bootstrapper) closeCollection() {
 	}
 }
 
+// pinnedMaps are the counter-bearing maps pinned under bpf.pin_path so
+// they survive an agent crash (kernel intact) and the restarted agent
+// reuses them for zero-loss recovery (docs/architecture/boot-and-recovery.md#agent-crash-process-killed-kernel-intact,
+// deferred item 7). Both carry cumulative counters emitted straight
+// from the kernel, so losing them on restart would break the
+// custom-Collector "no CounterVec reset" contract.
+//
+// The two metadata maps (mac_tenant_map, subnet_zone_trie) are
+// deliberately NOT pinned: the Neutron cold-start rebuilds both before
+// attach on every boot, so pinning would buy no billing continuity and
+// would force reconciling a stale pin against a fresh snapshot. During
+// the crash gap the old (still-attached) program keeps classifying
+// against its own metadata maps, and those classified counts land in
+// the reused telemetry_map.
+var pinnedMaps = []string{bpf.MapTelemetry, bpf.MapTelemetryStats}
+
 // loadCollection compiles the embedded BPF spec into a kernel-loaded
-// [*ebpf.Collection]. The caller owns Close on the returned value.
+// [*ebpf.Collection], pinning [pinnedMaps] under bpfCfg.PinPath and
+// reusing any compatible existing pins. It returns whether the maps
+// were pinned — false means the agent booted with unpinned maps and
+// degraded (≤60s) crash recovery. The caller owns Close on the
+// returned value.
 //
 // Before loading, the spec is checked against [bpf.ValidateMapSizes]
 // — a drift between the compiled `.o` and the Go-side `MaxEntries`
 // constants is treated as boot-fatal so an operator who forgot to
 // run `task generate` after a size bump sees an explicit error
 // instead of silently shipping with stale capacity.
-func loadCollection() (*ebpf.Collection, error) {
+//
+// Pinning outcomes:
+//
+//   - Reuse: a compatible pin exists (the agent-crash path) — its
+//     counters are read on the first scrape and merged, zero loss.
+//   - Fresh: no pin exists (first boot / hard reboot) — created + pinned.
+//   - Incompatible pin (wrong sizing/type, e.g. after a map-ABI bump):
+//     never silently adopted (docs/architecture/contracts.md#deferred-work
+//     item 7). The stale pins are removed and recreated fresh,
+//     self-healing across the bump; that boot's crash recovery is
+//     skipped but classification is correct.
+//   - Pinning unavailable (no bpffs, pin syscall failed, or the
+//     self-heal retry still failed): strict mode (the default) refuses
+//     to boot; bpf.unsafe_allow_unpinned_maps lets the operator opt
+//     into unpinned operation with degraded recovery.
+//
+// Note on boot ordering (docs/architecture/boot-and-recovery.md#boot-sequence): the Zombie
+// Hunter (step 1) deletes orphaned TC *filters*, never maps. A pinned
+// map's lifetime is held by its bpffs pin, decoupled from any
+// filter/program refcount — so hunt-then-reuse cannot destroy it, and
+// the two steps need no ordering constraint between them.
+func loadCollection(bpfCfg config.BPFConfig) (*ebpf.Collection, bool, error) {
 	spec, err := bpf.LoadTelemetry()
 	if err != nil {
-		return nil, fmt.Errorf("load BPF spec: %w", err)
+		return nil, false, fmt.Errorf("load BPF spec: %w", err)
 	}
 	if err := bpf.ValidateMapSizes(spec); err != nil {
-		return nil, fmt.Errorf("BPF spec validation: %w", err)
+		return nil, false, fmt.Errorf("BPF spec validation: %w", err)
+	}
+
+	coll, err := loadPinnedCollection(spec, bpfCfg.PinPath)
+	if err == nil {
+		return coll, true, nil
+	}
+
+	// A stale pin whose sizing/type no longer matches the current build
+	// must never be silently adopted (deferred item 7). Remove it and
+	// retry once with a fresh pin — the designed refuse-to-reuse path,
+	// self-healing across a map-ABI bump rather than bricking boot.
+	if errors.Is(err, ebpf.ErrMapIncompatible) {
+		slog.Warn("pinned map incompatible with current build; removing stale pins and recreating fresh (crash recovery skipped this boot)",
+			"component", componentBPF, "pin_path", bpfCfg.PinPath, "err", err)
+		if rmErr := removeStalePins(bpfCfg.PinPath); rmErr != nil {
+			err = fmt.Errorf("%w; removing stale pins also failed: %v", err, rmErr)
+		} else if coll, err = loadPinnedCollection(spec, bpfCfg.PinPath); err == nil {
+			return coll, true, nil
+		}
+	}
+
+	// Pinning could not be established. Strict mode (the default)
+	// refuses to boot rather than silently downgrade to the ≤60s
+	// WAL-bounded recovery the whole feature exists to remove.
+	if !bpfCfg.UnsafeAllowUnpinnedMaps {
+		return nil, false, fmt.Errorf("pin maps under %s: %w "+
+			"(set bpf.unsafe_allow_unpinned_maps=true to boot with unpinned maps and ≤60s crash recovery)",
+			bpfCfg.PinPath, err)
+	}
+	slog.Warn("could not pin maps; booting UNPINNED — agent-crash recovery degraded to ≤60s WAL-bounded loss",
+		"component", componentBPF, "pin_path", bpfCfg.PinPath, "err", err)
+	coll, err = loadUnpinnedCollection(spec)
+	if err != nil {
+		return nil, false, err
+	}
+	return coll, false, nil
+}
+
+// loadPinnedCollection marks [pinnedMaps] PinByName and loads the
+// collection against pinPath, so cilium/ebpf reuses a compatible
+// existing pin or creates and pins a fresh map. It returns an error
+// wrapping [ebpf.ErrMapIncompatible] when an existing pin's
+// sizing/type no longer matches the spec.
+func loadPinnedCollection(spec *ebpf.CollectionSpec, pinPath string) (*ebpf.Collection, error) {
+	if err := os.MkdirAll(pinPath, 0o700); err != nil {
+		return nil, fmt.Errorf("create pin dir %s: %w", pinPath, err)
+	}
+	for _, name := range pinnedMaps {
+		m := spec.Maps[name]
+		if m == nil {
+			return nil, fmt.Errorf("%s not present in BPF spec", name)
+		}
+		m.Pinning = ebpf.PinByName
+	}
+	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{
+		Maps: ebpf.MapOptions{PinPath: pinPath},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load BPF collection (pinned under %s): %w", pinPath, err)
+	}
+	return coll, nil
+}
+
+// loadUnpinnedCollection resets [pinnedMaps] back to PinNone and loads
+// the collection without pins — the fallback when pinning is
+// unavailable and the operator opted into unpinned operation. Resetting
+// is required because loadPinnedCollection mutated the shared spec.
+func loadUnpinnedCollection(spec *ebpf.CollectionSpec) (*ebpf.Collection, error) {
+	for _, name := range pinnedMaps {
+		if m := spec.Maps[name]; m != nil {
+			m.Pinning = ebpf.PinNone
+		}
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
-		return nil, fmt.Errorf("load BPF collection: %w", err)
+		return nil, fmt.Errorf("load BPF collection (unpinned): %w", err)
 	}
 	return coll, nil
+}
+
+// removeStalePins unlinks every [pinnedMaps] pin under pinPath so a
+// subsequent load recreates them fresh. A pin already absent is
+// success. Used only on the incompatible-pin self-heal path.
+func removeStalePins(pinPath string) error {
+	var errs []error
+	for _, name := range pinnedMaps {
+		p := filepath.Join(pinPath, name)
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove %s: %w", p, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // readerFromCollection wires a [BPFMapReader] over [bpf.MapTelemetry]

@@ -28,6 +28,11 @@ func writeAgentConfig(iface, httpAddr string) (string, error) {
 	cfg := config.Defaults()
 	cfg.HTTP.Listen = httpAddr
 	cfg.BPF.PinPath = "/sys/fs/bpf/lachesis-loadtest"
+	// The harness measures steady-state resource budgets, not crash
+	// recovery, and the builder image has no guaranteed bpffs mount at
+	// pin_path — so opt out of strict pinning and let the agent boot
+	// with unpinned maps rather than refuse.
+	cfg.BPF.UnsafeAllowUnpinnedMaps = true
 	cfg.BPF.AttachInterfaces = []string{iface}
 	cfg.Scrape.Interval = time.Second
 	cfg.Logging.Level = "warn"

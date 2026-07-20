@@ -22,6 +22,20 @@ type BPFConfig struct {
 	// match a prefix. Empty by default. Use for outliers such as a
 	// dedicated test interface.
 	AttachInterfaces []string `yaml:"attach_interfaces"`
+	// UnsafeAllowUnpinnedMaps, when true, lets the agent boot even
+	// when the counter-bearing maps cannot be pinned under PinPath
+	// (e.g. /sys/fs/bpf is not a mounted bpf filesystem). It then
+	// runs with unpinned maps, degrading agent-crash recovery from
+	// zero-loss back to the ≤60s WAL-bounded path
+	// (docs/architecture/boot-and-recovery.md#agent-crash-process-killed-kernel-intact).
+	// The default (false) is strict mode: if pinning cannot be
+	// established the agent refuses to start.
+	//
+	// This toggle only ever permits UNPINNED operation. It never
+	// permits adopting an incompatible (wrong-sized) pin — a stale
+	// pin is always removed and recreated fresh, never silently
+	// reused (docs/architecture/contracts.md#deferred-work item 7).
+	UnsafeAllowUnpinnedMaps bool `yaml:"unsafe_allow_unpinned_maps"`
 }
 
 func bpfDefaults() BPFConfig {

@@ -142,6 +142,13 @@ func applyEnv(cfg *Config, prefix string, getenv func(string) string) error {
 	if v := getenv(prefix + "_" + envBPFAttachInterfaces); v != "" {
 		cfg.BPF.AttachInterfaces = splitList(v)
 	}
+	if v := getenv(prefix + "_" + envBPFUnsafeAllowUnpinnedMaps); v != "" {
+		b, err := parseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s_%s=%q: %w", prefix, envBPFUnsafeAllowUnpinnedMaps, v, err)
+		}
+		cfg.BPF.UnsafeAllowUnpinnedMaps = b
+	}
 	if v := getenv(prefix + "_" + envScrapeInterval); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -239,6 +246,8 @@ func applyFlags(cfg *Config, configPath *string, args []string, envPrefix string
 	interfacesFlag := strings.Join(cfg.BPF.AttachInterfaces, ",")
 	fs.StringVar(&interfacesFlag, "bpf-attach-interfaces", interfacesFlag,
 		"Comma-separated explicit interface-name allowlist for the netlink subscriber"+envHint(envBPFAttachInterfaces))
+	fs.BoolVar(&cfg.BPF.UnsafeAllowUnpinnedMaps, "unsafe-allow-unpinned-maps", cfg.BPF.UnsafeAllowUnpinnedMaps,
+		"Allow boot to continue with unpinned maps when pinning cannot be established (degrades crash recovery to ≤60s); default false (strict)"+envHint(envBPFUnsafeAllowUnpinnedMaps))
 	fs.DurationVar(&cfg.Scrape.Interval, "scrape-interval", cfg.Scrape.Interval,
 		"Scrape interval"+envHint(envScrapeInterval))
 	fs.StringVar(&cfg.Logging.Level, "log-level", cfg.Logging.Level,

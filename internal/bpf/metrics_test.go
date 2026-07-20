@@ -1,6 +1,7 @@
 package bpf
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -32,6 +33,9 @@ lachesis_bpf_map_current_entries{map="subnet_zone_trie"} 245
 # TYPE lachesis_bpf_map_max_entries gauge
 lachesis_bpf_map_max_entries{map="mac_tenant_map"} 8192
 lachesis_bpf_map_max_entries{map="subnet_zone_trie"} 16384
+# HELP lachesis_bpf_maps_pinned 1 when the counter-bearing BPF maps are pinned (zero-loss agent-crash recovery); 0 when running unpinned (recovery degraded to the ≤60s WAL-bounded path).
+# TYPE lachesis_bpf_maps_pinned gauge
+lachesis_bpf_maps_pinned 0
 # HELP lachesis_bpf_update_failures_total Kernel-side cumulative count of telemetry_map inserts the kernel rejected (reason=update_failure; those flows' bytes are lost) and non-IP frames passed through uncounted (reason=skipped_ethertype), drained from the telemetry_stats BPF map each scrape.
 # TYPE lachesis_bpf_update_failures_total counter
 lachesis_bpf_update_failures_total{reason="skipped_ethertype"} 0
@@ -39,6 +43,34 @@ lachesis_bpf_update_failures_total{reason="update_failure"} 0
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want)); err != nil {
 		t.Fatalf("metric mismatch:\n%v", err)
+	}
+}
+
+func TestMetrics_SetMapsPinned(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		pinned bool
+		want   float64
+	}{
+		{"pinned", true, 1},
+		{"unpinned", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewMetrics()
+			m.SetMapsPinned(tc.pinned)
+
+			reg := prometheus.NewRegistry()
+			for _, c := range m.Collectors() {
+				reg.MustRegister(c)
+			}
+			want := "# HELP lachesis_bpf_maps_pinned 1 when the counter-bearing BPF maps are pinned (zero-loss agent-crash recovery); 0 when running unpinned (recovery degraded to the ≤60s WAL-bounded path).\n" +
+				"# TYPE lachesis_bpf_maps_pinned gauge\n" +
+				"lachesis_bpf_maps_pinned " + strconv.FormatFloat(tc.want, 'g', -1, 64) + "\n"
+			if err := testutil.GatherAndCompare(reg, strings.NewReader(want),
+				"lachesis_bpf_maps_pinned"); err != nil {
+				t.Fatalf("metric mismatch:\n%v", err)
+			}
+		})
 	}
 }
 
@@ -71,4 +103,5 @@ func TestMetrics_NilReceiverSafe(t *testing.T) {
 	m.SetMax(MapMacTenant, 100)
 	m.SetCurrent(MapSubnetZoneTrie, 50)
 	m.SetUpdateFailures(StatCounts{1, 2})
+	m.SetMapsPinned(true)
 }

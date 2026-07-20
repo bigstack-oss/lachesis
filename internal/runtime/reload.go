@@ -14,8 +14,10 @@
 //     cadence changes take effect at the next tick.
 //   - Load-time: change in the YAML is logged as a warning and
 //     ignored; restart is required. Resource-binding fields only:
-//     http.listen, bpf.pin_path, wal.path, logging.format, and the
-//     neutron/kafka connection sections.
+//     http.listen, bpf.pin_path, bpf.unsafe_allow_unpinned_maps,
+//     wal.path, logging.format, and the neutron/kafka connection
+//     sections. Pinning is a one-shot boot action, so both bpf
+//     knobs are load-time siblings — not hot tunables.
 package runtime
 
 import (
@@ -27,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 
@@ -118,6 +121,9 @@ func (m *Manager) Reload() error {
 
 	warnLoadTimeChange("http.listen", m.current.HTTP.Listen, next.HTTP.Listen)
 	warnLoadTimeChange("bpf.pin_path", m.current.BPF.PinPath, next.BPF.PinPath)
+	warnLoadTimeChange("bpf.unsafe_allow_unpinned_maps",
+		strconv.FormatBool(m.current.BPF.UnsafeAllowUnpinnedMaps),
+		strconv.FormatBool(next.BPF.UnsafeAllowUnpinnedMaps))
 	warnLoadTimeChange("wal.path", m.current.WAL.Path, next.WAL.Path)
 	warnLoadTimeChange("logging.format", m.current.Logging.Format, next.Logging.Format)
 
