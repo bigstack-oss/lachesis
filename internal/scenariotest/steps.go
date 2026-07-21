@@ -1430,6 +1430,12 @@ func (s ConfigureNICStep) Run(ctx context.Context, env *StepEnv) error {
 	if fip == "" {
 		return fmt.Errorf("run-state has no SSH FIP for VM %q", s.VM)
 	}
+	// Dev is interpolated unquoted into the SSH command; reject a
+	// stray metacharacter. CIDR needs no such guard — net.ParseCIDR
+	// below rejects anything that isn't digits/dots/slash.
+	if err := shellSafe("configure-nic.dev", s.Dev); err != nil {
+		return err
+	}
 	ip, ipnet, err := net.ParseCIDR(s.CIDR)
 	if err != nil {
 		return fmt.Errorf("configure-nic %s: %w", s.CIDR, err)
