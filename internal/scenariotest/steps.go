@@ -95,6 +95,7 @@ type StepEnv struct {
 	captured        map[tuple]float64
 	capturedServers map[serverTuple]float64
 	settledBase     float64
+	ghostsBase      float64
 	// macs records each deleted VM's MAC ([DeleteVMStep] captures it
 	// just before the delete) for a later BootVMStep's MACFrom.
 	macs map[string]string
@@ -219,8 +220,10 @@ func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
 	env.captured = sumByTuple(snap.Bytes)
 	env.capturedServers = sumByServerTuple(snap.Servers)
 	env.settledBase = snap.SettledFlows
+	env.ghostsBase = snap.LingeringGhosts
 	env.Log.Info("capture", "tuples", len(env.captured),
-		"server_tuples", len(env.capturedServers), "settled_flows", env.settledBase)
+		"server_tuples", len(env.capturedServers), "settled_flows", env.settledBase,
+		"lingering_ghosts", env.ghostsBase)
 	return nil
 }
 
@@ -1519,12 +1522,14 @@ func agentForNode(cfg Config, node string) (AgentConfig, error) {
 	return AgentConfig{}, fmt.Errorf("resolved host %q has no agent entry", host)
 }
 
-// MaxSettledStep asserts the agents' settled-flows counter has grown
-// by at most Budget rows since the most recent [CaptureStep] — the
-// "nothing folded" gate. Budget 0 (the useful case) pins an operation
-// that must not settle anything: a live migration never removes the
-// port from the snapshot, so a fold across one is a defect, not noise
-// (lachesis#235).
+// MaxSettledStep asserts the ghost-fold counter (settled_flows) grew by
+// at most Budget rows since the most recent [CaptureStep]. CAUTION: a
+// fold only registers after the 60s ghost grace + a sweep tick, so this
+// is meaningful ONLY when the check runs after that window has elapsed
+// (e.g. following an [AwaitSweepStep]). For "did this operation mark a
+// ghost at all" — where you want an immediate answer within seconds —
+// use [MaxGhostsStep], which reads the mark-time gauge and is not blinded
+// by the grace (lachesis#243).
 type MaxSettledStep struct {
 	Budget int64
 	Note   string
@@ -1543,6 +1548,38 @@ func (s MaxSettledStep) Run(ctx context.Context, env *StepEnv) error {
 	env.addRow(AssertRow{
 		Tenant: "settled-flows", Zone: "-", Direction: "-",
 		Baseline: env.settledBase, Current: snap.SettledFlows, Delta: delta,
+		Pass: delta <= float64(s.Budget), Note: s.Note,
+	})
+	return nil
+}
+
+// MaxGhostsStep asserts the live lingering-ghost gauge grew by at most
+// Budget since the most recent [CaptureStep] — the immediate,
+// discriminating "nothing was marked for deletion" check. Unlike
+// [MaxSettledStep], the gauge rises the instant a MAC is MarkDelete'd
+// (before any grace), so Budget 0 across a live migration genuinely
+// proves the migration ghosted nothing — a migration keeps the port in
+// the Neutron snapshot, so a mark is a defect, not a timing artifact
+// (lachesis#235/#243). Delta from capture, so a pre-existing ghost on a
+// shared agent doesn't false-fail it.
+type MaxGhostsStep struct {
+	Budget int64
+	Note   string
+}
+
+func (MaxGhostsStep) Kind() string { return "assert-max-ghosts" }
+
+func (MaxGhostsStep) requiredMetrics() []string { return []string{metricLingeringGhosts} }
+
+func (s MaxGhostsStep) Run(ctx context.Context, env *StepEnv) error {
+	snap, err := env.scrape(ctx)
+	if err != nil {
+		return err
+	}
+	delta := snap.LingeringGhosts - env.ghostsBase
+	env.addRow(AssertRow{
+		Tenant: "lingering-ghosts", Zone: "-", Direction: "-",
+		Baseline: env.ghostsBase, Current: snap.LingeringGhosts, Delta: delta,
 		Pass: delta <= float64(s.Budget), Note: s.Note,
 	})
 	return nil
