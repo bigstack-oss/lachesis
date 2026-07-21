@@ -56,7 +56,7 @@ func portRecreateSameServer() *scenariotest.Scenario {
 			// End the tuple: delete the port, let the sweep fold it.
 			scenariotest.CaptureStep{},
 			scenariotest.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true},
-			scenariotest.AwaitSweepStep{},
+			scenariotest.AwaitSweepStep{ForMACOf: "vm-a-nic2"},
 			scenariotest.MonotoneStep{Tenant: "T1",
 				Note: "tenant plane invariant across the fold"},
 

@@ -64,7 +64,7 @@ func multiPortPartialDelete() *scenariotest.Scenario {
 			// Delete NIC2's port outright and let the ghost sweep fold it.
 			scenariotest.CaptureStep{},
 			scenariotest.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true},
-			scenariotest.AwaitSweepStep{},
+			scenariotest.AwaitSweepStep{ForMACOf: "vm-a-nic2"},
 
 			// THE reproduction row: the server's tuple still has live
 			// rows (eth0), so its series must not have dipped. RED on
