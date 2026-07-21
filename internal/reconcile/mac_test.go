@@ -224,7 +224,7 @@ func TestReconcileMACs_TenantChangeSettlesOldTenant(t *testing.T) {
 		t.Fatalf("macDelta = %+v, want {Changed:1}", d)
 	}
 
-	flows, settled := st.SnapshotWithSettled(nil, nil)
+	flows, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
 	wantKey := state.SettledKey{Tenant: "proj-old", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}
 	if len(settled) != 1 || settled[0].Key != wantKey || settled[0].Bytes != 100 {
 		t.Fatalf("settled = %+v, want 100 bytes under %+v", settled, wantKey)
@@ -238,7 +238,7 @@ func TestReconcileMACs_TenantChangeSettlesOldTenant(t *testing.T) {
 	// Next drain: kernel cumulative moved 100→130; only the 30 new
 	// bytes may accrue (and will late-bind to proj-new at scrape).
 	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 130, Packets: 5, LastSeenNs: 2})
-	flows, settled = st.SnapshotWithSettled(nil, nil)
+	flows, settled, _ = st.SnapshotWithSettled(nil, nil, nil)
 	if flows[0].Total.Bytes != 30 {
 		t.Errorf("post-fold delta = %d bytes, want 30 (old cumulative must not replay)", flows[0].Total.Bytes)
 	}
@@ -276,7 +276,7 @@ func TestReconcileMACs_ResurrectedSameTenantDoesNotSettle(t *testing.T) {
 	})
 	r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{vmPort(macStr, "proj-z")}}, time.Unix(2000, 0))
 
-	flows, settled := st.SnapshotWithSettled(nil, nil)
+	flows, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
 	if len(settled) != 0 {
 		t.Errorf("settled = %+v, want none (same tenant resurrected)", settled)
 	}
@@ -387,7 +387,7 @@ func TestReconcileMACs_ExternalNetworkChangeSettlesOldAttribution(t *testing.T) 
 	if cur, _ := meta.Lookup(m); cur.ExternalNetwork != "public-2" {
 		t.Errorf("metadata ExternalNetwork = %q, want public-2", cur.ExternalNetwork)
 	}
-	_, settled := st.SnapshotWithSettled(nil, nil)
+	_, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
 	got := map[state.SettledKey]uint64{}
 	for _, s := range settled {
 		got[s.Key] = s.Bytes

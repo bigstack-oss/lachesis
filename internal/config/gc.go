@@ -42,6 +42,14 @@ type GCConfig struct {
 	// GhostSweepInterval is the ghost-sweep cadence. Hot-reloadable
 	// (takes effect at the sweeper's next tick).
 	GhostSweepInterval time.Duration `yaml:"ghost_sweep_interval"`
+	// ServerCarryTTL is how long a dormant per-server carry bucket (a
+	// server tuple with no live rows) survives as the rebirth seed before
+	// the sweep drops it — the mortal-family fold absorber's bound
+	// (docs/architecture/data-structures.md#settled-bytes). Set it above
+	// the billing ETL's day window + margin so a same-day port recreate
+	// continues its series; a rebirth after it is an ordinary new series.
+	// Hot-reloadable; applies at the sweep's next pass.
+	ServerCarryTTL time.Duration `yaml:"server_carry_ttl"`
 }
 
 // gcDefaults returns the pressure-relief baseline from
@@ -55,6 +63,7 @@ func gcDefaults() GCConfig {
 		PressureMaxPerPass:    1000,
 		GhostGrace:            60 * time.Second,
 		GhostSweepInterval:    60 * time.Second,
+		ServerCarryTTL:        26 * time.Hour,
 	}
 }
 
@@ -75,6 +84,9 @@ func (c GCConfig) Validate() error {
 	}
 	if c.GhostSweepInterval <= 0 {
 		return fmt.Errorf("ghost_sweep_interval %v must be > 0", c.GhostSweepInterval)
+	}
+	if c.ServerCarryTTL <= 0 {
+		return fmt.Errorf("server_carry_ttl %v must be > 0 — zero TTL drops the mortal-family carry immediately, reintroducing the fold dip (docs/architecture/data-structures.md#settled-bytes)", c.ServerCarryTTL)
 	}
 	if c.PressureMaxPerPass < 1 {
 		return fmt.Errorf("pressure_max_per_pass %d must be >= 1", c.PressureMaxPerPass)

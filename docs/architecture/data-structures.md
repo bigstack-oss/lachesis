@@ -318,6 +318,18 @@ Consequences and boundaries:
 - **Hard-crash window.** A fold becomes durable at the next WAL flush (≤60s). A hard crash in between restores the pre-fold rows, whose metadata may already be gone — so up to one flush window of folds can degrade to `unknown` on the next boot. This is the same envelope as the WAL's general ≤60s tail-loss trade-off; a graceful shutdown's final flush loses nothing.
 - The UnresolvedBuffer's synthetic `unknown` keys have zero MACs and never settle — `unknown` is not a tenant whose history needs preserving, and those rows are already terminal.
 
+### Per-server carry (the mortal family's fold absorber)
+
+The settled accumulator keeps the **immortal** tenant family monotone but deliberately drops the `server_id` dimension, so it does nothing for the **mortal** per-server family (`lachesis_server_bytes_total`), emitted as `Σ live rows`. A fold that removes rows from a *still-live* server tuple — one port of a multi-port server deleted, or a same-server port recreated — would make that server's exposed series *dip* while it is still live, which the billing ETL's day-window clamp reads as under-usage ([billing.md](./billing.md), lachesis#226 / #227).
+
+The fix is a second accumulator, the **carry**, keyed by the full server tuple `(server_id, tenant_id, zone, external_network, direction)` — exactly the emitted label set. `Settle` credits it with the same folded bytes it credits into settled, in the same write-lock critical section; the Collector emits `Σ live rows + carry` per server tuple, but **only for tuples that still have a live row** — a carry with no live row is a dormant rebirth seed, and the series has ended (mortal). One bucket, three behaviors:
+
+- **tuple still has live rows** → the carry credit keeps the series from dipping (fixes #226);
+- **tuple fully dead** → the series ends as today; the carry lies dormant as a same-window rebirth seed;
+- **dormant past the TTL** → the carry is dropped; the bytes remain in tenant settled and in the billing days already extracted, so dead servers accumulate no unbounded state.
+
+Dormancy and expiry are owned by the ghost sweep (`GlobalState.ExpireServerCarry` — never a per-tuple timer): each pass classifies a carry tuple live-or-dormant by resolving every live flow row, stamps `now` on one that has just fallen empty, and drops one dormant longer than the live `gc.server_carry_ttl` (hot-reloadable; default a day + margin, above the billing ETL's day window). The carry round-trips the WAL (additive schema v4) and restores before the scraper starts, so a restart never dips a live server's series; dormancy is re-derived after restore. `Collect` and the WAL snapshot read live + settled + carry under ONE lock — a torn snapshot would over- or under-bill a rebirth.
+
 ---
 
 Next: [packet-classification.md](./packet-classification.md) →

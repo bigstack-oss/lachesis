@@ -138,13 +138,14 @@ func (r *Reconciler) settleAttributionChange(mac uint64, old *metadata.TenantMet
 	if r.settler == nil {
 		return
 	}
-	folded := r.settler.Settle(state.SettleRebase, func(k bpf.FlowKey) (string, string, bool) {
+	folded := r.settler.Settle(state.SettleRebase, func(k bpf.FlowKey) (string, string, string, bool) {
 		if metadata.VMMAC(k) != mac {
-			return "", "", false
+			return "", "", "", false
 		}
 		// Per-flow label with the current (not-yet-changed) router map —
-		// exactly what the Collector was emitting for this row.
-		return old.ProjectID, metadata.FlowExternalLabel(r.routers, old.ExternalNetwork, k), true
+		// exactly what the Collector was emitting for this row. server_id
+		// is the OLD binding's so the carry seeds the tuple being vacated.
+		return old.ProjectID, metadata.FlowExternalLabel(r.routers, old.ExternalNetwork, k), old.ServerID, true
 	})
 	if folded > 0 {
 		slog.Info("settled flows to previous attribution before reassignment",

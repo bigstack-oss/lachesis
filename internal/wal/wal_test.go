@@ -52,7 +52,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.json")
 	want := sampleRecords()
 
-	if err := wal.Save(path, "test-build", want, nil, nil); err != nil {
+	if err := wal.Save(path, "test-build", want, nil, nil, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestSave_UsesStringEncodingForU64(t *testing.T) {
 			Total: bpf.FlowMetrics{Bytes: big, Packets: big, LastSeenNs: big},
 		},
 	}}
-	if err := wal.Save(path, "", in, nil, nil); err != nil {
+	if err := wal.Save(path, "", in, nil, nil, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestSave_RotatesPriorToBackup(t *testing.T) {
 	path := filepath.Join(dir, "wal.json")
 
 	// First Save: no prior file, no .bak should appear yet.
-	if err := wal.Save(path, "", sampleRecords()[:1], nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords()[:1], nil, nil, nil); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
 	if _, err := os.Stat(path + wal.BackupSuffix); !errors.Is(err, fs.ErrNotExist) {
@@ -130,7 +130,7 @@ func TestSave_RotatesPriorToBackup(t *testing.T) {
 	}
 
 	// Second Save: previous file should rotate to .bak.
-	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
 		t.Fatalf("second Save: %v", err)
 	}
 	if _, err := os.Stat(path + wal.BackupSuffix); err != nil {
@@ -161,10 +161,10 @@ func TestLoad_FallsBackToBackupOnBadPrimary(t *testing.T) {
 
 	// Land a good snapshot on .bak by saving twice; the first
 	// save's content rotates into .bak on the second save.
-	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
 		t.Fatalf("seed save 1: %v", err)
 	}
-	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
 		t.Fatalf("seed save 2: %v", err)
 	}
 
@@ -249,10 +249,10 @@ func TestLoad_NewerSchemaDoesNotFallBackToBackup(t *testing.T) {
 	path := filepath.Join(dir, "wal.json")
 
 	// Land a perfectly good v1 snapshot on .bak ...
-	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
 		t.Fatalf("seed save 1: %v", err)
 	}
-	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
 		t.Fatalf("seed save 2: %v", err)
 	}
 	// ... then overwrite the primary with a future-schema snapshot,
@@ -354,7 +354,7 @@ func TestSave_RecordsMarshalAndFlushOnMetrics(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "wal.json")
-	if err := wal.Save(path, "", sampleRecords(), nil, m); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, m); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -394,7 +394,7 @@ func TestSave_RecordsFailureStageOnBadDir(t *testing.T) {
 	// Target a directory that does not exist — the open in
 	// writeAndFsync will fail at the StageWrite stage.
 	path := filepath.Join(t.TempDir(), "no", "such", "dir", "wal.json")
-	if err := wal.Save(path, "", sampleRecords(), nil, m); err == nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, m); err == nil {
 		t.Fatal("Save: expected error for bad dir, got nil")
 	}
 
@@ -459,7 +459,7 @@ func TestEnsureDir_CreatesMissingDir(t *testing.T) {
 		t.Fatalf("Stat dir after EnsureDir: info=%v err=%v", info, err)
 	}
 
-	if err := wal.Save(path, "", sampleRecords(), nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
 		t.Fatalf("Save after EnsureDir: %v", err)
 	}
 	res, err := wal.Load(path)
@@ -560,7 +560,7 @@ func TestSaveLoad_RoundTripsSettled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.json")
 	want := sampleSettled()
 
-	if err := wal.Save(path, "test-build", sampleRecords(), want, nil); err != nil {
+	if err := wal.Save(path, "test-build", sampleRecords(), want, nil, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	res, err := wal.Load(path)
@@ -574,6 +574,72 @@ func TestSaveLoad_RoundTripsSettled(t *testing.T) {
 		if res.Settled[i] != want[i] {
 			t.Errorf("Settled[%d] = %+v, want %+v", i, res.Settled[i], want[i])
 		}
+	}
+}
+
+// sampleServerCarry is a representative v4 per-server carry section.
+func sampleServerCarry() []state.ServerCarryRecord {
+	return []state.ServerCarryRecord{
+		{
+			Key:   state.ServerCarryKey{ServerID: "11111111-2222-3333-4444-555555555555", Tenant: "d1a509ba00000000000000000000aaaa", ExtNet: "public-1", Zone: bpf.ZoneExternal, Dir: bpf.DirectionIngress},
+			Bytes: 9_000_000, Packets: 6_000,
+		},
+		{
+			Key:   state.ServerCarryKey{ServerID: "66666666-7777-8888-9999-000000000000", Tenant: "d1a509ba00000000000000000000aaaa", ExtNet: "none", Zone: bpf.ZoneInfra, Dir: bpf.DirectionEgress},
+			Bytes: 12_800, Packets: 20,
+		},
+	}
+}
+
+// TestSaveLoad_RoundTripsServerCarry: the v4 carry section survives a
+// Save/Load cycle bit-exact — the restart-safety of the mortal per-server
+// fold absorber (docs/architecture/data-structures.md#settled-bytes).
+func TestSaveLoad_RoundTripsServerCarry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	want := sampleServerCarry()
+
+	if err := wal.Save(path, "test-build", sampleRecords(), sampleSettled(), want, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.ServerCarry) != len(want) {
+		t.Fatalf("ServerCarry len = %d, want %d", len(res.ServerCarry), len(want))
+	}
+	for i := range want {
+		if res.ServerCarry[i] != want[i] {
+			t.Errorf("ServerCarry[%d] = %+v, want %+v", i, res.ServerCarry[i], want[i])
+		}
+	}
+}
+
+// TestLoad_V3SnapshotAccepted: a v3 file (pre-carry schema) still loads —
+// the v4 change is additive, so a post-upgrade boot restores flows +
+// settled and starts with an empty carry accumulator.
+func TestLoad_V3SnapshotAccepted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	// A minimal v3 envelope: one flow, one settled bucket, no server_carry.
+	v3 := `{
+  "schema_version": 3,
+  "agent_build": "pre-carry",
+  "written_at_ns": "1",
+  "global_state": [],
+  "settled": [{"tenant_id":"t1","external_network":"public-1","zone":1,"direction":0,"bytes":"500","packets":"5"}]
+}`
+	if err := os.WriteFile(path, []byte(v3), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load v3: %v", err)
+	}
+	if len(res.Settled) != 1 {
+		t.Errorf("Settled len = %d, want 1", len(res.Settled))
+	}
+	if res.ServerCarry != nil {
+		t.Errorf("ServerCarry = %+v, want nil (absent in a v3 file)", res.ServerCarry)
 	}
 }
 

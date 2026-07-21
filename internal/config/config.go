@@ -113,6 +113,7 @@ func (c Config) Tunables() tunables.Values {
 	return tunables.Values{
 		GhostGrace:            c.GC.GhostGrace,
 		GhostSweepInterval:    c.GC.GhostSweepInterval,
+		ServerCarryTTL:        c.GC.ServerCarryTTL,
 		ReconcileInterval:     c.Reconcile.Interval,
 		ScrapeInterval:        c.Scrape.Interval,
 		WALFlushInterval:      c.WAL.FlushInterval,

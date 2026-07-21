@@ -26,7 +26,11 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 //     field absent, which Load maps to the metadata.NoExternalNetwork
 //     sentinel; a pre-external-network bucket IS a "none" bucket, so no
 //     migration is needed.
-const SchemaVersion uint = 3
+//   - v4: adds the server_carry section — the mortal per-server family's
+//     fold absorber (docs/architecture/data-structures.md#settled-bytes).
+//     Purely additive — a v3 file is a valid v4 file with no carry
+//     buckets, so Load reads it without migration.
+const SchemaVersion uint = 4
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
 // previous snapshot. TempSuffix is the in-progress write target.
@@ -74,11 +78,13 @@ const (
 
 // LoadResult bundles a successful Load. Records is nil when Source
 // is LoadEmpty; Settled is nil for LoadEmpty and for v1 snapshots,
-// which predate the settled section.
+// which predate the settled section; ServerCarry is nil for LoadEmpty
+// and for v1–v3 snapshots, which predate the carry section.
 type LoadResult struct {
-	Records []state.Record
-	Settled []state.SettledRecord
-	Source  LoadSource
+	Records     []state.Record
+	Settled     []state.SettledRecord
+	ServerCarry []state.ServerCarryRecord
+	Source      LoadSource
 }
 
 // snapshotWire is the on-disk envelope. Field order and JSON tags
@@ -86,11 +92,12 @@ type LoadResult struct {
 // so a v2 writer with nothing settled produces a byte-identical
 // envelope to v1 apart from the version field.
 type snapshotWire struct {
-	SchemaVersion uint          `json:"schema_version"`
-	AgentBuild    string        `json:"agent_build"`
-	WrittenAtNs   uint64        `json:"written_at_ns,string"`
-	GlobalState   []entryWire   `json:"global_state"`
-	Settled       []settledWire `json:"settled,omitempty"`
+	SchemaVersion uint              `json:"schema_version"`
+	AgentBuild    string            `json:"agent_build"`
+	WrittenAtNs   uint64            `json:"written_at_ns,string"`
+	GlobalState   []entryWire       `json:"global_state"`
+	Settled       []settledWire     `json:"settled,omitempty"`
+	ServerCarry   []serverCarryWire `json:"server_carry,omitempty"`
 }
 
 // settledWire mirrors state.SettledRecord on the wire. The tenant is
@@ -102,6 +109,23 @@ type snapshotWire struct {
 // decode, where a v2-era entry's absent field reads as "" and Load
 // maps it to the sentinel.
 type settledWire struct {
+	TenantID        string `json:"tenant_id"`
+	ExternalNetwork string `json:"external_network,omitempty"`
+	Zone            uint8  `json:"zone"`
+	Direction       uint8  `json:"direction"`
+	Bytes           uint64 `json:"bytes,string"`
+	Packets         uint64 `json:"packets,string"`
+}
+
+// serverCarryWire mirrors state.ServerCarryRecord on the wire — the
+// mortal per-server carry (v4+). Like settledWire it carries the stable
+// project UUID and the already-gated external_network label, and adds
+// server_id (the Nova instance UUID). Dormancy/TTL state is deliberately
+// not persisted — the sweep re-derives it after restore — so there is
+// no timestamp field. external_network omitempty matters only on decode,
+// where an absent field reads as "" and Load maps it to the sentinel.
+type serverCarryWire struct {
+	ServerID        string `json:"server_id"`
 	TenantID        string `json:"tenant_id"`
 	ExternalNetwork string `json:"external_network,omitempty"`
 	Zone            uint8  `json:"zone"`

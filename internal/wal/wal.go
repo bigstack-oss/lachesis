@@ -70,14 +70,14 @@ type stageErr struct {
 func (e *stageErr) Error() string { return fmt.Sprintf("wal %s: %v", e.Stage, e.Err) }
 func (e *stageErr) Unwrap() error { return e.Err }
 
-// Save writes records and settled to path via the atomic
-// tmp+fsync+rename rotation described in the package doc. The two
+// Save writes records, settled and carry to path via the atomic
+// tmp+fsync+rename rotation described in the package doc. The three
 // slices must come from one [state.GlobalState.SnapshotForWAL] call —
-// a pair snapshotted separately can tear across a concurrent settle
+// slices snapshotted separately can tear across a concurrent settle
 // fold and persist the folded bytes twice or not at all. agentBuild is
 // informational (correlation with build logs); empty is acceptable. m
 // may be nil when phase timings and failure stages are not needed.
-func Save(path, agentBuild string, records []state.Record, settled []state.SettledRecord, m *Metrics) error {
+func Save(path, agentBuild string, records []state.Record, settled []state.SettledRecord, carry []state.ServerCarryRecord, m *Metrics) error {
 	snap := snapshotWire{
 		SchemaVersion: SchemaVersion,
 		AgentBuild:    agentBuild,
@@ -97,6 +97,20 @@ func Save(path, agentBuild string, records []state.Record, settled []state.Settl
 				Direction:       uint8(s.Key.Dir),
 				Bytes:           s.Bytes,
 				Packets:         s.Packets,
+			}
+		}
+	}
+	if len(carry) > 0 {
+		snap.ServerCarry = make([]serverCarryWire, len(carry))
+		for i, c := range carry {
+			snap.ServerCarry[i] = serverCarryWire{
+				ServerID:        c.Key.ServerID,
+				TenantID:        c.Key.Tenant,
+				ExternalNetwork: c.Key.ExtNet,
+				Zone:            uint8(c.Key.Zone),
+				Direction:       uint8(c.Key.Dir),
+				Bytes:           c.Bytes,
+				Packets:         c.Packets,
 			}
 		}
 	}
@@ -211,7 +225,7 @@ func writeAndFsync(path string, data []byte) error {
 func Load(path string) (LoadResult, error) {
 	primary, primaryErr := readAndParse(path)
 	if primaryErr == nil {
-		return LoadResult{Records: fromSnapshot(primary), Settled: fromSettled(primary), Source: LoadFromPrimary}, nil
+		return LoadResult{Records: fromSnapshot(primary), Settled: fromSettled(primary), ServerCarry: fromServerCarry(primary), Source: LoadFromPrimary}, nil
 	}
 
 	// The .bak behind a newer-schema primary may well parse — it can
@@ -224,7 +238,7 @@ func Load(path string) (LoadResult, error) {
 	bakPath := path + BackupSuffix
 	backup, backupErr := readAndParse(bakPath)
 	if backupErr == nil {
-		return LoadResult{Records: fromSnapshot(backup), Settled: fromSettled(backup), Source: LoadFromBackup}, nil
+		return LoadResult{Records: fromSnapshot(backup), Settled: fromSettled(backup), ServerCarry: fromServerCarry(backup), Source: LoadFromBackup}, nil
 	}
 
 	// Both missing is the first-boot path; report as empty.
@@ -353,6 +367,33 @@ func fromSettled(snap snapshotWire) []state.SettledRecord {
 			},
 			Bytes:   s.Bytes,
 			Packets: s.Packets,
+		}
+	}
+	return out
+}
+
+func fromServerCarry(snap snapshotWire) []state.ServerCarryRecord {
+	if len(snap.ServerCarry) == 0 {
+		return nil
+	}
+	out := make([]state.ServerCarryRecord, len(snap.ServerCarry))
+	for i, c := range snap.ServerCarry {
+		// Same absent-external_network→sentinel handling as fromSettled;
+		// a carry bucket always occupies a real emitted series.
+		ext := c.ExternalNetwork
+		if ext == "" {
+			ext = metadata.NoExternalNetwork
+		}
+		out[i] = state.ServerCarryRecord{
+			Key: state.ServerCarryKey{
+				ServerID: c.ServerID,
+				Tenant:   c.TenantID,
+				ExtNet:   ext,
+				Zone:     bpf.ZoneCode(c.Zone),
+				Dir:      bpf.Direction(c.Direction),
+			},
+			Bytes:   c.Bytes,
+			Packets: c.Packets,
 		}
 	}
 	return out

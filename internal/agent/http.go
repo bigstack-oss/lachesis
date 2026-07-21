@@ -44,7 +44,7 @@ func (a *Agent) openHTTP(opts Options) error {
 			return a.tun.Get().ReconcileInterval
 		},
 		Flows: func() []state.Entry {
-			ents, _ := a.state.SnapshotWithSettled(nil, nil)
+			ents, _, _ := a.state.SnapshotWithSettled(nil, nil, nil)
 			return ents
 		},
 		Fallback: mgr.DebugHandler(),

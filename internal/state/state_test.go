@@ -3,6 +3,7 @@ package state_test
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/state"
@@ -173,7 +174,7 @@ func TestSnapshotForWAL_ReturnsTotalAndLastRaw(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 10})
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 250, Packets: 3, LastSeenNs: 20})
 
-	records, _ := g.SnapshotForWAL(nil, nil)
+	records, _, _ := g.SnapshotForWAL(nil, nil, nil)
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
@@ -202,7 +203,7 @@ func TestRestore_SeedsBothTotalAndLastRaw(t *testing.T) {
 	// LastEbpfRaw, not re-baseline. Raw 1000 → delta = 100 → Total = 1100.
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 1000, Packets: 11, LastSeenNs: 200})
 
-	records, _ := g.SnapshotForWAL(nil, nil)
+	records, _, _ := g.SnapshotForWAL(nil, nil, nil)
 	r := records[0]
 	if got, want := r.Counter.Total.Bytes, uint64(1100); got != want {
 		t.Errorf("Total.Bytes after restore + delta = %d, want %d (= 1000 + (1000-900))", got, want)
@@ -223,7 +224,7 @@ func TestRestore_OverwritesExistingKey(t *testing.T) {
 		},
 	}})
 
-	records, _ := g.SnapshotForWAL(nil, nil)
+	records, _, _ := g.SnapshotForWAL(nil, nil, nil)
 	if got, want := records[0].Counter.Total.Bytes, uint64(9999); got != want {
 		t.Errorf("Restore did not overwrite: got %d, want %d", got, want)
 	}
@@ -236,9 +237,9 @@ func TestSnapshotForWAL_ReusesCapacity(t *testing.T) {
 		k.SrcMac[5] = byte(i)
 		g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1})
 	}
-	dst, _ := g.SnapshotForWAL(nil, nil)
+	dst, _, _ := g.SnapshotForWAL(nil, nil, nil)
 	cap1 := cap(dst)
-	dst, _ = g.SnapshotForWAL(dst[:0], nil)
+	dst, _, _ = g.SnapshotForWAL(dst[:0], nil, nil)
 	if cap(dst) != cap1 {
 		t.Errorf("SnapshotForWAL grew capacity: %d → %d", cap1, cap(dst))
 	}
@@ -303,7 +304,7 @@ func TestAdd_DoesNotPrimeDeltaBaseline(t *testing.T) {
 	// Counter — assert the cumulative is exactly what was Added.
 	g := state.New()
 	g.Add(keyA(), bpf.FlowMetrics{Bytes: 4242, Packets: 7, LastSeenNs: 1})
-	recs, _ := g.SnapshotForWAL(nil, nil)
+	recs, _, _ := g.SnapshotForWAL(nil, nil, nil)
 	if len(recs) != 1 {
 		t.Fatalf("SnapshotForWAL returned %d records, want 1", len(recs))
 	}
@@ -317,8 +318,8 @@ func TestAdd_DoesNotPrimeDeltaBaseline(t *testing.T) {
 
 // settleAll resolves every key to one tenant with the "none"
 // external-network sentinel — the common test fold.
-func settleAll(tenant string) func(bpf.FlowKey) (string, string, bool) {
-	return func(bpf.FlowKey) (string, string, bool) { return tenant, "none", true }
+func settleAll(tenant string) func(bpf.FlowKey) (string, string, string, bool) {
+	return func(bpf.FlowKey) (string, string, string, bool) { return tenant, "none", "", true }
 }
 
 // TestSettle_EvictMovesTotalsAndDeletesRows: the ghost-sweep fold.
@@ -330,16 +331,16 @@ func TestSettle_EvictMovesTotalsAndDeletesRows(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 2, LastSeenNs: 1})
 	g.ApplyDelta(keyB(), bpf.FlowMetrics{Bytes: 50, Packets: 1, LastSeenNs: 2})
 
-	folded := g.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+	folded := g.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
 		if k == keyA() {
-			return "tenant-a", "none", true
+			return "tenant-a", "none", "", true
 		}
-		return "", "", false
+		return "", "", "", false
 	})
 	if folded != 1 {
 		t.Fatalf("Settle folded %d rows, want 1", folded)
 	}
-	flows, settled := g.SnapshotWithSettled(nil, nil)
+	flows, settled, _ := g.SnapshotWithSettled(nil, nil, nil)
 	if len(flows) != 1 || flows[0].Key != keyB() || flows[0].Total.Bytes != 50 {
 		t.Errorf("flows = %+v, want only keyB with 50 bytes", flows)
 	}
@@ -358,7 +359,7 @@ func TestSettle_EvictAccumulatesIntoExistingBucket(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 30, Packets: 1, LastSeenNs: 2})
 	g.Settle(state.SettleEvict, settleAll("t1"))
 
-	_, settled := g.SnapshotWithSettled(nil, nil)
+	_, settled, _ := g.SnapshotWithSettled(nil, nil, nil)
 	if len(settled) != 1 || settled[0].Bytes != 130 {
 		t.Errorf("settled = %+v, want one bucket with 130 bytes", settled)
 	}
@@ -373,7 +374,7 @@ func TestSettle_RebaseZerosTotalKeepsWatermark(t *testing.T) {
 
 	g.Settle(state.SettleRebase, settleAll("t-old"))
 
-	flows, settled := g.SnapshotWithSettled(nil, nil)
+	flows, settled, _ := g.SnapshotWithSettled(nil, nil, nil)
 	if len(flows) != 1 || flows[0].Total.Bytes != 0 {
 		t.Fatalf("flows = %+v, want the row kept with Total zeroed", flows)
 	}
@@ -383,7 +384,7 @@ func TestSettle_RebaseZerosTotalKeepsWatermark(t *testing.T) {
 
 	// Kernel cumulative advances 100→130: only the 30 delta accrues.
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 130, Packets: 5, LastSeenNs: 2})
-	flows, _ = g.SnapshotWithSettled(nil, nil)
+	flows, _, _ = g.SnapshotWithSettled(nil, nil, nil)
 	if flows[0].Total.Bytes != 30 {
 		t.Errorf("post-rebase Total = %d, want 30 (settled cumulative must not replay)", flows[0].Total.Bytes)
 	}
@@ -396,7 +397,7 @@ func TestSettledWALRoundTrip(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 2, LastSeenNs: 1})
 	g.Settle(state.SettleEvict, settleAll("t1"))
 
-	_, settled := g.SnapshotForWAL(nil, nil)
+	_, settled, _ := g.SnapshotForWAL(nil, nil, nil)
 	if len(settled) != 1 {
 		t.Fatalf("SnapshotForWAL settled = %+v, want 1 bucket", settled)
 	}
@@ -406,7 +407,7 @@ func TestSettledWALRoundTrip(t *testing.T) {
 	if fresh.SettledLen() != 1 {
 		t.Fatalf("SettledLen after restore = %d, want 1", fresh.SettledLen())
 	}
-	_, got := fresh.SnapshotWithSettled(nil, nil)
+	_, got, _ := fresh.SnapshotWithSettled(nil, nil, nil)
 	if got[0] != settled[0] {
 		t.Errorf("restored settled = %+v, want %+v", got[0], settled[0])
 	}
@@ -419,11 +420,11 @@ func TestSettledWALRoundTrip(t *testing.T) {
 func TestSettle_DistinctExternalNetworksSeparateBuckets(t *testing.T) {
 	g := state.New()
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 1})
-	g.Settle(state.SettleEvict, func(bpf.FlowKey) (string, string, bool) { return "t1", "public-1", true })
+	g.Settle(state.SettleEvict, func(bpf.FlowKey) (string, string, string, bool) { return "t1", "public-1", "", true })
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 40, Packets: 1, LastSeenNs: 2})
-	g.Settle(state.SettleEvict, func(bpf.FlowKey) (string, string, bool) { return "t1", "none", true })
+	g.Settle(state.SettleEvict, func(bpf.FlowKey) (string, string, string, bool) { return "t1", "none", "", true })
 
-	_, settled := g.SnapshotWithSettled(nil, nil)
+	_, settled, _ := g.SnapshotWithSettled(nil, nil, nil)
 	if len(settled) != 2 {
 		t.Fatalf("settled = %+v, want 2 buckets (public-1, none)", settled)
 	}
@@ -433,5 +434,98 @@ func TestSettle_DistinctExternalNetworksSeparateBuckets(t *testing.T) {
 	}
 	if got["public-1"] != 100 || got["none"] != 40 {
 		t.Errorf("bucket split = %v, want public-1:100 none:40", got)
+	}
+}
+
+// serverKey builds a flow key on one server's series tuple — same zone +
+// direction, a distinct src MAC per port — so two ports feed one
+// per-server series (the lachesis#226 shape).
+func serverKey(port uint8) bpf.FlowKey {
+	return bpf.FlowKey{
+		SrcMac:    [6]uint8{0xaa, 0, 0, 0, 0, port},
+		DstMac:    [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto:  0x0800,
+		Direction: bpf.DirectionEgress,
+		DstZone:   bpf.ZoneExternal,
+	}
+}
+
+// carryResolve maps every live row to one server tuple (or to nothing
+// when server is ""), the shape [GlobalState.ExpireServerCarry] expects.
+func carryResolve(server string) func(bpf.FlowKey) (state.ServerCarryKey, bool) {
+	return func(k bpf.FlowKey) (state.ServerCarryKey, bool) {
+		if server == "" {
+			return state.ServerCarryKey{}, false
+		}
+		return state.ServerCarryKey{ServerID: server, Tenant: "t1", ExtNet: "none", Zone: k.DstZone, Dir: k.Direction}, true
+	}
+}
+
+// TestServerCarry_FoldCreditsAndSnapshots: a SettleEvict fold that
+// resolves a server_id credits the per-server carry with the folded
+// bytes, and the carry rides the combined snapshot.
+func TestServerCarry_FoldCreditsAndSnapshots(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(serverKey(1), bpf.FlowMetrics{Bytes: 600, Packets: 6, LastSeenNs: 1})
+	folded := g.Settle(state.SettleEvict, func(bpf.FlowKey) (string, string, string, bool) {
+		return "t1", "none", "srv-1", true
+	})
+	if folded != 1 {
+		t.Fatalf("folded %d, want 1", folded)
+	}
+	if g.CarryLen() != 1 {
+		t.Fatalf("CarryLen = %d, want 1 (fold credited the carry)", g.CarryLen())
+	}
+	_, _, carry := g.SnapshotWithSettled(nil, nil, nil)
+	if len(carry) != 1 || carry[0].Key.ServerID != "srv-1" || carry[0].Bytes != 600 {
+		t.Fatalf("carry snapshot = %+v, want srv-1 with 600 bytes", carry)
+	}
+}
+
+// TestServerCarry_RetainWhileLiveDropAfterTTL: the sweep keeps a carry
+// tuple while any live row still resolves to it (lachesis#226/#227 — the
+// server is alive), and drops it only once it has been dormant past the
+// TTL, so dead servers accumulate no unbounded state.
+func TestServerCarry_RetainWhileLiveDropAfterTTL(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(serverKey(1), bpf.FlowMetrics{Bytes: 600, Packets: 6, LastSeenNs: 1})
+	g.ApplyDelta(serverKey(2), bpf.FlowMetrics{Bytes: 400, Packets: 4, LastSeenNs: 1})
+	// Port 1 deleted: fold+evict it. Port 2 keeps the server alive.
+	g.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
+		if k == serverKey(1) {
+			return "t1", "none", "srv-1", true
+		}
+		return "", "", "", false
+	})
+	now := time.Now()
+
+	// Port 2 still resolves to srv-1 → the carry survives every sweep.
+	if dropped := g.ExpireServerCarry(time.Hour, now, carryResolve("srv-1")); dropped != 0 {
+		t.Fatalf("dropped %d while the server is still live, want 0", dropped)
+	}
+	if g.CarryLen() != 1 {
+		t.Fatalf("CarryLen = %d after a live sweep, want 1", g.CarryLen())
+	}
+
+	// Port 2 dies too: no live row resolves to srv-1 anymore.
+	g.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
+		if k == serverKey(2) {
+			return "t1", "none", "srv-1", true
+		}
+		return "", "", "", false
+	})
+	// First dormant sweep starts the clock; it does not drop.
+	if dropped := g.ExpireServerCarry(time.Hour, now, carryResolve("")); dropped != 0 {
+		t.Fatalf("dropped %d on the first dormant sweep, want 0", dropped)
+	}
+	if g.CarryLen() != 1 {
+		t.Fatalf("CarryLen = %d, want 1 (dormant, within TTL)", g.CarryLen())
+	}
+	// A sweep past the TTL drops it.
+	if dropped := g.ExpireServerCarry(time.Hour, now.Add(2*time.Hour), carryResolve("")); dropped != 1 {
+		t.Fatalf("dropped %d past the TTL, want 1", dropped)
+	}
+	if g.CarryLen() != 0 {
+		t.Fatalf("CarryLen = %d after the TTL drop, want 0", g.CarryLen())
 	}
 }

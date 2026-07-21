@@ -73,6 +73,7 @@ type Collector struct {
 	serverBytesDesc  *prometheus.Desc
 	flowsDesc        *prometheus.Desc
 	settledDesc      *prometheus.Desc
+	serverCarryDesc  *prometheus.Desc
 	scrapeErrorsDesc *prometheus.Desc
 	scrapeLastOKDesc *prometheus.Desc
 
@@ -89,10 +90,11 @@ type Collector struct {
 	// Prometheus registry is single-threaded but third-party
 	// registries are not.
 	collectMu sync.Mutex
-	// emitBuf and settledBuf are reused across Collect calls so the
-	// combined snapshot walk is zero-alloc in steady state.
-	emitBuf    []state.Entry
-	settledBuf []state.SettledRecord
+	// emitBuf, settledBuf and serverCarryBuf are reused across Collect
+	// calls so the combined snapshot walk is zero-alloc in steady state.
+	emitBuf        []state.Entry
+	settledBuf     []state.SettledRecord
+	serverCarryBuf []state.ServerCarryRecord
 	// aggBuf groups per-flow entries by (tenant, external_network,
 	// zone, direction) before emission; serverAggBuf groups LIVE rows
 	// by the same tuple plus server_id for the mortal per-server
@@ -128,7 +130,7 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		),
 		serverBytesDesc: prometheus.NewDesc(
 			MetricServerBytesTotal,
-			"Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).",
+			"Per-server network bytes, cumulative while the server's attribution lives (live rows + carry, so a partial fold or same-server port recreate never dips a still-live series). MORTAL series: ends at VM teardown, and its carry seed is dropped after gc.server_carry_ttl — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).",
 			[]string{"server_id", "tenant_id", "zone", "external_network", "direction"}, nil,
 		),
 		flowsDesc: prometheus.NewDesc(
@@ -139,6 +141,11 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		settledDesc: prometheus.NewDesc(
 			"lachesis_state_settled_tuples",
 			"Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/architecture/data-structures.md#settled-bytes).",
+			nil, nil,
+		),
+		serverCarryDesc: prometheus.NewDesc(
+			"lachesis_state_server_carry_tuples",
+			"Distinct (server_id, tenant, zone, external_network, direction) buckets in the mortal per-server carry accumulator — the fold absorber that keeps a still-live server series from dipping; dormant tuples are dropped after gc.server_carry_ttl (docs/architecture/data-structures.md#settled-bytes).",
 			nil, nil,
 		),
 		scrapeErrorsDesc: prometheus.NewDesc(
@@ -166,6 +173,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.serverBytesDesc
 	ch <- c.flowsDesc
 	ch <- c.settledDesc
+	ch <- c.serverCarryDesc
 	ch <- c.scrapeErrorsDesc
 	ch <- c.scrapeLastOKDesc
 	c.collectDuration.Describe(ch)
@@ -189,7 +197,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	defer c.collectMu.Unlock()
 	start := time.Now()
 
-	c.emitBuf, c.settledBuf = c.state.SnapshotWithSettled(c.emitBuf[:0], c.settledBuf[:0])
+	c.emitBuf, c.settledBuf, c.serverCarryBuf = c.state.SnapshotWithSettled(c.emitBuf[:0], c.settledBuf[:0], c.serverCarryBuf[:0])
 	clear(c.aggBuf)
 	clear(c.serverAggBuf)
 	for i := range c.settledBuf {
@@ -227,6 +235,25 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			c.serverAggBuf[sk] = sv
 		}
 	}
+	// Fold the carry into the mortal per-server family, but ONLY for
+	// tuples that still have live rows: live+carry is what keeps a
+	// still-live series from dipping across a partial fold or a
+	// same-server port recreate. A carry with no matching live tuple is a
+	// dormant rebirth seed — the series has ended (mortal) and must not be
+	// re-emitted as a flat line; it resumes only when a live row returns
+	// within gc.server_carry_ttl (docs/architecture/data-structures.md#settled-bytes).
+	for i := range c.serverCarryBuf {
+		sc := &c.serverCarryBuf[i]
+		sk := serverAggKey{
+			server: sc.Key.ServerID, tenant: sc.Key.Tenant, ext: sc.Key.ExtNet,
+			zone: sc.Key.Zone, dir: sc.Key.Dir,
+		}
+		if v, ok := c.serverAggBuf[sk]; ok {
+			v.bytes += sc.Bytes
+			v.packets += sc.Packets
+			c.serverAggBuf[sk] = v
+		}
+	}
 	for k, v := range c.aggBuf {
 		// ZoneCode.String / Direction.String return constant strings
 		// for all known codes — no allocation in this loop.
@@ -253,6 +280,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	)
 	ch <- prometheus.MustNewConstMetric(
 		c.settledDesc, prometheus.GaugeValue, float64(len(c.settledBuf)),
+	)
+	ch <- prometheus.MustNewConstMetric(
+		c.serverCarryDesc, prometheus.GaugeValue, float64(len(c.serverCarryBuf)),
 	)
 	ch <- prometheus.MustNewConstMetric(
 		c.scrapeErrorsDesc, prometheus.CounterValue, float64(c.scraper.ErrorCount()),

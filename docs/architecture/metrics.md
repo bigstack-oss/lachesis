@@ -18,7 +18,7 @@ the registry — a metric that drifts from this catalog fails CI by name.
 |---|---|---|---|
 | `lachesis_bytes_total` | counter | `tenant_id, zone, external_network, direction` | immortal (live + settled) |
 | `lachesis_packets_total` | counter | `tenant_id, zone, external_network, direction` | immortal (live + settled) |
-| `lachesis_server_bytes_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **mortal** — live rows only, ends at ghost sweep ([billing.md](./billing.md)) |
+| `lachesis_server_bytes_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **mortal** — `Σ live rows + carry`; the carry absorber keeps a still-live server's series from dipping across a partial fold or same-server port recreate, and the series ends once the server is fully dead and its carry expires (`gc.server_carry_ttl`) ([billing.md](./billing.md), [data-structures.md](./data-structures.md#settled-bytes)) |
 
 ### Billing label vocabulary
 
@@ -99,6 +99,7 @@ or sum by (tenant_id) (rate(lachesis_bytes_total[1m]))
 | `lachesis_bpf_update_failures_total` | counter | `reason="update_failure\|skipped_ethertype"` | kernel `telemetry_stats` PERCPU_ARRAY, CPU-summed and drained by the scraper each tick; both reason series are zero-seeded at startup. `update_failure` = telemetry_map inserts the kernel rejected (map full — those flows' bytes are lost until GC frees space), `skipped_ethertype` = non-IP frames passed through uncounted (ARP/LLDP noise normally; a sustained rise flags a trunk/VLAN blind spot) |
 | `lachesis_state_flows` | gauge | — | distinct flow keys in GlobalState (Collector) |
 | `lachesis_state_settled_tuples` | gauge | — | distinct buckets in the settled-bytes accumulator ([data-structures.md](./data-structures.md#settled-bytes)) |
+| `lachesis_state_server_carry_tuples` | gauge | — | distinct buckets in the mortal per-server carry accumulator — the fold absorber that keeps a live server series monotone; dormant tuples drop after `gc.server_carry_ttl` ([data-structures.md](./data-structures.md#settled-bytes)) |
 | `lachesis_scraper_errors_total` | counter | — | failed BPF-map drain attempts (Collector, from scraper) |
 | `lachesis_scraper_last_success_unix_seconds` | gauge | — | most recent successful drain; 0 if never (Collector, from scraper) |
 | `lachesis_collect_duration_seconds` | histogram | — | one Collect pass: snapshot + aggregate + emit. Buckets 1ms..1s |

@@ -41,6 +41,12 @@ type Values struct {
 	GhostGrace time.Duration `knob:"gc.ghost_grace"`
 	// GhostSweepInterval is the ghost-sweep cadence.
 	GhostSweepInterval time.Duration `knob:"gc.ghost_sweep_interval"`
+	// ServerCarryTTL bounds the mortal per-server carry: a dormant carry
+	// tuple (no live rows) is dropped by the sweep once it has been
+	// dormant this long, so dead servers accumulate no unbounded state
+	// (docs/architecture/data-structures.md#settled-bytes). Applies at
+	// the sweep's next pass.
+	ServerCarryTTL time.Duration `knob:"gc.server_carry_ttl"`
 	// ReconcileInterval is the periodic full-reconcile cadence — the
 	// metadata-freshness ceiling when Kafka is down. The /debug
 	// sync-stale badge derives from it.

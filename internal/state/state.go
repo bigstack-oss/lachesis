@@ -42,6 +42,7 @@ package state
 
 import (
 	"sync"
+	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
@@ -61,6 +62,14 @@ type GlobalState struct {
 	mu      sync.RWMutex
 	counts  map[bpf.FlowKey]*Counter
 	settled map[SettledKey]*settledTotal
+	// carry is the mortal per-server family's fold absorber, keyed by
+	// the full server label tuple (docs/architecture/data-structures.md#settled-bytes).
+	// [GlobalState.Settle] credits it in the same critical section it
+	// credits settled; the Collector emits live+carry per server tuple;
+	// [GlobalState.ExpireServerCarry] (the sweep) marks tuples with no
+	// live rows dormant and drops them past the carry TTL, so it stays
+	// bounded by live + within-TTL server tuples.
+	carry map[ServerCarryKey]*carryTotal
 }
 
 // settledTotal is the mutable per-bucket accumulator behind the
@@ -70,11 +79,23 @@ type settledTotal struct {
 	packets uint64
 }
 
+// carryTotal is the mutable per-tuple accumulator behind the carry map.
+// dormantSince is the zero Time while the tuple still has live rows;
+// the sweep stamps it when the tuple falls empty and drops the entry
+// once now−dormantSince exceeds the carry TTL. ServerCarryRecord is the
+// copy-out form (dormancy is not persisted — re-derived after restore).
+type carryTotal struct {
+	bytes        uint64
+	packets      uint64
+	dormantSince time.Time
+}
+
 // New returns an empty GlobalState.
 func New() *GlobalState {
 	return &GlobalState{
 		counts:  make(map[bpf.FlowKey]*Counter),
 		settled: make(map[SettledKey]*settledTotal),
+		carry:   make(map[ServerCarryKey]*carryTotal),
 	}
 }
 
@@ -192,12 +213,12 @@ func AddDelta(total, lastRaw *uint64, current uint64) {
 // unchanged by the fold (value moves between the two maps inside one
 // critical section), which is exactly the docs/architecture/contracts.md#required-contracts Contract 7 monotonicity
 // guarantee.
-func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int {
+func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant, extNet, server string, ok bool)) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	folded := 0
 	for k, c := range g.counts {
-		tenant, extNet, ok := resolve(k)
+		tenant, extNet, server, ok := resolve(k)
 		if !ok {
 			continue
 		}
@@ -209,6 +230,23 @@ func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant,
 		}
 		t.bytes += c.Total.Bytes
 		t.packets += c.Total.Packets
+		// The mortal per-server family's parallel absorber: credit the
+		// carry with the SAME folded bytes, keyed by the full server
+		// tuple, so the server series never dips while the tuple is
+		// still (or again) live (docs/architecture/data-structures.md#settled-bytes).
+		// Rows with no server_id (unattributable traffic) have no
+		// per-server series, so nothing to carry. Dormancy is the
+		// sweep's to decide — Settle never touches dormantSince.
+		if server != "" {
+			ck := ServerCarryKey{ServerID: server, Tenant: tenant, ExtNet: extNet, Zone: k.DstZone, Dir: k.Direction}
+			cc := g.carry[ck]
+			if cc == nil {
+				cc = &carryTotal{}
+				g.carry[ck] = cc
+			}
+			cc.bytes += c.Total.Bytes
+			cc.packets += c.Total.Packets
+		}
 		if mode == SettleEvict {
 			delete(g.counts, k)
 		} else {
@@ -243,7 +281,7 @@ func (g *GlobalState) Snapshot(dst []Entry) []Entry {
 // or drop (settled then live) the folded bytes for one exposure —
 // either way the next scrape breaks series monotonicity. Both slices
 // follow the [GlobalState.Snapshot] reuse contract.
-func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []SettledRecord) ([]Entry, []SettledRecord) {
+func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []SettledRecord, carry []ServerCarryRecord) ([]Entry, []SettledRecord, []ServerCarryRecord) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	for k, c := range g.counts {
@@ -252,7 +290,14 @@ func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []SettledRecord
 	for k, t := range g.settled {
 		settled = append(settled, SettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
 	}
-	return flows, settled
+	// Carry rides in the SAME RLock as live+settled: the mortal family's
+	// emitted value is live+carry per tuple, and a fold moving bytes
+	// rows→carry must never be observable half-done across a scrape
+	// (docs/architecture/contracts.md#required-contracts Contract 7).
+	for k, cc := range g.carry {
+		carry = append(carry, ServerCarryRecord{Key: k, Bytes: cc.bytes, Packets: cc.packets})
+	}
+	return flows, settled, carry
 }
 
 // Len returns the number of distinct flows currently tracked.
@@ -273,7 +318,7 @@ func (g *GlobalState) Len() int {
 // and a crash would make that permanent. Values are copied out so the
 // records are safe to use after the RLock is released, including
 // across the (no-lock) marshal and flush phases of the WAL writer.
-func (g *GlobalState) SnapshotForWAL(flows []Record, settled []SettledRecord) ([]Record, []SettledRecord) {
+func (g *GlobalState) SnapshotForWAL(flows []Record, settled []SettledRecord, carry []ServerCarryRecord) ([]Record, []SettledRecord, []ServerCarryRecord) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	for k, c := range g.counts {
@@ -282,7 +327,10 @@ func (g *GlobalState) SnapshotForWAL(flows []Record, settled []SettledRecord) ([
 	for k, t := range g.settled {
 		settled = append(settled, SettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
 	}
-	return flows, settled
+	for k, cc := range g.carry {
+		carry = append(carry, ServerCarryRecord{Key: k, Bytes: cc.bytes, Packets: cc.packets})
+	}
+	return flows, settled, carry
 }
 
 // Restore seeds the map from records previously written to the WAL.
@@ -316,4 +364,65 @@ func (g *GlobalState) SettledLen() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return len(g.settled)
+}
+
+// RestoreServerCarry seeds the carry accumulator from records previously
+// written to the WAL. Same contract as [GlobalState.Restore]: boot-time
+// only, existing buckets overwritten. Dormancy is deliberately not
+// persisted — the first [GlobalState.ExpireServerCarry] pass re-derives
+// it from the restored live rows.
+func (g *GlobalState) RestoreServerCarry(records []ServerCarryRecord) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, r := range records {
+		g.carry[r.Key] = &carryTotal{bytes: r.Bytes, packets: r.Packets}
+	}
+}
+
+// CarryLen returns the number of carry buckets currently held.
+func (g *GlobalState) CarryLen() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.carry)
+}
+
+// ExpireServerCarry is the carry bucket's lifecycle owner, invoked once
+// per ghost-sweep pass (never a per-tuple timer — docs/architecture/contracts.md#required-contracts).
+// Under the write lock it: (1) classifies each carry tuple live or
+// dormant by resolving every live flow row through resolve — a tuple
+// with at least one live row is live, its dormancy cleared; (2) stamps
+// now on a tuple that has just fallen empty; (3) drops any tuple dormant
+// longer than ttl. Dropped bytes remain in the tenant settled
+// accumulator and in the billing days already extracted, so a dead
+// server accumulates no unbounded state (docs/architecture/data-structures.md#settled-bytes).
+// Returns the number of carry buckets dropped.
+//
+// resolve returns the server tuple a live flow key currently maps to;
+// ok=false for a row with no server_id (unattributable traffic), which
+// can never keep a carry tuple alive.
+func (g *GlobalState) ExpireServerCarry(ttl time.Duration, now time.Time, resolve func(bpf.FlowKey) (ServerCarryKey, bool)) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	live := make(map[ServerCarryKey]struct{}, len(g.carry))
+	for k := range g.counts {
+		if ck, ok := resolve(k); ok {
+			live[ck] = struct{}{}
+		}
+	}
+	dropped := 0
+	for ck, cc := range g.carry {
+		if _, ok := live[ck]; ok {
+			cc.dormantSince = time.Time{} // still live — hold the carry, reset the clock
+			continue
+		}
+		if cc.dormantSince.IsZero() {
+			cc.dormantSince = now // just fell empty — start the TTL clock
+			continue
+		}
+		if now.Sub(cc.dormantSince) > ttl {
+			delete(g.carry, ck)
+			dropped++
+		}
+	}
+	return dropped
 }

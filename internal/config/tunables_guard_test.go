@@ -23,6 +23,7 @@ func TestTunablesProjection_CoversEveryField(t *testing.T) {
 	perturbed := Defaults()
 	perturbed.GC.GhostGrace = 71 * time.Second
 	perturbed.GC.GhostSweepInterval = 72 * time.Second
+	perturbed.GC.ServerCarryTTL = 80 * time.Hour
 	perturbed.GC.PressureHighWatermark = 0.73
 	perturbed.GC.PressureLowWatermark = 0.37
 	perturbed.GC.PressureMaxPerPass = 74

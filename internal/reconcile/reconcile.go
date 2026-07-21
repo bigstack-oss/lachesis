@@ -56,7 +56,7 @@ type MapGauge interface {
 // next scrape. Consumer-defined seam; the agent wires its
 // *state.GlobalState.
 type FlowSettler interface {
-	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int
+	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet, server string, ok bool)) int
 }
 
 // MetadataSource is the subset of [neutron.Neutron] the reconcile loop

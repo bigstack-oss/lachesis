@@ -287,11 +287,11 @@ lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a"
 
 	// The ghost sweep: fold the dead MAC's rows to its tenant, then
 	// delete the metadata (the exact order internal/gc performs).
-	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
 		if metadata.VMMAC(k) != macKey {
-			return "", "", false
+			return "", "", "", false
 		}
-		return "tenant-a", "none", true
+		return "tenant-a", "none", "", true
 	})
 	meta.Delete(macKey)
 
@@ -335,11 +335,11 @@ func TestCollect_MACReuseDoesNotInheritOrReplay(t *testing.T) {
 	// MAC is reborn on tenant B's port: metadata re-learned, and the
 	// reborn flow's kernel counter restarts from zero — its next drain
 	// reads a fresh cumulative (300), unrelated to A's 1000.
-	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
 		if metadata.VMMAC(k) != macKey {
-			return "", "", false
+			return "", "", "", false
 		}
-		return "tenant-a", "none", true
+		return "tenant-a", "none", "", true
 	})
 	meta.Delete(macKey)
 	meta.Insert(macKey, &metadata.TenantMeta{ProjectID: "tenant-b"})
@@ -487,7 +487,7 @@ func TestCollect_ServerFamilyEmitsLiveRowsOnly(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives (live rows + carry, so a partial fold or same-server port recreate never dips a still-live series). MORTAL series: ends at VM teardown, and its carry seed is dropped after gc.server_carry_ttl — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
 lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
 `
@@ -520,7 +520,7 @@ func TestCollect_ServerFamilyMortalAcrossSweep(t *testing.T) {
 
 	// Alive: both families expose the bytes.
 	expected := `
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives (live rows + carry, so a partial fold or same-server port recreate never dips a still-live series). MORTAL series: ends at VM teardown, and its carry seed is dropped after gc.server_carry_ttl — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
 lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 1000
 `
@@ -531,11 +531,11 @@ lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id
 
 	// Ghost sweep: fold under the dying attribution (zone-gated
 	// external_network), evict the rows, delete the metadata.
-	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
 		if metadata.VMMAC(k) != macKey {
-			return "", "", false
+			return "", "", "", false
 		}
-		return "tenant-a", metadata.ExternalNetworkLabel("public-1", k.DstZone), true
+		return "tenant-a", metadata.ExternalNetworkLabel("public-1", k.DstZone), "", true
 	})
 	meta.Delete(macKey)
 
@@ -550,6 +550,64 @@ lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenan
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"lachesis_bytes_total", "lachesis_server_bytes_total"); err != nil {
 		t.Errorf("after sweep: %v", err)
+	}
+}
+
+// TestCollect_ServerFamilyCarriesAcrossPartialFold reproduces lachesis#226:
+// two ports of one server feed a single per-server series tuple; deleting
+// one port ghost-folds its rows away, but the server_id stays alive on the
+// surviving port — so the mortal series must NOT dip. The carry (Σ live +
+// carry) holds the folded bytes on the still-live tuple.
+func TestCollect_ServerFamilyCarriesAcrossPartialFold(t *testing.T) {
+	meta := metadata.New()
+	vm1 := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	vm2 := [6]uint8{0xaa, 0, 0, 0, 0, 2}
+	for _, m := range [][6]uint8{vm1, vm2} {
+		meta.Insert(bpf.MACKey(m), &metadata.TenantMeta{
+			ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+		})
+	}
+
+	st := state.New()
+	dst := [6]uint8{0xee, 0, 0, 0, 0, 9}
+	k1 := bpf.FlowKey{SrcMac: vm1, DstMac: dst, EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	k2 := bpf.FlowKey{SrcMac: vm2, DstMac: dst, EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	st.ApplyDelta(k1, bpf.FlowMetrics{Bytes: 600, Packets: 6, LastSeenNs: 1})
+	st.ApplyDelta(k2, bpf.FlowMetrics{Bytes: 400, Packets: 4, LastSeenNs: 1})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	// Both ports live: the server tuple exposes the full 1000.
+	expected := `
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives (live rows + carry, so a partial fold or same-server port recreate never dips a still-live series). MORTAL series: ends at VM teardown, and its carry seed is dropped after gc.server_carry_ttl — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# TYPE lachesis_server_bytes_total counter
+lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 1000
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"lachesis_server_bytes_total"); err != nil {
+		t.Errorf("before fold: %v", err)
+	}
+
+	// vm1's port is deleted: the ghost sweep folds+evicts its rows under
+	// the dying attribution's server_id; vm2 keeps srv-1 alive.
+	folded := st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
+		if metadata.VMMAC(k) != bpf.MACKey(vm1) {
+			return "", "", "", false
+		}
+		return "tenant-a", metadata.ExternalNetworkLabel("public-1", k.DstZone), "srv-1", true
+	})
+	if folded != 1 {
+		t.Fatalf("folded %d rows, want 1", folded)
+	}
+	meta.Delete(bpf.MACKey(vm1))
+
+	// THE reproduction assertion: the still-live server series has NOT
+	// dipped — 1000 (live vm2 400 + carry vm1 600), not 400.
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"lachesis_server_bytes_total"); err != nil {
+		t.Errorf("after partial fold — server series dipped (lachesis#226): %v", err)
 	}
 }
 
@@ -589,7 +647,7 @@ func TestCollect_PerFlowRouterSplitsExternalNetworks(t *testing.T) {
 # TYPE lachesis_bytes_total counter
 lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 700
 lachesis_bytes_total{direction="tx",external_network="public-2",tenant_id="tenant-a",zone="external"} 300
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives (live rows + carry, so a partial fold or same-server port recreate never dips a still-live series). MORTAL series: ends at VM teardown, and its carry seed is dropped after gc.server_carry_ttl — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
 lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
 lachesis_server_bytes_total{direction="tx",external_network="public-2",server_id="srv-1",tenant_id="tenant-a",zone="external"} 300

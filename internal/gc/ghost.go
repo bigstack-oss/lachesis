@@ -77,7 +77,12 @@ type MacFlowEvictor interface {
 // The agent wires *state.GlobalState; tests may wire it too (it is
 // cheap to construct) or leave it nil to skip settling.
 type FlowSettler interface {
-	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int
+	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet, server string, ok bool)) int
+	// ExpireServerCarry runs the mortal per-server carry's lifecycle pass
+	// — the deterministic TTL owner (docs/architecture/data-structures.md#settled-bytes).
+	// resolve maps a live flow key to its current server tuple; ok=false
+	// for a row with no server_id.
+	ExpireServerCarry(ttl time.Duration, now time.Time, resolve func(bpf.FlowKey) (state.ServerCarryKey, bool)) int
 }
 
 // GhostSweeper periodically drops metadata entries whose 60s grace
@@ -202,8 +207,39 @@ func (g *GhostSweeper) sweep(now time.Time) {
 	residual := g.evictResidualFlows(swept)
 	settled := g.settleSwept(swept)
 	g.deleteUserspace(swept)
+	// Phase 5: the mortal per-server carry's lifecycle pass. Runs after
+	// phase 4 so the just-swept MACs no longer resolve — their tuples
+	// correctly fall dormant — while surviving siblings keep theirs alive
+	// (docs/architecture/data-structures.md#settled-bytes).
+	carryDropped := g.expireCarry(now)
 	g.refreshMacGauge()
-	g.report(len(swept), residual, settled, active)
+	g.report(len(swept), residual, settled, active, carryDropped)
+}
+
+// expireCarry runs the carry accumulator's dormancy/TTL pass — the
+// deterministic TTL owner (never a per-tuple timer, docs/architecture/contracts.md#required-contracts).
+// A live row's server tuple is resolved through the current metadata
+// exactly as the Collector emits it, so classification matches emission.
+// The TTL is the live gc.server_carry_ttl tunable (hot-reload; applies
+// this pass). No-op when no settler is wired (pre-fold unit tests).
+func (g *GhostSweeper) expireCarry(now time.Time) int {
+	if g.settler == nil {
+		return 0
+	}
+	ttl := g.tun.Get().ServerCarryTTL
+	return g.settler.ExpireServerCarry(ttl, now, func(k bpf.FlowKey) (state.ServerCarryKey, bool) {
+		meta, ok := g.meta.Lookup(metadata.VMMAC(k))
+		if !ok || meta.ServerID == "" {
+			return state.ServerCarryKey{}, false
+		}
+		return state.ServerCarryKey{
+			ServerID: meta.ServerID,
+			Tenant:   meta.ProjectID,
+			ExtNet:   metadata.FlowExternalLabel(g.routers, meta.ExternalNetwork, k),
+			Zone:     k.DstZone,
+			Dir:      k.Direction,
+		}, true
+	})
 }
 
 // refreshMacGauge keeps lachesis_bpf_map_current_entries{map="mac_tenant_map"}
@@ -294,12 +330,12 @@ func (g *GhostSweeper) settleSwept(swept map[uint64]struct{}) int {
 			metas[mac] = meta
 		}
 	}
-	return g.settler.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+	return g.settler.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
 		meta, ok := metas[metadata.VMMAC(k)]
 		if !ok {
-			return "", "", false
+			return "", "", "", false
 		}
-		return meta.ProjectID, metadata.FlowExternalLabel(g.routers, meta.ExternalNetwork, k), true
+		return meta.ProjectID, metadata.FlowExternalLabel(g.routers, meta.ExternalNetwork, k), meta.ServerID, true
 	})
 }
 
@@ -315,15 +351,15 @@ func (g *GhostSweeper) deleteUserspace(swept map[uint64]struct{}) {
 
 // report records the pass's outcome on the GC metrics and logs a line
 // when anything was swept.
-func (g *GhostSweeper) report(evicted, residual, settled, active int) {
+func (g *GhostSweeper) report(evicted, residual, settled, active, carryDropped int) {
 	g.mx.RecordTTLEvictions(evicted)
 	g.mx.RecordResidualFlowEvictions(residual)
 	g.mx.RecordSettledFlows(settled)
 	g.mx.SetGhostsActive(active)
-	if evicted > 0 {
+	if evicted > 0 || carryDropped > 0 {
 		slog.Info("swept expired lingering ghosts",
 			"component", component, "evicted", evicted,
 			"residual_flows", residual, "settled_flows", settled,
-			"still_active", active)
+			"carry_dropped", carryDropped, "still_active", active)
 	}
 }

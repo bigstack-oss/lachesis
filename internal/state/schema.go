@@ -76,6 +76,35 @@ type SettledRecord struct {
 	Packets uint64
 }
 
+// ServerCarryKey identifies one per-server carry bucket — the mortal
+// per-server family's fold absorber (docs/architecture/billing.md,
+// docs/architecture/contracts.md#required-contracts Contract 7). Unlike
+// [SettledKey], it KEEPS the server dimension: it is exactly the
+// lachesis_server_bytes_total label tuple, so a fold credits the same
+// series the live flows occupied and the mortal series never drops
+// while it is still live (a multi-port server losing one port, a
+// same-server port recreate). Bounded: a tuple with no live rows goes
+// dormant and its carry is dropped after the carry TTL (the sweep owns
+// expiry), so dead servers accumulate no unbounded state.
+type ServerCarryKey struct {
+	ServerID string
+	Tenant   string
+	ExtNet   string
+	Zone     bpf.ZoneCode
+	Dir      bpf.Direction
+}
+
+// ServerCarryRecord is one carry bucket's cumulative totals, emitted by
+// the snapshot methods and round-tripped through the WAL (additive
+// schema v3). Like [SettledRecord] it carries no delta-math or recency
+// fields; the dormancy/TTL state is re-derived by the sweep after a
+// restore, so it is deliberately not persisted.
+type ServerCarryRecord struct {
+	Key     ServerCarryKey
+	Bytes   uint64
+	Packets uint64
+}
+
 // SettleMode selects what [GlobalState.Settle] does with a flow row
 // after folding its Total into the settled accumulator. The right mode
 // is decided by whether the row's kernel telemetry_map counters still
