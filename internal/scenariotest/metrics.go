@@ -27,6 +27,12 @@ const (
 	// deleted VM. Absent on pre-fold agents — the scenario checks
 	// presence and refuses to run rather than hanging on the poll.
 	metricSettledFlows = "lachesis_gc_settled_flows_total"
+	// metricLingeringGhosts is the live count of MACs marked for deletion
+	// but not yet swept (the lingering-ghost grace window). Unlike
+	// metricSettledFlows (which only moves when the sweep folds, after the
+	// 60s grace), this gauge rises the instant a MAC is MarkDelete'd — the
+	// immediate signal that something was marked gone (docs/architecture/data-structures.md#lingering-ghost).
+	metricLingeringGhosts = "lachesis_lingering_ghosts_active"
 	// metricServerBytesTotal is the mortal per-server billing family
 	// (docs/architecture/billing.md). Absent on agents predating the per-server export;
 	// only expectations with a VM target need it, and assert refuses
@@ -81,6 +87,7 @@ type ScrapeResult struct {
 	AttachedInterfaces float64
 	AttachFailures     float64
 	SettledFlows       float64
+	LingeringGhosts    float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
 	// Anomalies is lachesis_neutron_anomalies broken out by its
@@ -95,6 +102,7 @@ type MetricsSnapshot struct {
 	AttachedInterfaces float64
 	AttachFailures     float64
 	SettledFlows       float64
+	LingeringGhosts    float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
 	// Anomalies sums each anomaly class across all agents.
@@ -159,13 +167,14 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	}
 	r := ScrapeResult{Present: map[string]bool{}}
 	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures,
-		metricSettledFlows, metricServerBytesTotal, metricNeutronAnomalies} {
+		metricSettledFlows, metricLingeringGhosts, metricServerBytesTotal, metricNeutronAnomalies} {
 		_, ok := fams[n]
 		r.Present[n] = ok
 	}
 	r.AttachedInterfaces = familySum(fams, metricAttachedInterfaces)
 	r.AttachFailures = familySum(fams, metricAttachFailures)
 	r.SettledFlows = familySum(fams, metricSettledFlows)
+	r.LingeringGhosts = familySum(fams, metricLingeringGhosts)
 	r.Bytes = bytesSamples(fams)
 	r.Servers = serverSamples(fams)
 	r.Anomalies = anomalySamples(fams)
@@ -253,6 +262,7 @@ func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) 
 		snap.AttachedInterfaces += r.AttachedInterfaces
 		snap.AttachFailures += r.AttachFailures
 		snap.SettledFlows += r.SettledFlows
+		snap.LingeringGhosts += r.LingeringGhosts
 		for _, s := range r.Bytes {
 			s.Node = a.Host
 			snap.Bytes = append(snap.Bytes, s)
