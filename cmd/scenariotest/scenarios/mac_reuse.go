@@ -54,7 +54,7 @@ func macReuse() *scenariotest.Scenario {
 			// Delete the VM and let the agent's ghost sweep fold it.
 			scenariotest.CaptureStep{},
 			scenariotest.DeleteVMStep{VM: "vm-a"},
-			scenariotest.AwaitSweepStep{},
+			scenariotest.AwaitSweepStep{ForMACOf: "vm-a"},
 
 			// Contract 7, live: the sweep moved nothing off the books.
 			scenariotest.MonotoneStep{Tenant: "T1", Note: "monotone across ghost sweep"},

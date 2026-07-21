@@ -71,7 +71,7 @@ func interfaceDetachReattach() *scenariotest.Scenario {
 			// SLOW: wait out the sweep, then bring the same port back.
 			scenariotest.CaptureStep{},
 			scenariotest.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
-			scenariotest.AwaitSweepStep{},
+			scenariotest.AwaitSweepStep{ForMACOf: "vm-a-nic2"},
 			scenariotest.ReattachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
 			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.26.9/24"},
 			scenariotest.DriveStep{Flows: []scenariotest.Flow{
