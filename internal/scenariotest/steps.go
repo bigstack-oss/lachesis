@@ -30,14 +30,16 @@ const (
 	// tick, so the default must comfortably cover the no-Kafka worst
 	// case.
 	DefaultSweepTimeout = 8 * time.Minute
-	// sweepPollInterval is the pause between [AwaitSweepStep] scrapes.
-	sweepPollInterval = 5 * time.Second
 	// DefaultAgentReadyTimeout bounds [RestartAgentStep]'s wait for the
 	// agent to answer /metrics and re-attach its taps after a restart.
 	DefaultAgentReadyTimeout = 90 * time.Second
 	// agentReadyPollInterval is the pause between readiness scrapes.
 	agentReadyPollInterval = 2 * time.Second
 )
+
+// sweepPollInterval is the pause between [AwaitSweepStep] polls. A var,
+// not a const, so poll-loop tests can shrink it.
+var sweepPollInterval = 5 * time.Second
 
 // Step is one instruction in a scripted scenario. Run performs the
 // step against env, appending any assertion rows to env.Report; it
@@ -286,26 +288,49 @@ func (s DeleteVMStep) Run(ctx context.Context, env *StepEnv) error {
 	return nil
 }
 
-// AwaitSweepStep blocks until the agents' summed
-// lachesis_gc_settled_flows_total rises above the value the most recent
-// [CaptureStep] recorded — the ghost sweep has folded something — or
-// Timeout (default [DefaultSweepTimeout]) fires.
+// AwaitSweepStep blocks until the ghost sweep has processed a deleted
+// VM/NIC. Prefer ForMACOf: it polls every agent's /debug/lookup for that
+// entity's MAC and returns once the MAC no longer resolves in the
+// userspace metadata map — which the sweep deletes LAST, after it has
+// folded the MAC's GlobalState rows into settled (docs/architecture/data-structures.md#settled-bytes;
+// sweep order: kernel delete → residual-flow evict → settle FOLD →
+// userspace delete). So "MAC gone from /debug/lookup" is a precise,
+// per-MAC signal that the fold (and therefore the per-server-series
+// drop) has happened.
+//
+// With ForMACOf empty it falls back to waiting for the global
+// lachesis_gc_settled_flows_total to rise — which is only trustworthy on
+// a quiet single-tenant agent: on a shared agent other tenants' folds
+// move that counter constantly, so the wait returns before THIS entity's
+// grace elapses and any following assertion reads pre-fold state
+// (lachesis#240). New scenarios should always set ForMACOf.
 type AwaitSweepStep struct {
-	Timeout time.Duration
+	// ForMACOf is the DSL id of the VM or NIC whose deleted MAC's fold to
+	// wait for — recorded by the preceding [DeleteVMStep] / [DetachPortStep].
+	ForMACOf string
+	Timeout  time.Duration
 }
 
 func (AwaitSweepStep) Kind() string { return "await-sweep" }
 
-func (AwaitSweepStep) requiredMetrics() []string { return []string{metricSettledFlows} }
+func (s AwaitSweepStep) requiredMetrics() []string {
+	if s.ForMACOf != "" {
+		return nil // uses /debug/lookup, not a metric family
+	}
+	return []string{metricSettledFlows}
+}
 
 func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultSweepTimeout
 	}
-	env.Log.Info("await-sweep: waiting", "settled_flows_above", env.settledBase, "timeout", timeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if s.ForMACOf != "" {
+		return s.awaitMACSwept(ctx, env, timeout)
+	}
+	env.Log.Warn("await-sweep: waiting on the GLOBAL settled counter — unreliable on a shared agent (lachesis#240); set ForMACOf", "settled_flows_above", env.settledBase, "timeout", timeout)
 	for {
 		snap, err := env.scrape(ctx)
 		if err != nil {
@@ -319,6 +344,60 @@ func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-ctx.Done():
 			return fmt.Errorf("ghost sweep not observed within %s (settled_flows still %.0f): %w",
 				timeout, snap.SettledFlows, ctx.Err())
+		case <-time.After(sweepPollInterval):
+		}
+	}
+}
+
+// awaitMACSwept polls every agent's /debug/lookup for the MAC recorded
+// against ForMACOf and returns once it resolves on none of them — the
+// userspace metadata delete that ends the ghost sweep, which happens
+// after the fold.
+func (s AwaitSweepStep) awaitMACSwept(ctx context.Context, env *StepEnv, timeout time.Duration) error {
+	mac, err := env.vmMAC(ctx, s.ForMACOf)
+	if err != nil {
+		return fmt.Errorf("await-sweep: no MAC known for %q (delete or detach it first): %w", s.ForMACOf, err)
+	}
+	env.Log.Info("await-sweep: waiting for MAC to leave metadata", "for", s.ForMACOf, "mac", mac, "timeout", timeout)
+	everFound := false // did the MAC resolve on any agent at any poll?
+	var lastErr error  // most recent transient lookup failure, surfaced on timeout
+	for {
+		gone := true
+		for _, u := range agentURLs(env.Config) {
+			res, err := env.Metrics.LookupMAC(ctx, u, mac)
+			if err != nil {
+				// A momentarily-unreachable agent can't confirm the MAC is
+				// gone there — keep waiting rather than abort, so one bad
+				// scrape on a multi-node cluster doesn't fail the wait.
+				lastErr = err
+				gone = false
+				continue
+			}
+			if res.Found {
+				everFound = true
+				gone = false
+			}
+		}
+		if gone {
+			if !everFound {
+				// The MAC never resolved on any agent during the wait: it was
+				// already swept before the first poll, or ForMACOf points at
+				// an entity whose traffic was never driven/learned. Nothing to
+				// wait for — return, but loudly, since a silent pass here would
+				// mask a mis-targeted ForMACOf.
+				env.Log.Warn("await-sweep: MAC never in metadata during the wait — nothing to await (already swept, or ForMACOf never learned)",
+					"for", s.ForMACOf, "mac", mac)
+				return nil
+			}
+			env.Log.Info("await-sweep: swept (MAC gone from metadata)", "for", s.ForMACOf, "mac", mac)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("await-sweep: MAC %s (%s) not confirmed gone after %s (last lookup error: %v): %w", mac, s.ForMACOf, timeout, lastErr, ctx.Err())
+			}
+			return fmt.Errorf("await-sweep: MAC %s (%s) still in metadata after %s — ghost not swept: %w", mac, s.ForMACOf, timeout, ctx.Err())
 		case <-time.After(sweepPollInterval):
 		}
 	}
@@ -1262,6 +1341,12 @@ func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	if ref.ID == "" {
 		return fmt.Errorf("run-state has no port %q", s.Port)
 	}
+	// Record the MAC so a following [AwaitSweepStep]{ForMACOf: s.Port} can
+	// wait for THIS NIC's ghost fold — even after Delete drops the ref.
+	if env.macs == nil {
+		env.macs = map[string]string{}
+	}
+	env.macs[s.Port] = ref.MAC
 	serverID, ok := serverIDFor(env.State, s.VM)
 	if !ok {
 		return fmt.Errorf("run-state has no server for VM %q", s.VM)

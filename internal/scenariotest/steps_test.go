@@ -39,6 +39,10 @@ func macReuseScenario() *Scenario {
 			}},
 			CaptureStep{},
 			DeleteVMStep{VM: "vm-a"},
+			// Deliberately the global-settled fallback (no ForMACOf): this
+			// helper exercises that path + its metric gate; the ForMACOf
+			// path is covered by the sweepMetrics tests and the registered
+			// mac-reuse scenario.
 			AwaitSweepStep{},
 			MonotoneStep{Tenant: "T1", Note: "monotone across ghost sweep"},
 			MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant", Budget: budget, Note: "no re-bucket to unknown"},
@@ -989,6 +993,11 @@ func TestSteps_NICLifecycle(t *testing.T) {
 	if liveID(senv.State.Ports, "vm-a-nic2") == "" {
 		t.Error("detach without Delete must keep the ref")
 	}
+	// The detached MAC is recorded so a following AwaitSweepStep{ForMACOf}
+	// can wait for its fold — even once Delete drops the ref.
+	if senv.macs["vm-a-nic2"] != ref.MAC {
+		t.Errorf("detach must record the MAC: macs[vm-a-nic2]=%q, want %q", senv.macs["vm-a-nic2"], ref.MAC)
+	}
 	if got, want := senv.State.Attach.Target, senv.Metrics.(*nicMetrics).env.baseAttached+1; got != want {
 		t.Errorf("post-detach attach target = %v, want %v", got, want)
 	}
@@ -1105,5 +1114,160 @@ func TestSteps_MaxSettled(t *testing.T) {
 	}
 	if senv.Report.OK {
 		t.Error("growth beyond budget must fail the report")
+	}
+}
+
+// sweepMetrics models a SHARED agent: the global settled counter rises
+// on every scrape (other tenants' folds), while the target MAC leaves
+// the metadata map only after macGoneAfterLookups lookups.
+type sweepMetrics struct {
+	settledStart        float64
+	macGoneAfterLookups int
+	lookups             int
+	scrapes             int
+}
+
+func (m *sweepMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+	m.scrapes++
+	return ScrapeResult{
+		Present:      map[string]bool{metricSettledFlows: true, metricBytesTotal: true, metricAttachedInterfaces: true},
+		SettledFlows: m.settledStart + float64(m.scrapes), // always rising
+	}, nil
+}
+
+func (m *sweepMetrics) LookupMAC(_ context.Context, _, _ string) (MACLookup, error) {
+	m.lookups++
+	if m.lookups >= m.macGoneAfterLookups {
+		return MACLookup{Found: false}, nil
+	}
+	return MACLookup{Found: true, TenantID: "t"}, nil
+}
+
+func (m *sweepMetrics) LookupFlows(context.Context, string, string) ([]FlowRow, error) {
+	return nil, nil
+}
+
+func sweepEnv(t *testing.T, m MetricsSource) *StepEnv {
+	t.Helper()
+	return &StepEnv{
+		Config:      testConfig(), // one agent
+		State:       &RunState{RunID: "r"},
+		Metrics:     m,
+		Log:         slog.New(slog.DiscardHandler),
+		Report:      &AssertReport{OK: true},
+		macs:        map[string]string{"nic": "fa:16:3e:00:00:aa"},
+		settledBase: 10,
+	}
+}
+
+// The fix (lachesis#240): ForMACOf waits for the MAC to leave metadata,
+// returning as soon as it does — regardless of the rising global counter.
+func TestSteps_AwaitSweep_ForMACReturnsWhenGone(t *testing.T) {
+	m := &sweepMetrics{settledStart: 10, macGoneAfterLookups: 1}
+	if err := (AwaitSweepStep{ForMACOf: "nic", Timeout: time.Second}).Run(context.Background(), sweepEnv(t, m)); err != nil {
+		t.Fatalf("await-sweep: %v", err)
+	}
+	if m.lookups != 1 {
+		t.Errorf("lookups = %d, want 1 (MAC gone on first poll)", m.lookups)
+	}
+}
+
+// The bug it fixes: a rising global settled counter must NOT satisfy a
+// ForMACOf wait — while the MAC is still in metadata the step keeps
+// waiting and ultimately times out on the MAC, never on the counter.
+func TestSteps_AwaitSweep_ForMACIgnoresGlobalSettled(t *testing.T) {
+	m := &sweepMetrics{settledStart: 10, macGoneAfterLookups: 1_000_000} // never gone
+	err := (AwaitSweepStep{ForMACOf: "nic", Timeout: 60 * time.Millisecond}).Run(context.Background(), sweepEnv(t, m))
+	if err == nil || !strings.Contains(err.Error(), "still in metadata") {
+		t.Fatalf("want a MAC-still-in-metadata timeout (not a global-settled pass), got %v", err)
+	}
+}
+
+// Fallback (no ForMACOf) keeps the legacy global-settled behavior.
+func TestSteps_AwaitSweep_GlobalFallback(t *testing.T) {
+	m := &sweepMetrics{settledStart: 10, macGoneAfterLookups: 1}
+	if err := (AwaitSweepStep{Timeout: time.Second}).Run(context.Background(), sweepEnv(t, m)); err != nil {
+		t.Fatalf("await-sweep global fallback: %v", err)
+	}
+	if m.lookups != 0 {
+		t.Errorf("global fallback must not call LookupMAC, got %d lookups", m.lookups)
+	}
+}
+
+// twoAgentCfg returns a config with two agents, for all-agents semantics.
+func twoAgentCfg() Config {
+	cfg := testConfig()
+	cfg.Cluster.Agents = []AgentConfig{
+		{Host: "compute-0", MetricsURL: "http://compute-0:9100/metrics"},
+		{Host: "compute-1", MetricsURL: "http://compute-1:9100/metrics"},
+	}
+	return cfg
+}
+
+// perAgentSweep answers LookupMAC per agent URL, and errors when errAll
+// is set — for the all-agents and transient-tolerance tests.
+type perAgentSweep struct {
+	foundOn map[string]bool // metrics URL → MAC still resolves there
+	errAll  bool
+}
+
+func (m *perAgentSweep) Scrape(context.Context, string) (ScrapeResult, error) {
+	return ScrapeResult{Present: map[string]bool{metricBytesTotal: true, metricAttachedInterfaces: true}}, nil
+}
+func (m *perAgentSweep) LookupMAC(_ context.Context, url, _ string) (MACLookup, error) {
+	if m.errAll {
+		return MACLookup{}, fmt.Errorf("boom: %s unreachable", url)
+	}
+	return MACLookup{Found: m.foundOn[url]}, nil
+}
+func (m *perAgentSweep) LookupFlows(context.Context, string, string) ([]FlowRow, error) {
+	return nil, nil
+}
+
+// Happy path with a real Found→gone transition (fast: shrunk poll interval).
+func TestSteps_AwaitSweep_ForMACTransition(t *testing.T) {
+	defer func(d time.Duration) { sweepPollInterval = d }(sweepPollInterval)
+	sweepPollInterval = 2 * time.Millisecond
+
+	m := &sweepMetrics{settledStart: 10, macGoneAfterLookups: 3} // Found twice, then gone
+	env := sweepEnv(t, m)
+	if err := (AwaitSweepStep{ForMACOf: "nic", Timeout: time.Second}).Run(context.Background(), env); err != nil {
+		t.Fatalf("await-sweep: %v", err)
+	}
+	if m.lookups < 3 {
+		t.Errorf("expected to poll until the MAC folded (>=3 lookups), got %d", m.lookups)
+	}
+}
+
+// All-agents semantics: while the MAC still resolves on ANY agent the
+// wait must not return — it times out here because compute-1 keeps it.
+func TestSteps_AwaitSweep_WaitsForAllAgents(t *testing.T) {
+	m := &perAgentSweep{foundOn: map[string]bool{
+		"http://compute-0:9100/metrics": false, // swept here
+		"http://compute-1:9100/metrics": true,  // still present here
+	}}
+	env := &StepEnv{
+		Config: twoAgentCfg(), State: &RunState{RunID: "r"}, Metrics: m,
+		Log: slog.New(slog.DiscardHandler), Report: &AssertReport{OK: true},
+		macs: map[string]string{"nic": "fa:16:3e:00:00:aa"},
+	}
+	err := (AwaitSweepStep{ForMACOf: "nic", Timeout: 60 * time.Millisecond}).Run(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "still in metadata") {
+		t.Fatalf("must keep waiting while any agent still has the MAC; got %v", err)
+	}
+}
+
+// Transient lookup errors must not abort the wait: it keeps polling and
+// surfaces the last error on timeout, rather than returning immediately.
+func TestSteps_AwaitSweep_ToleratesTransientErrors(t *testing.T) {
+	m := &perAgentSweep{errAll: true}
+	env := sweepEnv(t, m)
+	start := time.Now()
+	err := (AwaitSweepStep{ForMACOf: "nic", Timeout: 60 * time.Millisecond}).Run(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "last lookup error") {
+		t.Fatalf("want a timeout carrying the last lookup error (not an immediate abort), got %v", err)
+	}
+	if time.Since(start) < 40*time.Millisecond {
+		t.Errorf("returned too fast (%s) — it aborted on the first error instead of waiting", time.Since(start))
 	}
 }
