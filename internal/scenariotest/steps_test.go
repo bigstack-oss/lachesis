@@ -1044,6 +1044,10 @@ func TestSteps_ConfigureNIC(t *testing.T) {
 	if err := (ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "not-a-cidr"}).Run(context.Background(), senv); err == nil {
 		t.Error("bad CIDR must error")
 	}
+	// A shell-unsafe Dev is rejected before it reaches the command line.
+	if err := (ConfigureNICStep{VM: "vm-a", Dev: "eth1; reboot", CIDR: "10.0.31.9/24"}).Run(context.Background(), senv); err == nil {
+		t.Error("shell-unsafe Dev must error")
+	}
 }
 
 func TestSteps_ServerMonotone(t *testing.T) {

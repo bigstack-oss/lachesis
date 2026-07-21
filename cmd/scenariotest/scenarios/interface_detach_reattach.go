@@ -57,7 +57,11 @@ func interfaceDetachReattach() *scenariotest.Scenario {
 			scenariotest.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
 			scenariotest.ReattachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
 			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.26.9/24"},
-			scenariotest.MaxSettledStep{Note: "fast reattach folds nothing"},
+			// No explicit fold-gate here: within the grace an immediate
+			// settled-counter check is blind to a not-yet-registered fold
+			// (lachesis#243), and a fast detach transiently marks then
+			// un-marks a ghost — so the no-dip server-monotone below IS the
+			// proof that the resurrection folded nothing.
 			scenariotest.ServerMonotoneStep{VM: "vm-a",
 				Note: "fast reattach within grace — no dip"},
 			scenariotest.DriveStep{Flows: []scenariotest.Flow{
