@@ -49,7 +49,7 @@ func liveMigrateRoundTrip() *scenariotest.Scenario {
 			// Outbound leg: nothing folds, nothing dips, nothing re-buckets.
 			scenariotest.CaptureStep{},
 			scenariotest.MigrateStep{VM: "vm-a", Target: "node:1"},
-			scenariotest.MaxSettledStep{Note: "outbound migration folds nothing"},
+			scenariotest.MaxGhostsStep{Note: "outbound migration marks no ghost"},
 			scenariotest.ServerMonotoneStep{VM: "vm-a", Note: "per-server series monotone across outbound leg"},
 			scenariotest.MonotoneStep{Tenant: "T1", Note: "tenant monotone across outbound leg"},
 			scenariotest.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",
@@ -65,7 +65,7 @@ func liveMigrateRoundTrip() *scenariotest.Scenario {
 			// they must RESUME, not restart.
 			scenariotest.CaptureStep{},
 			scenariotest.MigrateStep{VM: "vm-a", Target: "node:0"},
-			scenariotest.MaxSettledStep{Note: "return migration folds nothing"},
+			scenariotest.MaxGhostsStep{Note: "return migration marks no ghost"},
 			scenariotest.ServerMonotoneStep{VM: "vm-a", Note: "per-server series monotone across return leg"},
 			scenariotest.MonotoneStep{Tenant: "T1", Note: "tenant monotone across return leg"},
 			scenariotest.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",

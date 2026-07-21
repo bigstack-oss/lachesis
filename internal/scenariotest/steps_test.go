@@ -893,6 +893,7 @@ type nicMetrics struct {
 
 	servers []ServerSample
 	settled float64
+	ghosts  float64
 }
 
 func (m *nicMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
@@ -906,11 +907,12 @@ func (m *nicMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 		Present: map[string]bool{
 			metricBytesTotal: true, metricAttachedInterfaces: true,
 			metricAttachFailures: true, metricSettledFlows: true,
-			metricServerBytesTotal: true,
+			metricServerBytesTotal: true, metricLingeringGhosts: true,
 		},
 		AttachedInterfaces: m.env.baseAttached + float64(m.env.booted) + float64(len(m.cloud.hotAttached)) - float64(deleted),
 		AttachFailures:     m.env.failures,
 		SettledFlows:       m.settled,
+		LingeringGhosts:    m.ghosts,
 		Servers:            m.servers,
 	}, nil
 }
@@ -1114,6 +1116,32 @@ func TestSteps_MaxSettled(t *testing.T) {
 	}
 	if senv.Report.OK {
 		t.Error("growth beyond budget must fail the report")
+	}
+}
+
+func TestSteps_MaxGhosts(t *testing.T) {
+	_, nm, senv := nicFixture(t)
+	ctx := context.Background()
+
+	nm.ghosts = 3 // a pre-existing ghost on the (shared) agent
+	if err := (CaptureStep{}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+	// No NEW ghost marked → delta 0 → passes a zero budget, even though
+	// the absolute count is non-zero (delta-from-capture, not absolute).
+	if err := (MaxGhostsStep{Note: "migration marks no ghost"}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+	if !senv.Report.OK {
+		t.Fatalf("no new ghost must pass despite a non-zero baseline: %+v", senv.Report.Rows)
+	}
+	// A newly-marked ghost (e.g. a wrongful migration ghost) fails.
+	nm.ghosts = 4
+	if err := (MaxGhostsStep{Note: "wrongful ghost"}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+	if senv.Report.OK {
+		t.Error("a newly-marked ghost must fail the report")
 	}
 }
 
