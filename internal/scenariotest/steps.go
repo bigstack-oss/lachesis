@@ -1455,7 +1455,15 @@ type ServerMonotoneStep struct {
 
 func (ServerMonotoneStep) Kind() string { return "assert-server-monotone" }
 
-func (ServerMonotoneStep) requiredMetrics() []string { return []string{metricServerBytesTotal} }
+// requiredMetrics deliberately returns nil: the mortal per-server family
+// (lachesis_server_bytes_total) is data-dependent — a fresh, quiet agent
+// exposes it only once a server flow has bytes, which THIS scenario's own
+// DriveStep produces before the assertion runs. A preflight gate on it
+// can't tell "agent too old" from "no traffic yet" and falsely blocks the
+// run on a freshly-started agent (observed live on c36). If the family is
+// genuinely never produced, [ServerMonotoneStep.Run] fails with a clear
+// "no captured server tuples" error instead.
+func (ServerMonotoneStep) requiredMetrics() []string { return nil }
 
 func (s ServerMonotoneStep) Run(ctx context.Context, env *StepEnv) error {
 	serverID, ok := serverIDFor(env.State, s.VM)
