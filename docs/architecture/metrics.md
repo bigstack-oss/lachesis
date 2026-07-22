@@ -3,7 +3,8 @@
 Two tiers of metrics. **Billing metrics** (the thing we exist to produce) are
 emitted by the custom `prometheus.Collector` from `GlobalState` — the tenant
 families fan out by (tenant, zone, external_network, direction), the mortal
-per-server family adds `server_id`. **Health metrics** (operator-facing
+per-server family adds `server_id` and `port_id` (one series per port;
+consumers aggregate to `server_id`). **Health metrics** (operator-facing
 instrumentation) are bounded-cardinality; an operator running PromQL against
 one node should see <100 series total. The product semantics on top of the
 billing tier — postures, consumption rules — live in [billing.md](./billing.md).
@@ -18,7 +19,7 @@ the registry — a metric that drifts from this catalog fails CI by name.
 |---|---|---|---|
 | `lachesis_bytes_total` | counter | `tenant_id, zone, external_network, direction` | immortal (live + settled) |
 | `lachesis_packets_total` | counter | `tenant_id, zone, external_network, direction` | immortal (live + settled) |
-| `lachesis_server_bytes_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **mortal** — live rows only, ends at ghost sweep ([billing.md](./billing.md)) |
+| `lachesis_server_bytes_total` | counter | `server_id, port_id, tenant_id, zone, external_network, direction` | **mortal, per port** — one series per Neutron port; a port's series stops when the port is deleted. Aggregate to `server_id` in the consumer via Δ-per-series-then-sum / sum-of-rates, never a naive sum-then-subtract ([billing.md](./billing.md)) |
 
 ### Billing label vocabulary
 

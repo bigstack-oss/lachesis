@@ -1,0 +1,20 @@
+# Prometheus recording rules for the CubeCOS network-telemetry agent.
+#
+# The mortal per-server family (lachesis_server_bytes_total) is emitted
+# PER PORT (port_id in the key). The billable unit is server_id, so a
+# consumer must aggregate across a server's ports — and the ONLY correct
+# way is per-series-FIRST: sum of per-series rates (dashboards) or
+# Δ-per-series then sum (the billing ETL, a range query, not a recording
+# rule). A naive `sum by (server_id)` of the raw counter DROPS the instant
+# any port's series stops (a deleted port), so it must never be graphed or
+# subtracted directly (docs/architecture/billing.md).
+#
+# This rule pre-computes the correct per-server byte RATE so dashboards
+# consume it rather than rolling their own aggregate. Exact billing totals
+# (period subtraction) are NOT a recording rule — they are the ETL's
+# Δ-per-series-then-sum range query described in billing.md.
+groups:
+  - name: lachesis-recording
+    rules:
+      - record: lachesis:server_bytes:rate5m
+        expr: sum by (server_id, tenant_id, zone, external_network, direction) (rate(lachesis_server_bytes_total[5m]))
