@@ -47,7 +47,7 @@ type RunState struct {
 	// assertions across a migration are judged against.
 	Migrations []MigrationRecord `json:"migrations,omitempty"`
 
-	// Baseline is the pre-drive lachesis_bytes_total snapshot across
+	// Baseline is the pre-drive lachesis_tenant_bytes_total snapshot across
 	// all agents, captured by `drive` immediately before it pushes
 	// traffic; `assert` diffs against it. BaselineServers is the
 	// per-server family's counterpart, consumed only by expectations

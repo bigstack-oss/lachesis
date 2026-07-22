@@ -18,7 +18,11 @@ import (
 // internal/netlink/metrics.go); kept as local constants so this tool
 // does not import internal/bpf and its generated kernel bindings.
 const (
-	metricBytesTotal         = "lachesis_bytes_total"
+	// metricBytesTotal is the TENANT tier of the four-layer billing
+	// hierarchy — the family carrying tenant_id, which every tenant
+	// expectation and monotonicity assertion reads
+	// (docs/architecture/billing.md).
+	metricBytesTotal         = "lachesis_tenant_bytes_total"
 	metricAttachedInterfaces = "lachesis_attached_interfaces"
 	metricAttachFailures     = "lachesis_tc_attach_failures_total"
 	// metricSettledFlows counts GlobalState rows the agent's ghost sweep
@@ -33,18 +37,24 @@ const (
 	// 60s grace), this gauge rises the instant a MAC is MarkDelete'd — the
 	// immediate signal that something was marked gone (docs/architecture/data-structures.md#lingering-ghost).
 	metricLingeringGhosts = "lachesis_lingering_ghosts_active"
-	// metricServerBytesTotal is the mortal per-server billing family
+	// metricServerBytesTotal is the per-server billing family
 	// (docs/architecture/billing.md). Absent on agents predating the per-server export;
 	// only expectations with a VM target need it, and assert refuses
 	// those against agents that don't expose it.
 	metricServerBytesTotal = "lachesis_server_bytes_total"
+	// metricPortBytesTotal is the per-port drill-down family — the
+	// mortal leaf of the four-layer hierarchy (docs/architecture/billing.md).
+	// Data-dependent like the server family (a series exists only once
+	// its port carries attributed traffic), so no step preflight-gates
+	// on it; [PortSeriesStep] fails with a clear row instead.
+	metricPortBytesTotal = "lachesis_port_bytes_total"
 	// metricNeutronAnomalies is the per-class topology-anomaly gauge.
 	// [AssertAnomalyStep] polls it; the class vocabulary is the agent's
 	// (cycle, ambiguity, …, multi_external_path).
 	metricNeutronAnomalies = "lachesis_neutron_anomalies"
 )
 
-// BytesSample is one lachesis_bytes_total series: the {tenant_id, zone,
+// BytesSample is one lachesis_tenant_bytes_total series: the {tenant_id, zone,
 // external_network, direction} label tuple and its cumulative value.
 // JSON-tagged because drive persists the pre-traffic snapshot into the
 // run-state file for assert to diff against. ExternalNetwork is empty
@@ -78,6 +88,19 @@ type ServerSample struct {
 	Node string `json:"node,omitempty"`
 }
 
+// PortSample is one lachesis_port_bytes_total series — the mortal
+// per-port leaf (docs/architecture/billing.md). [PortSeriesStep] uses it
+// to assert which port_id actually carried driven traffic.
+type PortSample struct {
+	PortID    string  `json:"port_id"`
+	ServerID  string  `json:"server_id"`
+	Zone      string  `json:"zone"`
+	Direction string  `json:"direction"`
+	Value     float64 `json:"value"`
+	// Node mirrors [BytesSample.Node].
+	Node string `json:"node,omitempty"`
+}
+
 // ScrapeResult is one agent's /metrics scrape: which of the metrics
 // scenariotest depends on are present (for preflight), plus the
 // agent-health gauge values and bytes series (for the attach gate and
@@ -90,6 +113,7 @@ type ScrapeResult struct {
 	LingeringGhosts    float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
+	PortBytes          []PortSample
 	// Anomalies is lachesis_neutron_anomalies broken out by its
 	// `class` label.
 	Anomalies map[string]float64
@@ -105,6 +129,7 @@ type MetricsSnapshot struct {
 	LingeringGhosts    float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
+	PortBytes          []PortSample
 	// Anomalies sums each anomaly class across all agents.
 	Anomalies map[string]float64
 }
@@ -117,6 +142,9 @@ type MetricsSnapshot struct {
 type MACLookup struct {
 	Found    bool
 	TenantID string
+	// PortID is the Neutron port the agent currently binds the MAC to
+	// — [AwaitPortBindingStep] polls it after a same-MAC port rebirth.
+	PortID string
 }
 
 // MetricsSource scrapes and parses one agent's observability surfaces:
@@ -177,6 +205,7 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	r.LingeringGhosts = familySum(fams, metricLingeringGhosts)
 	r.Bytes = bytesSamples(fams)
 	r.Servers = serverSamples(fams)
+	r.PortBytes = portSamples(fams)
 	r.Anomalies = anomalySamples(fams)
 	return r, nil
 }
@@ -208,6 +237,7 @@ func (h *HTTPMetrics) LookupMAC(ctx context.Context, metricsURL, mac string) (MA
 		MAC *struct {
 			Found    bool   `json:"found"`
 			TenantID string `json:"tenant_id"`
+			PortID   string `json:"port_id"`
 		} `json:"mac_tenant_map"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -216,7 +246,7 @@ func (h *HTTPMetrics) LookupMAC(ctx context.Context, metricsURL, mac string) (MA
 	if body.MAC == nil {
 		return MACLookup{}, nil
 	}
-	return MACLookup{Found: body.MAC.Found, TenantID: body.MAC.TenantID}, nil
+	return MACLookup{Found: body.MAC.Found, TenantID: body.MAC.TenantID, PortID: body.MAC.PortID}, nil
 }
 
 // LookupFlows implements the flow-query half of [MetricsSource]
@@ -271,6 +301,10 @@ func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) 
 			s.Node = a.Host
 			snap.Servers = append(snap.Servers, s)
 		}
+		for _, s := range r.PortBytes {
+			s.Node = a.Host
+			snap.PortBytes = append(snap.PortBytes, s)
+		}
 		for class, v := range r.Anomalies {
 			if snap.Anomalies == nil {
 				snap.Anomalies = map[string]float64{}
@@ -320,7 +354,7 @@ func familySum(fams map[string]*dto.MetricFamily, name string) float64 {
 	return total
 }
 
-// bytesSamples extracts every lachesis_bytes_total series with its
+// bytesSamples extracts every lachesis_tenant_bytes_total series with its
 // {tenant_id, zone, external_network, direction} labels.
 func bytesSamples(fams map[string]*dto.MetricFamily) []BytesSample {
 	fam, ok := fams[metricBytesTotal]
@@ -376,6 +410,33 @@ func serverSamples(fams map[string]*dto.MetricFamily) []ServerSample {
 	return out
 }
 
+// portSamples extracts every lachesis_port_bytes_total series. Returns
+// nil against agents predating the port family.
+func portSamples(fams map[string]*dto.MetricFamily) []PortSample {
+	fam, ok := fams[metricPortBytesTotal]
+	if !ok {
+		return nil
+	}
+	out := make([]PortSample, 0, len(fam.GetMetric()))
+	for _, m := range fam.GetMetric() {
+		s := PortSample{Value: sampleValue(m)}
+		for _, lp := range m.GetLabel() {
+			switch lp.GetName() {
+			case "port_id":
+				s.PortID = lp.GetValue()
+			case "server_id":
+				s.ServerID = lp.GetValue()
+			case "zone":
+				s.Zone = lp.GetValue()
+			case "direction":
+				s.Direction = lp.GetValue()
+			}
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // anomalySamples extracts lachesis_neutron_anomalies by its class
 // label. nil when the family is absent (pre-anomaly-gauge agents).
 func anomalySamples(fams map[string]*dto.MetricFamily) map[string]float64 {
@@ -395,7 +456,7 @@ func anomalySamples(fams map[string]*dto.MetricFamily) map[string]float64 {
 }
 
 // sampleValue returns whichever typed value a metric carries. The
-// agent emits lachesis_bytes_total as a counter and the attach metrics
+// agent emits lachesis_tenant_bytes_total as a counter and the attach metrics
 // as gauge/counter; reading all three shapes keeps this robust to the
 // exact type.
 func sampleValue(m *dto.Metric) float64 {

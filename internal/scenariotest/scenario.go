@@ -221,7 +221,7 @@ type Expect struct {
 	Node string
 
 	// MinBytes is the lower bound on the delta of
-	// lachesis_bytes_total (or lachesis_server_bytes_total when VM is
+	// lachesis_tenant_bytes_total (or lachesis_server_bytes_total when VM is
 	// set) for this tuple over the drive window.
 	MinBytes int64
 }

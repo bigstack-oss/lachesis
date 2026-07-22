@@ -66,7 +66,7 @@ const (
 
 // Drive pushes every declared flow across the realized topology: it
 // re-confirms the attach gate recorded by `up`, snapshots the
-// pre-traffic lachesis_bytes_total baseline into the run-state (assert
+// pre-traffic lachesis_tenant_bytes_total baseline into the run-state (assert
 // diffs against it), then executes the flows in declaration order.
 //
 // Flow strategies (both busybox/Cirros-safe, both validated live):
@@ -211,7 +211,7 @@ func (d *driver) unresolvedMACs(urls []string, want []ResourceRef) []string {
 	return missing
 }
 
-// captureBaseline snapshots lachesis_bytes_total across all agents and
+// captureBaseline snapshots lachesis_tenant_bytes_total across all agents and
 // persists it before any traffic, so assert's deltas exclude
 // everything that happened before this drive.
 func (d *driver) captureBaseline() error {
