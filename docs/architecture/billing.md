@@ -8,9 +8,9 @@ shapes and label vocabularies: [metrics.md](./metrics.md)).
 
 ## The emission invariant
 
-Every byte transfer the data plane can see appears in **exactly one `tx` series and one `rx` series**: counted once at the sender's tap as `direction="tx"` and once at the receiver's tap as `direction="rx"`, each keyed by `(tenant_id, zone, external_network, direction)` on `lachesis_bytes_total` / `lachesis_packets_total`. The agent **never deduplicates** — both-sides emission is the contract, not an artifact ([Scenario I](./scenarios.md); [edge-cases.md](./edge-cases.md) Tier 4 row 15). When only one endpoint sits behind a monitored tap (internet peers, DPDK/SR-IOV VMs), only that side's series exists.
+Every byte transfer the data plane can see appears in **exactly one `tx` series and one `rx` series**: counted once at the sender's tap as `direction="tx"` and once at the receiver's tap as `direction="rx"`, each keyed by `(tenant_id, zone, external_network, direction)` on `lachesis_tenant_bytes_total` / `lachesis_tenant_packets_total`. The agent **never deduplicates** — both-sides emission is the contract, not an artifact ([Scenario I](./scenarios.md); [edge-cases.md](./edge-cases.md) Tier 4 row 15). When only one endpoint sits behind a monitored tap (internet peers, DPDK/SR-IOV VMs), only that side's series exists.
 
-Byte basis: aggregated-skb L2 bytes. Per-segment headers are counted once per GSO/GRO superpacket, so bulk TCP measures ≈4–5% under wire-equivalent (verified empirically; ~0 on small-packet traffic — [edge-cases.md](./edge-cases.md) Tier 2 row 6), and `lachesis_packets_total` counts superpackets, not wire segments. **Bill on bytes, never on packets.**
+Byte basis: aggregated-skb L2 bytes. Per-segment headers are counted once per GSO/GRO superpacket, so bulk TCP measures ≈4–5% under wire-equivalent (verified empirically; ~0 on small-packet traffic — [edge-cases.md](./edge-cases.md) Tier 2 row 6), and `lachesis_tenant_packets_total` counts superpackets, not wire segments. **Bill on bytes, never on packets.**
 
 ## Per-zone charging postures
 
@@ -43,11 +43,11 @@ The unbilled fraction — bytes in `zone="miss"` or `tenant_id="unknown"` — is
 - record: lachesis:unbilled_bytes:ratio_rate5m
   expr: |
     sum(
-        rate(lachesis_bytes_total{zone="miss"}[5m])
-      or rate(lachesis_bytes_total{tenant_id="unknown",zone!="multicast"}[5m])
+        rate(lachesis_tenant_bytes_total{zone="miss"}[5m])
+      or rate(lachesis_tenant_bytes_total{tenant_id="unknown",zone!="multicast"}[5m])
     )
     /
-    sum(rate(lachesis_bytes_total[5m]))
+    sum(rate(lachesis_tenant_bytes_total[5m]))
 ```
 
 The `or` deduplicates series that are both `zone="miss"` and `tenant_id="unknown"`: both operands draw from the same series set, so label sets match exactly and each leaking series counts once. The `zone!="multicast"` guard on the second operand is load-bearing: received platform multicast resolves to `tenant_id="unknown"` (its group destination MAC is the VM-side MAC on the egress hook, so it misses `mac_tenant_map`), so without the guard the never-billed multicast zone would re-enter the numerator through the `unknown` clause and defeat the carve-out. The `miss` operand needs no guard — a multicast frame is classified `multicast`, never `miss`. The denominator is deliberately left as all observed bytes: multicast stays visible as a share of total, it just isn't counted as leaking.
@@ -60,11 +60,20 @@ The `or` deduplicates series that are both `zone="miss"` and `tenant_id="unknown
 
 Platform-L2 multicast (mDNS/SSDP on provider-attached taps) *was* the dominant structural contributor — a constant tens-of-KB/s numerator that pinned the ratio near 1% on quiet clusters — until it moved to the dedicated `multicast` zone and out of this numerator.
 
-## Per-server usage export
+## The four-layer usage export
 
-The tenant-family contract above is deliberately **aggregate** — `tenant_id × zone × external_network × direction`, all low-cardinality, every series immortal. Per-server billing detail is a **second metric family on the same `/metrics` endpoint** with a deliberately different lifecycle promise — not a dedicated endpoint, and not a message bus (pull-over-push is a deliberate decision: [ADR 0013](../adr/0013-pull-metrics-over-push-export.md)):
+Billing detail below the tenant tier is exported as further metric families on the same `/metrics` endpoint — not a dedicated endpoint, and not a message bus (pull-over-push is a deliberate decision: [ADR 0013](../adr/0013-pull-metrics-over-push-export.md)). The full hierarchy is **total → tenant → server → port**: each layer is immortal *within its owner's lifetime*, dies with its owner, and the layer above absorbs its deaths.
 
-`lachesis_server_bytes_total{server_id, tenant_id, zone, external_network, direction}` — cumulative, emitted from the same GlobalState (WAL-backed, restart-surviving) as the tenant family. `server_id` is the Neutron port `device_id` (Nova instance UUID), stable across live migration; `user` is not emitted (Neutron ports don't carry it) — the billing consumer derives ownership from `server_id`.
+| Layer | Family | Lifetime | Value | Absorbs |
+|---|---|---|---|---|
+| total | `lachesis_bytes_total` / `lachesis_packets_total` `{zone, external_network, direction}` | immortal | Σ tenant tier (tenant summed away), incl. `unknown` | everything |
+| tenant | `lachesis_tenant_bytes_total` / `lachesis_tenant_packets_total` `{tenant_id, …}` | project lifetime (today: forever) | live + tenant-settled | server & port deaths |
+| server | `lachesis_server_bytes_total` / `_packets_` `{server_id, tenant_id, …}` | **server lifetime** — ends when the server leaves the Nova list | Σ live rows + **server-settled** (flat-lines while portless, like a stopped VM) | port deletes/detaches ([data-structures.md](./data-structures.md#settled-bytes)) |
+| port | `lachesis_port_bytes_total` / `_packets_` `{server_id, port_id, tenant_id, …}` | port binding | that port's live rows | — (mortal leaf) |
+
+`server_id` is the Neutron port `device_id` (Nova instance UUID), stable across live migration; `port_id` is the Neutron port UUID — below billing granularity (the invoice is per server), a drill-down/monitoring dimension. `user` is not emitted (Neutron ports don't carry it) — the billing consumer derives ownership from `server_id`.
+
+The server tier's absorber makes the two reattach shapes correct by construction: a port detached and reattached to the **same** server folds into that server's settled bucket and the series *continues from the detach point*; a port reattached to a **new** server leaves its history with the old server (whose series holds it until that server dies) and counts the new server from zero — no double-billing. The port tier deliberately has no absorber: a same-port reattach restarts that leaf series, and billing exactness lives one layer up.
 
 ### External-network attribution rules
 
@@ -77,19 +86,19 @@ Resolution is **per flow, router-MAC first**:
 - **Known gap.** A VM directly on a provider network resolves `none` today: no FIP, no router owning its subnet's gateway — a known gap, not a fallback case.
 - **Live regression.** The `multi-external-path` scenario exercises the whole ladder: default-route and second-router drives each assert their own carrying network's series, and a third drive through a gateway-less router asserts the per-VM fallback — all on both families.
 
-### Mortality and the ETL contract
+### Lifetimes and the ETL contract
 
-- **Mortal series.** Unlike the tenant family, a per-server series *ends* when its attribution dies (VM deleted and ghost-swept): the fold settles bytes at tenant granularity only, so there is nothing left to emit the dead server from — deliberately, because per-dead-server accumulators would grow without bound under VM churn. Dead-server history is the scraping TSDB's responsibility; its retention must exceed the consumer's maximum tolerable ETL outage (90 days on the target platform, far above the few days actually required). A mortal series is PromQL-safe: it only ever *stops*, it never *decreases* — the poison the settled fold exists to prevent is a *continuing* series that drops.
-- **Compaction floor while alive:** no agent-side compaction may fold a live server's bytes past the server key (a per-live-server accumulator is the floor; that set is bounded). Tenant-level settle happens only at attribution death. Otherwise the exposed per-server series would decrease and break subtraction at server granularity.
-- **Consumption contract (the billing ETL):** read a day's range per series and take boundary values — series present at both ends: `Δ = last − first`; born mid-window: `Δ = last` (a counter born in-window carries its lifetime bytes); died mid-window: `Δ = last sample − first`; negative `Δ` clamps to 0 (an agent hard crash can regress the counter by up to the WAL flush window — provider-unfavorable, self-correcting); live migration: sum `Δ` across scrape instances per `server_id`. **Never `increase()`/`rate()` for money** — PromQL's reset heuristic assumes resets go to zero, so a crash's partial regression would be double-counted.
+- **Lifetime-bounded, not append-forever.** A server's series is monotone for exactly its lifetime: the server-settled absorber holds folded port bytes ([data-structures.md](./data-structures.md#settled-bytes)), so port churn never makes the series drop, and the reconciler releases the bucket — ending the series — only when the server leaves the Nova server list (no TTL; a failed Nova fetch holds buckets, the safe direction). Dead-server history is then the scraping TSDB's responsibility; its retention must exceed the consumer's maximum tolerable ETL outage (90 days on the target platform, far above the few days actually required). The invariant every layer keeps is: a series only ever *stops*, it never *decreases while continuing* — the poison the absorbers exist to prevent.
+- **The port leaf is the exception, deliberately.** `lachesis_port_bytes_total` has no absorber: a deleted port's series stops (fine), and a detached-then-reattached port restarts from a fresh kernel counter (documented). It is the drill-down view; billing consumers use the server tier.
+- **Consumption contract (the billing ETL):** read a day's range per `lachesis_server_bytes_total` series and take boundary values — series present at both ends: `Δ = last − first`; born mid-window: `Δ = last` (a counter born in-window carries its lifetime bytes); died mid-window (server deleted): `Δ = last sample − first`; negative `Δ` clamps to 0 (an agent hard crash can regress the counter by up to the WAL flush window — provider-unfavorable, self-correcting); live migration: sum `Δ` across scrape instances per `server_id`. Within a server's lifetime plain subtraction is safe — port churn cannot dip the series. **Never `increase()`/`rate()` for money** — PromQL's reset heuristic assumes resets go to zero, so a crash's partial regression would be double-counted.
 - **The agent meters; the billing system rates.** The rate table (`zone × external_network × direction → price`) lives in the billing layer, never in the agent. Billing *ownership* is billing-layer enrichment keyed by `server_id` at rating time: platform-level owner transfer can happen entirely inside the billing system's own records, invisible to OpenStack and to this agent — so `tenant_id` on these metrics is infrastructure attribution (dashboards, revenue-leak SLO, audit), never the invoice key.
 - The consumer pipeline (a scheduled ETL distilling day deltas into durable billing rows) is the platform's; the agent's promise ends at the two families' contracts. Cumulative + pull stays lossless across consumer downtime — any missed period is backfillable from the TSDB within retention.
 
-### Why two families coexist
+### Why the layers coexist
 
-The tenant family is immortal (live + settled bytes): safe for `rate()`, dashboards, recording rules, and exact two-point totals through any churn — and it is the only place unattributable traffic (`zone="miss"`, `tenant_id="unknown"`) can live, since such bytes have no `server_id`; the revenue-leak SLO is computable only there. The server family is mortal (live bytes only): the billing detail feed, consumed under the ETL contract above. The pair also forms two independent accumulation paths over the same kernel counters, enabling reconciliation audits of the billing pipeline (per-tenant sums of billed rows vs. tenant-series deltas).
+Each layer answers a different question with the strongest lifecycle promise that question allows. The **total** layer is the node's capacity/throughput view, invariant by construction (it is the tenant tier summed). The **tenant** layer is the operator/aggregate plane: safe for `rate()`, dashboards, recording rules, and exact two-point totals through any churn — and the only place unattributable traffic (`zone="miss"`, `tenant_id="unknown"`) can live, since such bytes have no `server_id`; the revenue-leak SLO is computable only there. The **server** layer is the billing detail feed, consumed under the ETL contract above; its server-settled absorber makes plain subtraction safe for the server's whole lifetime. The **port** layer is drill-down visibility (which NIC is moving the traffic). The layers also form independent accumulation paths over the same kernel counters, enabling reconciliation audits of the billing pipeline (Σ servers vs. tenant-series deltas, Σ tenants vs. total).
 
-`external_network` is the one billing dimension that is *also* low-cardinality enough for the tenant family (a handful of external networks, no churn), so operator dashboards can split egress by external network without touching per-server series. This keeps the tenant family as the operator/aggregate plane and the server family as the billing detail feed, with the durable record-of-truth in the billing system's own store.
+`external_network` is the one billing dimension that is *also* low-cardinality enough for the tenant and total layers (a handful of external networks, no churn), so operator dashboards can split egress by external network without touching per-server series — the durable record-of-truth stays in the billing system's own store.
 
 ---
 
