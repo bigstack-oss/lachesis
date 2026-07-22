@@ -428,7 +428,7 @@ func TestCollect_ExternalNetworkLabelRouting(t *testing.T) {
 	meta := metadata.New()
 	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
 	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
-		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
 	})
 
 	st := state.New()
@@ -464,7 +464,7 @@ func TestCollect_ServerFamilyEmitsLiveRowsOnly(t *testing.T) {
 	meta := metadata.New()
 	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
 	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
-		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
 	})
 
 	st := state.New()
@@ -487,9 +487,9 @@ func TestCollect_ServerFamilyEmitsLiveRowsOnly(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# HELP lachesis_server_bytes_total Per-server network bytes broken out per port (port_id), cumulative while the port's attribution lives. MORTAL series: a port's series ends when the port is deleted — PromQL-safe because it stops, never drops. Aggregate to the billable server_id in the consumer via Δ-per-series-then-sum (billing) or sum-of-rates (dashboards) — never a naive sum-by-server then subtract (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
-lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
+lachesis_server_bytes_total{direction="tx",external_network="public-1",port_id="port-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"lachesis_server_bytes_total"); err != nil {
@@ -506,7 +506,7 @@ func TestCollect_ServerFamilyMortalAcrossSweep(t *testing.T) {
 	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
 	macKey := bpf.MACKey(vmMAC)
 	meta.Insert(macKey, &metadata.TenantMeta{
-		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
 	})
 
 	st := state.New()
@@ -520,9 +520,9 @@ func TestCollect_ServerFamilyMortalAcrossSweep(t *testing.T) {
 
 	// Alive: both families expose the bytes.
 	expected := `
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# HELP lachesis_server_bytes_total Per-server network bytes broken out per port (port_id), cumulative while the port's attribution lives. MORTAL series: a port's series ends when the port is deleted — PromQL-safe because it stops, never drops. Aggregate to the billable server_id in the consumer via Δ-per-series-then-sum (billing) or sum-of-rates (dashboards) — never a naive sum-by-server then subtract (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
-lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 1000
+lachesis_server_bytes_total{direction="tx",external_network="public-1",port_id="port-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 1000
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"lachesis_server_bytes_total"); err != nil {
@@ -564,7 +564,7 @@ func TestCollect_PerFlowRouterSplitsExternalNetworks(t *testing.T) {
 	rtr1 := [6]uint8{0xfa, 0x16, 0x3e, 0, 0, 0x10}
 	rtr2 := [6]uint8{0xfa, 0x16, 0x3e, 0, 0, 0x20}
 	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
-		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
 	})
 	routers := metadata.NewRouterMACs()
 	routers.Replace(map[uint64]string{
@@ -589,10 +589,10 @@ func TestCollect_PerFlowRouterSplitsExternalNetworks(t *testing.T) {
 # TYPE lachesis_bytes_total counter
 lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 700
 lachesis_bytes_total{direction="tx",external_network="public-2",tenant_id="tenant-a",zone="external"} 300
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# HELP lachesis_server_bytes_total Per-server network bytes broken out per port (port_id), cumulative while the port's attribution lives. MORTAL series: a port's series ends when the port is deleted — PromQL-safe because it stops, never drops. Aggregate to the billable server_id in the consumer via Δ-per-series-then-sum (billing) or sum-of-rates (dashboards) — never a naive sum-by-server then subtract (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
-lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
-lachesis_server_bytes_total{direction="tx",external_network="public-2",server_id="srv-1",tenant_id="tenant-a",zone="external"} 300
+lachesis_server_bytes_total{direction="tx",external_network="public-1",port_id="port-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
+lachesis_server_bytes_total{direction="tx",external_network="public-2",port_id="port-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 300
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"lachesis_bytes_total", "lachesis_server_bytes_total"); err != nil {

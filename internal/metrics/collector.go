@@ -128,8 +128,8 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		),
 		serverBytesDesc: prometheus.NewDesc(
 			MetricServerBytesTotal,
-			"Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).",
-			[]string{"server_id", "tenant_id", "zone", "external_network", "direction"}, nil,
+			"Per-server network bytes broken out per port (port_id), cumulative while the port's attribution lives. MORTAL series: a port's series ends when the port is deleted — PromQL-safe because it stops, never drops. Aggregate to the billable server_id in the consumer via Δ-per-series-then-sum (billing) or sum-of-rates (dashboards) — never a naive sum-by-server then subtract (docs/architecture/billing.md).",
+			[]string{"server_id", "port_id", "tenant_id", "zone", "external_network", "direction"}, nil,
 		),
 		flowsDesc: prometheus.NewDesc(
 			"lachesis_state_flows",
@@ -213,13 +213,14 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		v.bytes += e.Total.Bytes
 		v.packets += e.Total.Packets
 		c.aggBuf[k] = v
-		// The mortal per-server family aggregates LIVE rows only —
-		// settled buckets have deliberately dropped the server
-		// dimension (docs/architecture/billing.md) — and only rows whose MAC
-		// resolves to a server: unattributable traffic has no
-		// server_id by definition.
+		// The mortal per-server family is emitted PER PORT (port_id in the
+		// key), aggregating a single port's live rows; a deleted port's
+		// series simply stops (PromQL-safe) and consumers aggregate to the
+		// billable server_id (docs/architecture/billing.md). Only rows whose
+		// MAC resolves to a server carry a server_id/port_id — unattributable
+		// traffic has neither by definition.
 		if a.ServerID != "" {
-			sk := serverAggKey{server: a.ServerID, tenant: a.Tenant, ext: a.ExternalNetwork,
+			sk := serverAggKey{server: a.ServerID, port: a.PortID, tenant: a.Tenant, ext: a.ExternalNetwork,
 				zone: e.Key.DstZone, dir: e.Key.Direction}
 			sv := c.serverAggBuf[sk]
 			sv.bytes += e.Total.Bytes
@@ -244,7 +245,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	for k, v := range c.serverAggBuf {
 		ch <- prometheus.MustNewConstMetric(
 			c.serverBytesDesc, prometheus.CounterValue, float64(v.bytes),
-			k.server, k.tenant, k.zone.String(), k.ext, k.dir.String(),
+			k.server, k.port, k.tenant, k.zone.String(), k.ext, k.dir.String(),
 		)
 	}
 

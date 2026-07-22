@@ -76,6 +76,7 @@ func desiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
 		desired[bpf.MACKey(key)] = metadata.TenantMeta{
 			ProjectID:       p.ProjectID,
 			ServerID:        p.DeviceID,
+			PortID:          p.ID,
 			ExternalNetwork: extByPort[p.ID],
 		}
 	}

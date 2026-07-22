@@ -37,6 +37,7 @@ type aggKey struct {
 // resolved server never enter this aggregation.
 type serverAggKey struct {
 	server string
+	port   string
 	tenant string
 	ext    string
 	zone   bpf.ZoneCode

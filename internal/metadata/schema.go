@@ -25,6 +25,12 @@ type TenantMeta struct {
 	// per-server metric family (docs/architecture/billing.md); empty when the
 	// port carries no device binding.
 	ServerID string
+	// PortID is the Neutron port UUID. Emitted as the `port_id` label on
+	// the per-server family so a server's traffic is broken out per port
+	// (docs/architecture/billing.md); consumers aggregate back to
+	// server_id. A MAC maps to exactly one port, so it is stable for the
+	// life of the MAC — a recreated port is a new MAC, hence a new series.
+	PortID string
 	// ExternalNetwork is the human-facing label of the external
 	// network this VM's egress leaves through — its floating IP's
 	// network, or its router's external gateway network (network name,
@@ -86,5 +92,6 @@ const NoExternalNetwork = "none"
 type Attribution struct {
 	Tenant          string
 	ServerID        string
+	PortID          string
 	ExternalNetwork string
 }
