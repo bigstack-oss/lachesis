@@ -318,6 +318,19 @@ Consequences and boundaries:
 - **Hard-crash window.** A fold becomes durable at the next WAL flush (≤60s). A hard crash in between restores the pre-fold rows, whose metadata may already be gone — so up to one flush window of folds can degrade to `unknown` on the next boot. This is the same envelope as the WAL's general ≤60s tail-loss trade-off; a graceful shutdown's final flush loses nothing.
 - The UnresolvedBuffer's synthetic `unknown` keys have zero MACs and never settle — `unknown` is not a tenant whose history needs preserving, and those rows are already terminal.
 
+### Server-settled (the server layer's fold absorber)
+
+The settled accumulator keeps the **tenant** layer monotone but deliberately drops the `server_id` dimension, so by itself it does nothing for the **server** layer (`lachesis_server_bytes_total`, [billing.md](./billing.md)). A fold that removes rows from a still-live server's tuple — one port of a multi-port server deleted, a NIC detached, a port recreated — would make that server's exposed series *dip*, which the billing ETL's day-window clamp reads as under-usage.
+
+GlobalState therefore carries a third map — the **server-settled** accumulator, keyed by the full server tuple `(server_id, tenant_id, zone, external_network, direction)`. `Settle` credits it with the same folded bytes it credits into tenant settled, **in the same write-lock critical section**, and the Collector emits `Σ live rows + server-settled` per server tuple — *including* tuples with no live rows, so a portless-but-alive server flat-lines (exactly like a stopped VM) rather than vanishing. Both consequences the design needs fall out:
+
+- **Same-server detach → reattach continues.** The detach folds the port's rows into the server's bucket; the reattached port's fresh kernel counter starts a new row from zero; the emitted sum resumes from the detach point.
+- **New-server reattach never double-bills.** The old server's bucket keeps the history (its series holds until *it* dies); the new server's tuple starts from zero via the first-sight guard.
+
+**Lifecycle — release on server death, no TTL.** The reconciler, after each successful sync whose best-effort Nova server-list fetch returned a populated list, calls `PruneServerSettled(alive)`: buckets whose `server_id` is absent from the list are dropped, ending the series. A nil list (Nova fetch failed) — or an empty one, indistinguishable from failure — skips the prune entirely: holding buckets on missing data is the safe direction, and the worst case is a handful of dead servers' buckets retained until the next populated list. Cardinality is bounded by live servers × zones × external networks × directions, watched by `lachesis_state_server_settled_tuples`.
+
+Server-settled buckets round-trip the WAL (additive schema v4) and restore before the scraper starts; Collect and the WAL snapshot read live + settled + server-settled under ONE lock — a torn snapshot would over- or under-bill a fold for one scrape (or permanently, on crash-restore).
+
 ---
 
 Next: [packet-classification.md](./packet-classification.md) →

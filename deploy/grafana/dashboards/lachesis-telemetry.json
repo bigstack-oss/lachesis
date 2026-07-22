@@ -459,7 +459,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",zone=\"miss\"}[5m]) or rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=\"unknown\",zone!=\"multicast\"}[5m])) / sum(rate(lachesis_bytes_total{instance=~\"$node\"}[5m]))",
+          "expr": "sum(rate(lachesis_tenant_bytes_total{instance=~\"$node\",zone=\"miss\"}[5m]) or rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=\"unknown\",zone!=\"multicast\"}[5m])) / sum(rate(lachesis_tenant_bytes_total{instance=~\"$node\"}[5m]))",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -526,7 +526,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",zone=\"miss\"}[1m]))",
+          "expr": "sum(rate(lachesis_tenant_bytes_total{instance=~\"$node\",zone=\"miss\"}[1m]))",
           "legendFormat": "zone=miss",
           "datasource": {
             "type": "prometheus",
@@ -535,7 +535,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=\"unknown\",zone!=\"multicast\"}[1m]))",
+          "expr": "sum(rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=\"unknown\",zone!=\"multicast\"}[1m]))",
           "legendFormat": "tenant=unknown",
           "datasource": {
             "type": "prometheus",
@@ -544,7 +544,7 @@
         },
         {
           "refId": "C",
-          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",zone=\"multicast\"}[1m]))",
+          "expr": "sum(rate(lachesis_tenant_bytes_total{instance=~\"$node\",zone=\"multicast\"}[1m]))",
           "legendFormat": "zone=multicast (never billed)",
           "datasource": {
             "type": "prometheus",
@@ -660,7 +660,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",direction=\"tx\"}[1m]))",
+          "expr": "sum(rate(lachesis_tenant_bytes_total{instance=~\"$node\",direction=\"tx\"}[1m]))",
           "legendFormat": "sent",
           "datasource": {
             "type": "prometheus",
@@ -669,7 +669,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum(rate(lachesis_bytes_total{instance=~\"$node\",direction=\"rx\"}[1m]))",
+          "expr": "sum(rate(lachesis_tenant_bytes_total{instance=~\"$node\",direction=\"rx\"}[1m]))",
           "legendFormat": "received",
           "datasource": {
             "type": "prometheus",
@@ -721,7 +721,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(lachesis_packets_total{instance=~\"$node\",direction=\"tx\"}[1m]))",
+          "expr": "sum(rate(lachesis_tenant_packets_total{instance=~\"$node\",direction=\"tx\"}[1m]))",
           "legendFormat": "sent",
           "datasource": {
             "type": "prometheus",
@@ -730,7 +730,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum(rate(lachesis_packets_total{instance=~\"$node\",direction=\"rx\"}[1m]))",
+          "expr": "sum(rate(lachesis_tenant_packets_total{instance=~\"$node\",direction=\"rx\"}[1m]))",
           "legendFormat": "received",
           "datasource": {
             "type": "prometheus",

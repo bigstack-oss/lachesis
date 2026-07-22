@@ -1,12 +1,14 @@
 # Metrics Catalog
 
 Two tiers of metrics. **Billing metrics** (the thing we exist to produce) are
-emitted by the custom `prometheus.Collector` from `GlobalState` — the tenant
-families fan out by (tenant, zone, external_network, direction), the mortal
-per-server family adds `server_id`. **Health metrics** (operator-facing
-instrumentation) are bounded-cardinality; an operator running PromQL against
-one node should see <100 series total. The product semantics on top of the
-billing tier — postures, consumption rules — live in [billing.md](./billing.md).
+emitted by the custom `prometheus.Collector` from `GlobalState` as a
+**four-layer family hierarchy** — total → tenant → server → port, each layer
+immortal within its owner's lifetime, each absorbing the deaths of the layer
+below. **Health metrics** (operator-facing instrumentation) are
+bounded-cardinality; an operator running PromQL against one node should see
+<100 series total (the port layer is the one deliberate exception, bounded by
+port count). The product semantics on top of the billing tier — postures,
+consumption rules — live in [billing.md](./billing.md).
 
 Every name below is pinned by tests: each package defines its own `Metrics`
 bundle, the agent registers them centrally, and a naming-guard test enumerates
@@ -16,9 +18,14 @@ the registry — a metric that drifts from this catalog fails CI by name.
 
 | Metric | Type | Labels | Series lifecycle |
 |---|---|---|---|
-| `lachesis_bytes_total` | counter | `tenant_id, zone, external_network, direction` | immortal (live + settled) |
-| `lachesis_packets_total` | counter | `tenant_id, zone, external_network, direction` | immortal (live + settled) |
-| `lachesis_server_bytes_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **mortal** — live rows only, ends at ghost sweep ([billing.md](./billing.md)) |
+| `lachesis_bytes_total` | counter | `zone, external_network, direction` | **total layer** — Σ over all tenants (incl. `unknown`) of live + settled; immortal |
+| `lachesis_packets_total` | counter | `zone, external_network, direction` | **total layer** — packets (GSO/GRO superpackets) companion; diagnostic, never billed |
+| `lachesis_tenant_bytes_total` | counter | `tenant_id, zone, external_network, direction` | **tenant layer** — live + tenant-settled; immortal (project lifetime) |
+| `lachesis_tenant_packets_total` | counter | `tenant_id, zone, external_network, direction` | **tenant layer** — live + tenant-settled; immortal (project lifetime) |
+| `lachesis_server_bytes_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **server layer** — Σ live rows + server-settled; monotone for exactly the server's lifetime (flat-lines while portless), ends when the server leaves the Nova list ([billing.md](./billing.md)) |
+| `lachesis_server_packets_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **server layer** — packets companion, same lifetime as the bytes family; diagnostic, never billed |
+| `lachesis_port_bytes_total` | counter | `server_id, port_id, tenant_id, zone, external_network, direction` | **port layer** — the mortal leaf: live rows of one port; stops at port delete, restarts fresh on detach→reattach (drill-down view; billing exactness lives one layer up) |
+| `lachesis_port_packets_total` | counter | `server_id, port_id, tenant_id, zone, external_network, direction` | **port layer** — packets companion, same lifetime as the bytes family; diagnostic, never billed |
 
 ### Billing label vocabulary
 
@@ -31,6 +38,7 @@ them, so changing any value is a breaking change once consumers exist.
 | `zone` | `external`, `same_tenant`, `other_tenant`, `infra`, `miss`, `shared`, `multicast` | The remote endpoint's zone relative to the VM's tenant ([packet-classification.md](./packet-classification.md)); the canonical strings from `bpf.ZoneCode.String()`. `multicast` is assigned by the kernel to any frame with a group destination MAC (platform-L2 chatter) — counted but never billed |
 | `external_network` | external-network name (ID when nameless), or `none` | The network the flow's external traffic leaves through, resolved **per flow**: the peer router-interface MAC's gateway network when known, else the VM's attribution (FIP network / gateway-IP rule) — full rules in [billing.md](./billing.md). Carried **only** on `zone="external"` series; every other zone (and external traffic with no resolvable path) emits the `none` sentinel, keeping cardinality at (#external networks + 1). The single labeling source is `metadata.FlowExternalLabel`, applied identically at scrape-time aggregation and every settle fold |
 | `server_id` | Nova instance UUID (Neutron port `device_id`) | Per-server family only. Never `unknown` — flows whose MAC doesn't resolve to a server are absent from the family by construction |
+| `port_id` | Neutron port UUID | Port layer only. A MAC maps to exactly one port; a recreated port is a new UUID, hence a new series |
 | `direction` | `tx`, `rx` | `tx` = the VM is sending; `rx` = the VM is receiving |
 
 **Attribution changes settle first.** Any change to a live MAC's attribution
@@ -84,9 +92,9 @@ family absent, never failing the sync). Dashboards join and fall back to bare
 ids when the info series is missing:
 
 ```promql
-sum by (tenant_id) (rate(lachesis_bytes_total[1m]))
+sum by (tenant_id) (rate(lachesis_tenant_bytes_total[1m]))
   * on(tenant_id) group_left(name) lachesis_tenant_info          # named rows
-or sum by (tenant_id) (rate(lachesis_bytes_total[1m]))
+or sum by (tenant_id) (rate(lachesis_tenant_bytes_total[1m]))
      unless on(tenant_id) lachesis_tenant_info                   # bare-id fallback
 ```
 
@@ -99,7 +107,8 @@ or sum by (tenant_id) (rate(lachesis_bytes_total[1m]))
 | `lachesis_bpf_update_failures_total` | counter | `reason="update_failure\|skipped_ethertype"` | kernel `telemetry_stats` PERCPU_ARRAY, CPU-summed and drained by the scraper each tick; both reason series are zero-seeded at startup. `update_failure` = telemetry_map inserts the kernel rejected (map full — those flows' bytes are lost until GC frees space), `skipped_ethertype` = non-IP frames passed through uncounted (ARP/LLDP noise normally; a sustained rise flags a trunk/VLAN blind spot) |
 | `lachesis_bpf_maps_pinned` | gauge | — | 1 when the counter-bearing BPF maps are pinned to bpffs (zero-loss agent-crash recovery, [boot-and-recovery.md](./boot-and-recovery.md)); 0 when running unpinned (recovery degraded to the ≤60s WAL-bounded path) |
 | `lachesis_state_flows` | gauge | — | distinct flow keys in GlobalState (Collector) |
-| `lachesis_state_settled_tuples` | gauge | — | distinct buckets in the settled-bytes accumulator ([data-structures.md](./data-structures.md#settled-bytes)) |
+| `lachesis_state_tenant_settled_tuples` | gauge | — | distinct buckets in the settled-bytes accumulator ([data-structures.md](./data-structures.md#settled-bytes)) |
+| `lachesis_state_server_settled_tuples` | gauge | — | distinct buckets in the server-settled accumulator — the server layer's fold absorber, released on Nova-list absence ([data-structures.md](./data-structures.md#settled-bytes)) |
 | `lachesis_scraper_errors_total` | counter | — | failed BPF-map drain attempts (Collector, from scraper) |
 | `lachesis_scraper_last_success_unix_seconds` | gauge | — | most recent successful drain; 0 if never (Collector, from scraper) |
 | `lachesis_collect_duration_seconds` | histogram | — | one Collect pass: snapshot + aggregate + emit. Buckets 1ms..1s |

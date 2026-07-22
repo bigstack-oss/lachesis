@@ -102,7 +102,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(lachesis_bytes_total, zone)",
+          "query": "label_values(lachesis_tenant_bytes_total, zone)",
           "refId": "zone"
         },
         "refresh": 2,
@@ -130,7 +130,7 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(lachesis_bytes_total, external_network)",
+          "query": "label_values(lachesis_tenant_bytes_total, external_network)",
           "refId": "external_network"
         },
         "refresh": 2,
@@ -220,7 +220,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[1m])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)",
+          "expr": "sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[1m])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)",
           "legendFormat": "{{name}} ({{tenant_id}})",
           "datasource": {
             "type": "prometheus",
@@ -229,7 +229,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[1m])) unless on(tenant_id) lachesis_tenant_info",
+          "expr": "sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[1m])) unless on(tenant_id) lachesis_tenant_info",
           "legendFormat": "{{tenant_id}}",
           "datasource": {
             "type": "prometheus",
@@ -285,7 +285,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[1m])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)",
+          "expr": "sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[1m])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)",
           "legendFormat": "{{name}} ({{tenant_id}})",
           "datasource": {
             "type": "prometheus",
@@ -294,7 +294,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (tenant_id) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[1m])) unless on(tenant_id) lachesis_tenant_info",
+          "expr": "sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[1m])) unless on(tenant_id) lachesis_tenant_info",
           "legendFormat": "{{tenant_id}}",
           "datasource": {
             "type": "prometheus",
@@ -350,7 +350,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(\n  sum by (tenant_id, zone, direction) (lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)\n)\nor\nlabel_replace(\n  sum by (tenant_id, zone, direction) (lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    unless on(tenant_id) lachesis_tenant_info,\n  \"name\", \"\", \"\", \"\"\n)",
+          "expr": "(\n  sum by (tenant_id, zone, direction) (lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)\n)\nor\nlabel_replace(\n  sum by (tenant_id, zone, direction) (lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    unless on(tenant_id) lachesis_tenant_info,\n  \"name\", \"\", \"\", \"\"\n)",
           "format": "table",
           "instant": true,
           "datasource": {
@@ -423,7 +423,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (zone) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[1m]))",
+          "expr": "sum by (zone) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[1m]))",
           "legendFormat": "{{zone}}",
           "datasource": {
             "type": "prometheus",
@@ -492,7 +492,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (external_network) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"tx\"}[1m]))",
+          "expr": "sum by (external_network) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"tx\"}[1m]))",
           "legendFormat": "{{external_network}}",
           "datasource": {
             "type": "prometheus",
@@ -548,7 +548,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (external_network) (rate(lachesis_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"rx\"}[1m]))",
+          "expr": "sum by (external_network) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"rx\"}[1m]))",
           "legendFormat": "{{external_network}}",
           "datasource": {
             "type": "prometheus",
