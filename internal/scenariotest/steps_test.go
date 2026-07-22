@@ -892,6 +892,7 @@ type nicMetrics struct {
 	cloud *fakeCloud
 
 	servers []ServerSample
+	ports   []PortSample
 	settled float64
 	ghosts  float64
 }
@@ -912,6 +913,7 @@ func (m *nicMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 		AttachedInterfaces: m.env.baseAttached + float64(m.env.booted) + float64(len(m.cloud.hotAttached)) - float64(deleted),
 		AttachFailures:     m.env.failures,
 		SettledFlows:       m.settled,
+		PortBytes:          m.ports,
 		LingeringGhosts:    m.ghosts,
 		Servers:            m.servers,
 	}, nil
@@ -1028,10 +1030,15 @@ func TestSteps_ConfigureNIC(t *testing.T) {
 	if err := (ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.31.9/24"}).Run(context.Background(), senv); err != nil {
 		t.Fatalf("configure-nic: %v", err)
 	}
-	if len(exec.calls) != 1 {
-		t.Fatalf("exec calls = %d, want 1", len(exec.calls))
+	// Two calls: the ssh-ready probe (lachesis#253 — the step must not
+	// race the fresh VM's sshd), then the configure command.
+	if len(exec.calls) != 2 {
+		t.Fatalf("exec calls = %d, want 2 (ssh-ready probe + command)", len(exec.calls))
 	}
-	call := exec.calls[0]
+	if exec.calls[0].command != "true" {
+		t.Errorf("first call = %q, want the ssh-ready probe (lachesis#253)", exec.calls[0].command)
+	}
+	call := exec.calls[1]
 	if call.addr != "203.0.113.9" {
 		t.Errorf("configured over %s, want the SSH FIP", call.addr)
 	}
@@ -1301,5 +1308,85 @@ func TestSteps_AwaitSweep_ToleratesTransientErrors(t *testing.T) {
 	}
 	if time.Since(start) < 40*time.Millisecond {
 		t.Errorf("returned too fast (%s) — it aborted on the first error instead of waiting", time.Since(start))
+	}
+}
+
+// TestSteps_AttachPortMACFrom: MACFrom pins a previously recorded MAC
+// onto the new port; an unrecorded handle errors before any cloud call.
+func TestSteps_AttachPortMACFrom(t *testing.T) {
+	cloud, _, senv := nicFixture(t)
+	ctx := context.Background()
+
+	// Record a MAC as DetachPortStep{Delete:true} would.
+	senv.macs = map[string]string{"vm-a-nic2": "fa:16:3e:00:00:aa"}
+	if err := (AttachPortStep{VM: "vm-a", ID: "vm-a-nic3", Network: "net-b", Subnet: "sub-b",
+		IP: "10.0.31.10", MACFrom: "vm-a-nic2"}).Run(ctx, senv); err != nil {
+		t.Fatalf("attach with MACFrom: %v", err)
+	}
+	nicID := liveID(senv.State.Ports, "vm-a-nic3")
+	if got := cloud.portMAC[nicID]; got != "fa:16:3e:00:00:aa" {
+		t.Errorf("created port MAC = %q, want the pinned MAC", got)
+	}
+	if err := (AttachPortStep{VM: "vm-a", ID: "vm-a-nic4", Network: "net-b", Subnet: "sub-b",
+		IP: "10.0.31.11", MACFrom: "never-recorded"}).Run(ctx, senv); err == nil {
+		t.Error("MACFrom with no recorded MAC must error")
+	}
+}
+
+// TestSteps_PortSeries: the port-tier assertion sums only the target
+// port's samples; a port whose id is absent (mislabeled traffic) fails.
+func TestSteps_PortSeries(t *testing.T) {
+	_, nm, senv := nicFixture(t)
+	ctx := context.Background()
+	senv.State.Ports = append(senv.State.Ports, ResourceRef{DSLID: "vm-a-nic3", ID: "port-new"})
+
+	nm.ports = []PortSample{
+		{PortID: "port-new", ServerID: "srv", Zone: "same_tenant", Direction: "tx", Value: 2 << 20},
+		{PortID: "port-old", ServerID: "srv", Zone: "same_tenant", Direction: "tx", Value: 9 << 20},
+	}
+	if err := (PortSeriesStep{VM: "vm-a", Port: "vm-a-nic3", MinBytes: 1 << 20, Note: "ok"}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+	if !senv.Report.OK {
+		t.Fatalf("port with enough bytes must pass: %+v", senv.Report.Rows)
+	}
+	// Traffic mislabeled under another port's id → the target sums 0.
+	nm.ports = []PortSample{
+		{PortID: "port-old", ServerID: "srv", Zone: "same_tenant", Direction: "tx", Value: 9 << 20},
+	}
+	defer func(d time.Duration) { sweepPollInterval = d }(sweepPollInterval)
+	sweepPollInterval = 2 * time.Millisecond
+	if err := (PortSeriesStep{VM: "vm-a", Port: "vm-a-nic3", MinBytes: 1 << 20, Timeout: 30 * time.Millisecond, Note: "stale"}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+	if senv.Report.OK {
+		t.Error("absent port_id must fail the row (mislabeled traffic)")
+	}
+}
+
+// TestSteps_RestartAgentRestoreConfig: the restore variant copies the
+// backup over the config WITHOUT re-backing-up first — the backup-first
+// spelling would clobber its own source with the alt config (the
+// self-destroying restore observed live on c36, 2026-07-22).
+func TestSteps_RestartAgentRestoreConfig(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", ConfigPath: "/etc/lachesis/agent.yaml", ReadyTimeout: time.Second}
+	exec := &restartExec{}
+
+	if err := (RestartAgentStep{RestoreConfig: true}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil)); err != nil {
+		t.Fatalf("restart restore: %v", err)
+	}
+	if !exec.has("cp -f /etc/lachesis/agent.yaml.scenariotest.bak /etc/lachesis/agent.yaml") {
+		t.Errorf("restore copy not issued: %+v", exec.calls)
+	}
+	for _, c := range exec.calls {
+		if strings.Contains(c.command, "agent.yaml /etc/lachesis/agent.yaml.scenariotest.bak") {
+			t.Errorf("restore must NOT back up first (clobbers its own source): %q", c.command)
+		}
+	}
+
+	// AltConfig and RestoreConfig together is a usage error.
+	if err := (RestartAgentStep{AltConfig: "/tmp/x.yaml", RestoreConfig: true}).Run(context.Background(), restartEnv(t, agents, ac, &restartExec{}, nil)); err == nil {
+		t.Error("AltConfig + RestoreConfig must error")
 	}
 }

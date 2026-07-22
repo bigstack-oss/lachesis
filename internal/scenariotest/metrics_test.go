@@ -9,10 +9,10 @@ import (
 	"testing"
 )
 
-const sampleExposition = `# HELP lachesis_bytes_total Network bytes observed by the agent.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{tenant_id="u-T1",zone="same_tenant",direction="tx"} 1.048576e+06
-lachesis_bytes_total{tenant_id="u-T1",zone="same_tenant",direction="rx"} 524288
+const sampleExposition = `# HELP lachesis_tenant_bytes_total Per-tenant network bytes observed by the agent.
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{tenant_id="u-T1",zone="same_tenant",direction="tx"} 1.048576e+06
+lachesis_tenant_bytes_total{tenant_id="u-T1",zone="same_tenant",direction="rx"} 524288
 # HELP lachesis_attached_interfaces Number of interfaces currently carrying telemetry TC programs.
 # TYPE lachesis_attached_interfaces gauge
 lachesis_attached_interfaces 3

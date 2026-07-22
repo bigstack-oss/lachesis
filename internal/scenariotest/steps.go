@@ -30,6 +30,10 @@ const (
 	// tick, so the default must comfortably cover the no-Kafka worst
 	// case.
 	DefaultSweepTimeout = 8 * time.Minute
+	// DefaultPortSeriesTimeout bounds [PortSeriesStep]'s stabilize poll —
+	// generously above one scrape interval so a drive's bytes have
+	// drained before the row is declared failing.
+	DefaultPortSeriesTimeout = 60 * time.Second
 	// DefaultAgentReadyTimeout bounds [RestartAgentStep]'s wait for the
 	// agent to answer /metrics and re-attach its taps after a restart.
 	DefaultAgentReadyTimeout = 90 * time.Second
@@ -729,6 +733,9 @@ func (s AddRouteStep) Run(ctx context.Context, env *StepEnv) error {
 	if fip == "" {
 		return fmt.Errorf("run-state has no SSH FIP for VM %q", s.VM)
 	}
+	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
+		return fmt.Errorf("add-route: %w", err)
+	}
 	// Absolute path: cirros sudo's PATH lacks /sbin ("sudo: ip: command
 	// not found"); the busybox `route` spelling is the fallback for
 	// images without iproute2 at that path.
@@ -1050,6 +1057,10 @@ type RestartAgentStep struct {
 	// AltConfig is an optional agent-host path to install as the agent
 	// config before the restart.
 	AltConfig string
+	// RestoreConfig restores the config an earlier AltConfig swap backed
+	// up (<config_path>.scenariotest.bak) before the restart — the
+	// cluster-portable way to end an alt-config phase.
+	RestoreConfig bool
 	// Timeout overrides [AgentControlConfig.ReadyTimeout] for the
 	// post-restart readiness wait.
 	Timeout time.Duration
@@ -1103,22 +1114,36 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	// and any running new PID counts as evidence.
 	oldPID, _ := agentMainPID(ctx, env, host, unit)
 
-	if s.AltConfig != "" {
+	altConfig := s.AltConfig
+	if s.RestoreConfig {
+		if altConfig != "" {
+			return fmt.Errorf("restart-agent: AltConfig and RestoreConfig are mutually exclusive")
+		}
+		altConfig = ac.ConfigPath + ".scenariotest.bak"
+	}
+	if altConfig != "" {
 		if ac.ConfigPath == "" {
 			return fmt.Errorf("restart-agent: AltConfig set but agent_control.config_path is empty")
 		}
 		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
 			return fmt.Errorf("restart-agent: %w", err)
 		}
-		if err := shellSafe("AltConfig", s.AltConfig); err != nil {
+		if err := shellSafe("AltConfig", altConfig); err != nil {
 			return fmt.Errorf("restart-agent: %w", err)
 		}
-		swap := fmt.Sprintf("sudo cp -f %s %s.scenariotest.bak && sudo cp -f %s %s",
-			ac.ConfigPath, ac.ConfigPath, s.AltConfig, ac.ConfigPath)
+		// An AltConfig install backs the real config up first; a
+		// RestoreConfig MUST NOT — its source IS the backup, and the
+		// backup-first spelling would clobber it with the alt config
+		// before "restoring" it (a self-destroying restore).
+		swap := fmt.Sprintf("sudo cp -f %s %s", altConfig, ac.ConfigPath)
+		if !s.RestoreConfig {
+			swap = fmt.Sprintf("sudo cp -f %s %s.scenariotest.bak && sudo cp -f %s %s",
+				ac.ConfigPath, ac.ConfigPath, altConfig, ac.ConfigPath)
+		}
 		if out, err := env.AgentExec.Run(ctx, host, swap); err != nil {
 			return fmt.Errorf("restart-agent: install alt config on %s: %w (output: %s)", host, err, out)
 		}
-		env.Log.Info("restart-agent: alt config installed", "host", host, "alt", s.AltConfig, "path", ac.ConfigPath)
+		env.Log.Info("restart-agent: alt config installed", "host", host, "alt", altConfig, "path", ac.ConfigPath, "restore", s.RestoreConfig)
 	}
 
 	if out, err := env.AgentExec.Run(ctx, host, "sudo systemctl restart "+unit); err != nil {
@@ -1197,6 +1222,171 @@ func shellSafe(field, v string) error {
 	return nil
 }
 
+// awaitSSHReady polls a trivial command until the VM answers SSH — the
+// step-side twin of drive's waitReady (lachesis#253): Nova ACTIVE races
+// cloud-init by tens of seconds, so any step that execs in the guest
+// right after `up` (ConfigureNICStep, AddRouteStep) must gate on
+// readiness or fail spuriously with "Connection refused" on clusters
+// where realize outpaces the boot. Same timeout + poll cadence as
+// drive's gate.
+func awaitSSHReady(ctx context.Context, env *StepEnv, vmID, addr string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultReadyTimeout)
+	defer cancel()
+	env.Log.Info("waiting for ssh-ready", "vm", vmID, "addr", addr, "timeout", defaultReadyTimeout)
+	for {
+		if _, err := env.Exec.Run(ctx, addr, "true"); err == nil {
+			env.Log.Info("vm ssh-ready", "vm", vmID, "addr", addr)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("vm %s (%s) not ssh-ready before deadline: %w", vmID, addr, ctx.Err())
+		case <-time.After(readyPollInterval):
+		}
+	}
+}
+
+// PortSeriesStep asserts the per-port leaf family attributes traffic to
+// the RIGHT port: the lachesis_port_bytes_total series carrying Port's
+// live Neutron id must sum to at least MinBytes across all agents. This
+// is the port-identity check the coarser tiers cannot express — e.g.
+// after a same-MAC port rebirth, traffic mislabeled under the dead
+// port's port_id leaves the new id's series empty (stale-attribution
+// reconcile miss). Data-dependent family, so no metric preflight — a
+// missing family simply fails the row with sum 0.
+type PortSeriesStep struct {
+	VM       string // DSL VM the port belongs to (for the report row)
+	Port     string // the [AttachPortStep.ID] run-state handle
+	MinBytes float64
+	// Timeout bounds the stabilize poll (default
+	// [DefaultPortSeriesTimeout]): a drive returns when the traffic is
+	// SENT, but the bytes surface only at the agent's next kernel drain
+	// (the scrape interval), so a single immediate scrape races the
+	// tick. Poll until the sum reaches MinBytes; a timeout is the
+	// failing row (traffic never attributed to this port).
+	Timeout time.Duration
+	Note    string
+}
+
+func (PortSeriesStep) Kind() string { return "assert-port-series" }
+
+func (s PortSeriesStep) Run(ctx context.Context, env *StepEnv) error {
+	portID := liveID(env.State.Ports, s.Port)
+	if portID == "" {
+		return fmt.Errorf("assert-port-series: run-state has no live port for %q", s.Port)
+	}
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultPortSeriesTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var sum float64
+	for {
+		snap, err := env.scrape(ctx)
+		if err != nil {
+			return err
+		}
+		sum = 0
+		for _, p := range snap.PortBytes {
+			if p.PortID == portID {
+				sum += p.Value
+			}
+		}
+		if sum >= s.MinBytes {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			env.Log.Warn("assert-port-series: timeout — traffic never attributed to the port",
+				"port", s.Port, "id", portID, "sum", sum, "min", s.MinBytes)
+			env.addRow(AssertRow{
+				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
+				Baseline: s.MinBytes, Current: sum, Delta: sum - s.MinBytes,
+				Pass: false, Note: s.Note,
+			})
+			return nil
+		case <-time.After(sweepPollInterval):
+		}
+	}
+	env.addRow(AssertRow{
+		Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
+		Baseline: s.MinBytes, Current: sum, Delta: sum - s.MinBytes,
+		Pass: true, Note: s.Note,
+	})
+	return nil
+}
+
+// AwaitPortBindingStep polls every agent's /debug/lookup until the MAC
+// of Port (its run-state ref) is bound to Port's CURRENT Neutron id —
+// the reconcile has processed a same-MAC port rebirth. On a healthy
+// agent this resolves within one reconcile interval; an agent whose
+// change detection misses the port_id change never rebinds, so the
+// timeout is recorded as a FAILING ROW (the defect itself), not a
+// mechanical error. Timeout defaults to [DefaultSweepTimeout].
+type AwaitPortBindingStep struct {
+	VM      string
+	Port    string // the [AttachPortStep.ID] whose live id must be bound
+	Timeout time.Duration
+	Note    string
+}
+
+func (AwaitPortBindingStep) Kind() string { return "await-port-binding" }
+
+func (s AwaitPortBindingStep) Run(ctx context.Context, env *StepEnv) error {
+	var ref ResourceRef
+	for _, p := range env.State.Ports {
+		if p.DSLID == s.Port {
+			ref = p
+		}
+	}
+	if ref.ID == "" || ref.MAC == "" {
+		return fmt.Errorf("await-port-binding: run-state has no port/MAC for %q", s.Port)
+	}
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultSweepTimeout
+	}
+	env.Log.Info("await-port-binding: waiting for MAC to rebind", "port", s.Port, "id", ref.ID, "mac", ref.MAC, "timeout", timeout)
+	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	var last string
+	for {
+		bound := true
+		for _, u := range agentURLs(env.Config) {
+			res, err := env.Metrics.LookupMAC(ctx, u, ref.MAC)
+			if err != nil || !res.Found || res.PortID != ref.ID {
+				bound = false
+				if err == nil {
+					last = res.PortID
+				}
+			}
+		}
+		if bound {
+			env.Log.Info("await-port-binding: rebound", "port", s.Port, "id", ref.ID)
+			env.addRow(AssertRow{
+				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
+				Baseline: 1, Current: 1, Delta: 0, Pass: true, Note: s.Note,
+			})
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			// The defect, as a row: the agents still bind the MAC to a
+			// stale (dead) port id — the port tier is mislabeling.
+			env.Log.Warn("await-port-binding: timeout — MAC still bound to a stale port",
+				"port", s.Port, "want", ref.ID, "stale", last)
+			env.addRow(AssertRow{
+				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
+				Baseline: 1, Current: 0, Delta: -1, Pass: false, Note: s.Note,
+			})
+			return nil
+		case <-time.After(sweepPollInterval):
+		}
+	}
+}
+
 // AttachPortStep hot-plugs a second NIC onto a live VM: it creates a
 // fresh port on a DSL network (the NIC is deliberately NOT a DSL VM —
 // the DSL models one port per VM, and the whole point of a hot-plugged
@@ -1213,6 +1403,10 @@ type AttachPortStep struct {
 	Network string // DSL network the port lands on
 	Subnet  string // DSL subnet for the fixed IP
 	IP      string // fixed IP (must be free in the subnet)
+	// MACFrom, when set, pins the new port to the MAC recorded for a
+	// previously deleted VM/NIC ([DeleteVMStep]/[DetachPortStep] record
+	// it) — the MAC-reuse shapes: same MAC, new port identity.
+	MACFrom string
 }
 
 func (AttachPortStep) Kind() string { return "attach-port" }
@@ -1252,12 +1446,20 @@ func (s AttachPortStep) Run(ctx context.Context, env *StepEnv) error {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
 
+	pinnedMAC := ""
+	if s.MACFrom != "" {
+		pinnedMAC = env.macs[s.MACFrom]
+		if pinnedMAC == "" {
+			return fmt.Errorf("attach-port: no MAC recorded for %q (delete or detach it first)", s.MACFrom)
+		}
+	}
 	name := Mangle(env.Config.Naming.Prefix, env.State.RunID, s.ID)
 	portID, err := env.Cloud.CreatePort(ctx, proj.ID, PortSpec{
 		Name:       name,
 		NetworkID:  netID,
 		SubnetID:   subnetID,
 		FixedIP:    s.IP,
+		MACAddress: pinnedMAC,
 		SecGroupID: secGroupID,
 	})
 	if err != nil {
@@ -1435,6 +1637,9 @@ func (s ConfigureNICStep) Run(ctx context.Context, env *StepEnv) error {
 	// below rejects anything that isn't digits/dots/slash.
 	if err := shellSafe("configure-nic.dev", s.Dev); err != nil {
 		return err
+	}
+	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
+		return fmt.Errorf("configure-nic: %w", err)
 	}
 	ip, ipnet, err := net.ParseCIDR(s.CIDR)
 	if err != nil {

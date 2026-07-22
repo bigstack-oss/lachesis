@@ -34,6 +34,8 @@ func All() []*scenariotest.Scenario {
 		multiPortPartialDelete(),
 		portRecreateSameServer(),
 		interfaceDetachReattach(),
+		macPinnedPortRecreate(),
+		portMoveAcrossServers(),
 	}
 }
 
