@@ -294,13 +294,11 @@ func (g *GhostSweeper) settleSwept(swept map[uint64]struct{}) int {
 			metas[mac] = meta
 		}
 	}
-	return g.settler.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
-		meta, ok := metas[metadata.VMMAC(k)]
-		if !ok {
-			return "", "", false
-		}
-		return meta.ProjectID, metadata.FlowExternalLabel(g.routers, meta.ExternalNetwork, k), true
-	})
+	return g.settler.Settle(state.SettleEvict, metadata.SettleResolver(g.routers,
+		func(k bpf.FlowKey) (*metadata.TenantMeta, bool) {
+			meta, ok := metas[metadata.VMMAC(k)]
+			return meta, ok
+		}))
 }
 
 // deleteUserspace drops the swept MACs from the userspace metadata map.

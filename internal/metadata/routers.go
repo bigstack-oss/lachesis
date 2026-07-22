@@ -79,3 +79,22 @@ func FlowExternalLabel(routers *RouterMACs, vmExtNet string, key bpf.FlowKey) st
 	}
 	return ExternalNetworkLabel(vmExtNet, key.DstZone)
 }
+
+// SettleResolver adapts a per-flow [TenantMeta] pick into the resolve
+// callback a settle fold takes. pick both gates which rows fold and
+// selects the meta whose attribution each row folds under; the
+// returned closure completes it with the (tenant, external_network)
+// pair the Collector emits for that row — [FlowExternalLabel] behind
+// the zone gate. Every fold site resolves through here so its rows
+// land in exactly the series their live flows occupied; a fold that
+// built the pair by hand could half-label (skip the router-map
+// lookup, say) and teleport settled bytes between series.
+func SettleResolver(routers *RouterMACs, pick func(bpf.FlowKey) (*TenantMeta, bool)) func(bpf.FlowKey) (string, string, bool) {
+	return func(k bpf.FlowKey) (string, string, bool) {
+		meta, ok := pick(k)
+		if !ok {
+			return "", "", false
+		}
+		return meta.ProjectID, FlowExternalLabel(routers, meta.ExternalNetwork, k), true
+	}
+}

@@ -138,14 +138,15 @@ func (r *Reconciler) settleAttributionChange(mac uint64, old *metadata.TenantMet
 	if r.settler == nil {
 		return
 	}
-	folded := r.settler.Settle(state.SettleRebase, func(k bpf.FlowKey) (string, string, bool) {
-		if metadata.VMMAC(k) != mac {
-			return "", "", false
-		}
-		// Per-flow label with the current (not-yet-changed) router map —
-		// exactly what the Collector was emitting for this row.
-		return old.ProjectID, metadata.FlowExternalLabel(r.routers, old.ExternalNetwork, k), true
-	})
+	// Labels resolve with the current (not-yet-changed) router map —
+	// exactly what the Collector was emitting for these rows.
+	folded := r.settler.Settle(state.SettleRebase, metadata.SettleResolver(r.routers,
+		func(k bpf.FlowKey) (*metadata.TenantMeta, bool) {
+			if metadata.VMMAC(k) != mac {
+				return nil, false
+			}
+			return old, true
+		}))
 	if folded > 0 {
 		slog.Info("settled flows to previous attribution before reassignment",
 			"component", component, "mac", mac, "flows", folded,
