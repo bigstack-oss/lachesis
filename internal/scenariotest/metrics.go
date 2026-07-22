@@ -69,6 +69,7 @@ type BytesSample struct {
 // specific server's delta.
 type ServerSample struct {
 	ServerID        string  `json:"server_id"`
+	PortID          string  `json:"port_id,omitempty"`
 	TenantID        string  `json:"tenant_id"`
 	Zone            string  `json:"zone"`
 	ExternalNetwork string  `json:"external_network,omitempty"`
@@ -361,6 +362,8 @@ func serverSamples(fams map[string]*dto.MetricFamily) []ServerSample {
 			switch lp.GetName() {
 			case "server_id":
 				s.ServerID = lp.GetValue()
+			case "port_id":
+				s.PortID = lp.GetValue()
 			case "tenant_id":
 				s.TenantID = lp.GetValue()
 			case "zone":

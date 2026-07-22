@@ -1055,42 +1055,45 @@ func TestSteps_ServerMonotone(t *testing.T) {
 	ctx := context.Background()
 	srvID := senv.State.Servers[0].ID
 
+	// Two ports feed the server's same_tenant tuple (the lachesis#226
+	// shape): the per-server total is 60 + 40 = 100.
 	nm.servers = []ServerSample{
-		{ServerID: srvID, Zone: "same_tenant", Direction: "tx", Value: 100},
-		{ServerID: srvID, Zone: "external", Direction: "tx", Value: 40},
+		{ServerID: srvID, PortID: "port-1", Zone: "same_tenant", Direction: "tx", Value: 60},
+		{ServerID: srvID, PortID: "port-2", Zone: "same_tenant", Direction: "tx", Value: 40},
 	}
 	if err := (CaptureStep{}).Run(ctx, senv); err != nil {
 		t.Fatal(err)
 	}
 
-	// One tuple dips (the partial-fold shape), one keeps growing.
+	// port-2 is deleted → its series disappears; port-1 grows to 70. The
+	// mortal rule keeps port-2's last value, so the reconstructed server
+	// total (70 + 40 = 110) does NOT dip below the captured 100 — PASS.
+	// A naive current-sum would read 70 and falsely fail (the #226 bug).
 	nm.servers = []ServerSample{
-		{ServerID: srvID, Zone: "same_tenant", Direction: "tx", Value: 60},
-		{ServerID: srvID, Zone: "external", Direction: "tx", Value: 41},
+		{ServerID: srvID, PortID: "port-1", Zone: "same_tenant", Direction: "tx", Value: 70},
 	}
-	if err := (ServerMonotoneStep{VM: "vm-a", Note: "dip"}).Run(ctx, senv); err != nil {
+	if err := (ServerMonotoneStep{VM: "vm-a", Note: "partial delete"}).Run(ctx, senv); err != nil {
+		t.Fatal(err)
+	}
+	if !senv.Report.OK {
+		t.Fatalf("a deleted port must not dip the server total (its last value is kept): %+v", senv.Report.Rows)
+	}
+
+	// A genuinely regressing LIVE port is a real dip and must fail:
+	// port-1 drops to 30, so reconstructed 30 + 40 = 70 < captured 100.
+	senv.Report = &AssertReport{OK: true}
+	nm.servers = []ServerSample{
+		{ServerID: srvID, PortID: "port-1", Zone: "same_tenant", Direction: "tx", Value: 30},
+	}
+	if err := (ServerMonotoneStep{VM: "vm-a", Note: "live regression"}).Run(ctx, senv); err != nil {
 		t.Fatal(err)
 	}
 	if senv.Report.OK {
-		t.Error("a dipped server tuple must fail the report")
-	}
-	var fails, passes int
-	for _, r := range senv.Report.Rows {
-		if r.Pass {
-			passes++
-		} else {
-			fails++
-			if r.Zone != "same_tenant" {
-				t.Errorf("failing row zone = %s, want same_tenant", r.Zone)
-			}
-		}
-	}
-	if fails != 1 || passes != 1 {
-		t.Errorf("rows = %d fail / %d pass, want 1/1", fails, passes)
+		t.Error("a live port going backwards must fail the report")
 	}
 
 	// No captured tuples for the VM is a scenario bug, not a pass.
-	senv.capturedServers = map[serverTuple]float64{}
+	senv.capturedServerPorts = map[serverPortTuple]float64{}
 	if err := (ServerMonotoneStep{VM: "vm-a"}).Run(ctx, senv); err == nil {
 		t.Error("no captured tuples must error")
 	}

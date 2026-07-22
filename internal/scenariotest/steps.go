@@ -88,14 +88,15 @@ type StepEnv struct {
 	Report *AssertReport
 
 	// captured is the per-tuple counter snapshot taken by the most
-	// recent [CaptureStep]; capturedServers is the per-server family's
-	// counterpart; settledBase is the summed settled-flows counter at
-	// the same instant. Monotone/growth assertions and the sweep wait
-	// diff against them.
-	captured        map[tuple]float64
-	capturedServers map[serverTuple]float64
-	settledBase     float64
-	ghostsBase      float64
+	// recent [CaptureStep]; capturedServerPorts is the mortal per-server
+	// family's counterpart, captured per (server, port, zone, ext, dir) so
+	// [ServerMonotoneStep] can apply the mortal consumption rule; settledBase
+	// is the summed settled-flows counter at the same instant.
+	// Monotone/growth assertions and the sweep wait diff against them.
+	captured            map[tuple]float64
+	capturedServerPorts map[serverPortTuple]float64
+	settledBase         float64
+	ghostsBase          float64
 	// macs records each deleted VM's MAC ([DeleteVMStep] captures it
 	// just before the delete) for a later BootVMStep's MACFrom.
 	macs map[string]string
@@ -218,11 +219,11 @@ func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
 		return err
 	}
 	env.captured = sumByTuple(snap.Bytes)
-	env.capturedServers = sumByServerTuple(snap.Servers)
+	env.capturedServerPorts = sumByServerPortTuple(snap.Servers)
 	env.settledBase = snap.SettledFlows
 	env.ghostsBase = snap.LingeringGhosts
 	env.Log.Info("capture", "tuples", len(env.captured),
-		"server_tuples", len(env.capturedServers), "settled_flows", env.settledBase,
+		"server_port_tuples", len(env.capturedServerPorts), "settled_flows", env.settledBase,
 		"lingering_ghosts", env.ghostsBase)
 	return nil
 }
@@ -1483,22 +1484,50 @@ func (s ServerMonotoneStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	cur := sumByServerTuple(snap.Servers)
-	rows := 0
-	for k, base := range env.capturedServers {
+	cur := sumByServerPortTuple(snap.Servers)
+
+	// Reconstruct the per-server billing total per (server, zone, ext, dir)
+	// under the mortal consumption rule (Δ-per-series-then-sum): a port
+	// still present contributes its current value; a port that has since
+	// disappeared (deleted → its series stopped) keeps its captured value
+	// (died-mid-window — its bytes live on in the TSDB, not the live scrape);
+	// a port born since capture (rebirth) adds its current value. The
+	// reconstructed total must never fall below the captured total — that is
+	// the invariant a naive current-sum would break the instant a port dies.
+	capturedTotal := map[serverTuple]float64{}
+	reconstructed := map[serverTuple]float64{}
+	for k, base := range env.capturedServerPorts {
 		if k.server != serverID {
 			continue
 		}
-		rows++
+		b := serverTuple{server: k.server, zone: k.zone, ext: k.ext, direction: k.direction}
+		capturedTotal[b] += base
+		if v, live := cur[k]; live {
+			reconstructed[b] += v // port alive → current value
+		} else {
+			reconstructed[b] += base // port gone → last-known (mortal stop, not a dip)
+		}
+	}
+	for k, v := range cur {
+		if k.server != serverID {
+			continue
+		}
+		if _, wasCaptured := env.capturedServerPorts[k]; wasCaptured {
+			continue
+		}
+		reconstructed[serverTuple{server: k.server, zone: k.zone, ext: k.ext, direction: k.direction}] += v // reborn port
+	}
+
+	if len(capturedTotal) == 0 {
+		return fmt.Errorf("assert-server-monotone: no captured server tuples for VM %q — capture after its traffic was driven", s.VM)
+	}
+	for b, base := range capturedTotal {
 		env.addRow(AssertRow{
 			Tenant: s.VM, VM: s.VM, ServerID: serverID,
-			Zone: k.zone, ExternalNetwork: k.ext, Direction: k.direction,
-			Baseline: base, Current: cur[k], Delta: cur[k] - base,
-			Pass: cur[k] >= base, Note: s.Note,
+			Zone: b.zone, ExternalNetwork: b.ext, Direction: b.direction,
+			Baseline: base, Current: reconstructed[b], Delta: reconstructed[b] - base,
+			Pass: reconstructed[b] >= base, Note: s.Note,
 		})
-	}
-	if rows == 0 {
-		return fmt.Errorf("assert-server-monotone: no captured server tuples for VM %q — capture after its traffic was driven", s.VM)
 	}
 	return nil
 }

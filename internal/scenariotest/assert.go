@@ -282,6 +282,13 @@ type extTuple struct{ tenant, zone, ext, direction string }
 
 type serverTuple struct{ server, zone, ext, direction string }
 
+// serverPortTuple is serverTuple refined by port_id — the identity of a
+// single per-port series in the mortal family. [ServerMonotoneStep]
+// captures at this granularity so it can apply the mortal consumption
+// rule (a deleted port's series stops; its last value still counts)
+// rather than the naive current-sum, which would dip on any port delete.
+type serverPortTuple struct{ server, port, zone, ext, direction string }
+
 // sumByTuple aggregates samples per label tuple. Summing (not
 // last-wins) matters on multi-node clusters, where every agent
 // exposes its own series for the same tenant.
@@ -309,6 +316,18 @@ func sumByServerTuple(samples []ServerSample) map[serverTuple]float64 {
 	m := make(map[serverTuple]float64, len(samples))
 	for _, s := range samples {
 		m[serverTuple{s.ServerID, s.Zone, s.ExternalNetwork, s.Direction}] += s.Value
+	}
+	return m
+}
+
+// sumByServerPortTuple aggregates the per-server family WITHOUT collapsing
+// port_id — one bucket per live per-port series. [ServerMonotoneStep] uses
+// it to track each port independently so a deleted port reads as a stop,
+// not a dip.
+func sumByServerPortTuple(samples []ServerSample) map[serverPortTuple]float64 {
+	m := make(map[serverPortTuple]float64, len(samples))
+	for _, s := range samples {
+		m[serverPortTuple{s.ServerID, s.PortID, s.Zone, s.ExternalNetwork, s.Direction}] += s.Value
 	}
 	return m
 }
