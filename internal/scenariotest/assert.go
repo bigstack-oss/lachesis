@@ -26,17 +26,18 @@ type AssertOptions struct {
 	Metrics    MetricsSource
 	Log        *slog.Logger
 
-	// SettleTimeout bounds the poll-until-pass loop: counters appear
+	// StabilizeTimeout bounds the poll-until-pass loop: counters appear
 	// one agent scrape interval after traffic, so assert re-evaluates
 	// until every expectation passes or this deadline fires. Zero
-	// uses [defaultSettleTimeout].
-	SettleTimeout time.Duration
+	// uses [defaultStabilizeTimeout]. ("Stabilize", not "settle" — the
+	// agent's settled-bytes fold is an unrelated concept.)
+	StabilizeTimeout time.Duration
 }
 
 const (
-	// defaultSettleTimeout gives the agent a few scrape intervals to
+	// defaultStabilizeTimeout gives the agent a few scrape intervals to
 	// surface the driven bytes before assert gives up.
-	defaultSettleTimeout = 45 * time.Second
+	defaultStabilizeTimeout = 45 * time.Second
 	// assertPollInterval is the pause between evaluation rounds.
 	assertPollInterval = 3 * time.Second
 	// noteBaselineInvalidated marks a negative delta: the tenant's
@@ -81,7 +82,7 @@ type AssertRow struct {
 
 // Assert evaluates every declared expectation as a MinBytes lower
 // bound on the delta between the drive-time baseline and the live
-// counters, polling until all pass or the settle timeout fires. The
+// counters, polling until all pass or the stabilize timeout fires. The
 // report is persisted to ReportPath either way; the returned error is
 // reserved for evaluation being impossible (no baseline, unknown
 // tenant, scrape failure) — a failed expectation is a false OK in the
@@ -102,9 +103,9 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 		rawServers: rs.BaselineServers,
 	}
 
-	timeout := opts.SettleTimeout
+	timeout := opts.StabilizeTimeout
 	if timeout <= 0 {
-		timeout = defaultSettleTimeout
+		timeout = defaultStabilizeTimeout
 	}
 	deadline := time.Now().Add(timeout)
 
@@ -136,7 +137,7 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 		if remaining < wait {
 			wait = remaining
 		}
-		opts.Log.Info("assert: not settled yet, retrying", "pass", passCount(report), "rows", len(report.Rows))
+		opts.Log.Info("assert: not stabilized yet, retrying", "pass", passCount(report), "rows", len(report.Rows))
 		select {
 		case <-ctx.Done():
 			return report, ctx.Err()

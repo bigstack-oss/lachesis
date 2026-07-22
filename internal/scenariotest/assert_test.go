@@ -36,13 +36,13 @@ func runAssertFixture(t *testing.T, sc *Scenario, rs *RunState, m MetricsSource,
 	t.Helper()
 	reportPath := t.TempDir() + "/report.json"
 	rep, err := Assert(context.Background(), AssertOptions{
-		Config:        testConfig(),
-		Scenario:      sc,
-		State:         rs,
-		ReportPath:    reportPath,
-		Metrics:       m,
-		Log:           slog.New(slog.DiscardHandler),
-		SettleTimeout: timeout,
+		Config:           testConfig(),
+		Scenario:         sc,
+		State:            rs,
+		ReportPath:       reportPath,
+		Metrics:          m,
+		Log:              slog.New(slog.DiscardHandler),
+		StabilizeTimeout: timeout,
 	})
 	return rep, reportPath, err
 }
@@ -111,14 +111,14 @@ func TestAssert_NegativeDeltaFlagsBaseline(t *testing.T) {
 	}
 }
 
-// settleMetrics reports counters that cross the threshold on the
-// second scrape round, proving the poll-until-settle loop.
-type settleMetrics struct {
+// stabilizeMetrics reports counters that cross the threshold on the
+// second scrape round, proving the poll-until-stabilize loop.
+type stabilizeMetrics struct {
 	instantMACs
 	calls *int
 }
 
-func (m settleMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+func (m stabilizeMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	*m.calls++
 	v := 100.0
 	if *m.calls > 1 {
@@ -130,14 +130,14 @@ func (m settleMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	}}, nil
 }
 
-func TestAssert_SettlesOnLaterScrape(t *testing.T) {
+func TestAssert_StabilizesOnLaterScrape(t *testing.T) {
 	calls := 0
-	rep, _, err := runAssertFixture(t, assertScenario(), assertState(), settleMetrics{calls: &calls}, 30*time.Second)
+	rep, _, err := runAssertFixture(t, assertScenario(), assertState(), stabilizeMetrics{calls: &calls}, 30*time.Second)
 	if err != nil {
 		t.Fatalf("Assert: %v", err)
 	}
 	if !rep.OK {
-		t.Fatalf("want OK after settle, got %+v", rep)
+		t.Fatalf("want OK after stabilizing, got %+v", rep)
 	}
 	if calls < 2 {
 		t.Errorf("expected at least 2 scrape rounds, got %d", calls)
@@ -180,7 +180,7 @@ func TestAssert_MultiAgentTuplesSum(t *testing.T) {
 	reportPath := t.TempDir() + "/report.json"
 	rep, err := Assert(context.Background(), AssertOptions{
 		Config: cfg, Scenario: sc, State: rs, ReportPath: reportPath,
-		Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: time.Second,
+		Metrics: m, Log: slog.New(slog.DiscardHandler), StabilizeTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -378,9 +378,9 @@ func TestAssert_NodeTargetSplitsAgents(t *testing.T) {
 	}
 	rep, err := Assert(context.Background(), AssertOptions{
 		Config: cfg, Scenario: sc, State: rs, ReportPath: t.TempDir() + "/report.json",
-		// Short: the failing row makes the settle loop exhaust the
+		// Short: the failing row makes the stabilize loop exhaust the
 		// timeout by design; there is nothing to wait for.
-		Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: 50 * time.Millisecond,
+		Metrics: m, Log: slog.New(slog.DiscardHandler), StabilizeTimeout: 50 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +404,7 @@ func TestAssert_CollectiveUnchangedByNodes(t *testing.T) {
 	sc.Expect = []Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20}}
 	rep, err := Assert(context.Background(), AssertOptions{
 		Config: cfg, Scenario: sc, State: rs, ReportPath: t.TempDir() + "/report.json",
-		Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: time.Second,
+		Metrics: m, Log: slog.New(slog.DiscardHandler), StabilizeTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -431,7 +431,7 @@ func TestAssert_NodeTargetErrors(t *testing.T) {
 			sc.Expect = []Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: tc.node, MinBytes: 1}}
 			_, err := Assert(context.Background(), AssertOptions{
 				Config: cfg, Scenario: sc, State: tc.rs, ReportPath: t.TempDir() + "/report.json",
-				Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: time.Second,
+				Metrics: m, Log: slog.New(slog.DiscardHandler), StabilizeTimeout: time.Second,
 			})
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
@@ -465,7 +465,7 @@ func TestAssert_NodeWithVMTarget(t *testing.T) {
 	sc.Expect = []Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", Node: "node:0", MinBytes: 1 << 20}}
 	rep, err := Assert(context.Background(), AssertOptions{
 		Config: cfg, Scenario: sc, State: rs, ReportPath: t.TempDir() + "/report.json",
-		Metrics: m, Log: slog.New(slog.DiscardHandler), SettleTimeout: time.Second,
+		Metrics: m, Log: slog.New(slog.DiscardHandler), StabilizeTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
