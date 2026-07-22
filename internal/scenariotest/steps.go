@@ -172,7 +172,7 @@ func (s DriveStep) Run(ctx context.Context, env *StepEnv) error {
 	})
 }
 
-// AssertStep evaluates Expect with the settle-polling `assert`
+// AssertStep evaluates Expect with the stabilize-polling `assert`
 // semantics against the most recent DriveStep's baseline, folding the
 // rows (tagged Note when they carry none) into the run's report.
 type AssertStep struct {
