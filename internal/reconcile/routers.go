@@ -50,19 +50,16 @@ func (r *Reconciler) reconcileRouterMACs(snap *neutron.Snapshot) int {
 
 	folded := 0
 	if r.settler != nil && r.meta != nil {
-		folded = r.settler.Settle(state.SettleRebase, func(k bpf.FlowKey) (string, string, bool) {
-			if k.DstZone != bpf.ZoneExternal || !changed[metadata.PeerMAC(k)] {
-				return "", "", false
-			}
-			meta, ok := r.meta.Lookup(metadata.VMMAC(k))
-			if !ok {
+		folded = r.settler.Settle(state.SettleRebase, metadata.SettleResolver(r.routers,
+			func(k bpf.FlowKey) (*metadata.TenantMeta, bool) {
+				if k.DstZone != bpf.ZoneExternal || !changed[metadata.PeerMAC(k)] {
+					return nil, false
+				}
 				// Unknown-VM flows emit the sentinel label regardless of
 				// the router map (the Resolver misses before consulting
 				// it) — nothing to re-home.
-				return "", "", false
-			}
-			return meta.ProjectID, metadata.FlowExternalLabel(r.routers, meta.ExternalNetwork, k), true
-		})
+				return r.meta.Lookup(metadata.VMMAC(k))
+			}))
 	}
 	r.routers.Replace(desired)
 	slog.Info("router external-network map updated; affected flows settled under their old label",
