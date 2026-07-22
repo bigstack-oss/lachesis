@@ -130,6 +130,7 @@ func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, snap *neutron.
 		meta.Insert(bpf.MACKey(key), &metadata.TenantMeta{
 			ProjectID:       p.ProjectID,
 			ServerID:        p.DeviceID,
+			PortID:          p.ID,
 			ExternalNetwork: extByPort[p.ID],
 		})
 		s.inserted++

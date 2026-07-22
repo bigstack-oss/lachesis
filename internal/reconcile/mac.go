@@ -76,6 +76,7 @@ func desiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
 		desired[bpf.MACKey(key)] = metadata.TenantMeta{
 			ProjectID:       p.ProjectID,
 			ServerID:        p.DeviceID,
+			PortID:          p.ID,
 			ExternalNetwork: extByPort[p.ID],
 		}
 	}
@@ -106,9 +107,7 @@ func (r *Reconciler) learnMACs(desired map[uint64]metadata.TenantMeta) (inserted
 		case !ok:
 			r.insertMAC(mac, want)
 			inserted++
-		case cur.ProjectID != want.ProjectID ||
-			cur.ExternalNetwork != want.ExternalNetwork ||
-			cur.ServerID != want.ServerID:
+		case !cur.SameAttribution(want):
 			// Attribution changed (possibly a ghost resurrected under a
 			// new attribution): settle history under the old one first.
 			r.settleAttributionChange(mac, cur, &want)

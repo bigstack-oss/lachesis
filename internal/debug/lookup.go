@@ -121,6 +121,7 @@ func (s *Server) fillMACLookup(result *lookupResult, hw net.HardwareAddr, canon 
 		entry.Found = true
 		entry.TenantID = meta.ProjectID
 		entry.TenantName = projectName(snap, meta.ProjectID)
+		entry.PortID = meta.PortID
 		entry.IsAmphora = meta.IsAmphora
 	}
 	result.MAC = entry

@@ -25,6 +25,12 @@ type TenantMeta struct {
 	// per-server metric family (docs/architecture/billing.md); empty when the
 	// port carries no device binding.
 	ServerID string
+	// PortID is the Neutron port UUID. Emitted as the `port_id` label on
+	// the per-server family so a server's traffic is broken out per port
+	// (docs/architecture/billing.md); consumers aggregate back to
+	// server_id. A MAC maps to exactly one port, so it is stable for the
+	// life of the MAC — a recreated port is a new MAC, hence a new series.
+	PortID string
 	// ExternalNetwork is the human-facing label of the external
 	// network this VM's egress leaves through — its floating IP's
 	// network, or its router's external gateway network (network name,
@@ -43,6 +49,25 @@ type TenantMeta struct {
 	// `gc.ghost_grace` tunable (default 60s — internal/tunables), and
 	// the GC drops the entry once `DeleteAt < now`.
 	DeleteAt time.Time
+}
+
+// SameAttribution reports whether two metas carry the same attribution
+// identity — every field EXCEPT the lifecycle ones (DeleteAt). It is
+// the reconcile change-detection's single comparison point: a change in
+// any attribution field must settle the MAC's history under the old
+// binding before the new one is published (docs/architecture/data-structures.md#settled-bytes).
+//
+// Deliberately implemented as a whole-struct compare with lifecycle
+// fields zeroed, NOT a field list: a field added to TenantMeta is
+// attribution-compared BY DEFAULT, which fails safe (a spurious settle
+// is sum-invariant and idempotent; a missed one silently mislabels — the
+// stale-port_id bug this replaced). A new LIFECYCLE field must be zeroed
+// here and classified in the schema guard test, which fails on any
+// unclassified field.
+func (m TenantMeta) SameAttribution(o TenantMeta) bool {
+	m.DeleteAt = time.Time{}
+	o.DeleteAt = time.Time{}
+	return m == o
 }
 
 // numShards is the fixed shard count. Must be a power of two so the
@@ -86,5 +111,6 @@ const NoExternalNetwork = "none"
 type Attribution struct {
 	Tenant          string
 	ServerID        string
+	PortID          string
 	ExternalNetwork string
 }

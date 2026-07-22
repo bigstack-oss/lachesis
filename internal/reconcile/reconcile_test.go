@@ -14,6 +14,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/state"
 	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
@@ -297,5 +298,55 @@ func TestRun_ReconcilesOnTick(t *testing.T) {
 	case <-runDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not exit after cancel")
+	}
+}
+
+// seedServerSettled folds one server-attributed row so st holds a
+// server-settled bucket for serverID.
+func seedServerSettled(t *testing.T, st *state.GlobalState, serverID string) {
+	t.Helper()
+	st.ApplyDelta(bpf.FlowKey{SrcMac: [6]uint8{0xaa, 0, 0, 0, 0, 1}, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionEgress, DstZone: bpf.ZoneExternal},
+		bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 1})
+	st.Settle(state.SettleEvict, func(bpf.FlowKey) (string, string, string, bool) {
+		return "t1", "none", serverID, true
+	})
+	if st.ServerSettledLen() != 1 {
+		t.Fatalf("seed: ServerSettledLen = %d, want 1", st.ServerSettledLen())
+	}
+}
+
+// TestReconcileOnce_PrunesServerSettledOnNovaList: a successful pass
+// whose snapshot carries a populated Nova server list releases the
+// server-settled buckets of servers absent from it — and a pass with an
+// empty/absent list (failed best-effort fetch) holds everything.
+func TestReconcileOnce_PrunesServerSettledOnNovaList(t *testing.T) {
+	st := state.New()
+	seedServerSettled(t, st, "srv-dead")
+
+	src := &fakeSrc{syncResult: neutron.SyncResult{
+		Snapshot: neutron.Snapshot{}, // Servers nil — Nova fetch failed
+	}}
+	mx := NewMetrics()
+	r := New(Options{
+		Source:   src,
+		Trie:     &fakeMap{},
+		Interner: metadata.NewTenantInterner(),
+		Settler:  st,
+		Metrics:  mx,
+	})
+
+	// Nil/empty Nova list → hold (pruning on missing data would end
+	// live servers' series).
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+	if st.ServerSettledLen() != 1 {
+		t.Fatalf("empty Nova list must hold buckets; ServerSettledLen = %d, want 1", st.ServerSettledLen())
+	}
+
+	// A populated list without srv-dead → the bucket is released.
+	src.syncResult.Snapshot.Servers = []neutron.Server{{ID: "srv-alive"}}
+	r.reconcileOnce(context.Background(), time.Unix(1001, 0))
+	if st.ServerSettledLen() != 0 {
+		t.Fatalf("populated Nova list must prune dead servers; ServerSettledLen = %d, want 0", st.ServerSettledLen())
 	}
 }

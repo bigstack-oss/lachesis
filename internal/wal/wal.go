@@ -70,14 +70,14 @@ type stageErr struct {
 func (e *stageErr) Error() string { return fmt.Sprintf("wal %s: %v", e.Stage, e.Err) }
 func (e *stageErr) Unwrap() error { return e.Err }
 
-// Save writes records and settled to path via the atomic
-// tmp+fsync+rename rotation described in the package doc. The two
-// slices must come from one [state.GlobalState.SnapshotForWAL] call —
-// a pair snapshotted separately can tear across a concurrent settle
-// fold and persist the folded bytes twice or not at all. agentBuild is
+// Save writes records, settled and serverSettled to path via the atomic
+// tmp+fsync+rename rotation described in the package doc. The slices
+// must come from one [state.GlobalState.SnapshotForWAL] call — slices
+// snapshotted separately can tear across a concurrent settle fold and
+// persist the folded bytes twice or not at all. agentBuild is
 // informational (correlation with build logs); empty is acceptable. m
 // may be nil when phase timings and failure stages are not needed.
-func Save(path, agentBuild string, records []state.Record, settled []state.SettledRecord, m *Metrics) error {
+func Save(path, agentBuild string, records []state.Record, settled []state.TenantSettledRecord, serverSettled []state.ServerSettledRecord, m *Metrics) error {
 	snap := snapshotWire{
 		SchemaVersion: SchemaVersion,
 		AgentBuild:    agentBuild,
@@ -88,9 +88,23 @@ func Save(path, agentBuild string, records []state.Record, settled []state.Settl
 		snap.GlobalState[i] = toWire(records[i])
 	}
 	if len(settled) > 0 {
-		snap.Settled = make([]settledWire, len(settled))
+		snap.TenantSettled = make([]tenantSettledWire, len(settled))
 		for i, s := range settled {
-			snap.Settled[i] = settledWire{
+			snap.TenantSettled[i] = tenantSettledWire{
+				TenantID:        s.Key.Tenant,
+				ExternalNetwork: s.Key.ExtNet,
+				Zone:            uint8(s.Key.Zone),
+				Direction:       uint8(s.Key.Dir),
+				Bytes:           s.Bytes,
+				Packets:         s.Packets,
+			}
+		}
+	}
+	if len(serverSettled) > 0 {
+		snap.ServerSettled = make([]serverSettledWire, len(serverSettled))
+		for i, s := range serverSettled {
+			snap.ServerSettled[i] = serverSettledWire{
+				ServerID:        s.Key.ServerID,
 				TenantID:        s.Key.Tenant,
 				ExternalNetwork: s.Key.ExtNet,
 				Zone:            uint8(s.Key.Zone),
@@ -211,7 +225,7 @@ func writeAndFsync(path string, data []byte) error {
 func Load(path string) (LoadResult, error) {
 	primary, primaryErr := readAndParse(path)
 	if primaryErr == nil {
-		return LoadResult{Records: fromSnapshot(primary), Settled: fromSettled(primary), Source: LoadFromPrimary}, nil
+		return LoadResult{Records: fromSnapshot(primary), TenantSettled: fromTenantSettled(primary), ServerSettled: fromServerSettled(primary), Source: LoadFromPrimary}, nil
 	}
 
 	// The .bak behind a newer-schema primary may well parse — it can
@@ -224,7 +238,7 @@ func Load(path string) (LoadResult, error) {
 	bakPath := path + BackupSuffix
 	backup, backupErr := readAndParse(bakPath)
 	if backupErr == nil {
-		return LoadResult{Records: fromSnapshot(backup), Settled: fromSettled(backup), Source: LoadFromBackup}, nil
+		return LoadResult{Records: fromSnapshot(backup), TenantSettled: fromTenantSettled(backup), ServerSettled: fromServerSettled(backup), Source: LoadFromBackup}, nil
 	}
 
 	// Both missing is the first-boot path; report as empty.
@@ -331,12 +345,19 @@ func fromMetricsWire(w flowMetricsWire) bpf.FlowMetrics {
 	return bpf.FlowMetrics{Bytes: w.Bytes, Packets: w.Packets, LastSeenNs: w.LastSeenNs}
 }
 
-func fromSettled(snap snapshotWire) []state.SettledRecord {
-	if len(snap.Settled) == 0 {
+func fromTenantSettled(snap snapshotWire) []state.TenantSettledRecord {
+	// ≤v3 files carry the tenant accumulator under the legacy `settled`
+	// key (schema.go); v4+ writes `tenant_settled`. A file never has
+	// both — Save writes only the new key — so merging is a plain pick.
+	src := snap.TenantSettled
+	if len(src) == 0 {
+		src = snap.LegacySettled
+	}
+	if len(src) == 0 {
 		return nil
 	}
-	out := make([]state.SettledRecord, len(snap.Settled))
-	for i, s := range snap.Settled {
+	out := make([]state.TenantSettledRecord, len(src))
+	for i, s := range src {
 		// v2 snapshots predate the external_network dimension; an
 		// absent field decodes as "" and means exactly "no external
 		// network" — the sentinel bucket (schema.go v3 note).
@@ -344,12 +365,39 @@ func fromSettled(snap snapshotWire) []state.SettledRecord {
 		if ext == "" {
 			ext = metadata.NoExternalNetwork
 		}
-		out[i] = state.SettledRecord{
-			Key: state.SettledKey{
+		out[i] = state.TenantSettledRecord{
+			Key: state.TenantSettledKey{
 				Tenant: s.TenantID,
 				ExtNet: ext,
 				Zone:   bpf.ZoneCode(s.Zone),
 				Dir:    bpf.Direction(s.Direction),
+			},
+			Bytes:   s.Bytes,
+			Packets: s.Packets,
+		}
+	}
+	return out
+}
+
+func fromServerSettled(snap snapshotWire) []state.ServerSettledRecord {
+	if len(snap.ServerSettled) == 0 {
+		return nil
+	}
+	out := make([]state.ServerSettledRecord, len(snap.ServerSettled))
+	for i, s := range snap.ServerSettled {
+		// Same absent-external_network→sentinel handling as fromTenantSettled;
+		// a server-settled bucket always occupies a real emitted series.
+		ext := s.ExternalNetwork
+		if ext == "" {
+			ext = metadata.NoExternalNetwork
+		}
+		out[i] = state.ServerSettledRecord{
+			Key: state.ServerSettledKey{
+				ServerID: s.ServerID,
+				Tenant:   s.TenantID,
+				ExtNet:   ext,
+				Zone:     bpf.ZoneCode(s.Zone),
+				Dir:      bpf.Direction(s.Direction),
 			},
 			Bytes:   s.Bytes,
 			Packets: s.Packets,

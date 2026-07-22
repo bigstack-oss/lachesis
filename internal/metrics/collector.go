@@ -60,21 +60,27 @@ type ScraperStats interface {
 	LastSuccessUnix() int64
 }
 
-// Collector emits per-(tenant, zone, direction) cumulative byte and
-// packet counters from a [state.GlobalState], plus a handful of
-// internal-health gauges.
+// Collector emits the four-layer billing hierarchy — total → tenant →
+// server → port byte/packet counters — from a [state.GlobalState],
+// plus a handful of internal-health gauges (docs/architecture/billing.md).
 type Collector struct {
 	state    *state.GlobalState
 	scraper  ScraperStats
 	resolver TenantResolver
 
-	bytesDesc        *prometheus.Desc
-	packetsDesc      *prometheus.Desc
-	serverBytesDesc  *prometheus.Desc
-	flowsDesc        *prometheus.Desc
-	settledDesc      *prometheus.Desc
-	scrapeErrorsDesc *prometheus.Desc
-	scrapeLastOKDesc *prometheus.Desc
+	totalBytesDesc    *prometheus.Desc
+	totalPacketsDesc  *prometheus.Desc
+	bytesDesc         *prometheus.Desc
+	packetsDesc       *prometheus.Desc
+	serverBytesDesc   *prometheus.Desc
+	serverPacketsDesc *prometheus.Desc
+	portBytesDesc     *prometheus.Desc
+	portPacketsDesc   *prometheus.Desc
+	flowsDesc         *prometheus.Desc
+	tenantSettledDesc *prometheus.Desc
+	serverSettledDesc *prometheus.Desc
+	scrapeErrorsDesc  *prometheus.Desc
+	scrapeLastOKDesc  *prometheus.Desc
 
 	// collectDuration times each Collect pass (snapshot + aggregate +
 	// emit). docs/architecture/performance.md sizes the per-scrape cost by N_CPU and flow
@@ -89,17 +95,23 @@ type Collector struct {
 	// Prometheus registry is single-threaded but third-party
 	// registries are not.
 	collectMu sync.Mutex
-	// emitBuf and settledBuf are reused across Collect calls so the
-	// combined snapshot walk is zero-alloc in steady state.
-	emitBuf    []state.Entry
-	settledBuf []state.SettledRecord
-	// aggBuf groups per-flow entries by (tenant, external_network,
-	// zone, direction) before emission; serverAggBuf groups LIVE rows
-	// by the same tuple plus server_id for the mortal per-server
-	// family. Both reused across Collect calls; clear() resets without
-	// releasing the bucket allocations.
+	// emitBuf, tenantSettledBuf and serverSettledBuf are reused across Collect
+	// calls so the combined snapshot walk is zero-alloc in steady state.
+	emitBuf          []state.Entry
+	tenantSettledBuf []state.TenantSettledRecord
+	serverSettledBuf []state.ServerSettledRecord
+	// The four per-tier aggregation buffers (docs/architecture/billing.md):
+	// totalAggBuf sums the tenant tier's buckets with the tenant
+	// dimension removed; aggBuf groups per-flow entries + tenant-settled
+	// by (tenant, external_network, zone, direction); serverAggBuf
+	// groups live rows + server-settled by the server tuple; portAggBuf
+	// groups live rows by the port tuple (the mortal leaf). All reused
+	// across Collect calls; clear() resets without releasing the bucket
+	// allocations.
+	totalAggBuf  map[totalAggKey]aggValue
 	aggBuf       map[aggKey]aggValue
 	serverAggBuf map[serverAggKey]aggValue
+	portAggBuf   map[portAggKey]aggValue
 }
 
 // New constructs a Collector. A nil resolver falls back to
@@ -114,31 +126,63 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		state:        st,
 		scraper:      sc,
 		resolver:     resolver,
+		totalAggBuf:  make(map[totalAggKey]aggValue),
 		aggBuf:       make(map[aggKey]aggValue),
 		serverAggBuf: make(map[serverAggKey]aggValue),
-		bytesDesc: prometheus.NewDesc(
+		portAggBuf:   make(map[portAggKey]aggValue),
+		totalBytesDesc: prometheus.NewDesc(
 			MetricBytesTotal,
-			"Network bytes observed by the agent, cumulative since first sight.",
+			"Total network bytes observed by the node, cumulative — the top of the four-layer billing hierarchy: Σ over all tenants (including \"unknown\") of live rows + settled. Immortal (docs/architecture/billing.md).",
+			[]string{"zone", "external_network", "direction"}, nil,
+		),
+		totalPacketsDesc: prometheus.NewDesc(
+			MetricPacketsTotal,
+			"Total network packets (GSO/GRO superpackets) observed by the node, cumulative — the total tier's diagnostic companion to lachesis_bytes_total. Never a billing dimension (docs/architecture/billing.md).",
+			[]string{"zone", "external_network", "direction"}, nil,
+		),
+		bytesDesc: prometheus.NewDesc(
+			MetricTenantBytesTotal,
+			"Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).",
 			[]string{"tenant_id", "zone", "external_network", "direction"}, nil,
 		),
 		packetsDesc: prometheus.NewDesc(
-			"lachesis_packets_total",
-			"Network packets observed by the agent, cumulative since first sight.",
+			MetricTenantPacketsTotal,
+			"Per-tenant network packets, cumulative since first sight — live rows + tenant-settled. Immortal (docs/architecture/billing.md).",
 			[]string{"tenant_id", "zone", "external_network", "direction"}, nil,
 		),
 		serverBytesDesc: prometheus.NewDesc(
 			MetricServerBytesTotal,
-			"Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).",
+			"Per-server network bytes, cumulative — Σ live rows + server-settled, monotone for exactly the server's lifetime: port deletes/detaches fold into the server-settled absorber (a portless-but-alive server flat-lines), and the series ends when the server leaves the Nova list. Period subtraction is safe within the lifetime; never increase()/rate() for money (docs/architecture/billing.md).",
 			[]string{"server_id", "tenant_id", "zone", "external_network", "direction"}, nil,
+		),
+		portBytesDesc: prometheus.NewDesc(
+			MetricPortBytesTotal,
+			"Per-port network bytes, cumulative while the port's binding lives — the mortal leaf of the billing hierarchy: a deleted port's series stops, and a detached-then-reattached port restarts from a fresh counter. Drill-down/monitoring view; billing exactness lives in lachesis_server_bytes_total (docs/architecture/billing.md).",
+			[]string{"server_id", "port_id", "tenant_id", "zone", "external_network", "direction"}, nil,
+		),
+		serverPacketsDesc: prometheus.NewDesc(
+			MetricServerPacketsTotal,
+			"Per-server network packets (GSO/GRO superpackets), cumulative — Σ live rows + server-settled, same lifetime as lachesis_server_bytes_total. Diagnostic companion; never a billing dimension (docs/architecture/billing.md).",
+			[]string{"server_id", "tenant_id", "zone", "external_network", "direction"}, nil,
+		),
+		portPacketsDesc: prometheus.NewDesc(
+			MetricPortPacketsTotal,
+			"Per-port network packets (GSO/GRO superpackets), cumulative while the port's binding lives — the mortal leaf's diagnostic companion to lachesis_port_bytes_total. Never a billing dimension (docs/architecture/billing.md).",
+			[]string{"server_id", "port_id", "tenant_id", "zone", "external_network", "direction"}, nil,
 		),
 		flowsDesc: prometheus.NewDesc(
 			"lachesis_state_flows",
 			"Distinct flow keys currently tracked in GlobalState.",
 			nil, nil,
 		),
-		settledDesc: prometheus.NewDesc(
-			"lachesis_state_settled_tuples",
+		tenantSettledDesc: prometheus.NewDesc(
+			"lachesis_state_tenant_settled_tuples",
 			"Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/architecture/data-structures.md#settled-bytes).",
+			nil, nil,
+		),
+		serverSettledDesc: prometheus.NewDesc(
+			"lachesis_state_server_settled_tuples",
+			"Distinct (server_id, tenant, zone, external_network, direction) buckets in the server-settled accumulator — the server tier's fold absorber; buckets are released when their server leaves the Nova list (docs/architecture/data-structures.md#settled-bytes).",
 			nil, nil,
 		),
 		scrapeErrorsDesc: prometheus.NewDesc(
@@ -161,11 +205,17 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 
 // Describe implements [prometheus.Collector].
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.totalBytesDesc
+	ch <- c.totalPacketsDesc
 	ch <- c.bytesDesc
 	ch <- c.packetsDesc
 	ch <- c.serverBytesDesc
+	ch <- c.serverPacketsDesc
+	ch <- c.portBytesDesc
+	ch <- c.portPacketsDesc
 	ch <- c.flowsDesc
-	ch <- c.settledDesc
+	ch <- c.tenantSettledDesc
+	ch <- c.serverSettledDesc
 	ch <- c.scrapeErrorsDesc
 	ch <- c.scrapeLastOKDesc
 	c.collectDuration.Describe(ch)
@@ -179,27 +229,63 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 // GlobalState, so it cannot deadlock against the scraper writer or
 // race a concurrent map iteration.
 //
-// The emitted value per (tenant, zone, direction) is live + settled:
-// live flows resolve their tenant at scrape time; settled buckets
-// carry the tenants of flows whose binding is gone (deleted VMs,
-// reassigned ports). The sum is what stays monotonic
-// (docs/architecture/data-structures.md#settled-bytes, docs/architecture/contracts.md#required-contracts Contract 7).
+// The emitted value per tier (docs/architecture/billing.md,
+// docs/architecture/data-structures.md#settled-bytes, docs/architecture/contracts.md#required-contracts Contract 7):
+// tenant = live + tenant-settled; total = the tenant tier with the
+// tenant dimension summed away; server = live + server-settled
+// (settled-only tuples emitted — a portless-but-alive server
+// flat-lines); port = live rows only, the mortal leaf.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectMu.Lock()
 	defer c.collectMu.Unlock()
 	start := time.Now()
 
-	c.emitBuf, c.settledBuf = c.state.SnapshotWithSettled(c.emitBuf[:0], c.settledBuf[:0])
+	c.emitBuf, c.tenantSettledBuf, c.serverSettledBuf = c.state.SnapshotWithSettled(c.emitBuf[:0], c.tenantSettledBuf[:0], c.serverSettledBuf[:0])
+	c.aggregate()
+	c.emitBilling(ch)
+	c.emitHealth(ch)
+
+	c.collectDuration.Observe(time.Since(start).Seconds())
+	c.collectDuration.Collect(ch)
+}
+
+// aggregate builds the four per-tier maps from the snapshot buffers, in
+// dependency order: tenant-settled and live rows feed the tenant tier
+// (live rows also feed server + port), the server-settled absorber
+// completes the server tier, and the total tier derives from the
+// finished tenant tier. Pure bucket math — no emission, no locks.
+func (c *Collector) aggregate() {
+	clear(c.totalAggBuf)
 	clear(c.aggBuf)
 	clear(c.serverAggBuf)
-	for i := range c.settledBuf {
-		s := &c.settledBuf[i]
+	clear(c.portAggBuf)
+	c.foldTenantSettled()
+	c.aggregateLiveRows()
+	c.foldServerSettled()
+	c.deriveTotals()
+}
+
+// foldTenantSettled credits the tenant tier with the settled buckets —
+// the bytes of flows whose attribution is gone (deleted VMs, reassigned
+// ports), which keep the tenant series monotone across churn
+// (docs/architecture/data-structures.md#settled-bytes).
+func (c *Collector) foldTenantSettled() {
+	for i := range c.tenantSettledBuf {
+		s := &c.tenantSettledBuf[i]
 		k := aggKey{tenant: s.Key.Tenant, ext: s.Key.ExtNet, zone: s.Key.Zone, dir: s.Key.Dir}
 		v := c.aggBuf[k]
 		v.bytes += s.Bytes
 		v.packets += s.Packets
 		c.aggBuf[k] = v
 	}
+}
+
+// aggregateLiveRows resolves each live flow row once and credits every
+// tier it belongs to: always the tenant tier; the server and port tiers
+// only when the MAC resolves to a server — unattributable traffic has
+// no server_id (and no port_id) by definition and lives in the tenant
+// tier's "unknown" series alone.
+func (c *Collector) aggregateLiveRows() {
 	for i := range c.emitBuf {
 		e := &c.emitBuf[i]
 		a := c.resolver.Resolve(e.Key)
@@ -213,11 +299,6 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		v.bytes += e.Total.Bytes
 		v.packets += e.Total.Packets
 		c.aggBuf[k] = v
-		// The mortal per-server family aggregates LIVE rows only —
-		// settled buckets have deliberately dropped the server
-		// dimension (docs/architecture/billing.md) — and only rows whose MAC
-		// resolves to a server: unattributable traffic has no
-		// server_id by definition.
 		if a.ServerID != "" {
 			sk := serverAggKey{server: a.ServerID, tenant: a.Tenant, ext: a.ExternalNetwork,
 				zone: e.Key.DstZone, dir: e.Key.Direction}
@@ -225,44 +306,95 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			sv.bytes += e.Total.Bytes
 			sv.packets += e.Total.Packets
 			c.serverAggBuf[sk] = sv
+			pk := portAggKey{server: a.ServerID, port: a.PortID, tenant: a.Tenant, ext: a.ExternalNetwork,
+				zone: e.Key.DstZone, dir: e.Key.Direction}
+			pv := c.portAggBuf[pk]
+			pv.bytes += e.Total.Bytes
+			pv.packets += e.Total.Packets
+			c.portAggBuf[pk] = pv
 		}
 	}
+}
+
+// foldServerSettled credits the server tier with its absorber, CREATING
+// entries for tuples with no live rows: a server that momentarily has
+// no ports (detached NIC, port recreate in flight) keeps emitting its
+// cumulative as a flat line — the series is monotone for the server's
+// whole lifetime, and it ends only when the reconciler releases the
+// bucket on Nova-list absence (docs/architecture/data-structures.md#settled-bytes).
+func (c *Collector) foldServerSettled() {
+	for i := range c.serverSettledBuf {
+		s := &c.serverSettledBuf[i]
+		sk := serverAggKey{server: s.Key.ServerID, tenant: s.Key.Tenant, ext: s.Key.ExtNet,
+			zone: s.Key.Zone, dir: s.Key.Dir}
+		sv := c.serverAggBuf[sk]
+		sv.bytes += s.Bytes
+		sv.packets += s.Packets
+		c.serverAggBuf[sk] = sv
+	}
+}
+
+// deriveTotals builds the total tier as the finished tenant tier with
+// the tenant dimension summed away — total = Σ tenant series by
+// construction, so the two tiers can never disagree.
+func (c *Collector) deriveTotals() {
 	for k, v := range c.aggBuf {
-		// ZoneCode.String / Direction.String return constant strings
-		// for all known codes — no allocation in this loop.
-		zone := k.zone.String()
-		dir := k.dir.String()
+		tk := totalAggKey{ext: k.ext, zone: k.zone, dir: k.dir}
+		tv := c.totalAggBuf[tk]
+		tv.bytes += v.bytes
+		tv.packets += v.packets
+		c.totalAggBuf[tk] = tv
+	}
+}
+
+// emitBilling emits the four billing tiers from the aggregated maps —
+// bytes and packets per tier, labels per docs/architecture/metrics.md.
+// ZoneCode.String / Direction.String return constant strings for all
+// known codes — no allocation in these loops.
+func (c *Collector) emitBilling(ch chan<- prometheus.Metric) {
+	for k, v := range c.totalAggBuf {
+		zone, dir := k.zone.String(), k.dir.String()
 		ch <- prometheus.MustNewConstMetric(
-			c.bytesDesc, prometheus.CounterValue, float64(v.bytes),
-			k.tenant, zone, k.ext, dir,
-		)
+			c.totalBytesDesc, prometheus.CounterValue, float64(v.bytes), zone, k.ext, dir)
 		ch <- prometheus.MustNewConstMetric(
-			c.packetsDesc, prometheus.CounterValue, float64(v.packets),
-			k.tenant, zone, k.ext, dir,
-		)
+			c.totalPacketsDesc, prometheus.CounterValue, float64(v.packets), zone, k.ext, dir)
+	}
+	for k, v := range c.aggBuf {
+		zone, dir := k.zone.String(), k.dir.String()
+		ch <- prometheus.MustNewConstMetric(
+			c.bytesDesc, prometheus.CounterValue, float64(v.bytes), k.tenant, zone, k.ext, dir)
+		ch <- prometheus.MustNewConstMetric(
+			c.packetsDesc, prometheus.CounterValue, float64(v.packets), k.tenant, zone, k.ext, dir)
 	}
 	for k, v := range c.serverAggBuf {
+		zone, dir := k.zone.String(), k.dir.String()
 		ch <- prometheus.MustNewConstMetric(
-			c.serverBytesDesc, prometheus.CounterValue, float64(v.bytes),
-			k.server, k.tenant, k.zone.String(), k.ext, k.dir.String(),
-		)
+			c.serverBytesDesc, prometheus.CounterValue, float64(v.bytes), k.server, k.tenant, zone, k.ext, dir)
+		ch <- prometheus.MustNewConstMetric(
+			c.serverPacketsDesc, prometheus.CounterValue, float64(v.packets), k.server, k.tenant, zone, k.ext, dir)
 	}
+	for k, v := range c.portAggBuf {
+		zone, dir := k.zone.String(), k.dir.String()
+		ch <- prometheus.MustNewConstMetric(
+			c.portBytesDesc, prometheus.CounterValue, float64(v.bytes), k.server, k.port, k.tenant, zone, k.ext, dir)
+		ch <- prometheus.MustNewConstMetric(
+			c.portPacketsDesc, prometheus.CounterValue, float64(v.packets), k.server, k.port, k.tenant, zone, k.ext, dir)
+	}
+}
 
+// emitHealth emits the collector's internal-health gauges: state sizes
+// from this pass's snapshot buffers plus the scraper's drain stats.
+func (c *Collector) emitHealth(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(
-		c.flowsDesc, prometheus.GaugeValue, float64(len(c.emitBuf)),
-	)
+		c.flowsDesc, prometheus.GaugeValue, float64(len(c.emitBuf)))
 	ch <- prometheus.MustNewConstMetric(
-		c.settledDesc, prometheus.GaugeValue, float64(len(c.settledBuf)),
-	)
+		c.tenantSettledDesc, prometheus.GaugeValue, float64(len(c.tenantSettledBuf)))
 	ch <- prometheus.MustNewConstMetric(
-		c.scrapeErrorsDesc, prometheus.CounterValue, float64(c.scraper.ErrorCount()),
-	)
+		c.serverSettledDesc, prometheus.GaugeValue, float64(len(c.serverSettledBuf)))
 	ch <- prometheus.MustNewConstMetric(
-		c.scrapeLastOKDesc, prometheus.GaugeValue, float64(c.scraper.LastSuccessUnix()),
-	)
-
-	c.collectDuration.Observe(time.Since(start).Seconds())
-	c.collectDuration.Collect(ch)
+		c.scrapeErrorsDesc, prometheus.CounterValue, float64(c.scraper.ErrorCount()))
+	ch <- prometheus.MustNewConstMetric(
+		c.scrapeLastOKDesc, prometheus.GaugeValue, float64(c.scraper.LastSuccessUnix()))
 }
 
 // UnknownTenant is the stub TenantResolver wired before the

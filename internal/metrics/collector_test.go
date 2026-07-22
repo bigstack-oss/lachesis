@@ -57,15 +57,15 @@ func TestCollect_EmitsCumulativeBytesAndPackets(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 1000
-# HELP lachesis_packets_total Network packets observed by the agent, cumulative since first sight.
-# TYPE lachesis_packets_total counter
-lachesis_packets_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 10
+# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 1000
+# HELP lachesis_tenant_packets_total Per-tenant network packets, cumulative since first sight — live rows + tenant-settled. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_packets_total counter
+lachesis_tenant_packets_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 10
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"lachesis_bytes_total", "lachesis_packets_total"); err != nil {
+		"lachesis_tenant_bytes_total", "lachesis_tenant_packets_total"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
@@ -116,7 +116,7 @@ func TestCollect_TenantResolverApplied(t *testing.T) {
 	}
 	found := false
 	for _, fam := range mf {
-		if fam.GetName() != "lachesis_bytes_total" {
+		if fam.GetName() != "lachesis_tenant_bytes_total" {
 			continue
 		}
 		for _, m := range fam.GetMetric() {
@@ -166,7 +166,7 @@ func TestCollect_LabelsCoverAllZonesAndDirections(t *testing.T) {
 
 	seen := map[string]bool{}
 	for _, fam := range mf {
-		if fam.GetName() != "lachesis_bytes_total" {
+		if fam.GetName() != "lachesis_tenant_bytes_total" {
 			continue
 		}
 		for _, m := range fam.GetMetric() {
@@ -205,7 +205,7 @@ func TestCollect_UnknownZoneFallsBackToNumeric(t *testing.T) {
 	}
 	want := false
 	for _, fam := range mf {
-		if fam.GetName() != "lachesis_bytes_total" {
+		if fam.GetName() != "lachesis_tenant_bytes_total" {
 			continue
 		}
 		for _, m := range fam.GetMetric() {
@@ -238,18 +238,18 @@ func TestCollect_AggregatesFlowsSharingLabels(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 500
-# HELP lachesis_packets_total Network packets observed by the agent, cumulative since first sight.
-# TYPE lachesis_packets_total counter
-lachesis_packets_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 5
+# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 500
+# HELP lachesis_tenant_packets_total Per-tenant network packets, cumulative since first sight — live rows + tenant-settled. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_packets_total counter
+lachesis_tenant_packets_total{direction="rx",external_network="none",tenant_id="unknown",zone="external"} 5
 # HELP lachesis_state_flows Distinct flow keys currently tracked in GlobalState.
 # TYPE lachesis_state_flows gauge
 lachesis_state_flows 5
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"lachesis_bytes_total", "lachesis_packets_total", "lachesis_state_flows"); err != nil {
+		"lachesis_tenant_bytes_total", "lachesis_tenant_packets_total", "lachesis_state_flows"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
@@ -276,22 +276,22 @@ func TestCollect_SeriesMonotonicAcrossGhostSweep(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 1000
+# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 1000
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"lachesis_bytes_total"); err != nil {
+		"lachesis_tenant_bytes_total"); err != nil {
 		t.Errorf("before sweep: %v", err)
 	}
 
 	// The ghost sweep: fold the dead MAC's rows to its tenant, then
 	// delete the metadata (the exact order internal/gc performs).
-	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
 		if metadata.VMMAC(k) != macKey {
-			return "", "", false
+			return "", "", "", false
 		}
-		return "tenant-a", "none", true
+		return "tenant-a", "none", "", true
 	})
 	meta.Delete(macKey)
 
@@ -299,18 +299,18 @@ lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a"
 	// settled bucket carries it. No live flows remain, and nothing
 	// re-bucketed to "unknown".
 	expected = `
-# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 1000
+# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 1000
 # HELP lachesis_state_flows Distinct flow keys currently tracked in GlobalState.
 # TYPE lachesis_state_flows gauge
 lachesis_state_flows 0
-# HELP lachesis_state_settled_tuples Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/architecture/data-structures.md#settled-bytes).
-# TYPE lachesis_state_settled_tuples gauge
-lachesis_state_settled_tuples 1
+# HELP lachesis_state_tenant_settled_tuples Distinct (tenant, zone, external_network, direction) buckets in the settled-bytes accumulator — flows folded out when their attribution was about to disappear (docs/architecture/data-structures.md#settled-bytes).
+# TYPE lachesis_state_tenant_settled_tuples gauge
+lachesis_state_tenant_settled_tuples 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"lachesis_bytes_total", "lachesis_state_flows", "lachesis_state_settled_tuples"); err != nil {
+		"lachesis_tenant_bytes_total", "lachesis_state_flows", "lachesis_state_tenant_settled_tuples"); err != nil {
 		t.Errorf("after sweep: %v", err)
 	}
 }
@@ -335,11 +335,11 @@ func TestCollect_MACReuseDoesNotInheritOrReplay(t *testing.T) {
 	// MAC is reborn on tenant B's port: metadata re-learned, and the
 	// reborn flow's kernel counter restarts from zero — its next drain
 	// reads a fresh cumulative (300), unrelated to A's 1000.
-	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
 		if metadata.VMMAC(k) != macKey {
-			return "", "", false
+			return "", "", "", false
 		}
-		return "tenant-a", "none", true
+		return "tenant-a", "none", "", true
 	})
 	meta.Delete(macKey)
 	meta.Insert(macKey, &metadata.TenantMeta{ProjectID: "tenant-b"})
@@ -350,13 +350,13 @@ func TestCollect_MACReuseDoesNotInheritOrReplay(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 1000
-lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-b",zone="same_tenant"} 300
+# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 1000
+lachesis_tenant_bytes_total{direction="tx",external_network="none",tenant_id="tenant-b",zone="same_tenant"} 300
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"lachesis_bytes_total"); err != nil {
+		"lachesis_tenant_bytes_total"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
@@ -366,8 +366,8 @@ lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-b"
 // sample carries the sum — Prometheus rejects duplicate label sets.
 func TestCollect_SettledAndLiveSumPerTuple(t *testing.T) {
 	st := state.New()
-	st.RestoreSettled([]state.SettledRecord{{
-		Key:   state.SettledKey{Tenant: "tenant-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
+	st.RestoreTenantSettled([]state.TenantSettledRecord{{
+		Key:   state.TenantSettledKey{Tenant: "tenant-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
 		Bytes: 400, Packets: 4,
 	}})
 	st.ApplyDelta(keyWith(bpf.DirectionIngress, bpf.ZoneSameTenant),
@@ -378,15 +378,15 @@ func TestCollect_SettledAndLiveSumPerTuple(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 500
-# HELP lachesis_packets_total Network packets observed by the agent, cumulative since first sight.
-# TYPE lachesis_packets_total counter
-lachesis_packets_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 5
+# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 500
+# HELP lachesis_tenant_packets_total Per-tenant network packets, cumulative since first sight — live rows + tenant-settled. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_packets_total counter
+lachesis_tenant_packets_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 5
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"lachesis_bytes_total", "lachesis_packets_total"); err != nil {
+		"lachesis_tenant_bytes_total", "lachesis_tenant_packets_total"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
@@ -428,7 +428,7 @@ func TestCollect_ExternalNetworkLabelRouting(t *testing.T) {
 	meta := metadata.New()
 	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
 	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
-		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
 	})
 
 	st := state.New()
@@ -444,13 +444,13 @@ func TestCollect_ExternalNetworkLabelRouting(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 700
-lachesis_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 300
+# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 700
+lachesis_tenant_bytes_total{direction="tx",external_network="none",tenant_id="tenant-a",zone="same_tenant"} 300
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"lachesis_bytes_total"); err != nil {
+		"lachesis_tenant_bytes_total"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
@@ -464,14 +464,14 @@ func TestCollect_ServerFamilyEmitsLiveRowsOnly(t *testing.T) {
 	meta := metadata.New()
 	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
 	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
-		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
 	})
 
 	st := state.New()
 	// A settled bucket from some prior fold: tenant family carries it,
 	// server family must not.
-	st.RestoreSettled([]state.SettledRecord{{
-		Key:   state.SettledKey{Tenant: "tenant-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
+	st.RestoreTenantSettled([]state.TenantSettledRecord{{
+		Key:   state.TenantSettledKey{Tenant: "tenant-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
 		Bytes: 400, Packets: 4,
 	}})
 	ext := bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 1},
@@ -487,7 +487,7 @@ func TestCollect_ServerFamilyEmitsLiveRowsOnly(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative — Σ live rows + server-settled, monotone for exactly the server's lifetime: port deletes/detaches fold into the server-settled absorber (a portless-but-alive server flat-lines), and the series ends when the server leaves the Nova list. Period subtraction is safe within the lifetime; never increase()/rate() for money (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
 lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
 `
@@ -506,7 +506,7 @@ func TestCollect_ServerFamilyMortalAcrossSweep(t *testing.T) {
 	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
 	macKey := bpf.MACKey(vmMAC)
 	meta.Insert(macKey, &metadata.TenantMeta{
-		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
 	})
 
 	st := state.New()
@@ -520,7 +520,7 @@ func TestCollect_ServerFamilyMortalAcrossSweep(t *testing.T) {
 
 	// Alive: both families expose the bytes.
 	expected := `
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative — Σ live rows + server-settled, monotone for exactly the server's lifetime: port deletes/detaches fold into the server-settled absorber (a portless-but-alive server flat-lines), and the series ends when the server leaves the Nova list. Period subtraction is safe within the lifetime; never increase()/rate() for money (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
 lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 1000
 `
@@ -531,11 +531,11 @@ lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id
 
 	// Ghost sweep: fold under the dying attribution (zone-gated
 	// external_network), evict the rows, delete the metadata.
-	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, bool) {
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
 		if metadata.VMMAC(k) != macKey {
-			return "", "", false
+			return "", "", "", false
 		}
-		return "tenant-a", metadata.ExternalNetworkLabel("public-1", k.DstZone), true
+		return "tenant-a", metadata.ExternalNetworkLabel("public-1", k.DstZone), "", true
 	})
 	meta.Delete(macKey)
 
@@ -543,12 +543,12 @@ lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id
 	// the tenant family still exposes the full cumulative on the SAME
 	// label tuple it always had.
 	expected = `
-# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 1000
+# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 1000
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"lachesis_bytes_total", "lachesis_server_bytes_total"); err != nil {
+		"lachesis_tenant_bytes_total", "lachesis_server_bytes_total"); err != nil {
 		t.Errorf("after sweep: %v", err)
 	}
 }
@@ -564,7 +564,7 @@ func TestCollect_PerFlowRouterSplitsExternalNetworks(t *testing.T) {
 	rtr1 := [6]uint8{0xfa, 0x16, 0x3e, 0, 0, 0x10}
 	rtr2 := [6]uint8{0xfa, 0x16, 0x3e, 0, 0, 0x20}
 	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
-		ProjectID: "tenant-a", ServerID: "srv-1", ExternalNetwork: "public-1",
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
 	})
 	routers := metadata.NewRouterMACs()
 	routers.Replace(map[uint64]string{
@@ -585,17 +585,179 @@ func TestCollect_PerFlowRouterSplitsExternalNetworks(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP lachesis_bytes_total Network bytes observed by the agent, cumulative since first sight.
-# TYPE lachesis_bytes_total counter
-lachesis_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 700
-lachesis_bytes_total{direction="tx",external_network="public-2",tenant_id="tenant-a",zone="external"} 300
-# HELP lachesis_server_bytes_total Per-server network bytes, cumulative while the server's attribution lives. MORTAL series: ends at VM teardown (no settled carry-over) — consume by period subtraction only, never increase()/rate() (docs/architecture/billing.md).
+# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+lachesis_tenant_bytes_total{direction="tx",external_network="public-1",tenant_id="tenant-a",zone="external"} 700
+lachesis_tenant_bytes_total{direction="tx",external_network="public-2",tenant_id="tenant-a",zone="external"} 300
+# HELP lachesis_server_bytes_total Per-server network bytes, cumulative — Σ live rows + server-settled, monotone for exactly the server's lifetime: port deletes/detaches fold into the server-settled absorber (a portless-but-alive server flat-lines), and the series ends when the server leaves the Nova list. Period subtraction is safe within the lifetime; never increase()/rate() for money (docs/architecture/billing.md).
 # TYPE lachesis_server_bytes_total counter
 lachesis_server_bytes_total{direction="tx",external_network="public-1",server_id="srv-1",tenant_id="tenant-a",zone="external"} 700
 lachesis_server_bytes_total{direction="tx",external_network="public-2",server_id="srv-1",tenant_id="tenant-a",zone="external"} 300
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"lachesis_bytes_total", "lachesis_server_bytes_total"); err != nil {
+		"lachesis_tenant_bytes_total", "lachesis_server_bytes_total"); err != nil {
 		t.Errorf("GatherAndCompare: %v", err)
+	}
+}
+
+// sumFamily gathers reg and returns the summed value of family name.
+func sumFamily(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var got float64
+	for _, fam := range mf {
+		if fam.GetName() != name {
+			continue
+		}
+		for _, m := range fam.GetMetric() {
+			got += m.GetCounter().GetValue()
+		}
+	}
+	return got
+}
+
+// TestCollect_ServerFamilyNoDipAcrossPartialFold reproduces lachesis#226
+// at the collector: two ports of one server feed a single server-tier
+// tuple; deleting one port ghost-folds its rows — and the still-live
+// server series must NOT dip, because the fold credited the
+// server-settled absorber (Σ live + server-settled is emitted).
+func TestCollect_ServerFamilyNoDipAcrossPartialFold(t *testing.T) {
+	meta := metadata.New()
+	vm1 := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	vm2 := [6]uint8{0xaa, 0, 0, 0, 0, 2}
+	for i, m := range [][6]uint8{vm1, vm2} {
+		meta.Insert(bpf.MACKey(m), &metadata.TenantMeta{
+			ProjectID: "tenant-a", ServerID: "srv-1", PortID: []string{"port-1", "port-2"}[i],
+			ExternalNetwork: "public-1",
+		})
+	}
+
+	st := state.New()
+	dst := [6]uint8{0xee, 0, 0, 0, 0, 9}
+	k1 := bpf.FlowKey{SrcMac: vm1, DstMac: dst, EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	k2 := bpf.FlowKey{SrcMac: vm2, DstMac: dst, EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	st.ApplyDelta(k1, bpf.FlowMetrics{Bytes: 600, Packets: 6, LastSeenNs: 1})
+	st.ApplyDelta(k2, bpf.FlowMetrics{Bytes: 400, Packets: 4, LastSeenNs: 1})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	if got := sumFamily(t, reg, "lachesis_server_bytes_total"); got != 1000 {
+		t.Fatalf("both ports live: server family = %v, want 1000", got)
+	}
+	// And the port layer breaks the same 1000 out per port.
+	if got := sumFamily(t, reg, "lachesis_port_bytes_total"); got != 1000 {
+		t.Fatalf("both ports live: port family = %v, want 1000", got)
+	}
+
+	// port-1 deleted: the ghost sweep folds+evicts its row under srv-1.
+	folded := st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
+		if metadata.VMMAC(k) != bpf.MACKey(vm1) {
+			return "", "", "", false
+		}
+		return "tenant-a", metadata.ExternalNetworkLabel("public-1", k.DstZone), "srv-1", true
+	})
+	if folded != 1 {
+		t.Fatalf("folded %d rows, want 1", folded)
+	}
+	meta.Delete(bpf.MACKey(vm1))
+
+	// THE lachesis#226 assertion: still 1000 (live 400 + settled 600) —
+	// while the port layer honestly shows only the surviving port.
+	if got := sumFamily(t, reg, "lachesis_server_bytes_total"); got != 1000 {
+		t.Fatalf("after partial fold: server family = %v, want 1000 (no dip)", got)
+	}
+	if got := sumFamily(t, reg, "lachesis_port_bytes_total"); got != 400 {
+		t.Fatalf("after partial fold: port family = %v, want 400 (the mortal leaf stopped)", got)
+	}
+	// The packets companions track the same absorber arithmetic
+	// (10 = live 4 + settled 6; the leaf keeps only the live 4).
+	if got := sumFamily(t, reg, "lachesis_server_packets_total"); got != 10 {
+		t.Fatalf("after partial fold: server packets = %v, want 10 (no dip)", got)
+	}
+	if got := sumFamily(t, reg, "lachesis_port_packets_total"); got != 4 {
+		t.Fatalf("after partial fold: port packets = %v, want 4", got)
+	}
+}
+
+// TestCollect_ServerFlatLinesUntilNovaPrune: the server-tier lifecycle.
+// A server whose ONLY port folds keeps emitting its cumulative as a
+// flat line (settled-only tuple — portless but alive), and the series
+// ends only when the reconciler's Nova-list prune releases the bucket.
+func TestCollect_ServerFlatLinesUntilNovaPrune(t *testing.T) {
+	meta := metadata.New()
+	vm := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	meta.Insert(bpf.MACKey(vm), &metadata.TenantMeta{
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
+	})
+	st := state.New()
+	k := bpf.FlowKey{SrcMac: vm, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal}
+	st.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1000, Packets: 10, LastSeenNs: 1})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	// Fold the only port (detach/delete) and drop its metadata.
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
+		if metadata.VMMAC(k) != bpf.MACKey(vm) {
+			return "", "", "", false
+		}
+		return "tenant-a", metadata.ExternalNetworkLabel("public-1", k.DstZone), "srv-1", true
+	})
+	meta.Delete(bpf.MACKey(vm))
+
+	// Portless but alive: the server family flat-lines at 1000 — and the
+	// port family is EMPTY (the mortal leaf stopped).
+	if got := sumFamily(t, reg, "lachesis_server_bytes_total"); got != 1000 {
+		t.Fatalf("portless flat line: server family = %v, want 1000", got)
+	}
+	if got := sumFamily(t, reg, "lachesis_port_bytes_total"); got != 0 {
+		t.Fatalf("portless: port family = %v, want 0 (stopped)", got)
+	}
+
+	// srv-1 leaves the Nova list → the reconciler prunes → series ends.
+	if dropped := st.PruneServerSettled(map[string]struct{}{"other-server": {}}); dropped != 1 {
+		t.Fatalf("prune dropped %d, want 1", dropped)
+	}
+	if got := sumFamily(t, reg, "lachesis_server_bytes_total"); got != 0 {
+		t.Fatalf("after Nova prune: server family = %v, want 0 (series ended)", got)
+	}
+}
+
+// TestCollect_TotalIsTenantSum: the total layer equals the tenant layer
+// with the tenant dimension summed away — including "unknown".
+func TestCollect_TotalIsTenantSum(t *testing.T) {
+	meta := metadata.New()
+	vm := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	meta.Insert(bpf.MACKey(vm), &metadata.TenantMeta{ProjectID: "tenant-a"})
+	st := state.New()
+	known := bpf.FlowKey{SrcMac: vm, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+	unknown := bpf.FlowKey{SrcMac: [6]uint8{0xbb, 0, 0, 0, 0, 5}, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+	st.ApplyDelta(known, bpf.FlowMetrics{Bytes: 700, Packets: 7, LastSeenNs: 1})
+	st.ApplyDelta(unknown, bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 1})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP lachesis_bytes_total Total network bytes observed by the node, cumulative — the top of the four-layer billing hierarchy: Σ over all tenants (including "unknown") of live rows + settled. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_bytes_total counter
+lachesis_bytes_total{direction="tx",external_network="none",zone="same_tenant"} 1000
+# HELP lachesis_packets_total Total network packets (GSO/GRO superpackets) observed by the node, cumulative — the total tier's diagnostic companion to lachesis_bytes_total. Never a billing dimension (docs/architecture/billing.md).
+# TYPE lachesis_packets_total counter
+lachesis_packets_total{direction="tx",external_network="none",zone="same_tenant"} 10
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"lachesis_bytes_total", "lachesis_packets_total"); err != nil {
+		t.Errorf("total = Σ tenants: %v", err)
 	}
 }
