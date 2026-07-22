@@ -50,7 +50,7 @@ type Record struct {
 	Counter Counter
 }
 
-// SettledKey identifies one settled-accumulator bucket. It is exactly
+// TenantSettledKey identifies one settled-accumulator bucket. It is exactly
 // the metric label tuple the Collector emits — the resolved tenant, the
 // zone-gated external-network label, plus the flow key's zone and
 // direction — because settling happens at the moment the finer
@@ -59,19 +59,47 @@ type Record struct {
 // always the already-gated label (a network name, or the
 // metadata.NoExternalNetwork sentinel) so a settled bucket lands in
 // exactly the series its live flows occupied.
-type SettledKey struct {
+type TenantSettledKey struct {
 	Tenant string
 	ExtNet string
 	Zone   bpf.ZoneCode
 	Dir    bpf.Direction
 }
 
-// SettledRecord is one settled bucket's cumulative totals, emitted by
-// the snapshot methods and round-tripped through the WAL. Settled
+// TenantSettledRecord is one settled bucket's cumulative totals, emitted by
+// the snapshot methods and round-tripped through the WAL. TenantSettled
 // buckets carry no LastEbpfRaw — they are past delta math by
 // definition — and no LastSeenNs — recency belongs to live flows.
-type SettledRecord struct {
-	Key     SettledKey
+type TenantSettledRecord struct {
+	Key     TenantSettledKey
+	Bytes   uint64
+	Packets uint64
+}
+
+// ServerSettledKey identifies one server-settled bucket — the server
+// tier's fold absorber in the four-layer family hierarchy
+// (docs/architecture/billing.md). Unlike [TenantSettledKey] it KEEPS the
+// server dimension: it is exactly the lachesis_server_bytes_total label
+// tuple, so a fold credits the same series the live flows occupied and
+// the server series stays monotone for the server's whole lifetime — a
+// multi-port server losing one port, a detached-then-reattached NIC, a
+// port recreate. Bounded: buckets are released when their server leaves
+// the Nova server list ([GlobalState.PruneServerSettled]), so a dead
+// server's series simply ends.
+type ServerSettledKey struct {
+	ServerID string
+	Tenant   string
+	ExtNet   string
+	Zone     bpf.ZoneCode
+	Dir      bpf.Direction
+}
+
+// ServerSettledRecord is one server-settled bucket's cumulative totals,
+// emitted by the snapshot methods and round-tripped through the WAL
+// (additive schema v4). Like [TenantSettledRecord] it carries no delta-math
+// or recency fields.
+type ServerSettledRecord struct {
+	Key     ServerSettledKey
 	Bytes   uint64
 	Packets uint64
 }

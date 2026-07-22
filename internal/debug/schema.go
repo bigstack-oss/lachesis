@@ -231,7 +231,11 @@ type lookupMACEntry struct {
 	Found      bool   `json:"found"`
 	TenantID   string `json:"tenant_id,omitempty"`
 	TenantName string `json:"tenant_name,omitempty"`
-	IsAmphora  bool   `json:"is_amphora,omitempty"`
+	// PortID is the Neutron port the MAC currently binds to — the
+	// port-tier identity, surfaced so a stale binding after a same-MAC
+	// port rebirth is observable (docs/architecture/billing.md).
+	PortID    string `json:"port_id,omitempty"`
+	IsAmphora bool   `json:"is_amphora,omitempty"`
 }
 
 // zonesModel is the /debug/zones view: the LPM trie as the kernel

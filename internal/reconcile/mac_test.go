@@ -224,8 +224,8 @@ func TestReconcileMACs_TenantChangeSettlesOldTenant(t *testing.T) {
 		t.Fatalf("macDelta = %+v, want {Changed:1}", d)
 	}
 
-	flows, settled := st.SnapshotWithSettled(nil, nil)
-	wantKey := state.SettledKey{Tenant: "proj-old", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}
+	flows, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
+	wantKey := state.TenantSettledKey{Tenant: "proj-old", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}
 	if len(settled) != 1 || settled[0].Key != wantKey || settled[0].Bytes != 100 {
 		t.Fatalf("settled = %+v, want 100 bytes under %+v", settled, wantKey)
 	}
@@ -238,7 +238,7 @@ func TestReconcileMACs_TenantChangeSettlesOldTenant(t *testing.T) {
 	// Next drain: kernel cumulative moved 100→130; only the 30 new
 	// bytes may accrue (and will late-bind to proj-new at scrape).
 	st.ApplyDelta(key, bpf.FlowMetrics{Bytes: 130, Packets: 5, LastSeenNs: 2})
-	flows, settled = st.SnapshotWithSettled(nil, nil)
+	flows, settled, _ = st.SnapshotWithSettled(nil, nil, nil)
 	if flows[0].Total.Bytes != 30 {
 		t.Errorf("post-fold delta = %d bytes, want 30 (old cumulative must not replay)", flows[0].Total.Bytes)
 	}
@@ -276,7 +276,7 @@ func TestReconcileMACs_ResurrectedSameTenantDoesNotSettle(t *testing.T) {
 	})
 	r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{vmPort(macStr, "proj-z")}}, time.Unix(2000, 0))
 
-	flows, settled := st.SnapshotWithSettled(nil, nil)
+	flows, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
 	if len(settled) != 0 {
 		t.Errorf("settled = %+v, want none (same tenant resurrected)", settled)
 	}
@@ -387,13 +387,13 @@ func TestReconcileMACs_ExternalNetworkChangeSettlesOldAttribution(t *testing.T) 
 	if cur, _ := meta.Lookup(m); cur.ExternalNetwork != "public-2" {
 		t.Errorf("metadata ExternalNetwork = %q, want public-2", cur.ExternalNetwork)
 	}
-	_, settled := st.SnapshotWithSettled(nil, nil)
-	got := map[state.SettledKey]uint64{}
+	_, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
+	got := map[state.TenantSettledKey]uint64{}
 	for _, s := range settled {
 		got[s.Key] = s.Bytes
 	}
-	wantExt := state.SettledKey{Tenant: "proj-a", ExtNet: "public-1", Zone: bpf.ZoneExternal, Dir: bpf.DirectionIngress}
-	wantSame := state.SettledKey{Tenant: "proj-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}
+	wantExt := state.TenantSettledKey{Tenant: "proj-a", ExtNet: "public-1", Zone: bpf.ZoneExternal, Dir: bpf.DirectionIngress}
+	wantSame := state.TenantSettledKey{Tenant: "proj-a", ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress}
 	if got[wantExt] != 700 {
 		t.Errorf("external-zone fold = %d under %+v, want 700 (old label)", got[wantExt], wantExt)
 	}
@@ -422,5 +422,34 @@ func TestReconcileMACs_GhostGraceIsLive(t *testing.T) {
 	got, _ := meta.Lookup(m1)
 	if want := now.Add(5 * time.Minute); !got.DeleteAt.Equal(want) {
 		t.Fatalf("DeleteAt = %v, want %v (the tunable grace, not the 60s default)", got.DeleteAt, want)
+	}
+}
+
+// TestReconcileMACs_PortRebirthSameAttribution reproduces the stale
+// port_id miss: a port is deleted and a NEW port with the SAME MAC and
+// identical attribution (tenant, server, external network) appears
+// before the agent noticed the delete (Kafka outage — the reconcile
+// diff sees old-live vs new-desired directly). The change detection
+// must treat the port_id change as an attribution change and refresh
+// the metadata; otherwise the port tier mislabels all subsequent
+// traffic under the dead port's port_id.
+func TestReconcileMACs_PortRebirthSameAttribution(t *testing.T) {
+	meta := metadata.New()
+	m := mac(t, "bb:00:00:00:00:07")
+	meta.Insert(m, &metadata.TenantMeta{ProjectID: "t1", ServerID: "srv-1", PortID: "port-old"})
+
+	mw := &fakeMacWriter{}
+	r := newMacReconciler(meta, mw)
+
+	p := vmPort("bb:00:00:00:00:07", "t1")
+	p.ID = "port-new"
+	p.DeviceID = "srv-1"
+	d := r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{p}}, time.Unix(2000, 0))
+
+	if d != (macDelta{Changed: 1}) {
+		t.Fatalf("macDelta = %+v, want {Changed:1} — a port_id change IS an attribution change", d)
+	}
+	if cur, _ := meta.Lookup(m); cur.PortID != "port-new" {
+		t.Errorf("PortID = %q, want port-new — stale port_id would mislabel the port tier", cur.PortID)
 	}
 }

@@ -56,7 +56,13 @@ type MapGauge interface {
 // next scrape. Consumer-defined seam; the agent wires its
 // *state.GlobalState.
 type FlowSettler interface {
-	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int
+	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet, server string, ok bool)) int
+	// PruneServerSettled releases server-settled buckets whose server is
+	// no longer in the Nova server list — the server tier's lifecycle
+	// rule (docs/architecture/data-structures.md#settled-bytes). The
+	// reconciler owns the call: it is the one place a fresh, successful
+	// Nova fetch is in hand.
+	PruneServerSettled(alive map[string]struct{}) int
 }
 
 // MetadataSource is the subset of [neutron.Neutron] the reconcile loop
@@ -220,8 +226,32 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 
 	r.src.Commit(result, now)
 	r.mx.RecordRun(resultOK)
+	r.pruneServerSettled(result.Snapshot.Servers)
 	r.refreshMapGauges(len(result.Entries))
 	r.logOutcome(delta, mac, len(result.Ambiguities))
+}
+
+// pruneServerSettled releases server-settled buckets for servers no
+// longer in the Nova list — a server's exposed series ends when (and
+// only when) the server is gone (docs/architecture/data-structures.md#settled-bytes).
+// Skipped entirely when servers is empty: a nil list means the
+// best-effort Nova fetch failed, and an empty one is indistinguishable
+// from it — pruning on missing data would end live servers' series, so
+// buckets are held until a populated list arrives (the safe direction;
+// worst case, a fully-emptied cloud retains its last servers' few
+// buckets until a server exists again). No-op without a settler.
+func (r *Reconciler) pruneServerSettled(servers []neutron.Server) {
+	if r.settler == nil || len(servers) == 0 {
+		return
+	}
+	alive := make(map[string]struct{}, len(servers))
+	for _, s := range servers {
+		alive[s.ID] = struct{}{}
+	}
+	if dropped := r.settler.PruneServerSettled(alive); dropped > 0 {
+		slog.Info("released server-settled buckets for dead servers",
+			"component", component, "dropped", dropped, "servers_alive", len(alive))
+	}
 }
 
 // refreshMapGauges keeps lachesis_bpf_map_current_entries current after the

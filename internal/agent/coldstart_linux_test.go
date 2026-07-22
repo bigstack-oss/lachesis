@@ -118,7 +118,7 @@ func TestPopulateMetadataFromPorts_CarriesAttribution(t *testing.T) {
 	if !ok {
 		t.Fatal("inserted MAC not found")
 	}
-	want := metadata.TenantMeta{ProjectID: "t1", ServerID: "srv-1", ExternalNetwork: "public-1"}
+	want := metadata.TenantMeta{ProjectID: "t1", ServerID: "srv-1", PortID: "p1", ExternalNetwork: "public-1"}
 	if *got != want {
 		t.Errorf("TenantMeta = %+v, want %+v", *got, want)
 	}

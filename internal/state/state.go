@@ -18,7 +18,7 @@
 // LastEbpfRaw = current. See [GlobalState.ApplyDelta] and
 // docs/architecture/contracts.md#required-contracts.
 //
-// # Settled bytes
+// # TenantSettled bytes
 //
 // A flow row's tenant is late-bound: the Collector resolves the MAC at
 // scrape time. When that binding is about to disappear (a dead VM's
@@ -26,7 +26,7 @@
 // cumulative would silently re-bucket — so the owner of that moment
 // calls [GlobalState.Settle], which folds the row's Total into a
 // per-(tenant, zone, direction) settled accumulator that the Collector
-// adds to its emission forever after. Settled buckets only grow; they
+// adds to its emission forever after. TenantSettled buckets only grow; they
 // are what keeps a tenant's exposed series monotonic across VM churn
 // (docs/architecture/data-structures.md#settled-bytes, docs/architecture/contracts.md#required-contracts Contract 7).
 //
@@ -51,20 +51,29 @@ import (
 // series monotonic after its flows stop resolving
 // (docs/architecture/data-structures.md#settled-bytes). See the package doc for invariants.
 //
-// Both maps live under the one mutex deliberately: [GlobalState.Settle]
+// All maps live under the one mutex deliberately: [GlobalState.Settle]
 // moves value between them, and every reader (the Collector's combined
-// snapshot, the WAL's combined snapshot) must observe the two sides
+// snapshot, the WAL's combined snapshot) must observe all sides
 // consistently — a snapshot taken between "row deleted" and "settled
 // credited" would lose the folded bytes for that scrape or flush, and
 // the reverse order would double-count them.
 type GlobalState struct {
-	mu      sync.RWMutex
-	counts  map[bpf.FlowKey]*Counter
-	settled map[SettledKey]*settledTotal
+	mu            sync.RWMutex
+	counts        map[bpf.FlowKey]*Counter
+	tenantSettled map[TenantSettledKey]*settledTotal
+	// serverSettled is the server tier's fold absorber
+	// (docs/architecture/data-structures.md#settled-bytes): [GlobalState.Settle]
+	// credits it in the same critical section it credits settled, the
+	// Collector emits Σ live rows + serverSettled per server tuple, and
+	// [GlobalState.PruneServerSettled] releases a bucket when its server
+	// leaves the Nova server list — the server series is monotone for
+	// exactly the server's lifetime.
+	serverSettled map[ServerSettledKey]*settledTotal
 }
 
 // settledTotal is the mutable per-bucket accumulator behind the
-// settled map. SettledRecord is its copy-out form.
+// settled and serverSettled maps. TenantSettledRecord / ServerSettledRecord
+// are the copy-out forms.
 type settledTotal struct {
 	bytes   uint64
 	packets uint64
@@ -73,8 +82,9 @@ type settledTotal struct {
 // New returns an empty GlobalState.
 func New() *GlobalState {
 	return &GlobalState{
-		counts:  make(map[bpf.FlowKey]*Counter),
-		settled: make(map[SettledKey]*settledTotal),
+		counts:        make(map[bpf.FlowKey]*Counter),
+		tenantSettled: make(map[TenantSettledKey]*settledTotal),
+		serverSettled: make(map[ServerSettledKey]*settledTotal),
 	}
 }
 
@@ -192,23 +202,40 @@ func AddDelta(total, lastRaw *uint64, current uint64) {
 // unchanged by the fold (value moves between the two maps inside one
 // critical section), which is exactly the docs/architecture/contracts.md#required-contracts Contract 7 monotonicity
 // guarantee.
-func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int {
+func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant, extNet, server string, ok bool)) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	folded := 0
 	for k, c := range g.counts {
-		tenant, extNet, ok := resolve(k)
+		tenant, extNet, server, ok := resolve(k)
 		if !ok {
 			continue
 		}
-		sk := SettledKey{Tenant: tenant, ExtNet: extNet, Zone: k.DstZone, Dir: k.Direction}
-		t := g.settled[sk]
+		sk := TenantSettledKey{Tenant: tenant, ExtNet: extNet, Zone: k.DstZone, Dir: k.Direction}
+		t := g.tenantSettled[sk]
 		if t == nil {
 			t = &settledTotal{}
-			g.settled[sk] = t
+			g.tenantSettled[sk] = t
 		}
 		t.bytes += c.Total.Bytes
 		t.packets += c.Total.Packets
+		// The server tier's absorber: credit the SAME folded bytes into
+		// the server-settled bucket, keyed by the full server tuple, so
+		// the server series stays monotone across the fold for the
+		// server's whole lifetime (docs/architecture/data-structures.md#settled-bytes).
+		// Rows with no server_id (unattributable traffic) have no server
+		// series, so nothing to credit. Same critical section as the
+		// tenant credit — a torn fold would over/under-expose one scrape.
+		if server != "" {
+			ck := ServerSettledKey{ServerID: server, Tenant: tenant, ExtNet: extNet, Zone: k.DstZone, Dir: k.Direction}
+			sc := g.serverSettled[ck]
+			if sc == nil {
+				sc = &settledTotal{}
+				g.serverSettled[ck] = sc
+			}
+			sc.bytes += c.Total.Bytes
+			sc.packets += c.Total.Packets
+		}
 		if mode == SettleEvict {
 			delete(g.counts, k)
 		} else {
@@ -243,16 +270,23 @@ func (g *GlobalState) Snapshot(dst []Entry) []Entry {
 // or drop (settled then live) the folded bytes for one exposure —
 // either way the next scrape breaks series monotonicity. Both slices
 // follow the [GlobalState.Snapshot] reuse contract.
-func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []SettledRecord) ([]Entry, []SettledRecord) {
+func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []TenantSettledRecord, serverSettled []ServerSettledRecord) ([]Entry, []TenantSettledRecord, []ServerSettledRecord) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	for k, c := range g.counts {
 		flows = append(flows, Entry{Key: k, Total: c.Total})
 	}
-	for k, t := range g.settled {
-		settled = append(settled, SettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
+	for k, t := range g.tenantSettled {
+		settled = append(settled, TenantSettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
 	}
-	return flows, settled
+	// Server-settled rides the SAME RLock as live+settled: the server
+	// family's emitted value is live+serverSettled per tuple, and a fold
+	// moving bytes rows→bucket must never be observable half-done across
+	// a scrape (docs/architecture/contracts.md#required-contracts Contract 7).
+	for k, t := range g.serverSettled {
+		serverSettled = append(serverSettled, ServerSettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
+	}
+	return flows, settled, serverSettled
 }
 
 // Len returns the number of distinct flows currently tracked.
@@ -273,16 +307,19 @@ func (g *GlobalState) Len() int {
 // and a crash would make that permanent. Values are copied out so the
 // records are safe to use after the RLock is released, including
 // across the (no-lock) marshal and flush phases of the WAL writer.
-func (g *GlobalState) SnapshotForWAL(flows []Record, settled []SettledRecord) ([]Record, []SettledRecord) {
+func (g *GlobalState) SnapshotForWAL(flows []Record, settled []TenantSettledRecord, serverSettled []ServerSettledRecord) ([]Record, []TenantSettledRecord, []ServerSettledRecord) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	for k, c := range g.counts {
 		flows = append(flows, Record{Key: k, Counter: *c})
 	}
-	for k, t := range g.settled {
-		settled = append(settled, SettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
+	for k, t := range g.tenantSettled {
+		settled = append(settled, TenantSettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
 	}
-	return flows, settled
+	for k, t := range g.serverSettled {
+		serverSettled = append(serverSettled, ServerSettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
+	}
+	return flows, settled, serverSettled
 }
 
 // Restore seeds the map from records previously written to the WAL.
@@ -300,20 +337,60 @@ func (g *GlobalState) Restore(records []Record) {
 	}
 }
 
-// RestoreSettled seeds the settled accumulator from records previously
+// RestoreTenantSettled seeds the settled accumulator from records previously
 // written to the WAL. Same contract as [GlobalState.Restore]: boot-time
 // only, existing buckets overwritten.
-func (g *GlobalState) RestoreSettled(records []SettledRecord) {
+func (g *GlobalState) RestoreTenantSettled(records []TenantSettledRecord) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for _, r := range records {
-		g.settled[r.Key] = &settledTotal{bytes: r.Bytes, packets: r.Packets}
+		g.tenantSettled[r.Key] = &settledTotal{bytes: r.Bytes, packets: r.Packets}
 	}
 }
 
-// SettledLen returns the number of settled buckets currently held.
-func (g *GlobalState) SettledLen() int {
+// TenantSettledLen returns the number of settled buckets currently held.
+func (g *GlobalState) TenantSettledLen() int {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return len(g.settled)
+	return len(g.tenantSettled)
+}
+
+// RestoreServerSettled seeds the server-settled accumulator from records
+// previously written to the WAL. Same contract as [GlobalState.Restore]:
+// boot-time only, existing buckets overwritten.
+func (g *GlobalState) RestoreServerSettled(records []ServerSettledRecord) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, r := range records {
+		g.serverSettled[r.Key] = &settledTotal{bytes: r.Bytes, packets: r.Packets}
+	}
+}
+
+// ServerSettledLen returns the number of server-settled buckets held.
+func (g *GlobalState) ServerSettledLen() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.serverSettled)
+}
+
+// PruneServerSettled drops every server-settled bucket whose ServerID is
+// not in alive — the server tier's lifecycle rule: a server series ends
+// when (and only when) its server leaves the Nova server list
+// (docs/architecture/data-structures.md#settled-bytes). The caller (the
+// reconciler, after a successful sync) must pass a set built from a
+// SUCCESSFUL Nova fetch and must skip the call entirely when the fetch
+// failed or returned nothing — pruning on missing data would end live
+// servers' series. No TTL, no clock: server-list absence is the one
+// unambiguous death signal. Returns the number of buckets dropped.
+func (g *GlobalState) PruneServerSettled(alive map[string]struct{}) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	dropped := 0
+	for k := range g.serverSettled {
+		if _, ok := alive[k.ServerID]; !ok {
+			delete(g.serverSettled, k)
+			dropped++
+		}
+	}
+	return dropped
 }

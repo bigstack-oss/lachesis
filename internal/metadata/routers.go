@@ -89,12 +89,12 @@ func FlowExternalLabel(routers *RouterMACs, vmExtNet string, key bpf.FlowKey) st
 // land in exactly the series their live flows occupied; a fold that
 // built the pair by hand could half-label (skip the router-map
 // lookup, say) and teleport settled bytes between series.
-func SettleResolver(routers *RouterMACs, pick func(bpf.FlowKey) (*TenantMeta, bool)) func(bpf.FlowKey) (string, string, bool) {
-	return func(k bpf.FlowKey) (string, string, bool) {
+func SettleResolver(routers *RouterMACs, pick func(bpf.FlowKey) (*TenantMeta, bool)) func(bpf.FlowKey) (string, string, string, bool) {
+	return func(k bpf.FlowKey) (string, string, string, bool) {
 		meta, ok := pick(k)
 		if !ok {
-			return "", "", false
+			return "", "", "", false
 		}
-		return meta.ProjectID, FlowExternalLabel(routers, meta.ExternalNetwork, k), true
+		return meta.ProjectID, FlowExternalLabel(routers, meta.ExternalNetwork, k), meta.ServerID, true
 	}
 }

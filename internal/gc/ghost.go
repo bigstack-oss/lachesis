@@ -77,7 +77,7 @@ type MacFlowEvictor interface {
 // The agent wires *state.GlobalState; tests may wire it too (it is
 // cheap to construct) or leave it nil to skip settling.
 type FlowSettler interface {
-	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet string, ok bool)) int
+	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet, server string, ok bool)) int
 }
 
 // GhostSweeper periodically drops metadata entries whose 60s grace

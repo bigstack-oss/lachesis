@@ -52,6 +52,7 @@ func (r *Resolver) Resolve(key bpf.FlowKey) Attribution {
 	return Attribution{
 		Tenant:          meta.ProjectID,
 		ServerID:        meta.ServerID,
+		PortID:          meta.PortID,
 		ExternalNetwork: FlowExternalLabel(r.routers, meta.ExternalNetwork, key),
 	}
 }

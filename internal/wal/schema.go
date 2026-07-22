@@ -26,7 +26,14 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 //     field absent, which Load maps to the metadata.NoExternalNetwork
 //     sentinel; a pre-external-network bucket IS a "none" bucket, so no
 //     migration is needed.
-const SchemaVersion uint = 3
+//   - v4: adds the server_settled section — the server tier's fold
+//     absorber in the four-layer family hierarchy
+//     (docs/architecture/data-structures.md#settled-bytes). Purely
+//     additive — a v3 file is a valid v4 file with no server-settled
+//     buckets, so Load reads it without migration. v4 also renames the
+//     tenant accumulator's key settled → tenant_settled; Load accepts
+//     both (LegacySettled), Save writes only the new key.
+const SchemaVersion uint = 4
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
 // previous snapshot. TempSuffix is the in-progress write target.
@@ -73,27 +80,34 @@ const (
 )
 
 // LoadResult bundles a successful Load. Records is nil when Source
-// is LoadEmpty; Settled is nil for LoadEmpty and for v1 snapshots,
-// which predate the settled section.
+// is LoadEmpty; TenantSettled is nil for LoadEmpty and for v1 snapshots,
+// which predate the settled section; ServerSettled is nil for LoadEmpty
+// and for v1–v3 snapshots, which predate the server-settled section.
 type LoadResult struct {
-	Records []state.Record
-	Settled []state.SettledRecord
-	Source  LoadSource
+	Records       []state.Record
+	TenantSettled []state.TenantSettledRecord
+	ServerSettled []state.ServerSettledRecord
+	Source        LoadSource
 }
 
 // snapshotWire is the on-disk envelope. Field order and JSON tags
-// are the wire format; do not reorder casually. Settled is omitempty
+// are the wire format; do not reorder casually. TenantSettled is omitempty
 // so a v2 writer with nothing settled produces a byte-identical
 // envelope to v1 apart from the version field.
 type snapshotWire struct {
-	SchemaVersion uint          `json:"schema_version"`
-	AgentBuild    string        `json:"agent_build"`
-	WrittenAtNs   uint64        `json:"written_at_ns,string"`
-	GlobalState   []entryWire   `json:"global_state"`
-	Settled       []settledWire `json:"settled,omitempty"`
+	SchemaVersion uint                `json:"schema_version"`
+	AgentBuild    string              `json:"agent_build"`
+	WrittenAtNs   uint64              `json:"written_at_ns,string"`
+	GlobalState   []entryWire         `json:"global_state"`
+	TenantSettled []tenantSettledWire `json:"tenant_settled,omitempty"`
+	ServerSettled []serverSettledWire `json:"server_settled,omitempty"`
+	// LegacySettled reads the ≤v3 on-disk key `settled` (the tenant
+	// accumulator's pre-four-layer name). Load merges it into
+	// TenantSettled; Save never writes it (always nil + omitempty).
+	LegacySettled []tenantSettledWire `json:"settled,omitempty"`
 }
 
-// settledWire mirrors state.SettledRecord on the wire. The tenant is
+// tenantSettledWire mirrors state.TenantSettledRecord on the wire. The tenant is
 // the Keystone project UUID string — the only tenant identifier stable
 // across boots (see the state.Record invariant note); zone and
 // direction reuse the flow-key enum encodings. ExternalNetwork is the
@@ -101,7 +115,23 @@ type snapshotWire struct {
 // "", so Save writes it on every bucket; omitempty matters only on
 // decode, where a v2-era entry's absent field reads as "" and Load
 // maps it to the sentinel.
-type settledWire struct {
+type tenantSettledWire struct {
+	TenantID        string `json:"tenant_id"`
+	ExternalNetwork string `json:"external_network,omitempty"`
+	Zone            uint8  `json:"zone"`
+	Direction       uint8  `json:"direction"`
+	Bytes           uint64 `json:"bytes,string"`
+	Packets         uint64 `json:"packets,string"`
+}
+
+// serverSettledWire mirrors state.ServerSettledRecord on the wire — the
+// server tier's fold absorber (v4+). Like tenantSettledWire it carries the
+// stable project UUID and the already-gated external_network label, and
+// adds server_id (the Nova instance UUID). Lifecycle state is not
+// persisted — release is re-derived from the Nova list on the next
+// reconcile after restore.
+type serverSettledWire struct {
+	ServerID        string `json:"server_id"`
 	TenantID        string `json:"tenant_id"`
 	ExternalNetwork string `json:"external_network,omitempty"`
 	Zone            uint8  `json:"zone"`
