@@ -51,12 +51,41 @@ Per-packet kernel cost is dominated by:
 2. Map lookups (`mac_tenant_map` ×2, maybe `subnet_zone_trie` ×2 with the sentinel fallback) — ~50 ns each when cached
 3. One PERCPU update — ~30 ns
 
-Total: **~150 ns / packet** (the amd64 CI runner measures ~135 ns through
-`BPF_PROG_TEST_RUN` on the lookup-miss path; the CI ceiling gate fails above
-300 ns — see [testing](../development/testing.md)). At 10 Gbps × 64-byte
-packets = ~14.88 Mpps × 150 ns = **~2.2 ms of CPU per second per core in the
-worst case**, or ~0.22% per core. Empirically: <1% delta in iperf3 throughput
-vs. baseline.
+Total: **~150 ns / packet**. The amd64 CI runner measures ~135 ns through
+`BPF_PROG_TEST_RUN` on the lookup-miss path (the CI ceiling gate fails above
+300 ns — see [testing](../development/testing.md)); a live run on a c36 compute
+node (Xeon, kernel 6.12) measured ~82 ns egress / ~94 ns ingress, so 150 ns is a
+conservative design figure.
+
+The CPU this costs is `packet_rate × per_packet_ns`, so the "% of a core" it
+burns is a function of the **packet rate**, not of how many cores the host has.
+Worked out at the 150 ns design figure:
+
+| Traffic reaching a VM tap | packet rate at the TC hook | telemetry CPU on the core that processes it |
+|---|---|---|
+| 10 Gbps bulk TCP (GSO-coalesced) | ~30–50 k frames/s | ~0.5 % of one core |
+| 10 Gbps at 1500 B | ~833 k pps | ~12 % of one core |
+| **10 Gbps at 64 B — line-rate worst case** | 14.88 Mpps | **~2.2 cores** (≈223 % of one core; ≈1.4 cores at the 94 ns measured on c36) |
+
+The 64 B line-rate case is the true worst case and it is **not free**:
+`14.88e6 × 150 ns = 2.23 CPU-seconds per second`, i.e. ~2.2 full cores of work.
+A single core saturates around 6–10 Mpps running only this program, so a genuine
+64 B flood cannot fit on one core — it must be spread across several by
+multiqueue/RSS. The cost **parallelises across the cores that carry the traffic;
+it does not shrink**. Expressing it as a percentage of the whole host is only
+meaningful when the load is actually spread that way — a flow pinned to one
+queue pays the full per-core cost on that one core.
+
+In practice a VM tap never sees 64 B line rate. Guest virtio TX caps a
+small-packet flood well below 1 Mpps, and GSO delivers a 10 Gbps bulk stream to
+the hook as only tens of thousands of frames/s (the c36 run measured ~32 k
+frames/s at 9.3 Gbps). Realistic per-tap cost is therefore a fraction of one
+core, and that same run showed the classifier **attached vs. detached
+indistinguishable from run-to-run noise** — no measurable throughput penalty.
+
+> `BPF_PROG_TEST_RUN` times a warm-cache tight loop; real traffic with many
+> distinct flows adds map-lookup cache misses, so treat the per-packet numbers
+> as a floor.
 
 ## Throughput characteristics
 
