@@ -886,9 +886,10 @@ func (s SetRouterGatewayStep) Run(ctx context.Context, env *StepEnv) error {
 	return nil
 }
 
-// SettledTuplesGrewStep asserts the settled-accumulator tuple gauge
-// (lachesis_state_settled_tuples) rose by at least Min since the most
-// recent [CaptureStep] — the live proof that a fold actually fired.
+// SettledTuplesGrewStep asserts the settled-accumulator tuple count —
+// the SUM of the four-layer per-tier gauges (state_{tenant,server,total}
+// _settled_tuples) — rose by at least Min since the most recent
+// [CaptureStep] — the live proof that a fold actually fired.
 // It polls (folds land a reconcile pass after the mutation, not
 // instantly) until the floor is met or Timeout (default
 // [DefaultSweepTimeout]) records a failing row. Unlike the GC-only
@@ -1061,7 +1062,10 @@ func (s DeleteFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	deleted := 0
 	kept := make([]FIPRef, 0, len(env.State.FIPs))
 	for _, f := range env.State.FIPs {
-		match := f.VMID == s.VM && f.Network == s.Network
+		// Without Provider, the SSH FIP (Network "") is never a target —
+		// only Provider opts into it, so a stray empty Network can't
+		// silently sacrifice SSH.
+		match := f.VMID == s.VM && f.Network == s.Network && f.Network != ""
 		if s.Provider {
 			match = f.VMID == s.VM && f.Network == "" // the provider SSH FIP
 		}
