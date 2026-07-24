@@ -184,3 +184,33 @@ func TestSampleAcross_StampsNode(t *testing.T) {
 		t.Errorf("server samples not node-stamped: %+v", snap.Servers)
 	}
 }
+
+// TestSampleAcross_AnomaliesMaxNotSum guards the aggregation of
+// lachesis_neutron_anomalies: it is a topology-global gauge every agent
+// derives identically from the same Neutron snapshot, so sampleAcross
+// must take the MAX across agents, not the sum (which would multiply the
+// count by the cluster size and make a [1,1] bound unsatisfiable on a
+// multi-node cluster — lachesis#171).
+func TestSampleAcross_AnomaliesMaxNotSum(t *testing.T) {
+	agents := []AgentConfig{
+		{Host: "cc1", MetricsURL: "http://cc1:9100/metrics"},
+		{Host: "cc2", MetricsURL: "http://cc2:9100/metrics"},
+	}
+	src := perNodeMetrics{byURL: map[string]ScrapeResult{
+		// Both agents report the same class identically...
+		agents[0].MetricsURL: {Anomalies: map[string]float64{"dangling_route": 1, "cycle": 2}},
+		// ...except cc2 has already resynced a fresh cycle the laggard
+		// hasn't yet — max must surface the higher value.
+		agents[1].MetricsURL: {Anomalies: map[string]float64{"dangling_route": 1, "cycle": 3}},
+	}}
+	snap, err := sampleAcross(context.Background(), src, agents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Anomalies["dangling_route"]; got != 1 {
+		t.Errorf("dangling_route = %v, want 1 (max across agents, not summed to 2)", got)
+	}
+	if got := snap.Anomalies["cycle"]; got != 3 {
+		t.Errorf("cycle = %v, want 3 (max across agents, not summed to 5)", got)
+	}
+}
