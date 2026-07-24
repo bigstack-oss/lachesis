@@ -1479,6 +1479,14 @@ type AttachPortStep struct {
 	// previously deleted VM/NIC ([DeleteVMStep]/[DetachPortStep] record
 	// it) — the MAC-reuse shapes: same MAC, new port identity.
 	MACFrom string
+	// PortSecurityOff creates the NIC's port with anti-spoofing off (and
+	// no security group — Neutron couples the two), so the guest can
+	// source frames from a forged MAC ([SetNICMACStep]).
+	PortSecurityOff bool
+	// AllowedPairs declares allowed_address_pairs on the NIC's port —
+	// the VRRP-style grants that admit specific (IP, MAC) sources with
+	// port security still on.
+	AllowedPairs []AddressPair
 }
 
 func (AttachPortStep) Kind() string { return "attach-port" }
@@ -1527,12 +1535,14 @@ func (s AttachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 	name := Mangle(env.Config.Naming.Prefix, env.State.RunID, s.ID)
 	portID, err := env.Cloud.CreatePort(ctx, proj.ID, PortSpec{
-		Name:       name,
-		NetworkID:  netID,
-		SubnetID:   subnetID,
-		FixedIP:    s.IP,
-		MACAddress: pinnedMAC,
-		SecGroupID: secGroupID,
+		Name:            name,
+		NetworkID:       netID,
+		SubnetID:        subnetID,
+		FixedIP:         s.IP,
+		MACAddress:      pinnedMAC,
+		SecGroupID:      secGroupID,
+		PortSecurityOff: s.PortSecurityOff,
+		AllowedPairs:    s.AllowedPairs,
 	})
 	if err != nil {
 		return err
@@ -1725,6 +1735,109 @@ func (s ConfigureNICStep) Run(ctx context.Context, env *StepEnv) error {
 		return fmt.Errorf("configure-nic %s on %s: %w (output: %s)", s.Dev, s.VM, err, out)
 	}
 	env.Log.Info("configure-nic", "vm", s.VM, "dev", s.Dev, "cidr", s.CIDR)
+	return nil
+}
+
+// SetNICMACStep rewrites a guest interface's MAC address — the forge
+// behind the spoofed-MAC and VRRP-vMAC scenarios. Runs over the VM's
+// provider SSH FIP (so never against the interface the session rides),
+// with the same absolute-path + busybox-fallback spelling as
+// [ConfigureNICStep]. The Neutron port's MAC is untouched: only the
+// wire frames change, which is exactly the point — the agent's maps
+// still know the REAL port MAC, so the forged source must land
+// unresolved.
+type SetNICMACStep struct {
+	VM  string
+	Dev string // guest device, e.g. "eth1"
+	MAC string // the forged source MAC, e.g. "02:de:ad:be:ef:01"
+}
+
+func (SetNICMACStep) Kind() string { return "set-nic-mac" }
+
+func (s SetNICMACStep) Run(ctx context.Context, env *StepEnv) error {
+	fip := ""
+	for _, f := range env.State.FIPs {
+		if f.VMID == s.VM && f.Network == "" { // the provider SSH FIP
+			fip = f.Address
+		}
+	}
+	if fip == "" {
+		return fmt.Errorf("set-nic-mac: run-state has no SSH FIP for VM %q", s.VM)
+	}
+	if err := shellSafe("set-nic-mac.dev", s.Dev); err != nil {
+		return err
+	}
+	if err := shellSafe("set-nic-mac.mac", s.MAC); err != nil {
+		return err
+	}
+	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
+		return fmt.Errorf("set-nic-mac: %w", err)
+	}
+	cmd := fmt.Sprintf(
+		"sudo /sbin/ip link set %s down 2>/dev/null || sudo ifconfig %s down; "+
+			"sudo /sbin/ip link set %s address %s 2>/dev/null || sudo ifconfig %s hw ether %s; "+
+			"sudo /sbin/ip link set %s up 2>/dev/null || sudo ifconfig %s up",
+		s.Dev, s.Dev, s.Dev, s.MAC, s.Dev, s.MAC, s.Dev, s.Dev)
+	if out, err := env.Exec.Run(ctx, fip, cmd); err != nil {
+		return fmt.Errorf("set-nic-mac %s=%s on %s: %w (output: %s)", s.Dev, s.MAC, s.VM, err, out)
+	}
+	env.Log.Info("set-nic-mac", "vm", s.VM, "dev", s.Dev, "mac", s.MAC)
+	return nil
+}
+
+// ZoneGrowthStep asserts one (tenant, zone, DIRECTION) tuple's growth
+// since the most recent [CaptureStep] sits inside [MinBytes, MaxBytes].
+// It refines [MaxGrowthStep] two ways the forged-MAC scenarios need:
+// a single direction (a forged sender pollutes tx while the peer's
+// legitimate replies own the same zone's other tuples), and a LOWER
+// bound with stabilize polling — bytes surface only at the agents'
+// next kernel drain, so with MinBytes set the step polls until the
+// floor is met or Timeout (default [DefaultPortSeriesTimeout]) records
+// the failing row. MaxBytes 0 means unbounded above.
+type ZoneGrowthStep struct {
+	Tenant    string // DSL project name, or a literal label like "unknown"
+	Zone      string
+	Direction string // "tx" or "rx"
+	MinBytes  int64
+	MaxBytes  int64
+	Timeout   time.Duration
+	Note      string
+}
+
+func (ZoneGrowthStep) Kind() string { return "assert-zone-growth" }
+
+func (s ZoneGrowthStep) Run(ctx context.Context, env *StepEnv) error {
+	label := env.tenantLabel(s.Tenant)
+	k := tuple{label, s.Zone, s.Direction}
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultPortSeriesTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	var delta float64
+	for {
+		snap, err := env.scrape(ctx)
+		if err != nil {
+			return err
+		}
+		delta = sumByTuple(snap.Bytes)[k] - env.captured[k]
+		if delta >= float64(s.MinBytes) || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sweepPollInterval):
+		}
+	}
+	pass := delta >= float64(s.MinBytes) && (s.MaxBytes <= 0 || delta <= float64(s.MaxBytes))
+	env.addRow(AssertRow{
+		Tenant: s.Tenant, TenantID: label,
+		Zone: s.Zone, Direction: s.Direction,
+		Baseline: env.captured[k], Current: env.captured[k] + delta, Delta: delta,
+		MinBytes: s.MinBytes,
+		Pass:     pass, Note: s.Note,
+	})
 	return nil
 }
 

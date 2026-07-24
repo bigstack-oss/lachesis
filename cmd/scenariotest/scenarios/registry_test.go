@@ -1,6 +1,7 @@
 package scenarios
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
@@ -37,6 +38,7 @@ func TestAll_BuildAndInvariants(t *testing.T) {
 		}
 
 		flows, expects := s.Flows, s.Expect
+		asserts := len(expects) > 0
 		for _, st := range s.Steps {
 			switch st := st.(type) {
 			case scenariotest.DriveStep:
@@ -47,12 +49,19 @@ func TestAll_BuildAndInvariants(t *testing.T) {
 			case scenariotest.AssertStep:
 				expects = append(expects, st.Expect...)
 			}
+			// Any assert-* step (ZoneGrowthStep, MonotoneStep, AssertAnomalyStep,
+			// …) makes a scenario's assertions live in its steps rather than
+			// its Expect list; recognise them by their Kind() prefix so this
+			// invariant doesn't have to enumerate the growing vocabulary.
+			if strings.HasPrefix(st.Kind(), "assert") {
+				asserts = true
+			}
 		}
 		if len(flows) == 0 {
 			t.Errorf("%s: no flows declared (top-level or in steps)", s.Name)
 		}
-		if len(expects) == 0 {
-			t.Errorf("%s: no expectations declared (top-level or in steps)", s.Name)
+		if !asserts {
+			t.Errorf("%s: no assertions declared (top-level Expect or an assert-* step)", s.Name)
 		}
 		for _, e := range expects {
 			if !validZones[e.Zone] {

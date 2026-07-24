@@ -47,6 +47,8 @@ func All() []*scenariotest.Scenario {
 		multiHopChain(),
 		maxHopsAtLimit(),
 		maxHopsExceeded(),
+		spoofedMACUntracked(),
+		vrrpVMACLeak(),
 	}
 }
 
