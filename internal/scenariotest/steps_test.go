@@ -1508,3 +1508,177 @@ func TestZoneGrowthStep(t *testing.T) {
 		})
 	}
 }
+
+// tupleMetrics reports a fixed settled-tuple sum, for SettledTuplesGrewStep.
+type tupleMetrics struct{ tuples float64 }
+
+func (m tupleMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+	return ScrapeResult{
+		Present:       map[string]bool{metricTenantSettledTuples: true, metricBytesTotal: true, metricAttachedInterfaces: true},
+		SettledTuples: m.tuples,
+	}, nil
+}
+func (tupleMetrics) LookupMAC(context.Context, string, string) (MACLookup, error) {
+	return MACLookup{}, nil
+}
+func (tupleMetrics) LookupFlows(context.Context, string, string) ([]FlowRow, error) {
+	return nil, nil
+}
+
+func TestSettledTuplesGrewStep(t *testing.T) {
+	// Timing isn't under test: shrink the poll so the timeout (fail) cases
+	// resolve in milliseconds.
+	defer func(d time.Duration) { sweepPollInterval = d }(sweepPollInterval)
+	sweepPollInterval = time.Millisecond
+
+	cases := []struct {
+		name          string
+		base, current float64
+		min           int64
+		wantPass      bool
+	}{
+		{"fold fired (grew past floor)", 5, 8, 1, true},
+		{"exactly at floor", 5, 6, 1, true},
+		{"flat — no fold — fails", 5, 5, 1, false},
+		{"grew but short of floor", 5, 6, 3, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &StepEnv{
+				Config:            testConfig(),
+				State:             &RunState{},
+				Metrics:           tupleMetrics{tuples: tc.current},
+				Log:               slog.New(slog.DiscardHandler),
+				Report:            &AssertReport{OK: true},
+				settledTuplesBase: tc.base,
+			}
+			step := SettledTuplesGrewStep{Min: tc.min, Timeout: 10 * time.Millisecond}
+			if err := step.Run(context.Background(), env); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			row := env.Report.Rows[len(env.Report.Rows)-1]
+			if row.Pass != tc.wantPass {
+				t.Errorf("Pass = %v, want %v (delta %.0f, min %d)", row.Pass, tc.wantPass, row.Delta, tc.min)
+			}
+		})
+	}
+}
+
+func TestDeleteFIPStep_ProviderAndGuard(t *testing.T) {
+	// vm-a carries two FIPs: the provider SSH FIP (Network "") and a
+	// scenario-net FIP (Network "net-ext").
+	newEnv := func() *StepEnv {
+		return &StepEnv{
+			Config: testConfig(),
+			State: &RunState{FIPs: []FIPRef{
+				{VMID: "vm-a", ID: "fip-ssh", Address: "203.0.113.9", Network: ""},
+				{VMID: "vm-a", ID: "fip-ext", Address: "203.0.113.10", Network: "net-ext"},
+			}},
+			StatePath: t.TempDir() + "/s.json",
+			Cloud:     newFakeCloud(&fakeEnv{}),
+			Log:       slog.New(slog.DiscardHandler),
+		}
+	}
+	remaining := func(env *StepEnv) []string {
+		var ids []string
+		for _, f := range env.State.FIPs {
+			ids = append(ids, f.ID)
+		}
+		return ids
+	}
+
+	// Provider deletes exactly the SSH FIP, keeps the scenario one.
+	t.Run("provider targets the SSH FIP", func(t *testing.T) {
+		env := newEnv()
+		if err := (DeleteFIPStep{VM: "vm-a", Provider: true}).Run(context.Background(), env); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := remaining(env); len(got) != 1 || got[0] != "fip-ext" {
+			t.Errorf("remaining FIPs = %v, want [fip-ext]", got)
+		}
+	})
+
+	// A normal (non-provider) delete targets the named scenario net and
+	// leaves the SSH FIP alone.
+	t.Run("non-provider targets the named net", func(t *testing.T) {
+		env := newEnv()
+		if err := (DeleteFIPStep{VM: "vm-a", Network: "net-ext"}).Run(context.Background(), env); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := remaining(env); len(got) != 1 || got[0] != "fip-ssh" {
+			t.Errorf("remaining FIPs = %v, want [fip-ssh]", got)
+		}
+	})
+
+	// The guard: a non-provider delete with an empty Network must NOT
+	// sacrifice the SSH FIP — it matches nothing, errors, and deletes none.
+	t.Run("non-provider empty network spares the SSH FIP", func(t *testing.T) {
+		env := newEnv()
+		err := (DeleteFIPStep{VM: "vm-a", Network: ""}).Run(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "no matching FIP") {
+			t.Fatalf("want a no-match error, got %v", err)
+		}
+		if len(env.State.FIPs) != 2 {
+			t.Errorf("no FIP should have been deleted, have %d", len(env.State.FIPs))
+		}
+	})
+}
+
+func TestSetRouterGatewayStep(t *testing.T) {
+	build := func() *Scenario {
+		b := scenario.New()
+		b.Network("net-T1", "T1").Subnet("sub-T1", "10.0.42.0/24", "10.0.42.1").VM("vm-a", "T1", "10.0.42.5")
+		b.ExternalNetwork("net-ext", "admin") // provider marker (not created)
+		b.ExternalNetwork("net-ext2", "admin").Subnet("sub-ext2", "172.24.98.0/24", "172.24.98.1")
+		b.Router("r-T1", "T1").Attach("sub-T1", "10.0.42.1").ExternalGateway("net-ext")
+		return &Scenario{Name: "regw", Builder: b, CreateExternalNets: []string{"net-ext2"}}
+	}
+	newEnv := func(cloud *fakeCloud, nets []ResourceRef) *StepEnv {
+		return &StepEnv{
+			Config:   testConfig(),
+			Scenario: build(),
+			State: &RunState{
+				Routers:  []ResourceRef{{DSLID: "r-T1", ID: "rtr-1", ProjectID: "uuid-t1"}},
+				Networks: nets,
+			},
+			StatePath: t.TempDir() + "/s.json",
+			Cloud:     cloud,
+			Log:       slog.New(slog.DiscardHandler),
+		}
+	}
+
+	// A created external net (net-ext2) resolves straight from run-state.
+	t.Run("created net resolves from run-state", func(t *testing.T) {
+		cloud := newFakeCloud(&fakeEnv{})
+		env := newEnv(cloud, []ResourceRef{{DSLID: "net-ext2", ID: "netid-ext2"}})
+		if err := (SetRouterGatewayStep{Router: "r-T1", ExternalNet: "net-ext2"}).Run(context.Background(), env); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := cloud.routerExt["rtr-1"]; got != "netid-ext2" {
+			t.Errorf("gateway = %q, want netid-ext2", got)
+		}
+	})
+
+	// A provider-bound marker (net-ext, absent from run-state) falls back
+	// to FindExternalNetwork — the round-trip re-gateway-BACK path.
+	t.Run("provider marker falls back to the config external net", func(t *testing.T) {
+		cloud := newFakeCloud(&fakeEnv{})
+		cloud.extNetID = "provider-real"
+		env := newEnv(cloud, nil)
+		if err := (SetRouterGatewayStep{Router: "r-T1", ExternalNet: "net-ext"}).Run(context.Background(), env); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := cloud.routerExt["rtr-1"]; got != "provider-real" {
+			t.Errorf("gateway = %q, want provider-real", got)
+		}
+	})
+
+	// An id that is neither a created net nor an external marker errors.
+	t.Run("unknown network errors", func(t *testing.T) {
+		env := newEnv(newFakeCloud(&fakeEnv{}), nil)
+		err := (SetRouterGatewayStep{Router: "r-T1", ExternalNet: "net-nope"}).Run(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "no live network") {
+			t.Fatalf("want a no-live-network error, got %v", err)
+		}
+	})
+}
