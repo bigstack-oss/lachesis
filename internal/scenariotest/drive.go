@@ -29,6 +29,13 @@ type DriveOptions struct {
 	// ReadyTimeout bounds the per-VM SSH-readiness wait. Zero uses
 	// [defaultReadyTimeout].
 	ReadyTimeout time.Duration
+	// KeepBaseline drives WITHOUT snapshotting a fresh pre-traffic
+	// baseline, so a later [AssertStep] measures the CUMULATIVE delta from
+	// an earlier drive's baseline rather than just this drive's. Used to
+	// prove traffic ADDS to an existing (e.g. settled) total — the
+	// round-trip router-regateway drives a second time with this set so
+	// the assert sees settled + live, not just live.
+	KeepBaseline bool
 }
 
 const (
@@ -89,7 +96,9 @@ func Drive(ctx context.Context, opts DriveOptions) error {
 	if err := d.waitMACsLearned(); err != nil {
 		return err
 	}
-	if err := d.captureBaseline(); err != nil {
+	if opts.KeepBaseline {
+		opts.Log.Info("baseline kept from a prior drive (cumulative measurement)")
+	} else if err := d.captureBaseline(); err != nil {
 		return err
 	}
 	for i, f := range opts.Scenario.Flows {
