@@ -22,7 +22,7 @@ entry pre-allocates one slot per CPU, the per-entry cost grows linearly with
 `internal/bpf/schema.go`, mirrored by the map spec), which makes the
 preallocated footprint a function of the host:
 
-| N_CPU | per-entry bytes | preallocated RSS at 65,536 entries |
+| N_CPU | per-entry bytes | preallocated kernel memory at 65,536 entries |
 |---|---|---|
 | 32 | 784 | ~50 MB |
 | 64 | 1,552 | ~100 MB |
@@ -42,7 +42,15 @@ budget. Deferred as [item 10](./contracts.md#deferred-work); the
 `lachesis_bpf_map_max_entries` gauge already surfaces the effective size per
 host so the gap is observable.
 
-**Total agent footprint (RSS)**: ~150–200 MB on a 32-core, 50-VM node. Most of it is the PERCPU map preallocation; well within budget for a daemon.
+**Total memory footprint — two separate pools, often conflated.** The agent's
+**process RSS** is small: ~26 MB measured on a 48-core c36 node (the Go runtime
+plus userspace state, *not* the map). The PERCPU `telemetry_map` is **kernel**
+memory (memlock), which does not count against process RSS — that is the
+~50–200 MB in the table above (by host core count; ~76 MB at 48 cores). So the
+daemon costs on the order of ~26 MB of process RAM plus a fixed kernel-locked
+map pool; both are well within budget. (Earlier revisions of this doc reported
+"~150–200 MB RSS, mostly the map" — that folded the kernel map pool into RSS,
+which the `VmRSS` of a live agent disproves.)
 
 ## CPU overhead
 
