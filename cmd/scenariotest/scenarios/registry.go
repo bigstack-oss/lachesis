@@ -41,6 +41,12 @@ func All() []*scenariotest.Scenario {
 		sameTenantRouted(),
 		fipHairpin(),
 		byteAccuracyBounds(),
+		resolverCycle(),
+		resolverDanglingRoute(),
+		extrarouteSameTenant(),
+		multiHopChain(),
+		maxHopsAtLimit(),
+		maxHopsExceeded(),
 	}
 }
 
