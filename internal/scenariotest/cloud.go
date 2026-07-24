@@ -192,6 +192,20 @@ type PortSpec struct {
 	FixedIP    string
 	SecGroupID string
 	MACAddress string
+	// PortSecurityOff creates the port with port_security_enabled=false
+	// and NO security groups (Neutron requires the two together) — the
+	// spoofed-MAC scenarios' escape hatch from MAC/IP anti-spoofing.
+	PortSecurityOff bool
+	// AllowedPairs populates allowed_address_pairs — the VRRP-style
+	// (IP, MAC) grants that let a guest source traffic from a virtual
+	// MAC with port security still on.
+	AllowedPairs []AddressPair
+}
+
+// AddressPair is one allowed_address_pairs entry on a port.
+type AddressPair struct {
+	IP  string
+	MAC string
 }
 
 // ServerSpec describes a Nova boot on one or more pre-created ports.

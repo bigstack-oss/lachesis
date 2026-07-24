@@ -21,6 +21,7 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/external"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/routers"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/portsecurity"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/security/groups"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/ports"
@@ -369,11 +370,24 @@ func (o *OpenStack) CreatePort(ctx context.Context, projectID string, spec PortS
 		FixedIPs:   []ports.IP{{SubnetID: spec.SubnetID, IPAddress: spec.FixedIP}},
 		MACAddress: spec.MACAddress,
 	}
+	for _, ap := range spec.AllowedPairs {
+		opts.AllowedAddressPairs = append(opts.AllowedAddressPairs,
+			ports.AddressPair{IPAddress: ap.IP, MACAddress: ap.MAC})
+	}
 	if spec.SecGroupID != "" {
 		sg := []string{spec.SecGroupID}
 		opts.SecurityGroups = &sg
 	}
-	p, err := ports.Create(ctx, sc.network, opts).Extract()
+	builder := ports.CreateOptsBuilder(opts)
+	if spec.PortSecurityOff {
+		// Disabling port security requires the port to carry no security
+		// groups; force the empty set regardless of SecGroupID.
+		empty := []string{}
+		opts.SecurityGroups = &empty
+		off := false
+		builder = portsecurity.PortCreateOptsExt{CreateOptsBuilder: opts, PortSecurityEnabled: &off}
+	}
+	p, err := ports.Create(ctx, sc.network, builder).Extract()
 	if err != nil {
 		return "", fmt.Errorf("openstack: create port %q: %w", spec.Name, err)
 	}
