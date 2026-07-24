@@ -1466,13 +1466,22 @@ func (s ResolvedGrewStep) Run(ctx context.Context, env *StepEnv) error {
 // booted VM and late-binds its buffered bytes. Only hot-reloadable
 // fields take effect (docs/operations/runtime.md); a restart would
 // discard the buffer this scenario depends on.
+//
+// PRECONDITION when AltConfig is set: unlike [RestartAgentStep], this
+// deliberately does NOT back up the current config (a reload chains
+// after a restart's alt-config swap, and a second backup would clobber
+// that restart's original-config backup). So it is only safe after a
+// RestartAgentStep has already backed up the real config, and the
+// scenario must restore it explicitly (its final RestartAgentStep).
+// Used standalone with AltConfig, it would overwrite the config with no
+// way back.
 type ReloadAgentStep struct {
 	// Node selects the agent (a placement slot or literal host); empty
 	// means the sole agent.
 	Node string
-	// AltConfig is an agent-host path installed over the agent config
-	// before the SIGHUP (backed up to <config>.scenariotest.bak, exactly
-	// like [RestartAgentStep]).
+	// AltConfig is an agent-host path copied over the agent config before
+	// the SIGHUP. Unlike [RestartAgentStep], NO backup is taken first —
+	// see the PRECONDITION on the type.
 	AltConfig string
 }
 
