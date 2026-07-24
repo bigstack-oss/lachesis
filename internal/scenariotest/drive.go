@@ -240,25 +240,33 @@ func (d *driver) runFlow(i int, f Flow) error {
 		return err
 	}
 
-	if f.To.VMID != "" {
+	if f.To.VMID != "" || f.To.FIPOf != "" {
 		return d.runVMFlow(i, f, srcFIP)
 	}
 	return d.runExternalFlow(f, srcFIP)
 }
 
-// runVMFlow streams Bytes of TCP from the source VM to the target
-// VM's internal IP, sinking into a busybox `nc -l` started via the
-// target's FIP.
+// runVMFlow streams Bytes of TCP from the source VM to the target VM,
+// sinking into a busybox `nc -l` started via the target's FIP. A
+// VMID target dials the VM's internal IP (the asserted bytes flow
+// tenant-network paths); a FIPOf target dials the VM's floating
+// address instead, forcing the hairpin DNAT/SNAT path.
 func (d *driver) runVMFlow(i int, f Flow, srcFIP string) error {
-	dstFIP, err := d.fip(f.To.VMID)
+	dstVM := f.To.VMID
+	if dstVM == "" {
+		dstVM = f.To.FIPOf
+	}
+	dstFIP, err := d.fip(dstVM)
 	if err != nil {
 		return err
 	}
-	dstInternal, err := internalIP(d.opts.Scenario, f.To.VMID)
-	if err != nil {
-		return err
+	dstAddr := dstFIP
+	if f.To.VMID != "" {
+		if dstAddr, err = internalIP(d.opts.Scenario, f.To.VMID); err != nil {
+			return err
+		}
 	}
-	if err := d.waitReady(f.To.VMID, dstFIP); err != nil {
+	if err := d.waitReady(dstVM, dstFIP); err != nil {
 		return err
 	}
 
@@ -270,11 +278,11 @@ func (d *driver) runVMFlow(i int, f Flow, srcFIP string) error {
 	d.sleepSinkDelay()
 
 	count := mibCount(f.Bytes)
-	stream := fmt.Sprintf("dd if=/dev/zero bs=1M count=%d 2>/dev/null | nc %s %d", count, dstInternal, port)
+	stream := fmt.Sprintf("dd if=/dev/zero bs=1M count=%d 2>/dev/null | nc %s %d", count, dstAddr, port)
 	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, stream); err != nil {
 		return fmt.Errorf("stream: %w", err)
 	}
-	d.opts.Log.Info("flow: tcp stream", "flow", i, "from", f.From, "to", f.To.VMID, "dst", dstInternal, "port", port, "mib", count)
+	d.opts.Log.Info("flow: tcp stream", "flow", i, "from", f.From, "to", dstVM, "dst", dstAddr, "port", port, "mib", count)
 	return nil
 }
 

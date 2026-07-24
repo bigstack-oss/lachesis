@@ -38,6 +38,11 @@ func vmToGateway() *scenariotest.Scenario {
 		},
 		Expect: []scenariotest.Expect{
 			{TenantID: "T1", Zone: "infra", Direction: "tx", MinBytes: 1 << 10},
+			// The metadata endpoint answers ICMP (the ovnmeta namespace
+			// carries 169.254.169.254 on a real interface), so the sized
+			// echo replies make infra/rx drivable too — the return leg of
+			// the same /32 INFRA row, previously asserted tx-only.
+			{TenantID: "T1", Zone: "infra", Direction: "rx", MinBytes: 1 << 10},
 		},
 	}
 }

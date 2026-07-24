@@ -8,7 +8,7 @@ import (
 
 var validZones = map[string]bool{
 	"same_tenant": true, "other_tenant": true, "external": true,
-	"shared": true, "infra": true, "miss": true,
+	"shared": true, "infra": true, "miss": true, "multicast": true,
 }
 
 // TestAll_BuildAndInvariants exercises every registered scenario: the
@@ -41,6 +41,9 @@ func TestAll_BuildAndInvariants(t *testing.T) {
 			switch st := st.(type) {
 			case scenariotest.DriveStep:
 				flows = append(flows, st.Flows...)
+			case scenariotest.IngressFlowStep:
+				// Harness-side sender: a flow for coverage purposes.
+				flows = append(flows, scenariotest.Flow{Bytes: st.Bytes})
 			case scenariotest.AssertStep:
 				expects = append(expects, st.Expect...)
 			}

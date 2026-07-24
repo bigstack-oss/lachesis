@@ -3,6 +3,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -1388,5 +1389,80 @@ func TestSteps_RestartAgentRestoreConfig(t *testing.T) {
 	// AltConfig and RestoreConfig together is a usage error.
 	if err := (RestartAgentStep{AltConfig: "/tmp/x.yaml", RestoreConfig: true}).Run(context.Background(), restartEnv(t, agents, ac, &restartExec{}, nil)); err == nil {
 		t.Error("AltConfig + RestoreConfig must error")
+	}
+}
+
+// stdinExecFake is a fakeExec that also accepts stdin streams,
+// recording how many bytes each command drained.
+type stdinExecFake struct {
+	fakeExec
+	stdinBytes []int64
+}
+
+func (e *stdinExecFake) RunWithStdin(ctx context.Context, addr, command string, stdin io.Reader) (string, error) {
+	n, err := io.Copy(io.Discard, stdin)
+	if err != nil {
+		return "", err
+	}
+	e.stdinBytes = append(e.stdinBytes, n)
+	return e.Run(ctx, addr, command)
+}
+
+func ingressEnv(t *testing.T, exec VMExec) *StepEnv {
+	t.Helper()
+	sc := sameTenantScenario()
+	return &StepEnv{
+		Config:    testConfig(),
+		Scenario:  sc,
+		State:     driveState(),
+		StatePath: t.TempDir() + "/state.json",
+		Metrics:   driveMetrics{attached: 7, bytes: []BytesSample{{TenantID: "u1", Zone: "external", Direction: "rx", Value: 7}}},
+		Exec:      exec,
+		Log:       slog.New(slog.DiscardHandler),
+		SinkDelay: -1,
+		Report:    &AssertReport{OK: true},
+	}
+}
+
+func TestIngressFlowStep_StreamsBudgetToFIP(t *testing.T) {
+	exec := &stdinExecFake{}
+	env := ingressEnv(t, exec)
+
+	err := IngressFlowStep{To: "vm-b", Bytes: 3 << 20}.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("IngressFlowStep: %v", err)
+	}
+	if len(exec.stdinBytes) != 1 || exec.stdinBytes[0] != 3<<20 {
+		t.Fatalf("streamed bytes = %v, want one stream of %d", exec.stdinBytes, 3<<20)
+	}
+	last := exec.calls[len(exec.calls)-1]
+	if last.addr != "203.0.113.11" {
+		t.Errorf("stream dialed %s, want vm-b's FIP 203.0.113.11", last.addr)
+	}
+	if !strings.Contains(last.command, "cat > /dev/null") {
+		t.Errorf("stream command = %q, want a cat sink", last.command)
+	}
+	// The step captures drive's baseline so a following AssertStep can diff.
+	if len(env.State.Baseline) != 1 || env.State.Baseline[0].Value != 7 {
+		t.Errorf("baseline not captured: %+v", env.State.Baseline)
+	}
+}
+
+func TestIngressFlowStep_RequiresStdinExec(t *testing.T) {
+	env := ingressEnv(t, &fakeExec{})
+	err := IngressFlowStep{To: "vm-b", Bytes: 1}.Run(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "stdin") {
+		t.Fatalf("want stdin-transport error, got %v", err)
+	}
+}
+
+func TestIngressFlowStep_MissingFIP(t *testing.T) {
+	exec := &stdinExecFake{}
+	env := ingressEnv(t, exec)
+	env.State.FIPs = nil
+	env.State.Ports = nil // and no MACs to gate on
+	err := IngressFlowStep{To: "vm-b", Bytes: 1}.Run(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "no SSH FIP") {
+		t.Fatalf("want missing-FIP error, got %v", err)
 	}
 }

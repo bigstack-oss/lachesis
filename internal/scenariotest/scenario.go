@@ -141,11 +141,13 @@ type Flow struct {
 	Proto Protocol
 }
 
-// FlowTarget is the destination of a [Flow]. Exactly one of VMID
-// or IP is non-empty; construct via [VMTarget] or [ExternalTarget].
+// FlowTarget is the destination of a [Flow]. Exactly one of VMID,
+// IP, or FIPOf is non-empty; construct via [VMTarget],
+// [ExternalTarget], or [FIPTarget].
 type FlowTarget struct {
-	VMID string
-	IP   string
+	VMID  string
+	IP    string
+	FIPOf string
 }
 
 // VMTarget returns a [FlowTarget] pointing at another DSL VM. The
@@ -156,6 +158,14 @@ func VMTarget(vmID string) FlowTarget { return FlowTarget{VMID: vmID} }
 // reachable from the source VM. Used for "VM → public" and
 // "VM → routed-peer" flows.
 func ExternalTarget(ip string) FlowTarget { return FlowTarget{IP: ip} }
+
+// FIPTarget returns a [FlowTarget] pointing at another DSL VM's
+// FLOATING address (resolved from the run-state at drive time): the
+// stream sinks on that VM but dials the FIP instead of the fixed IP,
+// so the bytes take the hairpin DNAT/SNAT path and must bill external
+// at both taps (docs/architecture/edge-cases.md#tier-3--misclassification
+// case 14c), never same_tenant.
+func FIPTarget(vmID string) FlowTarget { return FlowTarget{FIPOf: vmID} }
 
 // Protocol is the L4 protocol a [Flow] drives. The agent counts bytes
 // L4-agnostically — the kernel classifier keys on MAC / ethertype /

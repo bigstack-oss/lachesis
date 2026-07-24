@@ -3,6 +3,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -14,6 +15,14 @@ import (
 // production implementation is [SSHExec].
 type VMExec interface {
 	Run(ctx context.Context, addr, command string) (string, error)
+}
+
+// StdinExec is the optional [VMExec] extension for commands fed from
+// the harness's own stdin — how [IngressFlowStep] streams a byte
+// budget INTO a VM from outside the cluster. Implemented by [SSHExec];
+// a transport without it fails that step with a clear error.
+type StdinExec interface {
+	RunWithStdin(ctx context.Context, addr, command string, stdin io.Reader) (string, error)
 }
 
 // SSHExec runs commands over the system ssh binary — deliberately not
@@ -57,6 +66,17 @@ var sshBaseArgs = []string{
 // Run executes command on addr as the configured user and returns
 // the combined output.
 func (s *SSHExec) Run(ctx context.Context, addr, command string) (string, error) {
+	return s.run(ctx, addr, command, nil)
+}
+
+// RunWithStdin is [SSHExec.Run] with the command's stdin fed from the
+// harness: the ssh client streams stdin over the session and the
+// remote command sees EOF when it drains.
+func (s *SSHExec) RunWithStdin(ctx context.Context, addr, command string, stdin io.Reader) (string, error) {
+	return s.run(ctx, addr, command, stdin)
+}
+
+func (s *SSHExec) run(ctx context.Context, addr, command string, stdin io.Reader) (string, error) {
 	if s.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
@@ -65,7 +85,9 @@ func (s *SSHExec) Run(ctx context.Context, addr, command string) (string, error)
 	args := append([]string{"-i", s.KeyPath}, sshBaseArgs...)
 	args = append(args, fmt.Sprintf("%s@%s", s.User, addr), command)
 	start := time.Now()
-	out, err := exec.CommandContext(ctx, "ssh", args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Stdin = stdin
+	out, err := cmd.CombinedOutput()
 	dur := time.Since(start).Round(time.Millisecond)
 	if err != nil {
 		if s.Log != nil {
