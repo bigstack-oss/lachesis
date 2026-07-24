@@ -48,6 +48,7 @@ type Manager struct {
 	log        *logging.Handle
 	tun        *tunables.Store // nil = tunables stay load-time (bare unit tests)
 	mx         *Metrics        // nil = reload outcomes unobserved (unit tests)
+	onReload   func()          // nil = no post-reload hook (unit tests, or no reconciler)
 }
 
 // New creates a Manager seeded with the initial config snapshot. The
@@ -66,6 +67,18 @@ func New(configPath string, initial config.Config, log *logging.Handle) *Manager
 func (m *Manager) SetTunables(s *tunables.Store) {
 	m.mu.Lock()
 	m.tun = s
+	m.mu.Unlock()
+}
+
+// SetOnReload wires a hook run after every successful reload — the agent
+// passes the reconciler's Kick so a hot reconcile-interval change (or any
+// operator edit) applies at the NEXT reconcile within seconds, not after
+// the running ticker's current period elapses (which, at a large old
+// interval, would delay it by that whole period). Call once during boot,
+// before [Manager.InstallSIGHUP]; nil leaves reload hook-free.
+func (m *Manager) SetOnReload(fn func()) {
+	m.mu.Lock()
+	m.onReload = fn
 	m.mu.Unlock()
 }
 
@@ -129,6 +142,13 @@ func (m *Manager) Reload() error {
 
 	m.current = next
 	m.recordReload(reloadApplied)
+	// Kick the reconciler (if wired) so a changed reconcile interval — or
+	// any operator edit — is picked up at the next reconcile within
+	// seconds, not after the running ticker's current period. Kick is
+	// non-blocking and coalescing, so calling it under the lock is safe.
+	if m.onReload != nil {
+		m.onReload()
+	}
 	return nil
 }
 

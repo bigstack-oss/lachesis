@@ -443,3 +443,33 @@ gc:
 		t.Errorf("rejected reload changed the live grace to %v, want 60s", got)
 	}
 }
+
+func TestReload_FiresOnReloadHook(t *testing.T) {
+	path, initial := setup(t, "info")
+	logHandle, err := logging.Init(initial.Logging, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	mgr := runtime.New(path, initial, logHandle)
+	kicks := 0
+	mgr.SetOnReload(func() { kicks++ })
+
+	writeYAML(t, path, "debug")
+	if err := mgr.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if kicks != 1 {
+		t.Errorf("onReload fired %d times, want 1", kicks)
+	}
+
+	// A failed reload (bad YAML) must NOT fire the hook.
+	if err := os.WriteFile(path, []byte("::not yaml::"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Reload(); err == nil {
+		t.Fatal("Reload(bad yaml): want error")
+	}
+	if kicks != 1 {
+		t.Errorf("onReload fired on a failed reload (kicks=%d)", kicks)
+	}
+}

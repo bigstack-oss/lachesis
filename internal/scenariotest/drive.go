@@ -36,6 +36,18 @@ type DriveOptions struct {
 	// round-trip router-regateway drives a second time with this set so
 	// the assert sees settled + live, not just live.
 	KeepBaseline bool
+	// SkipMACLearn drives WITHOUT the pre-drive MAC-learn gate — for the
+	// deliberate case where a VM's MAC is expected NOT to be learned yet
+	// (the unresolved-latebind scenario suppresses metadata so first
+	// bytes park unknown). Normal drives leave this false: the gate
+	// prevents the learning race that miskeys traffic to zone=miss.
+	SkipMACLearn bool
+	// SkipAttachRecheck drives WITHOUT re-confirming the up-time attach
+	// gate — for a drive that intentionally follows a tap teardown (the
+	// ghost-grace scenario deletes the peer VM, which drops a tap and
+	// races a benign dying-tap attach failure). Normal drives leave this
+	// false so a genuinely lost tap still aborts before traffic.
+	SkipAttachRecheck bool
 }
 
 const (
@@ -90,10 +102,14 @@ func Drive(ctx context.Context, opts DriveOptions) error {
 	}
 	d := &driver{ctx: ctx, opts: opts}
 
-	if err := d.recheckAttach(); err != nil {
+	if opts.SkipAttachRecheck {
+		opts.Log.Warn("attach recheck: skipped by request (drive follows a tap teardown)")
+	} else if err := d.recheckAttach(); err != nil {
 		return err
 	}
-	if err := d.waitMACsLearned(); err != nil {
+	if opts.SkipMACLearn {
+		opts.Log.Warn("mac-learn gate: skipped by request (unresolved/late-bind drive)")
+	} else if err := d.waitMACsLearned(); err != nil {
 		return err
 	}
 	if opts.KeepBaseline {
