@@ -434,6 +434,25 @@ func (o *OpenStack) SetRouterRoutes(ctx context.Context, projectID, routerID str
 	return nil
 }
 
+// SetRouterGateway replaces a router's external gateway network — the
+// re-gateway mutation of the router-regateway scenario. Empty
+// externalNetworkID clears the gateway.
+func (o *OpenStack) SetRouterGateway(ctx context.Context, projectID, routerID, externalNetworkID string) error {
+	sc, err := o.scopedFor(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	var gw *routers.GatewayInfo
+	if externalNetworkID != "" {
+		gw = &routers.GatewayInfo{NetworkID: externalNetworkID}
+	}
+	_, err = routers.Update(ctx, sc.network, routerID, routers.UpdateOpts{GatewayInfo: gw}).Extract()
+	if err != nil {
+		return fmt.Errorf("openstack: set gateway on router %s: %w", routerID, err)
+	}
+	return nil
+}
+
 func (o *OpenStack) CreateServer(ctx context.Context, projectID string, spec ServerSpec) (string, error) {
 	sc, err := o.scopedFor(ctx, projectID)
 	if err != nil {

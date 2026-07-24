@@ -52,6 +52,16 @@ const (
 	// [AssertAnomalyStep] polls it; the class vocabulary is the agent's
 	// (cycle, ambiguity, …, multi_external_path).
 	metricNeutronAnomalies = "lachesis_neutron_anomalies"
+	// The three settled-accumulator tuple gauges of the four-layer model
+	// (docs/architecture/data-structures.md#settled-bytes). Unlike
+	// metricSettledFlows (which only the GC sweep moves), these rise
+	// whenever ANY fold adds a tuple — including a reconcile-driven
+	// [state.SettleRebase] from an attribution change on a LIVE port. The
+	// port-reassignment / router-regateway scenarios read their SUM to
+	// prove the reconcile fold fired.
+	metricTenantSettledTuples = "lachesis_state_tenant_settled_tuples"
+	metricServerSettledTuples = "lachesis_state_server_settled_tuples"
+	metricTotalSettledTuples  = "lachesis_state_total_settled_tuples"
 )
 
 // BytesSample is one lachesis_tenant_bytes_total series: the {tenant_id, zone,
@@ -110,6 +120,7 @@ type ScrapeResult struct {
 	AttachedInterfaces float64
 	AttachFailures     float64
 	SettledFlows       float64
+	SettledTuples      float64
 	LingeringGhosts    float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
@@ -126,6 +137,7 @@ type MetricsSnapshot struct {
 	AttachedInterfaces float64
 	AttachFailures     float64
 	SettledFlows       float64
+	SettledTuples      float64
 	LingeringGhosts    float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
@@ -195,13 +207,17 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	}
 	r := ScrapeResult{Present: map[string]bool{}}
 	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures,
-		metricSettledFlows, metricLingeringGhosts, metricServerBytesTotal, metricNeutronAnomalies} {
+		metricSettledFlows, metricLingeringGhosts, metricServerBytesTotal, metricNeutronAnomalies,
+		metricTenantSettledTuples} {
 		_, ok := fams[n]
 		r.Present[n] = ok
 	}
 	r.AttachedInterfaces = familySum(fams, metricAttachedInterfaces)
 	r.AttachFailures = familySum(fams, metricAttachFailures)
 	r.SettledFlows = familySum(fams, metricSettledFlows)
+	r.SettledTuples = familySum(fams, metricTenantSettledTuples) +
+		familySum(fams, metricServerSettledTuples) +
+		familySum(fams, metricTotalSettledTuples)
 	r.LingeringGhosts = familySum(fams, metricLingeringGhosts)
 	r.Bytes = bytesSamples(fams)
 	r.Servers = serverSamples(fams)
@@ -292,6 +308,7 @@ func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) 
 		snap.AttachedInterfaces += r.AttachedInterfaces
 		snap.AttachFailures += r.AttachFailures
 		snap.SettledFlows += r.SettledFlows
+		snap.SettledTuples += r.SettledTuples
 		snap.LingeringGhosts += r.LingeringGhosts
 		for _, s := range r.Bytes {
 			s.Node = a.Host

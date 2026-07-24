@@ -207,6 +207,15 @@ func (c *fakeCloud) SetRouterRoutes(_ context.Context, _, routerID string, route
 	return nil
 }
 
+func (c *fakeCloud) SetRouterGateway(_ context.Context, _, routerID, externalNetworkID string) error {
+	if externalNetworkID == "" {
+		delete(c.routerExt, routerID)
+	} else {
+		c.routerExt[routerID] = externalNetworkID
+	}
+	return nil
+}
+
 // CreateServer models placement the way Nova does: an AZ host pin
 // ("nova:<host>") lands the server there; unpinned servers go to the
 // first hypervisor (a deterministic stand-in for the scheduler).

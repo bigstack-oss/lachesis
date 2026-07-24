@@ -64,8 +64,13 @@ type Cloud interface {
 	// transit subnet) to a router. Exactly one of subnetID/portID is
 	// set.
 	AddRouterInterface(ctx context.Context, projectID, routerID, subnetID, portID string) error
-	// SetRouterRoutes replaces a router's static (extra) routes.
+	// SetRouterRoutes replaces a router's static (extra) routes. Also
+	// the mid-run extraroute-mutation vehicle ([SetRouterRoutesStep]).
 	SetRouterRoutes(ctx context.Context, projectID, routerID string, routes []RouteSpec) error
+	// SetRouterGateway replaces (or, with an empty network id, clears) a
+	// router's external gateway — the re-gateway mutation of the
+	// router-regateway scenario ([SetRouterGatewayStep]).
+	SetRouterGateway(ctx context.Context, projectID, routerID, externalNetworkID string) error
 	// CreateServer boots a Nova server on a pre-created port.
 	CreateServer(ctx context.Context, projectID string, spec ServerSpec) (id string, err error)
 	// WaitServerActive blocks until the server reports ACTIVE or the
