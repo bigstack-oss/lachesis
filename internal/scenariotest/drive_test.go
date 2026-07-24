@@ -428,3 +428,37 @@ func TestDrive_MACGateSkipsRouterInterfaceRefs(t *testing.T) {
 		t.Fatalf("Drive must not gate on router-interface refs: %v", err)
 	}
 }
+
+func TestDrive_FIPTargetDialsFloatingIP(t *testing.T) {
+	sc := sameTenantScenario()
+	sc.Flows = []Flow{{From: "vm-a", To: FIPTarget("vm-b"), Bytes: 1 << 20, Proto: TCP}}
+	rs := driveState()
+	exec := &fakeExec{}
+
+	if _, err := driveFixture(t, sc, rs, exec, driveMetrics{attached: 7}); err != nil {
+		t.Fatalf("Drive: %v", err)
+	}
+	var sinkIdx, streamIdx = -1, -1
+	for i, c := range exec.calls {
+		switch {
+		case strings.Contains(c.command, "nc -l -p 15000"):
+			sinkIdx = i
+			if c.addr != "203.0.113.11" {
+				t.Errorf("sink started on %s, want target FIP 203.0.113.11", c.addr)
+			}
+		case strings.Contains(c.command, "dd if=/dev/zero"):
+			streamIdx = i
+			// The hairpin point: the stream dials the FLOATING address,
+			// not the fixed IP.
+			if !strings.Contains(c.command, "nc 203.0.113.11 15000") {
+				t.Errorf("stream must dial the target's FIP: %q", c.command)
+			}
+		}
+	}
+	if sinkIdx == -1 || streamIdx == -1 {
+		t.Fatalf("missing sink or stream call: %+v", exec.calls)
+	}
+	if sinkIdx > streamIdx {
+		t.Error("sink must start before the stream")
+	}
+}

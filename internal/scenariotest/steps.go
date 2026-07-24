@@ -16,6 +16,7 @@ package scenariotest
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"regexp"
@@ -174,6 +175,77 @@ func (s DriveStep) Run(ctx context.Context, env *StepEnv) error {
 		SinkDelay:       env.SinkDelay,
 		MACLearnTimeout: env.MACLearnTimeout,
 	})
+}
+
+// IngressFlowStep streams Bytes INTO a VM from the harness itself —
+// the "sender outside the cluster" no [Flow] can express, and the
+// only way to drive the external/rx tuple through the FIP DNAT path
+// (docs/architecture/edge-cases.md). It runs drive's usual gates
+// (attach recheck, MAC-learn, fresh baseline — a later [AssertStep]
+// diffs against it), then feeds the byte budget over SSH stdin into a
+// `cat > /dev/null` on the VM: SSH because its port is the one
+// inbound path the platform security group is guaranteed to pass (the
+// harness already reaches every VM through it). The stream framing
+// only adds bytes on the wire, so MinBytes = Bytes stays a safe lower
+// bound.
+type IngressFlowStep struct {
+	// To is the DSL VM id receiving the stream, dialed at its FIP.
+	To    string
+	Bytes int64
+}
+
+func (IngressFlowStep) Kind() string { return "ingress-flow" }
+
+func (s IngressFlowStep) Run(ctx context.Context, env *StepEnv) error {
+	stdin, ok := env.Exec.(StdinExec)
+	if !ok {
+		return fmt.Errorf("ingress-flow: the exec transport cannot stream stdin (need [StdinExec])")
+	}
+	// Zero-flow drive: the same gates and baseline capture a DriveStep
+	// gets, with the actual traffic pushed from the harness below.
+	sc := *env.Scenario
+	sc.Flows = nil
+	if err := Drive(ctx, DriveOptions{
+		Config:          env.Config,
+		Scenario:        &sc,
+		State:           env.State,
+		StatePath:       env.StatePath,
+		Metrics:         env.Metrics,
+		Exec:            env.Exec,
+		Log:             env.Log,
+		SinkDelay:       env.SinkDelay,
+		MACLearnTimeout: env.MACLearnTimeout,
+	}); err != nil {
+		return err
+	}
+	fip := ""
+	for _, f := range env.State.FIPs {
+		if f.VMID == s.To && f.Network == "" { // the provider SSH FIP
+			fip = f.Address
+		}
+	}
+	if fip == "" {
+		return fmt.Errorf("ingress-flow: run-state has no SSH FIP for VM %q", s.To)
+	}
+	if err := awaitSSHReady(ctx, env, s.To, fip); err != nil {
+		return fmt.Errorf("ingress-flow: %w", err)
+	}
+	if out, err := stdin.RunWithStdin(ctx, fip, "cat > /dev/null", io.LimitReader(zeroReader{}, s.Bytes)); err != nil {
+		return fmt.Errorf("ingress-flow: stream %d bytes to %s: %w (output: %s)", s.Bytes, s.To, err, out)
+	}
+	env.Log.Info("ingress-flow: streamed", "to", s.To, "fip", fip, "bytes", s.Bytes)
+	return nil
+}
+
+// zeroReader is an endless stream of zero bytes; [IngressFlowStep]
+// bounds it with io.LimitReader.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
 }
 
 // AssertStep evaluates Expect with the stabilize-polling `assert`

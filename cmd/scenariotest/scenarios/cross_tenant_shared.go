@@ -41,9 +41,16 @@ func crossTenantShared() *scenariotest.Scenario {
 		Builder: b,
 		Flows: []scenariotest.Flow{
 			{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
+			// The reverse stream drives shared/rx at full size: vm-b's
+			// bytes arrive at vm-a's tap from the shared subnet over the
+			// same routed path. (The forward stream's ACKs alone are no
+			// lower bound — GRO coalesces pure ACKs to a couple of KiB,
+			// observed live on c36.)
+			{From: "vm-b", To: scenariotest.VMTarget("vm-a"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 		},
 		Expect: []scenariotest.Expect{
 			{TenantID: "T1", Zone: "shared", Direction: "tx", MinBytes: 1 << 20},
+			{TenantID: "T1", Zone: "shared", Direction: "rx", MinBytes: 1 << 20},
 		},
 	}
 }

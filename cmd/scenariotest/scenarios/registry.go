@@ -36,6 +36,11 @@ func All() []*scenariotest.Scenario {
 		interfaceDetachReattach(),
 		macPinnedPortRecreate(),
 		portMoveAcrossServers(),
+		multicastZone(),
+		fipIngressRx(),
+		sameTenantRouted(),
+		fipHairpin(),
+		byteAccuracyBounds(),
 	}
 }
 
