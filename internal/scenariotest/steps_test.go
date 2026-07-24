@@ -1682,3 +1682,127 @@ func TestSetRouterGatewayStep(t *testing.T) {
 		}
 	})
 }
+
+// resolvedMetrics reports a fixed unresolved-resolved total, for ResolvedGrewStep.
+type resolvedMetrics struct{ resolved float64 }
+
+func (m resolvedMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+	return ScrapeResult{
+		Present:            map[string]bool{metricUnresolvedResolved: true, metricBytesTotal: true, metricAttachedInterfaces: true},
+		UnresolvedResolved: m.resolved,
+	}, nil
+}
+func (resolvedMetrics) LookupMAC(context.Context, string, string) (MACLookup, error) {
+	return MACLookup{}, nil
+}
+func (resolvedMetrics) LookupFlows(context.Context, string, string) ([]FlowRow, error) {
+	return nil, nil
+}
+
+func TestResolvedGrewStep(t *testing.T) {
+	// Timing isn't under test: shrink the poll so the timeout (fail) cases
+	// resolve in milliseconds.
+	defer func(d time.Duration) { sweepPollInterval = d }(sweepPollInterval)
+	sweepPollInterval = time.Millisecond
+
+	cases := []struct {
+		name          string
+		base, current float64
+		min           int64
+		wantPass      bool
+	}{
+		{"late-bind fired (grew past floor)", 3, 12, 1, true},
+		{"exactly at floor", 3, 4, 1, true},
+		{"none resolved — fails", 3, 3, 1, false},
+		{"grew but short of floor", 3, 5, 5, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &StepEnv{
+				Config:       testConfig(),
+				State:        &RunState{},
+				Metrics:      resolvedMetrics{resolved: tc.current},
+				Log:          slog.New(slog.DiscardHandler),
+				Report:       &AssertReport{OK: true},
+				resolvedBase: tc.base,
+			}
+			step := ResolvedGrewStep{Min: tc.min, Timeout: 10 * time.Millisecond}
+			if err := step.Run(context.Background(), env); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			row := env.Report.Rows[len(env.Report.Rows)-1]
+			if row.Pass != tc.wantPass {
+				t.Errorf("Pass = %v, want %v (delta %.0f, min %d)", row.Pass, tc.wantPass, row.Delta, tc.min)
+			}
+		})
+	}
+}
+
+func TestReloadAgentStep(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m", SSHHost: "10.0.0.10"}}
+
+	// AltConfig swap + SIGHUP, and NO backup (reload chains after a
+	// restart's backup — backing up here would clobber it).
+	t.Run("swaps config and SIGHUPs without a backup", func(t *testing.T) {
+		ac := AgentControlConfig{User: "root", KeyPath: "/k", ConfigPath: "/etc/lachesis/agent.yaml", Unit: "lachesis-agent"}
+		exec := &restartExec{}
+		if err := (ReloadAgentStep{AltConfig: "/root/resume.yaml"}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil)); err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if !exec.has("cp -f /root/resume.yaml /etc/lachesis/agent.yaml") {
+			t.Errorf("alt-config swap not issued: %+v", exec.calls)
+		}
+		if exec.has(".scenariotest.bak") {
+			t.Errorf("reload must NOT back up the config (it chains after a restart's backup): %+v", exec.calls)
+		}
+		if !exec.has("systemctl kill -s HUP lachesis-agent") {
+			t.Errorf("SIGHUP not issued: %+v", exec.calls)
+		}
+		for _, c := range exec.calls {
+			if c.addr != "10.0.0.10" {
+				t.Errorf("SSHed to %q, want the agent's ssh_host 10.0.0.10", c.addr)
+			}
+		}
+	})
+
+	// No AltConfig → pure re-read: SIGHUP only, no config swap.
+	t.Run("no alt config sends SIGHUP only", func(t *testing.T) {
+		ac := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis-agent"}
+		exec := &restartExec{}
+		if err := (ReloadAgentStep{}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil)); err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if exec.has("cp -f") {
+			t.Errorf("no AltConfig, but a config swap was issued: %+v", exec.calls)
+		}
+		if !exec.has("systemctl kill -s HUP lachesis-agent") {
+			t.Errorf("SIGHUP not issued: %+v", exec.calls)
+		}
+	})
+
+	// Error paths: each must fail BEFORE the SIGHUP.
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", ConfigPath: "/etc/lachesis/agent.yaml"}
+	cases := map[string]struct {
+		agents  []AgentConfig
+		ac      AgentControlConfig
+		exec    VMExec
+		step    ReloadAgentStep
+		wantErr string
+	}{
+		"no agent exec":        {agents, ac, nil, ReloadAgentStep{}, "no agent-host SSH transport"},
+		"missing creds":        {agents, AgentControlConfig{}, &restartExec{}, ReloadAgentStep{}, "user and agent_control.key_path"},
+		"alt without cfg path": {agents, AgentControlConfig{User: "root", KeyPath: "/k"}, &restartExec{}, ReloadAgentStep{AltConfig: "/root/x.yaml"}, "config_path is empty"},
+		"unsafe unit":          {agents, AgentControlConfig{User: "root", KeyPath: "/k", Unit: "u; rm -rf /"}, &restartExec{}, ReloadAgentStep{}, "unsafe for a shell command"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := tc.step.Run(context.Background(), restartEnv(t, tc.agents, tc.ac, tc.exec, nil))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+			}
+			if re, ok := tc.exec.(*restartExec); ok && re.has("systemctl kill") {
+				t.Errorf("must not SIGHUP when validation failed: %+v", re.calls)
+			}
+		})
+	}
+}
