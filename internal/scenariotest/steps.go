@@ -158,6 +158,12 @@ func (e *StepEnv) vmMAC(ctx context.Context, vm string) (string, error) {
 // streams. A later [AssertStep] diffs against this step's baseline.
 type DriveStep struct {
 	Flows []Flow
+	// KeepBaseline drives without resetting the run-state baseline, so a
+	// following [AssertStep] measures the CUMULATIVE delta since an
+	// earlier drive — the way router-regateway proves a second drive's
+	// live bytes ADD to the settled total (settled + live) rather than
+	// starting from zero.
+	KeepBaseline bool
 }
 
 func (DriveStep) Kind() string { return "drive" }
@@ -175,6 +181,7 @@ func (s DriveStep) Run(ctx context.Context, env *StepEnv) error {
 		Log:             env.Log,
 		SinkDelay:       env.SinkDelay,
 		MACLearnTimeout: env.MACLearnTimeout,
+		KeepBaseline:    s.KeepBaseline,
 	})
 }
 
@@ -759,9 +766,26 @@ func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
 		return err
 	}
 	portID := liveID(env.State.Ports, s.VM)
+	if portID == "" {
+		return fmt.Errorf("run-state has no live port for %q", s.VM)
+	}
 	netID := liveID(env.State.Networks, s.Network)
-	if portID == "" || netID == "" {
-		return fmt.Errorf("run-state has no live ids for %s/%s", s.VM, s.Network)
+	if netID == "" {
+		// Provider-bound external marker (not a CreateExternalNets net in
+		// run-state) resolves to the config's external network, the same
+		// mapping realize applies — so a FIP can be re-established on the
+		// provider net after a round trip freed it.
+		for _, n := range snap.Networks {
+			if n.ID == s.Network && n.IsExternal {
+				if netID, err = env.Cloud.FindExternalNetwork(ctx, env.Config.Prerequisites.ExternalNetworkName); err != nil {
+					return fmt.Errorf("associate-fip: resolve provider external net: %w", err)
+				}
+				break
+			}
+		}
+	}
+	if netID == "" {
+		return fmt.Errorf("associate-fip: no live network for %q (not a created external net nor a provider-bound marker)", s.Network)
 	}
 	fipID, addr, err := env.Cloud.CreateFIP(ctx, proj.ID, FIPCreateSpec{
 		ExternalNetworkID: netID,
@@ -839,7 +863,21 @@ func (s SetRouterGatewayStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 	netID := liveID(env.State.Networks, s.ExternalNet)
 	if netID == "" {
-		return fmt.Errorf("set-router-gateway: run-state has no live network for %q (a CreateExternalNets marker?)", s.ExternalNet)
+		// Not a created (CreateExternalNets) network in run-state — a
+		// provider-bound external marker resolves to the config's external
+		// network, the same mapping realize applies (so re-gatewaying BACK
+		// to the provider net works on the round trip).
+		for _, n := range env.Scenario.Builder.Build().Networks {
+			if n.ID == s.ExternalNet && n.IsExternal {
+				if netID, err = env.Cloud.FindExternalNetwork(ctx, env.Config.Prerequisites.ExternalNetworkName); err != nil {
+					return fmt.Errorf("set-router-gateway: resolve provider external net: %w", err)
+				}
+				break
+			}
+		}
+	}
+	if netID == "" {
+		return fmt.Errorf("set-router-gateway: no live network for %q (not a created external net nor a provider-bound marker)", s.ExternalNet)
 	}
 	if err := env.Cloud.SetRouterGateway(ctx, ref.ProjectID, ref.ID, netID); err != nil {
 		return err
