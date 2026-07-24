@@ -101,6 +101,7 @@ type StepEnv struct {
 	capturedServers   map[serverTuple]float64
 	settledBase       float64
 	settledTuplesBase float64
+	resolvedBase      float64
 	ghostsBase        float64
 	// macs records each deleted VM's MAC ([DeleteVMStep] captures it
 	// just before the delete) for a later BootVMStep's MACFrom.
@@ -164,6 +165,15 @@ type DriveStep struct {
 	// live bytes ADD to the settled total (settled + live) rather than
 	// starting from zero.
 	KeepBaseline bool
+	// SkipMACLearn drives without the pre-drive MAC-learn gate — for the
+	// unresolved-latebind scenario, where a VM's MAC is deliberately not
+	// yet learned so its first bytes must park unknown. Leave false
+	// everywhere else.
+	SkipMACLearn bool
+	// SkipAttachRecheck drives without re-confirming the up-time attach
+	// gate — for a drive that follows a tap teardown (ghost-grace deletes
+	// the peer, dropping a tap and racing a benign attach-failure).
+	SkipAttachRecheck bool
 }
 
 func (DriveStep) Kind() string { return "drive" }
@@ -172,16 +182,18 @@ func (s DriveStep) Run(ctx context.Context, env *StepEnv) error {
 	sc := *env.Scenario
 	sc.Flows = s.Flows
 	return Drive(ctx, DriveOptions{
-		Config:          env.Config,
-		Scenario:        &sc,
-		State:           env.State,
-		StatePath:       env.StatePath,
-		Metrics:         env.Metrics,
-		Exec:            env.Exec,
-		Log:             env.Log,
-		SinkDelay:       env.SinkDelay,
-		MACLearnTimeout: env.MACLearnTimeout,
-		KeepBaseline:    s.KeepBaseline,
+		Config:            env.Config,
+		Scenario:          &sc,
+		State:             env.State,
+		StatePath:         env.StatePath,
+		Metrics:           env.Metrics,
+		Exec:              env.Exec,
+		Log:               env.Log,
+		SinkDelay:         env.SinkDelay,
+		MACLearnTimeout:   env.MACLearnTimeout,
+		KeepBaseline:      s.KeepBaseline,
+		SkipMACLearn:      s.SkipMACLearn,
+		SkipAttachRecheck: s.SkipAttachRecheck,
 	})
 }
 
@@ -305,10 +317,12 @@ func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
 	env.capturedServers = sumByServerTuple(snap.Servers)
 	env.settledBase = snap.SettledFlows
 	env.settledTuplesBase = snap.SettledTuples
+	env.resolvedBase = snap.UnresolvedResolved
 	env.ghostsBase = snap.LingeringGhosts
 	env.Log.Info("capture", "tuples", len(env.captured),
 		"server_tuples", len(env.capturedServers), "settled_flows", env.settledBase,
-		"settled_tuples", env.settledTuplesBase, "lingering_ghosts", env.ghostsBase)
+		"settled_tuples", env.settledTuplesBase, "unresolved_resolved", env.resolvedBase,
+		"lingering_ghosts", env.ghostsBase)
 	return nil
 }
 
@@ -1394,6 +1408,123 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	env.Log.Info("restart-agent: restart issued", "host", host, "unit", unit, "old_pid", oldPID)
 
 	return s.awaitReady(ctx, env, agent, host, unit, oldPID, base.AttachedInterfaces)
+}
+
+// ResolvedGrewStep asserts the UnresolvedBuffer late-binding counter
+// (lachesis_unresolved_resolved_total) rose by at least Min since the
+// most recent [CaptureStep] — the proof that a flow's bytes were parked
+// unknown and then re-attributed to the right tenant WITHIN the TTL (not
+// expired to unknown). Polls until the floor is met or Timeout (default
+// [DefaultSweepTimeout]) records a failing row, because resolution lands
+// a reconcile-plus-scrape after the MAC becomes known.
+type ResolvedGrewStep struct {
+	Min     int64
+	Timeout time.Duration
+	Note    string
+}
+
+func (ResolvedGrewStep) Kind() string { return "assert-resolved-grew" }
+
+func (ResolvedGrewStep) requiredMetrics() []string { return []string{metricUnresolvedResolved} }
+
+func (s ResolvedGrewStep) Run(ctx context.Context, env *StepEnv) error {
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultSweepTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	var delta float64
+	for {
+		snap, err := env.scrape(ctx)
+		if err != nil {
+			return err
+		}
+		delta = snap.UnresolvedResolved - env.resolvedBase
+		if delta >= float64(s.Min) || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sweepPollInterval):
+		}
+	}
+	env.addRow(AssertRow{
+		Tenant: "unresolved-resolved", Zone: "-", Direction: "-",
+		Baseline: env.resolvedBase, Current: env.resolvedBase + delta, Delta: delta,
+		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
+	})
+	return nil
+}
+
+// ReloadAgentStep installs an alternate config on an agent host and
+// sends SIGHUP — a HOT reload, not a restart: the process does not
+// cycle, so in-memory state (crucially the UnresolvedBuffer) survives.
+// It is how the unresolved-latebind scenario "resumes the metadata
+// feed" — swap in a config with a short reconcile interval and SIGHUP,
+// and the running agent's next periodic reconcile learns the newly
+// booted VM and late-binds its buffered bytes. Only hot-reloadable
+// fields take effect (docs/operations/runtime.md); a restart would
+// discard the buffer this scenario depends on.
+type ReloadAgentStep struct {
+	// Node selects the agent (a placement slot or literal host); empty
+	// means the sole agent.
+	Node string
+	// AltConfig is an agent-host path installed over the agent config
+	// before the SIGHUP (backed up to <config>.scenariotest.bak, exactly
+	// like [RestartAgentStep]).
+	AltConfig string
+}
+
+func (ReloadAgentStep) Kind() string { return "reload-agent" }
+
+func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
+	if env.AgentExec == nil {
+		return fmt.Errorf("reload-agent: no agent-host SSH transport — set agent_control in the config")
+	}
+	ac := env.Config.AgentControl
+	if ac.KeyPath == "" || ac.User == "" {
+		return fmt.Errorf("reload-agent: agent_control.user and agent_control.key_path are required")
+	}
+	agent, err := agentForNode(env.Config, s.Node)
+	if err != nil {
+		return fmt.Errorf("reload-agent: %w", err)
+	}
+	unit := ac.Unit
+	if unit == "" {
+		unit = "lachesis-agent"
+	}
+	if err := shellSafe("agent_control.unit", unit); err != nil {
+		return fmt.Errorf("reload-agent: %w", err)
+	}
+	host := agent.sshHost()
+	if s.AltConfig != "" {
+		if ac.ConfigPath == "" {
+			return fmt.Errorf("reload-agent: AltConfig set but agent_control.config_path is empty")
+		}
+		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+			return fmt.Errorf("reload-agent: %w", err)
+		}
+		if err := shellSafe("AltConfig", s.AltConfig); err != nil {
+			return fmt.Errorf("reload-agent: %w", err)
+		}
+		// No backup here (unlike [RestartAgentStep]): a reload chains after
+		// a restart's alt-config swap, and backing up would clobber that
+		// restart's original-config backup. Restoring the real config is
+		// the scenario's explicit final step.
+		swap := fmt.Sprintf("sudo cp -f %s %s", s.AltConfig, ac.ConfigPath)
+		if out, err := env.AgentExec.Run(ctx, host, swap); err != nil {
+			return fmt.Errorf("reload-agent: install alt config on %s: %w (output: %s)", host, err, out)
+		}
+	}
+	// SIGHUP the unit's main process (no ExecReload on the unit — send the
+	// signal directly). The agent re-reads its YAML and applies the
+	// hot-reloadable fields; the process keeps running.
+	if out, err := env.AgentExec.Run(ctx, host, "sudo systemctl kill -s HUP "+unit); err != nil {
+		return fmt.Errorf("reload-agent: SIGHUP %s on %s: %w (output: %s)", unit, host, err, out)
+	}
+	env.Log.Info("reload-agent: SIGHUP sent", "host", host, "unit", unit, "alt", s.AltConfig)
+	return nil
 }
 
 // awaitReady blocks until the restart is confirmed AND the agent is

@@ -51,6 +51,8 @@ func All() []*scenariotest.Scenario {
 		vrrpVMACLeak(),
 		extrarouteMutation(),
 		routerRegateway(),
+		ghostGraceWindow(),
+		unresolvedLatebind(),
 	}
 }
 

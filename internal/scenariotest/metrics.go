@@ -62,6 +62,13 @@ const (
 	metricTenantSettledTuples = "lachesis_state_tenant_settled_tuples"
 	metricServerSettledTuples = "lachesis_state_server_settled_tuples"
 	metricTotalSettledTuples  = "lachesis_state_total_settled_tuples"
+	// metricUnresolvedResolved counts UnresolvedBuffer late-binding
+	// successes: a flow whose MAC was unknown when its first bytes
+	// arrived, then became known within the TTL and was re-attributed to
+	// the right tenant (docs/architecture/data-structures.md#userspace-structures).
+	// The unresolved-latebind scenario reads it to prove the buffer
+	// resolved rather than expired to unknown.
+	metricUnresolvedResolved = "lachesis_unresolved_resolved_total"
 )
 
 // BytesSample is one lachesis_tenant_bytes_total series: the {tenant_id, zone,
@@ -121,6 +128,7 @@ type ScrapeResult struct {
 	AttachFailures     float64
 	SettledFlows       float64
 	SettledTuples      float64
+	UnresolvedResolved float64
 	LingeringGhosts    float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
@@ -138,6 +146,7 @@ type MetricsSnapshot struct {
 	AttachFailures     float64
 	SettledFlows       float64
 	SettledTuples      float64
+	UnresolvedResolved float64
 	LingeringGhosts    float64
 	Bytes              []BytesSample
 	Servers            []ServerSample
@@ -208,7 +217,7 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	r := ScrapeResult{Present: map[string]bool{}}
 	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures,
 		metricSettledFlows, metricLingeringGhosts, metricServerBytesTotal, metricNeutronAnomalies,
-		metricTenantSettledTuples} {
+		metricTenantSettledTuples, metricUnresolvedResolved} {
 		_, ok := fams[n]
 		r.Present[n] = ok
 	}
@@ -218,6 +227,7 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	r.SettledTuples = familySum(fams, metricTenantSettledTuples) +
 		familySum(fams, metricServerSettledTuples) +
 		familySum(fams, metricTotalSettledTuples)
+	r.UnresolvedResolved = familySum(fams, metricUnresolvedResolved)
 	r.LingeringGhosts = familySum(fams, metricLingeringGhosts)
 	r.Bytes = bytesSamples(fams)
 	r.Servers = serverSamples(fams)
@@ -309,6 +319,7 @@ func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) 
 		snap.AttachFailures += r.AttachFailures
 		snap.SettledFlows += r.SettledFlows
 		snap.SettledTuples += r.SettledTuples
+		snap.UnresolvedResolved += r.UnresolvedResolved
 		snap.LingeringGhosts += r.LingeringGhosts
 		for _, s := range r.Bytes {
 			s.Node = a.Host

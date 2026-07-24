@@ -317,6 +317,12 @@ func (b *bootstrapper) wireReconcile() error {
 		Metrics:   b.ag.mx.reconcile,
 		BPFGauge:  b.ag.mx.bpf,
 	})
+	// A SIGHUP reload kicks the reconciler so a retuned reconcile
+	// interval (or any operator edit) is picked up within seconds rather
+	// than after the running ticker's current period elapses.
+	if b.ag.runtime != nil {
+		b.ag.runtime.SetOnReload(b.ag.reconciler.Kick)
+	}
 	return nil
 }
 
