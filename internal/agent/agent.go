@@ -125,12 +125,13 @@ type Agent struct {
 	// and the incremental Kafka updater share it.
 	interner *metadata.TenantInterner
 
-	// walRecBuf, walTenantSettledBuf and walServerSettledBuf are the reused SnapshotForWAL
+	// walRecBuf and the three settled buffers are the reused SnapshotForWAL
 	// destinations so a steady-state flush does not allocate fresh
 	// slices. Owned solely by the WAL flush goroutine; no lock needed.
 	walRecBuf           []state.Record
 	walTenantSettledBuf []state.TenantSettledRecord
 	walServerSettledBuf []state.ServerSettledRecord
+	walTotalSettledBuf  []state.TotalSettledRecord
 
 	// buildID stamps the WAL envelope's agent_build field. Resolved
 	// once at construction from the binary's embedded VCS revision;
@@ -208,4 +209,11 @@ func (a *Agent) SeedTenantSettled(records []state.TenantSettledRecord) {
 // the next reconcile's Nova-list prune after restore.
 func (a *Agent) SeedServerSettled(records []state.ServerSettledRecord) {
 	a.state.RestoreServerSettled(records)
+}
+
+// SeedTotalSettled seeds the agent's total-settled accumulator from
+// the WAL's total_settled section (v5+) — the dead projects' history
+// that keeps the total tier monotone across restarts.
+func (a *Agent) SeedTotalSettled(records []state.TotalSettledRecord) {
+	a.state.RestoreTotalSettled(records)
 }

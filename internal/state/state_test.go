@@ -173,7 +173,7 @@ func TestSnapshotForWAL_ReturnsTotalAndLastRaw(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 10})
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 250, Packets: 3, LastSeenNs: 20})
 
-	records, _, _ := g.SnapshotForWAL(nil, nil, nil)
+	records, _, _, _ := g.SnapshotForWAL(nil, nil, nil, nil)
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1", len(records))
 	}
@@ -202,7 +202,7 @@ func TestRestore_SeedsBothTotalAndLastRaw(t *testing.T) {
 	// LastEbpfRaw, not re-baseline. Raw 1000 → delta = 100 → Total = 1100.
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 1000, Packets: 11, LastSeenNs: 200})
 
-	records, _, _ := g.SnapshotForWAL(nil, nil, nil)
+	records, _, _, _ := g.SnapshotForWAL(nil, nil, nil, nil)
 	r := records[0]
 	if got, want := r.Counter.Total.Bytes, uint64(1100); got != want {
 		t.Errorf("Total.Bytes after restore + delta = %d, want %d (= 1000 + (1000-900))", got, want)
@@ -223,7 +223,7 @@ func TestRestore_OverwritesExistingKey(t *testing.T) {
 		},
 	}})
 
-	records, _, _ := g.SnapshotForWAL(nil, nil, nil)
+	records, _, _, _ := g.SnapshotForWAL(nil, nil, nil, nil)
 	if got, want := records[0].Counter.Total.Bytes, uint64(9999); got != want {
 		t.Errorf("Restore did not overwrite: got %d, want %d", got, want)
 	}
@@ -236,9 +236,9 @@ func TestSnapshotForWAL_ReusesCapacity(t *testing.T) {
 		k.SrcMac[5] = byte(i)
 		g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1})
 	}
-	dst, _, _ := g.SnapshotForWAL(nil, nil, nil)
+	dst, _, _, _ := g.SnapshotForWAL(nil, nil, nil, nil)
 	cap1 := cap(dst)
-	dst, _, _ = g.SnapshotForWAL(dst[:0], nil, nil)
+	dst, _, _, _ = g.SnapshotForWAL(dst[:0], nil, nil, nil)
 	if cap(dst) != cap1 {
 		t.Errorf("SnapshotForWAL grew capacity: %d → %d", cap1, cap(dst))
 	}
@@ -303,7 +303,7 @@ func TestAdd_DoesNotPrimeDeltaBaseline(t *testing.T) {
 	// Counter — assert the cumulative is exactly what was Added.
 	g := state.New()
 	g.Add(keyA(), bpf.FlowMetrics{Bytes: 4242, Packets: 7, LastSeenNs: 1})
-	recs, _, _ := g.SnapshotForWAL(nil, nil, nil)
+	recs, _, _, _ := g.SnapshotForWAL(nil, nil, nil, nil)
 	if len(recs) != 1 {
 		t.Fatalf("SnapshotForWAL returned %d records, want 1", len(recs))
 	}
@@ -339,7 +339,7 @@ func TestSettle_EvictMovesTotalsAndDeletesRows(t *testing.T) {
 	if folded != 1 {
 		t.Fatalf("Settle folded %d rows, want 1", folded)
 	}
-	flows, settled, _ := g.SnapshotWithSettled(nil, nil, nil)
+	flows, settled, _, _ := g.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(flows) != 1 || flows[0].Key != keyB() || flows[0].Total.Bytes != 50 {
 		t.Errorf("flows = %+v, want only keyB with 50 bytes", flows)
 	}
@@ -358,7 +358,7 @@ func TestSettle_EvictAccumulatesIntoExistingBucket(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 30, Packets: 1, LastSeenNs: 2})
 	g.Settle(state.SettleEvict, settleAll("t1"))
 
-	_, settled, _ := g.SnapshotWithSettled(nil, nil, nil)
+	_, settled, _, _ := g.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(settled) != 1 || settled[0].Bytes != 130 {
 		t.Errorf("settled = %+v, want one bucket with 130 bytes", settled)
 	}
@@ -373,7 +373,7 @@ func TestSettle_RebaseZerosTotalKeepsWatermark(t *testing.T) {
 
 	g.Settle(state.SettleRebase, settleAll("t-old"))
 
-	flows, settled, _ := g.SnapshotWithSettled(nil, nil, nil)
+	flows, settled, _, _ := g.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(flows) != 1 || flows[0].Total.Bytes != 0 {
 		t.Fatalf("flows = %+v, want the row kept with Total zeroed", flows)
 	}
@@ -383,7 +383,7 @@ func TestSettle_RebaseZerosTotalKeepsWatermark(t *testing.T) {
 
 	// Kernel cumulative advances 100→130: only the 30 delta accrues.
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 130, Packets: 5, LastSeenNs: 2})
-	flows, _, _ = g.SnapshotWithSettled(nil, nil, nil)
+	flows, _, _, _ = g.SnapshotWithSettled(nil, nil, nil, nil)
 	if flows[0].Total.Bytes != 30 {
 		t.Errorf("post-rebase Total = %d, want 30 (settled cumulative must not replay)", flows[0].Total.Bytes)
 	}
@@ -396,7 +396,7 @@ func TestSettledWALRoundTrip(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 100, Packets: 2, LastSeenNs: 1})
 	g.Settle(state.SettleEvict, settleAll("t1"))
 
-	_, settled, _ := g.SnapshotForWAL(nil, nil, nil)
+	_, settled, _, _ := g.SnapshotForWAL(nil, nil, nil, nil)
 	if len(settled) != 1 {
 		t.Fatalf("SnapshotForWAL settled = %+v, want 1 bucket", settled)
 	}
@@ -406,7 +406,7 @@ func TestSettledWALRoundTrip(t *testing.T) {
 	if fresh.TenantSettledLen() != 1 {
 		t.Fatalf("TenantSettledLen after restore = %d, want 1", fresh.TenantSettledLen())
 	}
-	_, got, _ := fresh.SnapshotWithSettled(nil, nil, nil)
+	_, got, _, _ := fresh.SnapshotWithSettled(nil, nil, nil, nil)
 	if got[0] != settled[0] {
 		t.Errorf("restored settled = %+v, want %+v", got[0], settled[0])
 	}
@@ -423,7 +423,7 @@ func TestSettle_DistinctExternalNetworksSeparateBuckets(t *testing.T) {
 	g.ApplyDelta(keyA(), bpf.FlowMetrics{Bytes: 40, Packets: 1, LastSeenNs: 2})
 	g.Settle(state.SettleEvict, func(bpf.FlowKey) (string, string, string, bool) { return "t1", "none", "", true })
 
-	_, settled, _ := g.SnapshotWithSettled(nil, nil, nil)
+	_, settled, _, _ := g.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(settled) != 2 {
 		t.Fatalf("settled = %+v, want 2 buckets (public-1, none)", settled)
 	}
@@ -461,7 +461,7 @@ func TestServerSettled_FoldCreditsBothAccumulators(t *testing.T) {
 	if folded != 1 {
 		t.Fatalf("folded %d, want 1", folded)
 	}
-	_, settled, serverSettled := g.SnapshotWithSettled(nil, nil, nil)
+	_, settled, serverSettled, _ := g.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(settled) != 1 || settled[0].Bytes != 600 {
 		t.Fatalf("tenant settled = %+v, want one 600-byte bucket", settled)
 	}
@@ -512,7 +512,7 @@ func TestPruneServerSettled_DropsDeadHoldsAlive(t *testing.T) {
 	if dropped := g.PruneServerSettled(map[string]struct{}{"srv-2": {}}); dropped != 1 {
 		t.Fatalf("dropped %d, want 1", dropped)
 	}
-	_, _, serverSettled := g.SnapshotWithSettled(nil, nil, nil)
+	_, _, serverSettled, _ := g.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(serverSettled) != 1 || serverSettled[0].Key.ServerID != "srv-2" {
 		t.Fatalf("server settled after prune = %+v, want only srv-2", serverSettled)
 	}
@@ -536,7 +536,7 @@ func TestServerSettled_SameServerResume(t *testing.T) {
 	g.ApplyDelta(serverKey(1), bpf.FlowMetrics{Bytes: 50, Packets: 1, LastSeenNs: 2})
 	g.ApplyDelta(serverKey(1), bpf.FlowMetrics{Bytes: 90, Packets: 2, LastSeenNs: 3})
 
-	flows, _, serverSettled := g.SnapshotWithSettled(nil, nil, nil)
+	flows, _, serverSettled, _ := g.SnapshotWithSettled(nil, nil, nil, nil)
 	var live uint64
 	for _, f := range flows {
 		live += f.Total.Bytes
@@ -551,5 +551,109 @@ func TestServerSettled_SameServerResume(t *testing.T) {
 	// no double-count.
 	if parked != 600 || live != 90 {
 		t.Fatalf("parked=%d live=%d, want 600/90 — sum must resume from the detach point", parked, live)
+	}
+}
+
+// tenantKey builds flow keys that resolve to distinct tenants: one
+// tuple per tenant index under the same zone/direction, a distinct
+// src MAC per tenant — the lachesis#251 prune shape.
+func tenantKey(tenant uint8) bpf.FlowKey {
+	return bpf.FlowKey{
+		SrcMac:    [6]uint8{0xbb, 0, 0, 0, 0, tenant},
+		DstMac:    [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto:  0x0800,
+		Direction: bpf.DirectionEgress,
+		DstZone:   bpf.ZoneExternal,
+	}
+}
+
+// TestPruneTenantSettled_FoldsIntoTotalAndDrops: the reconciler's
+// Keystone-list prune is a settle-to-parent — a dead project's bucket
+// folds into the total-settled absorber (the total tier is derived, so
+// a plain delete would dip it) and only then disappears; per-key value
+// is conserved across the fold.
+func TestPruneTenantSettled_FoldsIntoTotalAndDrops(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(tenantKey(1), bpf.FlowMetrics{Bytes: 600, Packets: 6, LastSeenNs: 1})
+	g.ApplyDelta(tenantKey(2), bpf.FlowMetrics{Bytes: 400, Packets: 4, LastSeenNs: 1})
+	g.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
+		if k == tenantKey(1) {
+			return "t-dead", "none", "", true
+		}
+		return "t-alive", "none", "", true
+	})
+
+	// Both projects still in the Keystone list → nothing released.
+	alive := map[string]struct{}{"t-dead": {}, "t-alive": {}}
+	if dropped := g.PruneTenantSettled(alive); dropped != 0 {
+		t.Fatalf("dropped %d with both projects alive, want 0", dropped)
+	}
+	if g.TotalSettledLen() != 0 {
+		t.Fatalf("TotalSettledLen = %d before any release, want 0", g.TotalSettledLen())
+	}
+
+	// t-dead deleted from Keystone → its bucket folds into the total
+	// absorber and is released; t-alive is untouched.
+	if dropped := g.PruneTenantSettled(map[string]struct{}{"t-alive": {}}); dropped != 1 {
+		t.Fatalf("dropped %d, want 1", dropped)
+	}
+	_, settled, _, totalSettled := g.SnapshotWithSettled(nil, nil, nil, nil)
+	if len(settled) != 1 || settled[0].Key.Tenant != "t-alive" || settled[0].Bytes != 400 {
+		t.Fatalf("tenant settled after prune = %+v, want only t-alive with 400 bytes", settled)
+	}
+	if len(totalSettled) != 1 || totalSettled[0].Bytes != 600 || totalSettled[0].Packets != 6 {
+		t.Fatalf("total settled = %+v, want one 600-byte/6-packet bucket", totalSettled)
+	}
+	want := state.TotalSettledKey{ExtNet: "none", Zone: bpf.ZoneExternal, Dir: bpf.DirectionEgress}
+	if totalSettled[0].Key != want {
+		t.Fatalf("total settled key = %+v, want %+v", totalSettled[0].Key, want)
+	}
+}
+
+// TestPruneTenantSettled_AccumulatesSharedTuple: two dead projects on
+// the same (zone, ext, dir) tuple accumulate into ONE total bucket —
+// and a second prune round adds on top of the first, never overwrites.
+func TestPruneTenantSettled_AccumulatesSharedTuple(t *testing.T) {
+	g := state.New()
+	g.ApplyDelta(tenantKey(1), bpf.FlowMetrics{Bytes: 600, Packets: 6, LastSeenNs: 1})
+	g.ApplyDelta(tenantKey(2), bpf.FlowMetrics{Bytes: 400, Packets: 4, LastSeenNs: 1})
+	g.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
+		if k == tenantKey(1) {
+			return "t-dead-1", "none", "", true
+		}
+		return "t-dead-2", "none", "", true
+	})
+
+	if dropped := g.PruneTenantSettled(map[string]struct{}{"t-dead-2": {}}); dropped != 1 {
+		t.Fatalf("first round dropped %d, want 1", dropped)
+	}
+	if dropped := g.PruneTenantSettled(map[string]struct{}{}); dropped != 1 {
+		t.Fatalf("second round dropped %d, want 1", dropped)
+	}
+	_, _, _, totalSettled := g.SnapshotWithSettled(nil, nil, nil, nil)
+	if len(totalSettled) != 1 || totalSettled[0].Bytes != 1000 || totalSettled[0].Packets != 10 {
+		t.Fatalf("total settled = %+v, want one accumulated 1000-byte/10-packet bucket", totalSettled)
+	}
+}
+
+// TestRestoreTotalSettled_RoundTrip: the WAL seed path — records
+// restored at boot come back bit-exact through the combined snapshot.
+func TestRestoreTotalSettled_RoundTrip(t *testing.T) {
+	g := state.New()
+	want := []state.TotalSettledRecord{{
+		Key:   state.TotalSettledKey{ExtNet: "net-ext", Zone: bpf.ZoneExternal, Dir: bpf.DirectionIngress},
+		Bytes: 1 << 40, Packets: 1 << 20,
+	}}
+	g.RestoreTotalSettled(want)
+	if g.TotalSettledLen() != 1 {
+		t.Fatalf("TotalSettledLen = %d, want 1", g.TotalSettledLen())
+	}
+	_, _, _, got := g.SnapshotWithSettled(nil, nil, nil, nil)
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("snapshot = %+v, want %+v", got, want)
+	}
+	flows, settled, serverSettled, totals := g.SnapshotForWAL(nil, nil, nil, nil)
+	if len(flows) != 0 || len(settled) != 0 || len(serverSettled) != 0 || len(totals) != 1 || totals[0] != want[0] {
+		t.Fatalf("SnapshotForWAL totals = %+v, want %+v", totals, want)
 	}
 }

@@ -69,6 +69,13 @@ type GlobalState struct {
 	// leaves the Nova server list — the server series is monotone for
 	// exactly the server's lifetime.
 	serverSettled map[ServerSettledKey]*settledTotal
+	// totalSettled is the total tier's fold absorber: the total family
+	// is derived (Σ tenant tier at Collect), so a tenant-settled bucket
+	// released by [GlobalState.PruneTenantSettled] folds its value here
+	// — in the same critical section — or the immortal total series
+	// would dip by the dead project's lifetime bytes. Never pruned: the
+	// total tier has no owner to die with.
+	totalSettled map[TotalSettledKey]*settledTotal
 }
 
 // settledTotal is the mutable per-bucket accumulator behind the
@@ -85,6 +92,7 @@ func New() *GlobalState {
 		counts:        make(map[bpf.FlowKey]*Counter),
 		tenantSettled: make(map[TenantSettledKey]*settledTotal),
 		serverSettled: make(map[ServerSettledKey]*settledTotal),
+		totalSettled:  make(map[TotalSettledKey]*settledTotal),
 	}
 }
 
@@ -270,7 +278,7 @@ func (g *GlobalState) Snapshot(dst []Entry) []Entry {
 // or drop (settled then live) the folded bytes for one exposure —
 // either way the next scrape breaks series monotonicity. Both slices
 // follow the [GlobalState.Snapshot] reuse contract.
-func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []TenantSettledRecord, serverSettled []ServerSettledRecord) ([]Entry, []TenantSettledRecord, []ServerSettledRecord) {
+func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []TenantSettledRecord, serverSettled []ServerSettledRecord, totalSettled []TotalSettledRecord) ([]Entry, []TenantSettledRecord, []ServerSettledRecord, []TotalSettledRecord) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	for k, c := range g.counts {
@@ -286,7 +294,12 @@ func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []TenantSettled
 	for k, t := range g.serverSettled {
 		serverSettled = append(serverSettled, ServerSettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
 	}
-	return flows, settled, serverSettled
+	// Total-settled likewise: a tenant prune moving value bucket→bucket
+	// must never be observable half-done across a scrape.
+	for k, t := range g.totalSettled {
+		totalSettled = append(totalSettled, TotalSettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
+	}
+	return flows, settled, serverSettled, totalSettled
 }
 
 // Len returns the number of distinct flows currently tracked.
@@ -307,7 +320,7 @@ func (g *GlobalState) Len() int {
 // and a crash would make that permanent. Values are copied out so the
 // records are safe to use after the RLock is released, including
 // across the (no-lock) marshal and flush phases of the WAL writer.
-func (g *GlobalState) SnapshotForWAL(flows []Record, settled []TenantSettledRecord, serverSettled []ServerSettledRecord) ([]Record, []TenantSettledRecord, []ServerSettledRecord) {
+func (g *GlobalState) SnapshotForWAL(flows []Record, settled []TenantSettledRecord, serverSettled []ServerSettledRecord, totalSettled []TotalSettledRecord) ([]Record, []TenantSettledRecord, []ServerSettledRecord, []TotalSettledRecord) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	for k, c := range g.counts {
@@ -319,7 +332,10 @@ func (g *GlobalState) SnapshotForWAL(flows []Record, settled []TenantSettledReco
 	for k, t := range g.serverSettled {
 		serverSettled = append(serverSettled, ServerSettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
 	}
-	return flows, settled, serverSettled
+	for k, t := range g.totalSettled {
+		totalSettled = append(totalSettled, TotalSettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
+	}
+	return flows, settled, serverSettled, totalSettled
 }
 
 // Restore seeds the map from records previously written to the WAL.
@@ -393,4 +409,60 @@ func (g *GlobalState) PruneServerSettled(alive map[string]struct{}) int {
 		}
 	}
 	return dropped
+}
+
+// PruneTenantSettled releases every tenant-settled bucket whose Tenant
+// is not in alive — the tenant tier's lifecycle rule: a project's
+// series ends when (and only when) the project leaves the Keystone
+// project list (docs/architecture/data-structures.md#settled-bytes).
+// Unlike the server prune this is a settle-to-parent, not a plain
+// delete: the total family is derived (Σ tenant tier at Collect), so
+// each dying bucket's totals fold into the total-settled absorber in
+// this same critical section — deleting without folding would make the
+// immortal lachesis_bytes_total series decrease while continuing.
+//
+// The caller (the reconciler, after a successful sync) must pass a set
+// built from a SUCCESSFUL Keystone fetch, must skip the call when the
+// list is empty, and must include any pseudo-tenants that are not
+// Keystone projects (metadata.UnknownTenantID) in alive — they have no
+// project to die with. No TTL, no clock: project-list absence is the
+// one unambiguous death signal. Returns the number of buckets released.
+func (g *GlobalState) PruneTenantSettled(alive map[string]struct{}) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	dropped := 0
+	for k, t := range g.tenantSettled {
+		if _, ok := alive[k.Tenant]; ok {
+			continue
+		}
+		tk := TotalSettledKey{ExtNet: k.ExtNet, Zone: k.Zone, Dir: k.Dir}
+		tt := g.totalSettled[tk]
+		if tt == nil {
+			tt = &settledTotal{}
+			g.totalSettled[tk] = tt
+		}
+		tt.bytes += t.bytes
+		tt.packets += t.packets
+		delete(g.tenantSettled, k)
+		dropped++
+	}
+	return dropped
+}
+
+// RestoreTotalSettled seeds the total-settled accumulator from records
+// previously written to the WAL. Same contract as [GlobalState.Restore]:
+// boot-time only, existing buckets overwritten.
+func (g *GlobalState) RestoreTotalSettled(records []TotalSettledRecord) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, r := range records {
+		g.totalSettled[r.Key] = &settledTotal{bytes: r.Bytes, packets: r.Packets}
+	}
+}
+
+// TotalSettledLen returns the number of total-settled buckets held.
+func (g *GlobalState) TotalSettledLen() int {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return len(g.totalSettled)
 }

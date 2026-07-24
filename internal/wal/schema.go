@@ -33,7 +33,14 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 //     buckets, so Load reads it without migration. v4 also renames the
 //     tenant accumulator's key settled → tenant_settled; Load accepts
 //     both (LegacySettled), Save writes only the new key.
-const SchemaVersion uint = 4
+//   - v5: adds the total_settled section — the total tier's fold
+//     absorber, credited when a dead project's tenant-settled bucket is
+//     released ([state.GlobalState.PruneTenantSettled],
+//     docs/architecture/data-structures.md#settled-bytes). Purely
+//     additive — a v4 file is a valid v5 file with no total-settled
+//     buckets (no project had died yet), so Load reads it without
+//     migration.
+const SchemaVersion uint = 5
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
 // previous snapshot. TempSuffix is the in-progress write target.
@@ -82,11 +89,14 @@ const (
 // LoadResult bundles a successful Load. Records is nil when Source
 // is LoadEmpty; TenantSettled is nil for LoadEmpty and for v1 snapshots,
 // which predate the settled section; ServerSettled is nil for LoadEmpty
-// and for v1–v3 snapshots, which predate the server-settled section.
+// and for v1–v3 snapshots, which predate the server-settled section;
+// TotalSettled is nil for LoadEmpty and for v1–v4 snapshots, which
+// predate the total-settled section.
 type LoadResult struct {
 	Records       []state.Record
 	TenantSettled []state.TenantSettledRecord
 	ServerSettled []state.ServerSettledRecord
+	TotalSettled  []state.TotalSettledRecord
 	Source        LoadSource
 }
 
@@ -101,6 +111,7 @@ type snapshotWire struct {
 	GlobalState   []entryWire         `json:"global_state"`
 	TenantSettled []tenantSettledWire `json:"tenant_settled,omitempty"`
 	ServerSettled []serverSettledWire `json:"server_settled,omitempty"`
+	TotalSettled  []totalSettledWire  `json:"total_settled,omitempty"`
 	// LegacySettled reads the ≤v3 on-disk key `settled` (the tenant
 	// accumulator's pre-four-layer name). Load merges it into
 	// TenantSettled; Save never writes it (always nil + omitempty).
@@ -133,6 +144,19 @@ type tenantSettledWire struct {
 type serverSettledWire struct {
 	ServerID        string `json:"server_id"`
 	TenantID        string `json:"tenant_id"`
+	ExternalNetwork string `json:"external_network,omitempty"`
+	Zone            uint8  `json:"zone"`
+	Direction       uint8  `json:"direction"`
+	Bytes           uint64 `json:"bytes,string"`
+	Packets         uint64 `json:"packets,string"`
+}
+
+// totalSettledWire mirrors state.TotalSettledRecord on the wire — the
+// total tier's fold absorber (v5+). No tenant or server dimension: the
+// key is exactly the lachesis_bytes_total label tuple (the already-gated
+// external_network label plus the flow-key zone/direction encodings).
+// Never pruned, so no lifecycle state to persist.
+type totalSettledWire struct {
 	ExternalNetwork string `json:"external_network,omitempty"`
 	Zone            uint8  `json:"zone"`
 	Direction       uint8  `json:"direction"`

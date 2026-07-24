@@ -70,14 +70,15 @@ type stageErr struct {
 func (e *stageErr) Error() string { return fmt.Sprintf("wal %s: %v", e.Stage, e.Err) }
 func (e *stageErr) Unwrap() error { return e.Err }
 
-// Save writes records, settled and serverSettled to path via the atomic
-// tmp+fsync+rename rotation described in the package doc. The slices
-// must come from one [state.GlobalState.SnapshotForWAL] call — slices
-// snapshotted separately can tear across a concurrent settle fold and
-// persist the folded bytes twice or not at all. agentBuild is
-// informational (correlation with build logs); empty is acceptable. m
-// may be nil when phase timings and failure stages are not needed.
-func Save(path, agentBuild string, records []state.Record, settled []state.TenantSettledRecord, serverSettled []state.ServerSettledRecord, m *Metrics) error {
+// Save writes records and the three settled accumulators to path via
+// the atomic tmp+fsync+rename rotation described in the package doc.
+// The slices must come from one [state.GlobalState.SnapshotForWAL]
+// call — slices snapshotted separately can tear across a concurrent
+// settle fold and persist the folded bytes twice or not at all.
+// agentBuild is informational (correlation with build logs); empty is
+// acceptable. m may be nil when phase timings and failure stages are
+// not needed.
+func Save(path, agentBuild string, records []state.Record, settled []state.TenantSettledRecord, serverSettled []state.ServerSettledRecord, totalSettled []state.TotalSettledRecord, m *Metrics) error {
 	snap := snapshotWire{
 		SchemaVersion: SchemaVersion,
 		AgentBuild:    agentBuild,
@@ -106,6 +107,18 @@ func Save(path, agentBuild string, records []state.Record, settled []state.Tenan
 			snap.ServerSettled[i] = serverSettledWire{
 				ServerID:        s.Key.ServerID,
 				TenantID:        s.Key.Tenant,
+				ExternalNetwork: s.Key.ExtNet,
+				Zone:            uint8(s.Key.Zone),
+				Direction:       uint8(s.Key.Dir),
+				Bytes:           s.Bytes,
+				Packets:         s.Packets,
+			}
+		}
+	}
+	if len(totalSettled) > 0 {
+		snap.TotalSettled = make([]totalSettledWire, len(totalSettled))
+		for i, s := range totalSettled {
+			snap.TotalSettled[i] = totalSettledWire{
 				ExternalNetwork: s.Key.ExtNet,
 				Zone:            uint8(s.Key.Zone),
 				Direction:       uint8(s.Key.Dir),
@@ -225,7 +238,7 @@ func writeAndFsync(path string, data []byte) error {
 func Load(path string) (LoadResult, error) {
 	primary, primaryErr := readAndParse(path)
 	if primaryErr == nil {
-		return LoadResult{Records: fromSnapshot(primary), TenantSettled: fromTenantSettled(primary), ServerSettled: fromServerSettled(primary), Source: LoadFromPrimary}, nil
+		return LoadResult{Records: fromSnapshot(primary), TenantSettled: fromTenantSettled(primary), ServerSettled: fromServerSettled(primary), TotalSettled: fromTotalSettled(primary), Source: LoadFromPrimary}, nil
 	}
 
 	// The .bak behind a newer-schema primary may well parse — it can
@@ -238,7 +251,7 @@ func Load(path string) (LoadResult, error) {
 	bakPath := path + BackupSuffix
 	backup, backupErr := readAndParse(bakPath)
 	if backupErr == nil {
-		return LoadResult{Records: fromSnapshot(backup), TenantSettled: fromTenantSettled(backup), ServerSettled: fromServerSettled(backup), Source: LoadFromBackup}, nil
+		return LoadResult{Records: fromSnapshot(backup), TenantSettled: fromTenantSettled(backup), ServerSettled: fromServerSettled(backup), TotalSettled: fromTotalSettled(backup), Source: LoadFromBackup}, nil
 	}
 
 	// Both missing is the first-boot path; report as empty.
@@ -368,6 +381,36 @@ func fromTenantSettled(snap snapshotWire) []state.TenantSettledRecord {
 		out[i] = state.TenantSettledRecord{
 			Key: state.TenantSettledKey{
 				Tenant: s.TenantID,
+				ExtNet: ext,
+				Zone:   bpf.ZoneCode(s.Zone),
+				Dir:    bpf.Direction(s.Direction),
+			},
+			Bytes:   s.Bytes,
+			Packets: s.Packets,
+		}
+	}
+	return out
+}
+
+// fromTotalSettled converts the wire total-settled section (v5+) back
+// to state records. Nil for pre-v5 snapshots — a file written before
+// the section existed has, by definition, never pruned a tenant bucket,
+// so an empty absorber is the correct restore.
+func fromTotalSettled(snap snapshotWire) []state.TotalSettledRecord {
+	if len(snap.TotalSettled) == 0 {
+		return nil
+	}
+	out := make([]state.TotalSettledRecord, len(snap.TotalSettled))
+	for i, s := range snap.TotalSettled {
+		// Same absent-external_network→sentinel handling as
+		// fromTenantSettled; a total-settled bucket always occupies a
+		// real emitted series.
+		ext := s.ExternalNetwork
+		if ext == "" {
+			ext = metadata.NoExternalNetwork
+		}
+		out[i] = state.TotalSettledRecord{
+			Key: state.TotalSettledKey{
 				ExtNet: ext,
 				Zone:   bpf.ZoneCode(s.Zone),
 				Dir:    bpf.Direction(s.Direction),

@@ -104,6 +104,32 @@ type ServerSettledRecord struct {
 	Packets uint64
 }
 
+// TotalSettledKey identifies one total-settled bucket — the total
+// tier's fold absorber in the four-layer family hierarchy
+// (docs/architecture/billing.md). The total family is DERIVED (Σ tenant
+// tier at Collect time), so releasing a dead project's tenant-settled
+// bucket would make the immortal lachesis_bytes_total series decrease
+// while continuing — the poison the absorbers exist to prevent.
+// [GlobalState.PruneTenantSettled] therefore settles to the parent: the
+// dying bucket's totals fold here, under the tenant dimension summed
+// away — exactly the lachesis_bytes_total label tuple. Bounded by
+// construction: zones × external networks × 2 directions.
+type TotalSettledKey struct {
+	ExtNet string
+	Zone   bpf.ZoneCode
+	Dir    bpf.Direction
+}
+
+// TotalSettledRecord is one total-settled bucket's cumulative totals,
+// emitted by the snapshot methods and round-tripped through the WAL
+// (additive schema v5). Like [TenantSettledRecord] it carries no
+// delta-math or recency fields.
+type TotalSettledRecord struct {
+	Key     TotalSettledKey
+	Bytes   uint64
+	Packets uint64
+}
+
 // SettleMode selects what [GlobalState.Settle] does with a flow row
 // after folding its Total into the settled accumulator. The right mode
 // is decided by whether the row's kernel telemetry_map counters still

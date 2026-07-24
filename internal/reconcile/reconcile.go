@@ -63,6 +63,12 @@ type FlowSettler interface {
 	// reconciler owns the call: it is the one place a fresh, successful
 	// Nova fetch is in hand.
 	PruneServerSettled(alive map[string]struct{}) int
+	// PruneTenantSettled releases tenant-settled buckets whose project is
+	// no longer in the Keystone project list, folding each into the
+	// total-settled absorber — the tenant tier's lifecycle rule
+	// (docs/architecture/data-structures.md#settled-bytes). Same ownership
+	// rationale as PruneServerSettled.
+	PruneTenantSettled(alive map[string]struct{}) int
 }
 
 // MetadataSource is the subset of [neutron.Neutron] the reconcile loop
@@ -227,6 +233,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 	r.src.Commit(result, now)
 	r.mx.RecordRun(resultOK)
 	r.pruneServerSettled(result.Snapshot.Servers)
+	r.pruneTenantSettled(result.Snapshot.Projects)
 	r.refreshMapGauges(len(result.Entries))
 	r.logOutcome(delta, mac, len(result.Ambiguities))
 }
@@ -251,6 +258,32 @@ func (r *Reconciler) pruneServerSettled(servers []neutron.Server) {
 	if dropped := r.settler.PruneServerSettled(alive); dropped > 0 {
 		slog.Info("released server-settled buckets for dead servers",
 			"component", component, "dropped", dropped, "servers_alive", len(alive))
+	}
+}
+
+// pruneTenantSettled releases tenant-settled buckets for projects no
+// longer in the Keystone list — a project's exposed series ends when
+// (and only when) the project is gone; each released bucket folds into
+// the total-settled absorber so the derived total tier never dips
+// (docs/architecture/data-structures.md#settled-bytes). The Keystone
+// fetch is sync-fatal (unlike the best-effort Nova list), so a failed
+// fetch never reaches this call; the empty-list skip guards the same
+// hold-on-missing-data direction anyway — a healthy Keystone always has
+// at least the service projects. metadata.UnknownTenantID joins the
+// alive set explicitly: the unknown pseudo-tenant is not a Keystone
+// project and has no project to die with. No-op without a settler.
+func (r *Reconciler) pruneTenantSettled(projects []neutron.Project) {
+	if r.settler == nil || len(projects) == 0 {
+		return
+	}
+	alive := make(map[string]struct{}, len(projects)+1)
+	for _, p := range projects {
+		alive[p.ID] = struct{}{}
+	}
+	alive[metadata.UnknownTenantID] = struct{}{}
+	if dropped := r.settler.PruneTenantSettled(alive); dropped > 0 {
+		slog.Info("released tenant-settled buckets for deleted projects into the total absorber",
+			"component", component, "dropped", dropped, "projects_alive", len(projects))
 	}
 }
 

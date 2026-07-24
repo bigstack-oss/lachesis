@@ -79,6 +79,7 @@ type Collector struct {
 	flowsDesc         *prometheus.Desc
 	tenantSettledDesc *prometheus.Desc
 	serverSettledDesc *prometheus.Desc
+	totalSettledDesc  *prometheus.Desc
 	scrapeErrorsDesc  *prometheus.Desc
 	scrapeLastOKDesc  *prometheus.Desc
 
@@ -95,11 +96,12 @@ type Collector struct {
 	// Prometheus registry is single-threaded but third-party
 	// registries are not.
 	collectMu sync.Mutex
-	// emitBuf, tenantSettledBuf and serverSettledBuf are reused across Collect
+	// emitBuf and the three settled buffers are reused across Collect
 	// calls so the combined snapshot walk is zero-alloc in steady state.
 	emitBuf          []state.Entry
 	tenantSettledBuf []state.TenantSettledRecord
 	serverSettledBuf []state.ServerSettledRecord
+	totalSettledBuf  []state.TotalSettledRecord
 	// The four per-tier aggregation buffers (docs/architecture/billing.md):
 	// totalAggBuf sums the tenant tier's buckets with the tenant
 	// dimension removed; aggBuf groups per-flow entries + tenant-settled
@@ -185,6 +187,11 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 			"Distinct (server_id, tenant, zone, external_network, direction) buckets in the server-settled accumulator — the server tier's fold absorber; buckets are released when their server leaves the Nova list (docs/architecture/data-structures.md#settled-bytes).",
 			nil, nil,
 		),
+		totalSettledDesc: prometheus.NewDesc(
+			"lachesis_state_total_settled_tuples",
+			"Distinct (zone, external_network, direction) buckets in the total-settled accumulator — the total tier's fold absorber, credited when a deleted project's tenant-settled bucket is released. Never pruned (docs/architecture/data-structures.md#settled-bytes).",
+			nil, nil,
+		),
 		scrapeErrorsDesc: prometheus.NewDesc(
 			"lachesis_scraper_errors_total",
 			"Cumulative count of failed BPF-map drain attempts since agent start.",
@@ -216,6 +223,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.flowsDesc
 	ch <- c.tenantSettledDesc
 	ch <- c.serverSettledDesc
+	ch <- c.totalSettledDesc
 	ch <- c.scrapeErrorsDesc
 	ch <- c.scrapeLastOKDesc
 	c.collectDuration.Describe(ch)
@@ -240,7 +248,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	defer c.collectMu.Unlock()
 	start := time.Now()
 
-	c.emitBuf, c.tenantSettledBuf, c.serverSettledBuf = c.state.SnapshotWithSettled(c.emitBuf[:0], c.tenantSettledBuf[:0], c.serverSettledBuf[:0])
+	c.emitBuf, c.tenantSettledBuf, c.serverSettledBuf, c.totalSettledBuf = c.state.SnapshotWithSettled(c.emitBuf[:0], c.tenantSettledBuf[:0], c.serverSettledBuf[:0], c.totalSettledBuf[:0])
 	c.aggregate()
 	c.emitBilling(ch)
 	c.emitHealth(ch)
@@ -263,6 +271,7 @@ func (c *Collector) aggregate() {
 	c.aggregateLiveRows()
 	c.foldServerSettled()
 	c.deriveTotals()
+	c.foldTotalSettled()
 }
 
 // foldTenantSettled credits the tenant tier with the settled buckets —
@@ -347,6 +356,24 @@ func (c *Collector) deriveTotals() {
 	}
 }
 
+// foldTotalSettled credits the total tier with its absorber — the
+// history of projects whose tenant-settled buckets were released on
+// Keystone-list absence. Runs AFTER deriveTotals: the derived sum
+// covers only living tenants, and this fold adds the dead ones' bytes
+// back so the immortal total series never dips across a project
+// deletion, CREATING the bucket's tuple if no living tenant occupies it
+// (docs/architecture/data-structures.md#settled-bytes).
+func (c *Collector) foldTotalSettled() {
+	for i := range c.totalSettledBuf {
+		s := &c.totalSettledBuf[i]
+		tk := totalAggKey{ext: s.Key.ExtNet, zone: s.Key.Zone, dir: s.Key.Dir}
+		tv := c.totalAggBuf[tk]
+		tv.bytes += s.Bytes
+		tv.packets += s.Packets
+		c.totalAggBuf[tk] = tv
+	}
+}
+
 // emitBilling emits the four billing tiers from the aggregated maps —
 // bytes and packets per tier, labels per docs/architecture/metrics.md.
 // ZoneCode.String / Direction.String return constant strings for all
@@ -391,6 +418,8 @@ func (c *Collector) emitHealth(ch chan<- prometheus.Metric) {
 		c.tenantSettledDesc, prometheus.GaugeValue, float64(len(c.tenantSettledBuf)))
 	ch <- prometheus.MustNewConstMetric(
 		c.serverSettledDesc, prometheus.GaugeValue, float64(len(c.serverSettledBuf)))
+	ch <- prometheus.MustNewConstMetric(
+		c.totalSettledDesc, prometheus.GaugeValue, float64(len(c.totalSettledBuf)))
 	ch <- prometheus.MustNewConstMetric(
 		c.scrapeErrorsDesc, prometheus.CounterValue, float64(c.scraper.ErrorCount()))
 	ch <- prometheus.MustNewConstMetric(

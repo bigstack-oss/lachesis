@@ -67,7 +67,7 @@ func seedSnapshots(t *testing.T, path string) {
 		},
 	}}
 	for i := 0; i < 2; i++ {
-		if err := wal.Save(path, "", records, nil, nil, nil); err != nil {
+		if err := wal.Save(path, "", records, nil, nil, nil, nil); err != nil {
 			t.Fatalf("seed save %d: %v", i+1, err)
 		}
 	}
