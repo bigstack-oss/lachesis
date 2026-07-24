@@ -1466,3 +1466,45 @@ func TestIngressFlowStep_MissingFIP(t *testing.T) {
 		t.Fatalf("want missing-FIP error, got %v", err)
 	}
 }
+
+func TestZoneGrowthStep(t *testing.T) {
+	// The loop timing isn't under test — kill the settle and shrink the
+	// poll so cases resolve in milliseconds.
+	defer func(s, p time.Duration) { zoneGrowthSettle, sweepPollInterval = s, p }(zoneGrowthSettle, sweepPollInterval)
+	zoneGrowthSettle, sweepPollInterval = 0, time.Millisecond
+
+	k := tuple{"u1", "external", "tx"}
+	cases := []struct {
+		name     string
+		min, max int64
+		current  float64
+		wantPass bool
+	}{
+		{"within [min,max]", 1 << 20, 3 << 20, 2 << 20, true},
+		{"below min", 1 << 20, 0, 512 << 10, false},
+		{"min met, no ceiling", 1 << 20, 0, 2 << 20, true},
+		{"pure upper bound satisfied", 0, 256 << 10, 100 << 10, true},
+		{"pure upper bound exceeded", 0, 256 << 10, 1 << 20, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &StepEnv{
+				Config:   testConfig(),
+				State:    &RunState{},
+				Metrics:  driveMetrics{bytes: []BytesSample{{TenantID: "u1", Zone: "external", Direction: "tx", Value: tc.current}}},
+				Log:      slog.New(slog.DiscardHandler),
+				Report:   &AssertReport{OK: true},
+				captured: map[tuple]float64{k: 0},
+			}
+			step := ZoneGrowthStep{Tenant: "u1", Zone: "external", Direction: "tx",
+				MinBytes: tc.min, MaxBytes: tc.max, Timeout: 10 * time.Millisecond}
+			if err := step.Run(context.Background(), env); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			row := env.Report.Rows[len(env.Report.Rows)-1]
+			if row.Pass != tc.wantPass {
+				t.Errorf("Pass = %v, want %v (delta %.0f, bounds [%d,%d])", row.Pass, tc.wantPass, row.Delta, tc.min, tc.max)
+			}
+		})
+	}
+}

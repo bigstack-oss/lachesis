@@ -1785,6 +1785,13 @@ func (s SetNICMACStep) Run(ctx context.Context, env *StepEnv) error {
 	return nil
 }
 
+// zoneGrowthSettle is how long a pure upper-bound [ZoneGrowthStep]
+// (MinBytes 0) waits for the drive to drain before its single read —
+// bytes surface a kernel drain (scrape interval) after traffic, so a
+// too-early read could let a late-arriving mis-attribution slip under
+// the ceiling. A var, not a const, so tests shrink it to zero.
+var zoneGrowthSettle = 15 * time.Second
+
 // ZoneGrowthStep asserts one (tenant, zone, DIRECTION) tuple's growth
 // since the most recent [CaptureStep] sits inside [MinBytes, MaxBytes].
 // It refines [MaxGrowthStep] two ways the forged-MAC scenarios need:
@@ -1794,6 +1801,11 @@ func (s SetNICMACStep) Run(ctx context.Context, env *StepEnv) error {
 // next kernel drain, so with MinBytes set the step polls until the
 // floor is met or Timeout (default [DefaultPortSeriesTimeout]) records
 // the failing row. MaxBytes 0 means unbounded above.
+//
+// A pure upper-bound check (MinBytes 0) has no floor to poll toward, so
+// it waits [zoneGrowthSettle] for the drive to drain before its single
+// read — otherwise it would depend on a preceding MinBytes step having
+// polled long enough to drain the traffic first.
 type ZoneGrowthStep struct {
 	Tenant    string // DSL project name, or a literal label like "unknown"
 	Zone      string
@@ -1812,6 +1824,15 @@ func (s ZoneGrowthStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultPortSeriesTimeout
+	}
+	// Pure upper bound: no floor to poll toward, so settle first so the
+	// drive has drained before the single read (see [zoneGrowthSettle]).
+	if s.MinBytes == 0 && zoneGrowthSettle > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(zoneGrowthSettle):
+		}
 	}
 	deadline := time.Now().Add(timeout)
 	var delta float64
