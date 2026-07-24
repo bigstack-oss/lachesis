@@ -6,7 +6,7 @@ import (
 )
 
 // spoofedMACUntracked pins the classifier's L2 trust boundary
-// (docs/architecture/edge-cases.md case 10): frames sourced from a MAC
+// (docs/architecture/edge-cases.md#tier-3--misclassification case 10): frames sourced from a MAC
 // Neutron never allocated must land in the unknown/miss bucket and
 // bill no real tenant. It is also the first scenario to drive the miss
 // zone deliberately.
