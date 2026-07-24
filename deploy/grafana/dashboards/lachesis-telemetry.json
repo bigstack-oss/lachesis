@@ -34,7 +34,7 @@
     },
     {
       "id": 1,
-      "title": "Agent Up",
+      "title": "Agents Up",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -49,7 +49,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{instance=~\"$node\",job=\"lachesis-agent\"}",
+          "expr": "count(up{job=\"lachesis-agent\",instance=~\"$node\"} == 1) or vector(0)",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -73,42 +73,24 @@
       },
       "fieldConfig": {
         "defaults": {
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "DOWN",
-                  "index": 0
-                },
-                "1": {
-                  "text": "UP",
-                  "index": 1
-                }
-              }
-            }
-          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
                 "color": "green",
-                "value": 1
+                "value": null
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
-      "description": "Prometheus scrape health of the agent's /metrics endpoint."
+      "description": "Number of agents whose /metrics scrape is healthy across the selected nodes. Per-node up/down is in the Fleet detail table below."
     },
     {
       "id": 2,
-      "title": "Tracked Flows",
+      "title": "Tracked Flows (\u03a3)",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -123,7 +105,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_state_flows{instance=~\"$node\"}",
+          "expr": "sum(lachesis_state_flows{instance=~\"$node\"})",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -153,25 +135,17 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 50000
-              },
-              {
-                "color": "red",
-                "value": 65000
               }
             ]
           },
           "unit": "short"
         }
       },
-      "description": "Distinct flow keys tracked in GlobalState. Thresholds mark the telemetry_map sizing budget (yellow 50k, red 65k)."
+      "description": "Live flow rows tracked in GlobalState, summed across the selected nodes. Per-node values are in the Fleet detail table."
     },
     {
       "id": 3,
-      "title": "Attached Interfaces",
+      "title": "Attached Interfaces (\u03a3)",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -186,7 +160,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_attached_interfaces{instance=~\"$node\"}",
+          "expr": "sum(lachesis_attached_interfaces{instance=~\"$node\"})",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -222,11 +196,11 @@
           "unit": "short"
         }
       },
-      "description": "Interfaces currently carrying the TC telemetry programs (netlink Interface Registry size)."
+      "description": "TC-attached interfaces, summed across the selected nodes. Per-node values are in the Fleet detail table."
     },
     {
       "id": 4,
-      "title": "Neutron Sync Age",
+      "title": "Neutron Sync Age (max)",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -241,7 +215,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_neutron_sync_age_seconds{instance=~\"$node\"}",
+          "expr": "max(lachesis_neutron_sync_age_seconds{instance=~\"$node\"})",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -301,11 +275,11 @@
         },
         "overrides": []
       },
-      "description": "Seconds since the last successful Neutron cold-start or reconcile. \"never synced\" means the agent is running without tenant metadata."
+      "description": "Worst (oldest) Neutron sync age across the selected nodes. A single stale node trips this."
     },
     {
       "id": 5,
-      "title": "Last Scrape Age",
+      "title": "Last Scrape Age (max)",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -320,7 +294,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - lachesis_scraper_last_success_unix_seconds{instance=~\"$node\"}",
+          "expr": "max(time() - lachesis_scraper_last_success_unix_seconds{instance=~\"$node\"})",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -364,11 +338,11 @@
           "unit": "s"
         }
       },
-      "description": "Seconds since the scraper last drained the kernel BPF map successfully. Should hover near the 10s scrape interval."
+      "description": "Worst (oldest) time-since-successful-scrape across the selected nodes."
     },
     {
       "id": 6,
-      "title": "telemetry_map fill",
+      "title": "telemetry_map fill (max)",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -383,7 +357,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_bpf_map_current_entries{instance=~\"$node\",map=\"telemetry_map\"} / lachesis_bpf_map_max_entries{instance=~\"$node\",map=\"telemetry_map\"}",
+          "expr": "max(lachesis_bpf_map_current_entries{instance=~\"$node\",map=\"telemetry_map\"} / lachesis_bpf_map_max_entries{instance=~\"$node\",map=\"telemetry_map\"})",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -426,7 +400,353 @@
           }
         }
       },
-      "description": "Kernel flow-map occupancy (current/max entries). Pressure-relief GC triggers at 80%."
+      "description": "Worst telemetry_map fill ratio across the selected nodes (GC pressure-relief triggers at 0.8)."
+    },
+    {
+      "id": 120,
+      "type": "row",
+      "title": "Fleet detail (per node)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 121,
+      "title": "Per-node health",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"lachesis-agent\",instance=~\"$node\"}",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "lachesis_state_flows{instance=~\"$node\"}",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "lachesis_attached_interfaces{instance=~\"$node\"}",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "lachesis_neutron_sync_age_seconds{instance=~\"$node\"}",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "E",
+          "expr": "time() - lachesis_scraper_last_success_unix_seconds{instance=~\"$node\"}",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "F",
+          "expr": "lachesis_bpf_map_current_entries{instance=~\"$node\",map=\"telemetry_map\"} / lachesis_bpf_map_max_entries{instance=~\"$node\",map=\"telemetry_map\"}",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "instance",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "pattern": "^(instance|Value #[A-Z])$"
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "instance": "Node",
+              "Value #A": "Up",
+              "Value #B": "Flows",
+              "Value #C": "Ifaces",
+              "Value #D": "Neutron sync age",
+              "Value #E": "Last scrape age",
+              "Value #F": "telemetry_map fill"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true,
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Up"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "UP",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom",
+                "value": {
+                  "cellOptions": {
+                    "type": "color-background",
+                    "mode": "basic"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Flows"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ifaces"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Neutron sync age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 60
+                    },
+                    {
+                      "color": "red",
+                      "value": 300
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom",
+                "value": {
+                  "cellOptions": {
+                    "type": "color-background",
+                    "mode": "basic"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last scrape age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 30
+                    },
+                    {
+                      "color": "red",
+                      "value": 120
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom",
+                "value": {
+                  "cellOptions": {
+                    "type": "color-background",
+                    "mode": "basic"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "telemetry_map fill"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.7
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.8
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom",
+                "value": {
+                  "cellOptions": {
+                    "type": "color-background",
+                    "mode": "basic"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Up",
+            "desc": false
+          }
+        ]
+      },
+      "description": "One row per node: scrape health, tracked flows, attached interfaces, Neutron sync age, last scrape age, and telemetry_map fill. Down / stale nodes sort to the top. Replaces the per-node stat tiles that became unreadable past a handful of nodes."
     },
     {
       "id": 110,
@@ -435,7 +755,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 5,
+        "y": 15,
         "w": 24,
         "h": 1
       },
@@ -452,7 +772,7 @@
       "description": "Share of observed bytes that cannot be attributed to any tenant (miss zone or unknown tenant) \u2014 the fraction of traffic billing cannot invoice. Target: below 0.1%. Platform-L2 multicast (mDNS/SSDP on provider-attached taps) is classified into the never-billed multicast zone and excluded from this numerator; it still appears in the denominator and in the Zone breakdown.",
       "gridPos": {
         "x": 0,
-        "y": 6,
+        "y": 16,
         "w": 6,
         "h": 6
       },
@@ -519,7 +839,7 @@
       "description": "The unbillable streams behind the ratio: bytes whose destination could not be classified (miss) and bytes whose VM MAC is not known to the metadata layer (unknown, excluding multicast). Persistent flow in these two means lost revenue \u2014 drill down at /debug/anomalies and /debug/lookup. The multicast series is platform-L2 chatter (mDNS/SSDP): counted, never billed, and deliberately excluded from the SLO numerator.",
       "gridPos": {
         "x": 6,
-        "y": 6,
+        "y": 16,
         "w": 9,
         "h": 6
       },
@@ -589,7 +909,7 @@
       "description": "How often flow records are folded into the per-tenant settled totals \u2014 this happens when a VM is deleted or its attribution changes. A burst here is normal after teardown waves; it also means per-server series just ended on this node.",
       "gridPos": {
         "x": 15,
-        "y": 6,
+        "y": 16,
         "w": 9,
         "h": 6
       },
@@ -637,7 +957,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 12,
+        "y": 22,
         "w": 24,
         "h": 1
       },
@@ -653,7 +973,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 13,
+        "y": 23,
         "w": 12,
         "h": 8
       },
@@ -714,7 +1034,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 13,
+        "y": 23,
         "w": 12,
         "h": 8
       },
@@ -772,7 +1092,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 21,
+        "y": 31,
         "w": 24,
         "h": 1
       },
@@ -788,7 +1108,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 22,
+        "y": 32,
         "w": 12,
         "h": 8
       },
@@ -857,7 +1177,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 22,
+        "y": 32,
         "w": 12,
         "h": 8
       },
@@ -911,7 +1231,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 40,
         "w": 24,
         "h": 1
       },
@@ -927,7 +1247,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 41,
         "w": 8,
         "h": 8
       },
@@ -975,7 +1295,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 31,
+        "y": 41,
         "w": 8,
         "h": 8
       },
@@ -1042,7 +1362,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 31,
+        "y": 41,
         "w": 8,
         "h": 8
       },
@@ -1096,7 +1416,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 49,
         "w": 24,
         "h": 1
       },
@@ -1112,7 +1432,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 50,
         "w": 12,
         "h": 8
       },
@@ -1160,7 +1480,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 40,
+        "y": 50,
         "w": 6,
         "h": 8
       },
@@ -1217,7 +1537,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 40,
+        "y": 50,
         "w": 6,
         "h": 8
       },
@@ -1269,7 +1589,7 @@
       "description": "lachesis_neutron_anomalies from the last sync/reconcile pass. Gauge semantics: a fixed misconfiguration drops back to 0. multi_external_path = VMs whose external_network attribution is a deterministic pick among several candidates (billing approximate; drill down at /debug/anomalies).",
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 58,
         "w": 12,
         "h": 8
       },
@@ -1316,7 +1636,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 56,
+        "y": 66,
         "w": 24,
         "h": 1
       },
@@ -1332,7 +1652,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 57,
+        "y": 67,
         "w": 12,
         "h": 8
       },
@@ -1418,7 +1738,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 57,
+        "y": 67,
         "w": 12,
         "h": 8
       },
@@ -1472,7 +1792,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 75,
         "w": 24,
         "h": 1
       },
@@ -1488,7 +1808,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 76,
         "w": 8,
         "h": 8
       },
@@ -1536,7 +1856,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 66,
+        "y": 76,
         "w": 8,
         "h": 8
       },
@@ -1584,7 +1904,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 66,
+        "y": 76,
         "w": 8,
         "h": 8
       },
@@ -1640,7 +1960,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 74,
+        "y": 84,
         "w": 24,
         "h": 1
       },
@@ -1656,7 +1976,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 75,
+        "y": 85,
         "w": 8,
         "h": 8
       },
@@ -1729,7 +2049,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 75,
+        "y": 85,
         "w": 8,
         "h": 8
       },
@@ -1803,7 +2123,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 75,
+        "y": 85,
         "w": 8,
         "h": 8
       },
@@ -1865,7 +2185,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 83,
+        "y": 93,
         "w": 24,
         "h": 1
       },
@@ -1881,7 +2201,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 84,
+        "y": 94,
         "w": 8,
         "h": 8
       },
@@ -1937,7 +2257,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 84,
+        "y": 94,
         "w": 8,
         "h": 8
       },
@@ -1993,7 +2313,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 84,
+        "y": 94,
         "w": 8,
         "h": 8
       },
@@ -2038,6 +2358,340 @@
         }
       },
       "description": "Periodic + Kafka-kicked Neutron reconcile passes by outcome: ok = applied & committed; sync_error = Neutron fetch failed; apply_error = a kernel write failed and state was not committed (retried next pass)."
+    },
+    {
+      "id": 130,
+      "type": "row",
+      "title": "Agent resource usage",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 102,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 131,
+      "title": "Fleet CPU (\u03a3 cores)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 103,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(process_cpu_seconds_total{job=\"lachesis-agent\",instance=~\"$node\"}[5m]))",
+          "legendFormat": "fleet cores",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": true
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Aggregate CPU the telemetry agent consumes across the selected nodes (cores). Per-node detail is in the table below."
+    },
+    {
+      "id": 132,
+      "title": "Fleet memory (\u03a3 resident)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 103,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(process_resident_memory_bytes{job=\"lachesis-agent\",instance=~\"$node\"})",
+          "legendFormat": "fleet RSS",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": true
+          },
+          "unit": "bytes"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Aggregate resident memory (RSS) of the agent across the selected nodes."
+    },
+    {
+      "id": 133,
+      "title": "Goroutines (max across nodes)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 103,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(go_goroutines{job=\"lachesis-agent\",instance=~\"$node\"})",
+          "legendFormat": "max goroutines",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": true
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        }
+      },
+      "description": "Worst goroutine count across the selected nodes \u2014 a steady climb signals a leak in the scrape loop or a worker."
+    },
+    {
+      "id": 134,
+      "title": "Per-node agent resources",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 111,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(process_cpu_seconds_total{job=\"lachesis-agent\",instance=~\"$node\"}[5m])",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "process_resident_memory_bytes{job=\"lachesis-agent\",instance=~\"$node\"}",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "go_goroutines{job=\"lachesis-agent\",instance=~\"$node\"}",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "process_open_fds{job=\"lachesis-agent\",instance=~\"$node\"}",
+          "instant": true,
+          "format": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "instance",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "pattern": "^(instance|Value #[A-Z])$"
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "instance": "Node",
+              "Value #A": "CPU cores",
+              "Value #B": "RSS",
+              "Value #C": "Goroutines",
+              "Value #D": "Open FDs"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true,
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU cores"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RSS"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Goroutines"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Open FDs"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "CPU cores",
+            "desc": true
+          }
+        ]
+      },
+      "description": "One row per node: agent CPU (cores), resident memory, goroutine count, and open file descriptors. Top CPU consumers sort first. process_* is read from /proc on the node; go_* from the Go runtime."
     }
   ],
   "refresh": "10s",
