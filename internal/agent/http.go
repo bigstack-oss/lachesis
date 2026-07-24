@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/bigstack-oss/lachesis/internal/debug"
@@ -74,6 +75,24 @@ func (a *Agent) openHTTP(opts Options) error {
 // and subsystem health on one wire.
 func (a *Agent) buildRegistry() (*prometheus.Registry, error) {
 	reg := prometheus.NewRegistry()
+
+	// A custom registry ships empty — unlike the default global one it
+	// carries no built-in collectors — so the agent's own resource
+	// footprint (process_* CPU/RSS/fds, go_* goroutines/heap/GC) is
+	// absent from /metrics until added here. Bind these directly rather
+	// than through registrations(): their names are not lachesis_-prefixed
+	// by design, and the naming guard (metrics_convention_test.go) walks
+	// only the registrations() bundles, so keeping them out of that path
+	// exposes the standard series without tripping the prefix rule.
+	for _, c := range []prometheus.Collector{
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		collectors.NewGoCollector(),
+	} {
+		if err := reg.Register(c); err != nil {
+			return nil, fmt.Errorf("agent: register runtime collector: %w", err)
+		}
+	}
+
 	if err := reg.Register(a.collector); err != nil {
 		return nil, fmt.Errorf("agent: register collector: %w", err)
 	}
