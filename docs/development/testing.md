@@ -143,6 +143,8 @@ task loadtest                                           # default: 15s window, 4
 
 **How to run.** Not part of `go test ./...` — it is an operator binary, not a tagged test, and needs a live cluster. `go test` covers the library (config, name-mangling, the snapshot→resource translation, metrics parsing, the attach gate) with the OpenStack / SSH / metrics IO behind seam interfaces. Run live with `scenariotest preflight --config <cfg> <scenario>` then `scenariotest run --config <cfg> <scenario>` against a staging cluster.
 
+**Known-infeasible at this tier.** The resolver's Step-C **ambiguity** fallback (duplicate destination CIDR with two owners on one router → `lachesis_neutron_anomalies{class="ambiguity"}`) cannot be produced through the Neutron API: any two prefixes that both contain a destination necessarily overlap each other, and Neutron rejects attaching overlapping-CIDR subnets to one router (`Bad router request: Cidr … overlaps with cidr …` — verified live on OVN/Yoga, 2026-07-24, lachesis#171). The condition is reachable only from a stale or corrupted snapshot, which no API-driven scenario can stage; the **unit tier owns it** (`internal/neutron/resolve_test.go`'s ambiguity cases build the snapshot directly).
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push to `develop`/`main` and on every PR:

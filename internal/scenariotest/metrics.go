@@ -305,11 +305,19 @@ func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) 
 			s.Node = a.Host
 			snap.PortBytes = append(snap.PortBytes, s)
 		}
+		// Anomaly counts are a topology-global fact: every agent derives
+		// them from the same Neutron snapshot, so all agents report the
+		// same value. Take the max across agents (not the sum, which would
+		// multiply the count by the cluster size), so an anomaly bound
+		// stays cluster-size-independent — and a lagging agent that hasn't
+		// resynced yet reads as the lower value, letting the poll wait.
 		for class, v := range r.Anomalies {
 			if snap.Anomalies == nil {
 				snap.Anomalies = map[string]float64{}
 			}
-			snap.Anomalies[class] += v
+			if v > snap.Anomalies[class] {
+				snap.Anomalies[class] = v
+			}
 		}
 	}
 	return snap, nil
