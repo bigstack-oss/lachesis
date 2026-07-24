@@ -18,10 +18,10 @@ the registry — a metric that drifts from this catalog fails CI by name.
 
 | Metric | Type | Labels | Series lifecycle |
 |---|---|---|---|
-| `lachesis_bytes_total` | counter | `zone, external_network, direction` | **total layer** — Σ over all tenants (incl. `unknown`) of live + settled; immortal |
+| `lachesis_bytes_total` | counter | `zone, external_network, direction` | **total layer** — Σ over all tenants (incl. `unknown`) of live + settled, plus total-settled (dead projects' history); immortal |
 | `lachesis_packets_total` | counter | `zone, external_network, direction` | **total layer** — packets (GSO/GRO superpackets) companion; diagnostic, never billed |
-| `lachesis_tenant_bytes_total` | counter | `tenant_id, zone, external_network, direction` | **tenant layer** — live + tenant-settled; immortal (project lifetime) |
-| `lachesis_tenant_packets_total` | counter | `tenant_id, zone, external_network, direction` | **tenant layer** — live + tenant-settled; immortal (project lifetime) |
+| `lachesis_tenant_bytes_total` | counter | `tenant_id, zone, external_network, direction` | **tenant layer** — live + tenant-settled; monotone for exactly the project's lifetime, ends when the project leaves the Keystone list (`unknown` never dies; [billing.md](./billing.md)) |
+| `lachesis_tenant_packets_total` | counter | `tenant_id, zone, external_network, direction` | **tenant layer** — packets companion, same lifetime as the bytes family; diagnostic, never billed |
 | `lachesis_server_bytes_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **server layer** — Σ live rows + server-settled; monotone for exactly the server's lifetime (flat-lines while portless), ends when the server leaves the Nova list ([billing.md](./billing.md)) |
 | `lachesis_server_packets_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **server layer** — packets companion, same lifetime as the bytes family; diagnostic, never billed |
 | `lachesis_port_bytes_total` | counter | `server_id, port_id, tenant_id, zone, external_network, direction` | **port layer** — the mortal leaf: live rows of one port; stops at port delete, restarts fresh on detach→reattach (drill-down view; billing exactness lives one layer up) |
@@ -109,6 +109,7 @@ or sum by (tenant_id) (rate(lachesis_tenant_bytes_total[1m]))
 | `lachesis_state_flows` | gauge | — | distinct flow keys in GlobalState (Collector) |
 | `lachesis_state_tenant_settled_tuples` | gauge | — | distinct buckets in the settled-bytes accumulator ([data-structures.md](./data-structures.md#settled-bytes)) |
 | `lachesis_state_server_settled_tuples` | gauge | — | distinct buckets in the server-settled accumulator — the server layer's fold absorber, released on Nova-list absence ([data-structures.md](./data-structures.md#settled-bytes)) |
+| `lachesis_state_total_settled_tuples` | gauge | — | distinct buckets in the total-settled accumulator — the total layer's fold absorber, credited when a deleted project's tenant-settled bucket is released; never pruned ([data-structures.md](./data-structures.md#settled-bytes)) |
 | `lachesis_scraper_errors_total` | counter | — | failed BPF-map drain attempts (Collector, from scraper) |
 | `lachesis_scraper_last_success_unix_seconds` | gauge | — | most recent successful drain; 0 if never (Collector, from scraper) |
 | `lachesis_collect_duration_seconds` | histogram | — | one Collect pass: snapshot + aggregate + emit. Buckets 1ms..1s |

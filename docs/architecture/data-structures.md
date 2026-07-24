@@ -331,6 +331,14 @@ GlobalState therefore carries a third map — the **server-settled** accumulator
 
 Server-settled buckets round-trip the WAL (additive schema v4) and restore before the scraper starts; Collect and the WAL snapshot read live + settled + server-settled under ONE lock — a torn snapshot would over- or under-bill a fold for one scrape (or permanently, on crash-restore).
 
+### Tenant release and total-settled (the tenant lifecycle, the total layer's absorber)
+
+The tenant layer gets the same lifecycle rule as the server layer, one level up: the reconciler, after each successful sync, calls `PruneTenantSettled(alive)` with the Keystone project list the sync already fetches — tenant-settled buckets whose project left the list are released, ending the project's series. The Keystone fetch is sync-fatal (a failure aborts the pass before Commit, so the prune never sees bad data); an empty list is skipped defensively anyway, and `tenant_id="unknown"` joins the alive set explicitly — the unknown pseudo-tenant is not a Keystone project and never dies.
+
+Unlike the server prune, the tenant prune is a **settle-to-parent, not a plain delete**. The total layer (`lachesis_bytes_total`) is *derived* — Collect sums the finished tenant tier — so a dead project's contribution lives entirely in the bucket being released, and deleting it would dip the immortal total series by the project's lifetime bytes. GlobalState therefore carries a fourth map — the **total-settled** accumulator, keyed `(zone, external_network, direction)`, exactly the total family's label tuple — and `PruneTenantSettled` folds each dying bucket into it in the same write-lock critical section it deletes from. Collect adds total-settled on top of the derived sum. Never pruned: the total layer has no owner to die with, and cardinality is bounded by construction (zones × external networks × 2), watched by `lachesis_state_total_settled_tuples`.
+
+Total-settled buckets round-trip the WAL (additive schema v5) under the same ONE-lock snapshot discipline as the other accumulators.
+
 ---
 
 Next: [packet-classification.md](./packet-classification.md) →
