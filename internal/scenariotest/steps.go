@@ -97,10 +97,11 @@ type StepEnv struct {
 	// counterpart; settledBase is the summed settled-flows counter at
 	// the same instant. Monotone/growth assertions and the sweep wait
 	// diff against them.
-	captured        map[tuple]float64
-	capturedServers map[serverTuple]float64
-	settledBase     float64
-	ghostsBase      float64
+	captured          map[tuple]float64
+	capturedServers   map[serverTuple]float64
+	settledBase       float64
+	settledTuplesBase float64
+	ghostsBase        float64
 	// macs records each deleted VM's MAC ([DeleteVMStep] captures it
 	// just before the delete) for a later BootVMStep's MACFrom.
 	macs map[string]string
@@ -296,10 +297,11 @@ func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
 	env.captured = sumByTuple(snap.Bytes)
 	env.capturedServers = sumByServerTuple(snap.Servers)
 	env.settledBase = snap.SettledFlows
+	env.settledTuplesBase = snap.SettledTuples
 	env.ghostsBase = snap.LingeringGhosts
 	env.Log.Info("capture", "tuples", len(env.captured),
 		"server_tuples", len(env.capturedServers), "settled_flows", env.settledBase,
-		"lingering_ghosts", env.ghostsBase)
+		"settled_tuples", env.settledTuplesBase, "lingering_ghosts", env.ghostsBase)
 	return nil
 }
 
@@ -779,6 +781,122 @@ func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	return nil
 }
 
+// routerRef finds a router's run-state entry (live id + project) by
+// its DSL id — shared by the Neutron-mutation steps.
+func routerRef(env *StepEnv, dsl string) (ResourceRef, error) {
+	for _, r := range env.State.Routers {
+		if r.DSLID == dsl {
+			return r, nil
+		}
+	}
+	return ResourceRef{}, fmt.Errorf("run-state has no router %q", dsl)
+}
+
+// SetRouterRoutesStep replaces a router's static (extra) routes mid-run
+// via the Neutron API — the live route change behind the
+// extraroute-mutation scenario. The agent's next reconcile rebuilds the
+// trie insert-then-delete (docs/architecture/trie-construction.md), so
+// new traffic reclassifies with no MISS window. Routes wholly replaces
+// the router's route set (an empty slice clears them).
+type SetRouterRoutesStep struct {
+	Router string
+	Routes []RouteSpec
+}
+
+func (SetRouterRoutesStep) Kind() string { return "set-router-routes" }
+
+func (s SetRouterRoutesStep) Run(ctx context.Context, env *StepEnv) error {
+	ref, err := routerRef(env, s.Router)
+	if err != nil {
+		return err
+	}
+	if err := env.Cloud.SetRouterRoutes(ctx, ref.ProjectID, ref.ID, s.Routes); err != nil {
+		return err
+	}
+	env.Log.Info("set-router-routes", "router", s.Router, "routes", len(s.Routes))
+	return nil
+}
+
+// SetRouterGatewayStep re-points a router's external gateway to another
+// DSL external network mid-run — the re-gateway mutation. The agent's
+// reconcile rebuilds the router-interface-MAC → external-network map;
+// every flow riding a changed router MAC folds under its OLD label
+// first (reconcile/routers.go [state.SettleRebase]), keeping the
+// external_network series monotone across the move. ExternalNet is a
+// DSL external-network id resolved to its live network via the
+// run-state (a [Scenario.CreateExternalNets] marker).
+type SetRouterGatewayStep struct {
+	Router      string
+	ExternalNet string
+}
+
+func (SetRouterGatewayStep) Kind() string { return "set-router-gateway" }
+
+func (s SetRouterGatewayStep) Run(ctx context.Context, env *StepEnv) error {
+	ref, err := routerRef(env, s.Router)
+	if err != nil {
+		return err
+	}
+	netID := liveID(env.State.Networks, s.ExternalNet)
+	if netID == "" {
+		return fmt.Errorf("set-router-gateway: run-state has no live network for %q (a CreateExternalNets marker?)", s.ExternalNet)
+	}
+	if err := env.Cloud.SetRouterGateway(ctx, ref.ProjectID, ref.ID, netID); err != nil {
+		return err
+	}
+	env.Log.Info("set-router-gateway", "router", s.Router, "external_net", s.ExternalNet)
+	return nil
+}
+
+// SettledTuplesGrewStep asserts the settled-accumulator tuple gauge
+// (lachesis_state_settled_tuples) rose by at least Min since the most
+// recent [CaptureStep] — the live proof that a fold actually fired.
+// It polls (folds land a reconcile pass after the mutation, not
+// instantly) until the floor is met or Timeout (default
+// [DefaultSweepTimeout]) records a failing row. Unlike the GC-only
+// settled_flows counter, this gauge also moves on a reconcile-driven
+// [state.SettleRebase], so it discriminates "the attribution change
+// folded the port's flows" from "nothing happened".
+type SettledTuplesGrewStep struct {
+	Min     int64
+	Timeout time.Duration
+	Note    string
+}
+
+func (SettledTuplesGrewStep) Kind() string { return "assert-settled-tuples-grew" }
+
+func (SettledTuplesGrewStep) requiredMetrics() []string { return []string{metricTenantSettledTuples} }
+
+func (s SettledTuplesGrewStep) Run(ctx context.Context, env *StepEnv) error {
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultSweepTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	var delta float64
+	for {
+		snap, err := env.scrape(ctx)
+		if err != nil {
+			return err
+		}
+		delta = snap.SettledTuples - env.settledTuplesBase
+		if delta >= float64(s.Min) || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sweepPollInterval):
+		}
+	}
+	env.addRow(AssertRow{
+		Tenant: "settled-tuples", Zone: "-", Direction: "-",
+		Baseline: env.settledTuplesBase, Current: env.settledTuplesBase + delta, Delta: delta,
+		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
+	})
+	return nil
+}
+
 // AddRouteStep adds an in-guest static route on a VM (`sudo ip route
 // add CIDR via Via`) — how a scenario steers traffic through a
 // specific router when the VM's default route points elsewhere (the
@@ -887,10 +1005,16 @@ func (s AssertFlowPeerStep) Run(ctx context.Context, env *StepEnv) error {
 
 // DeleteFIPStep removes the floating IP(s) a prior [AssociateFIPStep]
 // bound to VM from the named DSL network. Provider-net FIPs (Network
-// "" in the run-state — the SSH path) are never touched.
+// "" in the run-state — the SSH path) are never touched — unless
+// Provider is set, which targets EXACTLY that SSH FIP: the
+// router-regateway scenario frees it so Neutron will let the router's
+// external gateway change (RouterExternalGatewayInUseByFloatingIp
+// otherwise). Deleting it sacrifices SSH, so only steps that drive
+// nothing afterward use Provider.
 type DeleteFIPStep struct {
-	VM      string
-	Network string
+	VM       string
+	Network  string
+	Provider bool
 }
 
 func (DeleteFIPStep) Kind() string { return "delete-fip" }
@@ -899,7 +1023,11 @@ func (s DeleteFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	deleted := 0
 	kept := make([]FIPRef, 0, len(env.State.FIPs))
 	for _, f := range env.State.FIPs {
-		if f.VMID != s.VM || f.Network != s.Network || f.Network == "" {
+		match := f.VMID == s.VM && f.Network == s.Network
+		if s.Provider {
+			match = f.VMID == s.VM && f.Network == "" // the provider SSH FIP
+		}
+		if !match {
 			kept = append(kept, f)
 			continue
 		}
@@ -907,10 +1035,10 @@ func (s DeleteFIPStep) Run(ctx context.Context, env *StepEnv) error {
 			return err
 		}
 		deleted++
-		env.Log.Info("delete-fip: gone", "addr", f.Address, "network", s.Network)
+		env.Log.Info("delete-fip: gone", "addr", f.Address, "network", f.Network, "provider", s.Provider)
 	}
 	if deleted == 0 {
-		return fmt.Errorf("run-state has no FIP for VM %q from network %q", s.VM, s.Network)
+		return fmt.Errorf("run-state has no matching FIP for VM %q (network %q, provider %v)", s.VM, s.Network, s.Provider)
 	}
 	// Drop the deleted refs so `down` doesn't re-delete them — the
 	// run-state stays a truthful inventory of what is still live.

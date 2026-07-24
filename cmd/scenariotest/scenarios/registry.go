@@ -49,6 +49,8 @@ func All() []*scenariotest.Scenario {
 		maxHopsExceeded(),
 		spoofedMACUntracked(),
 		vrrpVMACLeak(),
+		extrarouteMutation(),
+		routerRegateway(),
 	}
 }
 
