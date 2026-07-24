@@ -68,7 +68,7 @@ func TestReconcileRouterMACs_GatewayChangeSettlesOldLabel(t *testing.T) {
 		t.Fatalf("changed MACs = %d, want 1", n)
 	}
 
-	flows, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
+	flows, settled, _, _ := st.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(flows) != 1 {
 		t.Fatalf("flows = %+v, want the row to SURVIVE (SettleRebase)", flows)
 	}
@@ -102,7 +102,7 @@ func TestReconcileRouterMACs_NoChangeNoFold(t *testing.T) {
 	if n := r.reconcileRouterMACs(&snap); n != 0 {
 		t.Fatalf("changed MACs = %d, want 0", n)
 	}
-	if _, settled, _ := st.SnapshotWithSettled(nil, nil, nil); len(settled) != 0 {
+	if _, settled, _, _ := st.SnapshotWithSettled(nil, nil, nil, nil); len(settled) != 0 {
 		t.Errorf("no-change pass folded rows: %+v", settled)
 	}
 }
@@ -130,7 +130,7 @@ func TestReconcileRouterMACs_RemovalFoldsAndForgets(t *testing.T) {
 	if n := r.reconcileRouterMACs(&snap); n != 1 {
 		t.Fatalf("changed MACs = %d, want 1", n)
 	}
-	_, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
+	_, settled, _, _ := st.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(settled) != 1 || settled[0].Key.ExtNet != "public-1" || settled[0].Bytes != 500 {
 		t.Fatalf("settled = %+v, want 500 bytes under public-1", settled)
 	}
@@ -163,7 +163,7 @@ func TestReconcileRouterMACs_NonExternalAndForeignRowsUntouched(t *testing.T) {
 	snap := routerSnap(rtrMAC, "net-pub2", "public-2")
 	r.reconcileRouterMACs(&snap)
 
-	flows, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
+	flows, settled, _, _ := st.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(settled) != 0 {
 		t.Errorf("folded rows that don't ride the changed router: %+v", settled)
 	}

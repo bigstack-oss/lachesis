@@ -179,7 +179,7 @@ func TestSweep_SettlesFlowsToTenantBeforeUserspaceDelete(t *testing.T) {
 	g := New(Options{Meta: meta, Evictor: ev, Settler: st, Metrics: mx, Tunables: tunables.New(tunables.Values{GhostSweepInterval: time.Hour})})
 	g.sweep(now)
 
-	flows, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
+	flows, settled, _, _ := st.SnapshotWithSettled(nil, nil, nil, nil)
 	if len(flows) != 1 || flows[0].Key != liveKey {
 		t.Fatalf("flows after sweep = %+v, want only the live VM's row", flows)
 	}
@@ -383,7 +383,7 @@ func TestSweep_SettlesUnderPerFlowRouterLabel(t *testing.T) {
 	})
 	g.sweep(now)
 
-	_, settled, _ := st.SnapshotWithSettled(nil, nil, nil)
+	_, settled, _, _ := st.SnapshotWithSettled(nil, nil, nil, nil)
 	want := state.TenantSettledKey{Tenant: "tenant-a", ExtNet: "public-1", Zone: bpf.ZoneExternal, Dir: bpf.DirectionIngress}
 	if len(settled) != 1 || settled[0].Key != want || settled[0].Bytes != 900 {
 		t.Fatalf("settled = %+v, want 900 bytes under the ROUTER label %+v (not the per-VM public-2)", settled, want)

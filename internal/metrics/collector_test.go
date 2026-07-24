@@ -761,3 +761,64 @@ lachesis_packets_total{direction="tx",external_network="none",zone="same_tenant"
 		t.Errorf("total = Σ tenants: %v", err)
 	}
 }
+
+// TestCollect_TotalNeverDipsAcrossTenantPrune: the lachesis#251
+// invariant. The total tier is DERIVED (Σ tenant tier), so releasing a
+// deleted project's tenant-settled bucket would dip the immortal
+// lachesis_bytes_total — unless the prune settles to the parent. The
+// tenant series must end; the total must hold its value exactly; and
+// the total-settled watermark gauge must show the absorber in use.
+func TestCollect_TotalNeverDipsAcrossTenantPrune(t *testing.T) {
+	meta := metadata.New()
+	vm := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	meta.Insert(bpf.MACKey(vm), &metadata.TenantMeta{ProjectID: "tenant-dead"})
+	st := state.New()
+	k := bpf.FlowKey{SrcMac: vm, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+	st.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1000, Packets: 10, LastSeenNs: 1})
+
+	c := metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	if got := sumFamily(t, reg, "lachesis_bytes_total"); got != 1000 {
+		t.Fatalf("baseline: total family = %v, want 1000", got)
+	}
+
+	// The project's VM dies: ghost-fold the rows, drop the metadata.
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
+		if metadata.VMMAC(k) != bpf.MACKey(vm) {
+			return "", "", "", false
+		}
+		return "tenant-dead", metadata.ExternalNetworkLabel("", k.DstZone), "", true
+	})
+	meta.Delete(bpf.MACKey(vm))
+	if got := sumFamily(t, reg, "lachesis_bytes_total"); got != 1000 {
+		t.Fatalf("after fold: total family = %v, want 1000", got)
+	}
+
+	// The project leaves Keystone: the reconciler prunes its bucket.
+	if dropped := st.PruneTenantSettled(map[string]struct{}{"some-other-project": {}}); dropped != 1 {
+		t.Fatalf("prune dropped %d, want 1", dropped)
+	}
+
+	// Tenant series ended; total holds — bytes AND packets.
+	if got := sumFamily(t, reg, "lachesis_tenant_bytes_total"); got != 0 {
+		t.Fatalf("after prune: tenant family = %v, want 0 (series ended with its project)", got)
+	}
+	if got := sumFamily(t, reg, "lachesis_bytes_total"); got != 1000 {
+		t.Fatalf("after prune: total family = %v, want 1000 — the immortal tier dipped", got)
+	}
+	if got := sumFamily(t, reg, "lachesis_packets_total"); got != 10 {
+		t.Fatalf("after prune: total packets = %v, want 10", got)
+	}
+	watermark := `
+# HELP lachesis_state_total_settled_tuples Distinct (zone, external_network, direction) buckets in the total-settled accumulator — the total tier's fold absorber, credited when a deleted project's tenant-settled bucket is released. Never pruned (docs/architecture/data-structures.md#settled-bytes).
+# TYPE lachesis_state_total_settled_tuples gauge
+lachesis_state_total_settled_tuples 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(watermark),
+		"lachesis_state_total_settled_tuples"); err != nil {
+		t.Fatalf("total-settled watermark: %v", err)
+	}
+}

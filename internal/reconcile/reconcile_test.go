@@ -350,3 +350,70 @@ func TestReconcileOnce_PrunesServerSettledOnNovaList(t *testing.T) {
 		t.Fatalf("populated Nova list must prune dead servers; ServerSettledLen = %d, want 0", st.ServerSettledLen())
 	}
 }
+
+// seedTenantSettled drives one flow and ghost-folds it so st holds one
+// tenant-settled bucket for tenant, keyed by a distinct MAC per call.
+func seedTenantSettled(t *testing.T, st *state.GlobalState, mac uint8, tenant string) {
+	t.Helper()
+	before := st.TenantSettledLen()
+	st.ApplyDelta(bpf.FlowKey{SrcMac: [6]uint8{0xbb, 0, 0, 0, 0, mac}, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 9},
+		EthProto: 0x0800, Direction: bpf.DirectionEgress, DstZone: bpf.ZoneExternal},
+		bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 1})
+	st.Settle(state.SettleEvict, func(k bpf.FlowKey) (string, string, string, bool) {
+		if k.SrcMac != ([6]uint8{0xbb, 0, 0, 0, 0, mac}) {
+			return "", "", "", false
+		}
+		return tenant, "none", "", true
+	})
+	if st.TenantSettledLen() != before+1 {
+		t.Fatalf("seed: TenantSettledLen = %d, want %d", st.TenantSettledLen(), before+1)
+	}
+}
+
+// TestReconcileOnce_PrunesTenantSettledOnKeystoneList: a successful pass
+// whose snapshot carries a populated Keystone project list releases the
+// tenant-settled buckets of deleted projects into the total absorber;
+// an empty list holds everything, and the "unknown" pseudo-tenant is
+// never released (it is not a Keystone project — lachesis#251).
+func TestReconcileOnce_PrunesTenantSettledOnKeystoneList(t *testing.T) {
+	st := state.New()
+	seedTenantSettled(t, st, 1, "t-dead")
+	seedTenantSettled(t, st, 2, metadata.UnknownTenantID)
+
+	src := &fakeSrc{syncResult: neutron.SyncResult{
+		Snapshot: neutron.Snapshot{}, // Projects nil — defensive hold
+	}}
+	r := New(Options{
+		Source:   src,
+		Trie:     &fakeMap{},
+		Interner: metadata.NewTenantInterner(),
+		Settler:  st,
+		Metrics:  NewMetrics(),
+	})
+
+	// Empty project list → hold (the Keystone fetch is sync-fatal, so
+	// this shape shouldn't occur — the skip is the same safe direction
+	// as the Nova prune's).
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+	if st.TenantSettledLen() != 2 {
+		t.Fatalf("empty project list must hold buckets; TenantSettledLen = %d, want 2", st.TenantSettledLen())
+	}
+	if st.TotalSettledLen() != 0 {
+		t.Fatalf("hold must not credit the total absorber; TotalSettledLen = %d, want 0", st.TotalSettledLen())
+	}
+
+	// A populated list without t-dead → its bucket folds into the total
+	// absorber; "unknown" survives despite also being absent.
+	src.syncResult.Snapshot.Projects = []neutron.Project{{ID: "t-alive"}}
+	r.reconcileOnce(context.Background(), time.Unix(1001, 0))
+	if st.TenantSettledLen() != 1 {
+		t.Fatalf("populated project list must prune deleted projects; TenantSettledLen = %d, want 1", st.TenantSettledLen())
+	}
+	_, settled, _, totalSettled := st.SnapshotWithSettled(nil, nil, nil, nil)
+	if settled[0].Key.Tenant != metadata.UnknownTenantID {
+		t.Fatalf("surviving bucket = %q, want the exempt %q", settled[0].Key.Tenant, metadata.UnknownTenantID)
+	}
+	if len(totalSettled) != 1 || totalSettled[0].Bytes != 100 {
+		t.Fatalf("total absorber = %+v, want t-dead's 100 bytes", totalSettled)
+	}
+}

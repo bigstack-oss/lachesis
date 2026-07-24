@@ -52,7 +52,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.json")
 	want := sampleRecords()
 
-	if err := wal.Save(path, "test-build", want, nil, nil, nil); err != nil {
+	if err := wal.Save(path, "test-build", want, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestSave_UsesStringEncodingForU64(t *testing.T) {
 			Total: bpf.FlowMetrics{Bytes: big, Packets: big, LastSeenNs: big},
 		},
 	}}
-	if err := wal.Save(path, "", in, nil, nil, nil); err != nil {
+	if err := wal.Save(path, "", in, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestSave_RotatesPriorToBackup(t *testing.T) {
 	path := filepath.Join(dir, "wal.json")
 
 	// First Save: no prior file, no .bak should appear yet.
-	if err := wal.Save(path, "", sampleRecords()[:1], nil, nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords()[:1], nil, nil, nil, nil); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
 	if _, err := os.Stat(path + wal.BackupSuffix); !errors.Is(err, fs.ErrNotExist) {
@@ -130,7 +130,7 @@ func TestSave_RotatesPriorToBackup(t *testing.T) {
 	}
 
 	// Second Save: previous file should rotate to .bak.
-	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("second Save: %v", err)
 	}
 	if _, err := os.Stat(path + wal.BackupSuffix); err != nil {
@@ -161,10 +161,10 @@ func TestLoad_FallsBackToBackupOnBadPrimary(t *testing.T) {
 
 	// Land a good snapshot on .bak by saving twice; the first
 	// save's content rotates into .bak on the second save.
-	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("seed save 1: %v", err)
 	}
-	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("seed save 2: %v", err)
 	}
 
@@ -249,10 +249,10 @@ func TestLoad_NewerSchemaDoesNotFallBackToBackup(t *testing.T) {
 	path := filepath.Join(dir, "wal.json")
 
 	// Land a perfectly good v1 snapshot on .bak ...
-	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("seed save 1: %v", err)
 	}
-	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("seed save 2: %v", err)
 	}
 	// ... then overwrite the primary with a future-schema snapshot,
@@ -354,7 +354,7 @@ func TestSave_RecordsMarshalAndFlushOnMetrics(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "wal.json")
-	if err := wal.Save(path, "", sampleRecords(), nil, nil, m); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil, m); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -394,7 +394,7 @@ func TestSave_RecordsFailureStageOnBadDir(t *testing.T) {
 	// Target a directory that does not exist — the open in
 	// writeAndFsync will fail at the StageWrite stage.
 	path := filepath.Join(t.TempDir(), "no", "such", "dir", "wal.json")
-	if err := wal.Save(path, "", sampleRecords(), nil, nil, m); err == nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil, m); err == nil {
 		t.Fatal("Save: expected error for bad dir, got nil")
 	}
 
@@ -459,7 +459,7 @@ func TestEnsureDir_CreatesMissingDir(t *testing.T) {
 		t.Fatalf("Stat dir after EnsureDir: info=%v err=%v", info, err)
 	}
 
-	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil); err != nil {
+	if err := wal.Save(path, "", sampleRecords(), nil, nil, nil, nil); err != nil {
 		t.Fatalf("Save after EnsureDir: %v", err)
 	}
 	res, err := wal.Load(path)
@@ -560,7 +560,7 @@ func TestSaveLoad_RoundTripsSettled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.json")
 	want := sampleSettled()
 
-	if err := wal.Save(path, "test-build", sampleRecords(), want, nil, nil); err != nil {
+	if err := wal.Save(path, "test-build", sampleRecords(), want, nil, nil, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	res, err := wal.Load(path)
@@ -666,7 +666,7 @@ func TestSaveLoad_RoundTripsServerSettled(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.json")
 	want := sampleServerSettled()
 
-	if err := wal.Save(path, "test-build", sampleRecords(), sampleSettled(), want, nil); err != nil {
+	if err := wal.Save(path, "test-build", sampleRecords(), sampleSettled(), want, nil, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	res, err := wal.Load(path)
@@ -708,5 +708,46 @@ func TestLoad_V3SnapshotAccepted(t *testing.T) {
 	}
 	if res.ServerSettled != nil {
 		t.Errorf("ServerSettled = %+v, want nil (absent in a v3 file)", res.ServerSettled)
+	}
+}
+
+// TestSaveLoad_RoundTripsTotalSettled: the v5 total_settled section
+// survives a Save/Load cycle bit-exact, and a snapshot saved without it
+// (a v4-shaped file — no project had died) restores a nil absorber.
+func TestSaveLoad_RoundTripsTotalSettled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	want := []state.TotalSettledRecord{
+		{Key: state.TotalSettledKey{ExtNet: "net-ext", Zone: bpf.ZoneExternal, Dir: bpf.DirectionEgress},
+			Bytes: 1 << 40, Packets: 1 << 20},
+		{Key: state.TotalSettledKey{ExtNet: "none", Zone: bpf.ZoneSameTenant, Dir: bpf.DirectionIngress},
+			Bytes: 7, Packets: 3},
+	}
+	if err := wal.Save(path, "test-build", sampleRecords(), nil, nil, want, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.TotalSettled) != len(want) {
+		t.Fatalf("TotalSettled len = %d, want %d", len(res.TotalSettled), len(want))
+	}
+	for i := range want {
+		if res.TotalSettled[i] != want[i] {
+			t.Errorf("TotalSettled[%d] = %+v, want %+v", i, res.TotalSettled[i], want[i])
+		}
+	}
+
+	// No total-settled section → nil on load (pre-v5 files and v5
+	// writers with an empty absorber are byte-identical here).
+	if err := wal.Save(path, "test-build", sampleRecords(), nil, nil, nil, nil); err != nil {
+		t.Fatalf("Save without totals: %v", err)
+	}
+	res, err = wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load without totals: %v", err)
+	}
+	if res.TotalSettled != nil {
+		t.Fatalf("TotalSettled = %+v, want nil for a snapshot without the section", res.TotalSettled)
 	}
 }
