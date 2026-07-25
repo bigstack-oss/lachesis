@@ -37,6 +37,7 @@ type subsystemMetrics struct {
 	gc         *gc.Metrics
 	unresolved *unresolved.Metrics
 	reconcile  *reconcile.Metrics
+	scraper    *scraper.Metrics
 	kafka      *kafka.Metrics
 	runtime    *runtime.Metrics
 	registry   *cnetlink.Registry
@@ -76,6 +77,7 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics, neutronInfo *neutron.InfoCo
 		unresolved:  unresolved.NewMetrics(),
 		runtime:     runtime.NewMetrics(),
 		reconcile:   reconcile.NewMetrics(),
+		scraper:     scraper.NewMetrics(),
 		kafka:       kafka.NewMetrics(kafkaTopic),
 		registry:    nlReg,
 		neutronInfo: neutronInfo,
@@ -140,6 +142,7 @@ func (m subsystemMetrics) registrations() []labelledCollectors {
 		{componentGC, m.gc.Collectors()},
 		{componentUnresolved, m.unresolved.Collectors()},
 		{componentReconcile, m.reconcile.Collectors()},
+		{componentScraper, m.scraper.Collectors()},
 		{componentKafka, m.kafka.Collectors()},
 		{componentRuntime, m.runtime.Collectors()},
 	}

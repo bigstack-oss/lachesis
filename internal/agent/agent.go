@@ -182,6 +182,7 @@ func New(opts Options) (*Agent, error) {
 	a.scraper = scraper.New(
 		telemetryFillReader{inner: opts.Reader, stats: opts.Stats, mx: a.mx.bpf},
 		st, tun)
+	a.scraper.SetMetrics(a.mx.scraper)
 	a.collector = metrics.New(st, a.scraper, opts.resolverOrDefault(meta, routers))
 
 	if err := a.openHTTP(opts); err != nil {

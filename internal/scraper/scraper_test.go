@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/scraper"
 	"github.com/bigstack-oss/lachesis/internal/state"
@@ -373,5 +375,74 @@ func TestRun_ShutdownForceSweepsTheSink(t *testing.T) {
 	}
 	if len(sink.sweeps) == 0 || !sink.sweeps[len(sink.sweeps)-1] {
 		t.Errorf("Sweep calls = %v, want the final one to be force=true (shutdown drain)", sink.sweeps)
+	}
+}
+
+// scrapeSampleCount gathers the scrape-duration histogram's observation
+// count from reg — a histogram has no single value to read, and its sum
+// is wall time, so the count is the assertable fact.
+func scrapeSampleCount(t *testing.T, reg *prometheus.Registry) uint64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, f := range fams {
+		if f.GetName() != "lachesis_scrape_duration_seconds" {
+			continue
+		}
+		if len(f.GetMetric()) != 1 {
+			t.Fatalf("metric count = %d, want 1", len(f.GetMetric()))
+		}
+		return f.GetMetric()[0].GetHistogram().GetSampleCount()
+	}
+	t.Fatal("lachesis_scrape_duration_seconds not registered")
+	return 0
+}
+
+// Every tick is timed, including one whose drain failed — the time was
+// still spent, and a tick that errors is exactly the case an operator
+// wants visible.
+func TestTick_ObservesScrapeDuration(t *testing.T) {
+	r := &fakeReader{
+		returns: []map[bpf.FlowKey]bpf.FlowMetrics{
+			{key(1, 2): {Bytes: 100, Packets: 1, LastSeenNs: 1}},
+			nil,
+		},
+		errOn: 2,
+	}
+	mx := scraper.NewMetrics()
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(mx.Collectors()...)
+
+	s := scraper.New(r, state.New(), tunables.New(tunables.Values{ScrapeInterval: time.Second}))
+	s.SetMetrics(mx)
+
+	if got := scrapeSampleCount(t, reg); got != 0 {
+		t.Fatalf("observations before any tick = %d, want 0", got)
+	}
+	if err := s.Tick(); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := scrapeSampleCount(t, reg); got != 1 {
+		t.Errorf("observations after one tick = %d, want 1", got)
+	}
+	if err := s.Tick(); err == nil {
+		t.Fatal("second Tick: want the synthetic reader failure")
+	}
+	if got := scrapeSampleCount(t, reg); got != 2 {
+		t.Errorf("observations after a failed tick = %d, want 2 (failed ticks are timed too)", got)
+	}
+}
+
+// A Scraper with no metrics bundle must tick normally — SetMetrics is
+// optional and every observation helper is nil-safe.
+func TestTick_NilMetricsIsSafe(t *testing.T) {
+	r := &fakeReader{returns: []map[bpf.FlowKey]bpf.FlowMetrics{
+		{key(1, 2): {Bytes: 100, Packets: 1, LastSeenNs: 1}},
+	}}
+	s := scraper.New(r, state.New(), tunables.New(tunables.Values{ScrapeInterval: time.Second}))
+	if err := s.Tick(); err != nil {
+		t.Fatalf("Tick without metrics: %v", err)
 	}
 }

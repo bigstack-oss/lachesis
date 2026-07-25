@@ -84,6 +84,10 @@ type Scraper struct {
 	// goroutine.
 	sink FlowSink
 
+	// mx, when set, times each tick. Wired once before Run like evictor
+	// and sink; nil records nothing.
+	mx *Metrics
+
 	errors atomic.Uint64
 	lastOK atomic.Int64 // unix seconds; 0 = never succeeded
 }
@@ -106,6 +110,10 @@ func New(reader MapReader, st *state.GlobalState, tun *tunables.Store) *Scraper 
 // kernel telemetry_map handle. Passing nil leaves pressure relief
 // disabled.
 func (s *Scraper) SetEvictor(e Evictor) { s.evictor = e }
+
+// SetMetrics wires the instrument bundle timing each tick. Call once
+// before [Run] starts the scrape goroutine; nil records nothing.
+func (s *Scraper) SetMetrics(m *Metrics) { s.mx = m }
 
 // SetSink wires the unknown-MAC classifier. Call once before [Run]
 // starts the scrape goroutine. Passing nil keeps the legacy
@@ -158,6 +166,8 @@ func (s *Scraper) Run(ctx context.Context) {
 // Tick performs a single drain+integrate pass. Exposed for tests and
 // for the loadtest harness; the production path is [Scraper.Run].
 func (s *Scraper) Tick() error {
+	start := time.Now()
+	defer func() { s.mx.ObserveScrape(time.Since(start)) }()
 	clear(s.buf)
 	if err := s.reader.BatchLookup(s.buf); err != nil {
 		s.errors.Add(1)
