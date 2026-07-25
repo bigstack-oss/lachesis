@@ -1738,6 +1738,62 @@ func TestResolvedGrewStep(t *testing.T) {
 	}
 }
 
+// evictionMetrics reports a fixed pressure-relief eviction total, for
+// EvictionsGrewStep.
+type evictionMetrics struct{ evictions float64 }
+
+func (m evictionMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+	return ScrapeResult{
+		Present:                 map[string]bool{metricGCEvictions: true, metricBytesTotal: true, metricAttachedInterfaces: true},
+		PressureReliefEvictions: m.evictions,
+	}, nil
+}
+func (evictionMetrics) LookupMAC(context.Context, string, string) (MACLookup, error) {
+	return MACLookup{}, nil
+}
+func (evictionMetrics) LookupFlows(context.Context, string, string) ([]FlowRow, error) {
+	return nil, nil
+}
+
+func TestEvictionsGrewStep(t *testing.T) {
+	// Timing isn't under test: shrink the poll so the timeout (fail) cases
+	// resolve in milliseconds.
+	defer func(d time.Duration) { sweepPollInterval = d }(sweepPollInterval)
+	sweepPollInterval = time.Millisecond
+
+	cases := []struct {
+		name          string
+		base, current float64
+		min           int64
+		wantPass      bool
+	}{
+		{"relief ran (grew past floor)", 2000, 5858, 1, true},
+		{"exactly at floor", 2000, 2001, 1, true},
+		{"never tripped the watermark — fails", 2000, 2000, 1, false},
+		{"grew but short of floor", 2000, 2500, 1000, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &StepEnv{
+				Config:        testConfig(),
+				State:         &RunState{},
+				Metrics:       evictionMetrics{evictions: tc.current},
+				Log:           slog.New(slog.DiscardHandler),
+				Report:        &AssertReport{OK: true},
+				evictionsBase: tc.base,
+			}
+			step := EvictionsGrewStep{Min: tc.min, Timeout: 10 * time.Millisecond}
+			if err := step.Run(context.Background(), env); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			row := env.Report.Rows[len(env.Report.Rows)-1]
+			if row.Pass != tc.wantPass {
+				t.Errorf("Pass = %v, want %v (delta %.0f, min %d)", row.Pass, tc.wantPass, row.Delta, tc.min)
+			}
+		})
+	}
+}
+
 func TestReloadAgentStep(t *testing.T) {
 	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m", SSHHost: "10.0.0.10"}}
 
