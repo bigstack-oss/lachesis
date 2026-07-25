@@ -35,6 +35,7 @@ const (
 	componentGC         = "gc"
 	componentUnresolved = "unresolved"
 	componentReconcile  = "reconcile"
+	componentScraper    = "scraper"
 	componentKafka      = "kafka"
 	componentRuntime    = "runtime"
 )
