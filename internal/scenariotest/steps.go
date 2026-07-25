@@ -102,6 +102,7 @@ type StepEnv struct {
 	settledBase       float64
 	settledTuplesBase float64
 	resolvedBase      float64
+	evictionsBase     float64
 	ghostsBase        float64
 	// macs records each deleted VM's MAC ([DeleteVMStep] captures it
 	// just before the delete) for a later BootVMStep's MACFrom.
@@ -318,11 +319,12 @@ func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
 	env.settledBase = snap.SettledFlows
 	env.settledTuplesBase = snap.SettledTuples
 	env.resolvedBase = snap.UnresolvedResolved
+	env.evictionsBase = snap.PressureReliefEvictions
 	env.ghostsBase = snap.LingeringGhosts
 	env.Log.Info("capture", "tuples", len(env.captured),
 		"server_tuples", len(env.capturedServers), "settled_flows", env.settledBase,
 		"settled_tuples", env.settledTuplesBase, "unresolved_resolved", env.resolvedBase,
-		"lingering_ghosts", env.ghostsBase)
+		"pressure_relief_evictions", env.evictionsBase, "lingering_ghosts", env.ghostsBase)
 	return nil
 }
 
@@ -1452,6 +1454,64 @@ func (s ResolvedGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	env.addRow(AssertRow{
 		Tenant: "unresolved-resolved", Zone: "-", Direction: "-",
 		Baseline: env.resolvedBase, Current: env.resolvedBase + delta, Delta: delta,
+		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
+	})
+	return nil
+}
+
+// EvictionsGrewStep asserts the pressure-relief eviction counter
+// (lachesis_gc_evictions_total{reason="pressure_relief"}) rose by at
+// least Min since the most recent [CaptureStep] — the proof that the
+// telemetry_map fill crossed the high watermark and the GC evicted the
+// oldest flows, rather than the map quietly staying under the trigger
+// (docs/architecture/data-structures.md#kernel-side-bpf-maps).
+//
+// It reads the pressure_relief reason ALONE, never the whole family: the
+// same family carries the ghost sweep's ttl and ghost_residual_flow
+// reasons, and conflating them would let an unrelated ghost expiry pass
+// as pressure relief.
+//
+// The step only shows that eviction happened. Its value comes from
+// pairing with the byte assertions around it: bytes evicted from the
+// kernel map must already have been flushed into GlobalState, so the
+// tenant's exposed total keeps growing across the eviction ("flush
+// before evict"). Polls until the floor is met or Timeout (default
+// [DefaultSweepTimeout]), because relief runs on the scrape tick.
+type EvictionsGrewStep struct {
+	Min     int64
+	Timeout time.Duration
+	Note    string
+}
+
+func (EvictionsGrewStep) Kind() string { return "assert-evictions-grew" }
+
+func (EvictionsGrewStep) requiredMetrics() []string { return []string{metricGCEvictions} }
+
+func (s EvictionsGrewStep) Run(ctx context.Context, env *StepEnv) error {
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultSweepTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	var delta float64
+	for {
+		snap, err := env.scrape(ctx)
+		if err != nil {
+			return err
+		}
+		delta = snap.PressureReliefEvictions - env.evictionsBase
+		if delta >= float64(s.Min) || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sweepPollInterval):
+		}
+	}
+	env.addRow(AssertRow{
+		Tenant: "gc-pressure-relief", Zone: "-", Direction: "-",
+		Baseline: env.evictionsBase, Current: env.evictionsBase + delta, Delta: delta,
 		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
 	})
 	return nil

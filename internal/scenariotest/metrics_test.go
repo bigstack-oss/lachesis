@@ -75,6 +75,36 @@ func TestHTTPMetrics_Scrape(t *testing.T) {
 	}
 }
 
+// The eviction family packs three reasons; only pressure_relief is the
+// telemetry_map fill eviction. Summing the family whole would let a ghost
+// sweep's ttl expiry masquerade as pressure relief, so the per-reason read
+// is the load-bearing behaviour here (values from a live c36 run).
+func TestHTTPMetrics_ScrapeEvictionsByReason(t *testing.T) {
+	const exposition = `# HELP lachesis_gc_evictions_total Map entries the GC evicted, by reason.
+# TYPE lachesis_gc_evictions_total counter
+lachesis_gc_evictions_total{reason="pressure_relief"} 5858
+lachesis_gc_evictions_total{reason="ttl"} 23
+lachesis_gc_evictions_total{reason="ghost_residual_flow"} 7
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(exposition))
+	}))
+	defer srv.Close()
+
+	res, err := NewHTTPMetrics(nil).Scrape(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Scrape: %v", err)
+	}
+	if !res.Present[metricGCEvictions] {
+		t.Errorf("metric %s reported absent", metricGCEvictions)
+	}
+	// 5858, not 5888 (the family total).
+	if res.PressureReliefEvictions != 5858 {
+		t.Errorf("PressureReliefEvictions = %v, want 5858 (other reasons must not be summed in)",
+			res.PressureReliefEvictions)
+	}
+}
+
 func TestHTTPMetrics_MissingMetric(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("# TYPE other_metric gauge\nother_metric 1\n"))

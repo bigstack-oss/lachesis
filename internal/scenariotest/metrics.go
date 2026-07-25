@@ -69,6 +69,17 @@ const (
 	// The unresolved-latebind scenario reads it to prove the buffer
 	// resolved rather than expired to unknown.
 	metricUnresolvedResolved = "lachesis_unresolved_resolved_total"
+	// metricGCEvictions counts map entries the GC evicted, split by a
+	// `reason` label. Only reason="pressure_relief" is the telemetry_map
+	// fill-watermark eviction [EvictionsGrewStep] asserts on; the family
+	// also carries ttl (mac_tenant_map ghost expiry) and
+	// ghost_residual_flow, so it must be read per-reason via [reasonSum]
+	// rather than summed whole
+	// (docs/architecture/data-structures.md#kernel-side-bpf-maps).
+	metricGCEvictions = "lachesis_gc_evictions_total"
+	// reasonPressureRelief is the [metricGCEvictions] `reason` value for a
+	// telemetry_map fill-watermark eviction.
+	reasonPressureRelief = "pressure_relief"
 )
 
 // BytesSample is one lachesis_tenant_bytes_total series: the {tenant_id, zone,
@@ -133,6 +144,9 @@ type ScrapeResult struct {
 	Bytes              []BytesSample
 	Servers            []ServerSample
 	PortBytes          []PortSample
+	// PressureReliefEvictions is lachesis_gc_evictions_total for the
+	// pressure_relief reason alone.
+	PressureReliefEvictions float64
 	// Anomalies is lachesis_neutron_anomalies broken out by its
 	// `class` label.
 	Anomalies map[string]float64
@@ -151,6 +165,9 @@ type MetricsSnapshot struct {
 	Bytes              []BytesSample
 	Servers            []ServerSample
 	PortBytes          []PortSample
+	// PressureReliefEvictions sums pressure-relief evictions across all
+	// agents.
+	PressureReliefEvictions float64
 	// Anomalies sums each anomaly class across all agents.
 	Anomalies map[string]float64
 }
@@ -217,7 +234,7 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	r := ScrapeResult{Present: map[string]bool{}}
 	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures,
 		metricSettledFlows, metricLingeringGhosts, metricServerBytesTotal, metricNeutronAnomalies,
-		metricTenantSettledTuples, metricUnresolvedResolved} {
+		metricTenantSettledTuples, metricUnresolvedResolved, metricGCEvictions} {
 		_, ok := fams[n]
 		r.Present[n] = ok
 	}
@@ -228,6 +245,7 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 		familySum(fams, metricServerSettledTuples) +
 		familySum(fams, metricTotalSettledTuples)
 	r.UnresolvedResolved = familySum(fams, metricUnresolvedResolved)
+	r.PressureReliefEvictions = reasonSum(fams, metricGCEvictions, reasonPressureRelief)
 	r.LingeringGhosts = familySum(fams, metricLingeringGhosts)
 	r.Bytes = bytesSamples(fams)
 	r.Servers = serverSamples(fams)
@@ -320,6 +338,7 @@ func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) 
 		snap.SettledFlows += r.SettledFlows
 		snap.SettledTuples += r.SettledTuples
 		snap.UnresolvedResolved += r.UnresolvedResolved
+		snap.PressureReliefEvictions += r.PressureReliefEvictions
 		snap.LingeringGhosts += r.LingeringGhosts
 		for _, s := range r.Bytes {
 			s.Node = a.Host
@@ -378,6 +397,27 @@ func (h *HTTPMetrics) fetch(ctx context.Context, url string) (map[string]*dto.Me
 // familySum totals every sample in a metric family, whatever its
 // value type. Used for the attach gauge and the attach-failure
 // counter, neither of which scenariotest cares to break down by label.
+// reasonSum sums only the samples of family name whose `reason` label
+// equals want. The eviction families pack several distinct reasons into
+// one family, so [familySum] would conflate unrelated eviction paths —
+// notably pressure-relief (telemetry_map fill) with the ghost sweep's
+// ttl expiry.
+func reasonSum(fams map[string]*dto.MetricFamily, name, want string) float64 {
+	fam, ok := fams[name]
+	if !ok {
+		return 0
+	}
+	var total float64
+	for _, m := range fam.GetMetric() {
+		for _, lp := range m.GetLabel() {
+			if lp.GetName() == "reason" && lp.GetValue() == want {
+				total += sampleValue(m)
+			}
+		}
+	}
+	return total
+}
+
 func familySum(fams map[string]*dto.MetricFamily, name string) float64 {
 	fam, ok := fams[name]
 	if !ok {
