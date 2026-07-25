@@ -107,7 +107,18 @@ indistinguishable from run-to-run noise** — no measurable throughput penalty.
 | 128-core, 10k flows | 30 MB | ~30 ms |
 | 128-core, 50k flows | 150 MB | ~100+ ms |
 
-  At high core counts a flat "5 ms" scrape estimate is not realistic; the scrape budget must account for the actual N_CPU. The `lachesis_collect_duration_seconds` histogram surfaces this per node.
+  At high core counts a flat "5 ms" scrape estimate is not realistic; the scrape
+  budget must account for the actual N_CPU. The wall times above are **modelled,
+  not measured**: the drain is not instrumented — no histogram wraps the
+  scraper's `BatchLookup` tick, so a node's real drain cost is not observable
+  from `/metrics` today.
+
+  In particular `lachesis_collect_duration_seconds` does **not** surface it (an
+  earlier revision of this page said it did). That histogram times the Prometheus
+  `Collect` pass over GlobalState — the read/exposition path, one row per flow
+  with no `N_CPU` term — which is a different axis from this kernel→userspace
+  snapshot. Sizing a scrape budget from it will mislead: it moves with flow count
+  and label cardinality, not with host core count.
 
 - Map iteration during pressure-relief GC: same cost; runs in the same scrape goroutine (after BatchLookup), so its `telemetry_map` deletes never race the drain.
 - **WAL flush** breaks into three phases, not just fsync:
