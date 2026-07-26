@@ -1890,19 +1890,30 @@ func TestRestartAgentStep_SetConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects AltConfig combination", func(t *testing.T) {
-		env := restartEnv(t, agents, ac, &restartExec{catOut: "gc: {}\n"}, nil)
+	// A rejected combination must fail BEFORE touching the host: erroring
+	// after the AltConfig swap would abort the scenario with the node left
+	// on the alt config and its restore step never reached.
+	t.Run("rejects AltConfig combination without mutating the host", func(t *testing.T) {
+		exec := &restartExec{catOut: "gc: {}\n"}
+		env := restartEnv(t, agents, ac, exec, nil)
 		step := RestartAgentStep{AltConfig: "/root/alt.yaml", SetConfig: map[string]string{"a.b": "1"}}
 		if err := step.Run(context.Background(), env); err == nil {
 			t.Error("AltConfig + SetConfig should error")
 		}
+		if exec.has("cp -f") || exec.has("systemctl restart") {
+			t.Errorf("host mutated before the combination was rejected: %+v", exec.calls)
+		}
 	})
 
-	t.Run("rejects RestoreConfig combination", func(t *testing.T) {
-		env := restartEnv(t, agents, ac, &restartExec{catOut: "gc: {}\n"}, nil)
+	t.Run("rejects RestoreConfig combination without mutating the host", func(t *testing.T) {
+		exec := &restartExec{catOut: "gc: {}\n"}
+		env := restartEnv(t, agents, ac, exec, nil)
 		step := RestartAgentStep{RestoreConfig: true, SetConfig: map[string]string{"a.b": "1"}}
 		if err := step.Run(context.Background(), env); err == nil {
 			t.Error("RestoreConfig + SetConfig should error")
+		}
+		if exec.has("cp -f") || exec.has("systemctl restart") {
+			t.Errorf("host mutated before the combination was rejected: %+v", exec.calls)
 		}
 	})
 
@@ -1910,6 +1921,53 @@ func TestRestartAgentStep_SetConfig(t *testing.T) {
 		bare := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis"}
 		env := restartEnv(t, agents, bare, &restartExec{catOut: "gc: {}\n"}, nil)
 		step := RestartAgentStep{SetConfig: map[string]string{"a.b": "1"}}
+		if err := step.Run(context.Background(), env); err == nil {
+			t.Error("SetConfig without agent_control.config_path should error")
+		}
+	})
+}
+
+// The reload half of SetConfig: patches the config already in force,
+// SIGHUPs, and — unlike the restart half — takes no backup. Its guards
+// must also fire before the host is touched.
+func TestReloadAgentStep_SetConfig(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m", SSHHost: "10.0.0.10"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis", ConfigPath: "/root/agent.yaml"}
+
+	t.Run("patches in place and SIGHUPs, no backup", func(t *testing.T) {
+		exec := &restartExec{catOut: "reconcile:\n  interval: 600s\n"}
+		env := restartEnv(t, agents, ac, exec, nil)
+		step := ReloadAgentStep{SetConfig: map[string]string{"reconcile.interval": "15s"}}
+		if err := step.Run(context.Background(), env); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !exec.has("sudo cat /root/agent.yaml") {
+			t.Error("did not read the in-force config")
+		}
+		if exec.has(".scenariotest.bak") {
+			t.Error("reload must not back up — it would clobber the restart's copy of the real config")
+		}
+		if !exec.has("systemctl kill -s HUP lachesis") {
+			t.Errorf("did not SIGHUP the unit: %+v", exec.calls)
+		}
+	})
+
+	t.Run("rejects AltConfig combination without mutating the host", func(t *testing.T) {
+		exec := &restartExec{catOut: "gc: {}\n"}
+		env := restartEnv(t, agents, ac, exec, nil)
+		step := ReloadAgentStep{AltConfig: "/root/alt.yaml", SetConfig: map[string]string{"a.b": "1"}}
+		if err := step.Run(context.Background(), env); err == nil {
+			t.Error("AltConfig + SetConfig should error")
+		}
+		if exec.has("cp -f") || exec.has("HUP") {
+			t.Errorf("host mutated before the combination was rejected: %+v", exec.calls)
+		}
+	})
+
+	t.Run("requires config_path", func(t *testing.T) {
+		bare := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis"}
+		env := restartEnv(t, agents, bare, &restartExec{catOut: "gc: {}\n"}, nil)
+		step := ReloadAgentStep{SetConfig: map[string]string{"a.b": "1"}}
 		if err := step.Run(context.Background(), env); err == nil {
 			t.Error("SetConfig without agent_control.config_path should error")
 		}
