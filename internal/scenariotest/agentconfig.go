@@ -3,11 +3,12 @@
 //
 // Deriving is the whole point. An agent config carries cluster-specific
 // values — broker list, WAL path, credentials file — so a checked-in
-// alternate config could never be dropped onto an arbitrary host, and a
-// hand-staged one (the older AltConfig convention) is an undocumented
-// manual prerequisite that makes a scenario unrunnable on a fresh
-// cluster. SetConfig instead reads what the node already has, overrides
-// only the named keys, and writes it back.
+// alternate config could never be dropped onto an arbitrary host. The
+// convention this replaced pointed each scenario at a file hand-staged
+// on the agent host, an undocumented manual prerequisite that made those
+// scenarios unrunnable on a fresh cluster. SetConfig instead reads what
+// the node already has, overrides only the named keys, and writes it
+// back.
 
 package scenariotest
 
