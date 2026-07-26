@@ -1313,8 +1313,23 @@ type RestartAgentStep struct {
 	// agent host. Empty means the sole agent (errors if more than one).
 	Node string
 	// AltConfig is an optional agent-host path to install as the agent
-	// config before the restart.
+	// config before the restart. Prefer [RestartAgentStep.SetConfig]:
+	// AltConfig needs a file hand-staged on every agent host, which makes
+	// a scenario unrunnable on a cluster where nobody staged it.
 	AltConfig string
+	// SetConfig overrides individual keys in the node's OWN agent config
+	// before the restart — dotted YAML path to value, e.g.
+	// {"gc.pressure_high_watermark": "0.0001"}. Values are decoded as
+	// YAML scalars, so they land with their natural type (float, bool,
+	// duration string). Everything not named is preserved, and the
+	// original is backed up exactly as an AltConfig swap would be, so a
+	// later RestoreConfig undoes it.
+	//
+	// This is the cluster-portable way to run an agent under different
+	// tunables: nothing has to be pre-staged, and the derived config
+	// keeps the node's own broker list, WAL path and credentials.
+	// Mutually exclusive with AltConfig and RestoreConfig.
+	SetConfig map[string]string
 	// RestoreConfig restores the config an earlier AltConfig swap backed
 	// up (<config_path>.scenariotest.bak) before the restart — the
 	// cluster-portable way to end an alt-config phase.
@@ -1402,6 +1417,23 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 			return fmt.Errorf("restart-agent: install alt config on %s: %w (output: %s)", host, err, out)
 		}
 		env.Log.Info("restart-agent: alt config installed", "host", host, "alt", altConfig, "path", ac.ConfigPath, "restore", s.RestoreConfig)
+	}
+
+	if len(s.SetConfig) > 0 {
+		if s.AltConfig != "" || s.RestoreConfig {
+			return fmt.Errorf("restart-agent: SetConfig is mutually exclusive with AltConfig and RestoreConfig")
+		}
+		if ac.ConfigPath == "" {
+			return fmt.Errorf("restart-agent: SetConfig set but agent_control.config_path is empty")
+		}
+		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+			return fmt.Errorf("restart-agent: %w", err)
+		}
+		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig); err != nil {
+			return fmt.Errorf("restart-agent: %w", err)
+		}
+		env.Log.Info("restart-agent: config overrides applied",
+			"host", host, "path", ac.ConfigPath, "keys", len(s.SetConfig))
 	}
 
 	if out, err := env.AgentExec.Run(ctx, host, "sudo systemctl restart "+unit); err != nil {

@@ -720,6 +720,7 @@ type restartExec struct {
 	restarted bool
 	noCycle   bool   // MainPID never changes — restart did not take
 	failOn    string // a command substring that returns an error
+	catOut    string // what `sudo cat <config>` returns (SetConfig reads it)
 }
 
 func (e *restartExec) Run(_ context.Context, addr, command string) (string, error) {
@@ -736,6 +737,8 @@ func (e *restartExec) Run(_ context.Context, addr, command string) (string, erro
 			return "MainPID=2222\n", nil
 		}
 		return "MainPID=1111\n", nil
+	case strings.HasPrefix(command, "sudo cat "):
+		return e.catOut, nil
 	}
 	return "", nil
 }
@@ -1861,4 +1864,54 @@ func TestReloadAgentStep(t *testing.T) {
 			}
 		})
 	}
+}
+
+// SetConfig patches the node's own config and restarts; it must refuse to
+// combine with the hand-staged AltConfig / RestoreConfig spellings.
+func TestRestartAgentStep_SetConfig(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m", SSHHost: "10.0.0.10"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis", ConfigPath: "/root/agent.yaml"}
+
+	t.Run("patches the node config then restarts", func(t *testing.T) {
+		exec := &restartExec{catOut: "gc:\n  ghost_grace: 120s\n"}
+		env := restartEnv(t, agents, ac, exec, nil)
+		step := RestartAgentStep{SetConfig: map[string]string{"gc.pressure_high_watermark": "0.0001"}}
+		if err := step.Run(context.Background(), env); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !exec.has("sudo cat /root/agent.yaml") {
+			t.Error("did not read the node's config")
+		}
+		if !exec.has(".scenariotest.bak") {
+			t.Error("did not back up the original")
+		}
+		if !exec.has("systemctl restart lachesis") {
+			t.Error("did not restart the unit")
+		}
+	})
+
+	t.Run("rejects AltConfig combination", func(t *testing.T) {
+		env := restartEnv(t, agents, ac, &restartExec{catOut: "gc: {}\n"}, nil)
+		step := RestartAgentStep{AltConfig: "/root/alt.yaml", SetConfig: map[string]string{"a.b": "1"}}
+		if err := step.Run(context.Background(), env); err == nil {
+			t.Error("AltConfig + SetConfig should error")
+		}
+	})
+
+	t.Run("rejects RestoreConfig combination", func(t *testing.T) {
+		env := restartEnv(t, agents, ac, &restartExec{catOut: "gc: {}\n"}, nil)
+		step := RestartAgentStep{RestoreConfig: true, SetConfig: map[string]string{"a.b": "1"}}
+		if err := step.Run(context.Background(), env); err == nil {
+			t.Error("RestoreConfig + SetConfig should error")
+		}
+	})
+
+	t.Run("requires config_path", func(t *testing.T) {
+		bare := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis"}
+		env := restartEnv(t, agents, bare, &restartExec{catOut: "gc: {}\n"}, nil)
+		step := RestartAgentStep{SetConfig: map[string]string{"a.b": "1"}}
+		if err := step.Run(context.Background(), env); err == nil {
+			t.Error("SetConfig without agent_control.config_path should error")
+		}
+	})
 }

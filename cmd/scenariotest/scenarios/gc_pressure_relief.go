@@ -20,15 +20,12 @@ import (
 // entries, and the VM's own handful of real flows then exceeds them.
 // That drives the genuine code path on genuine resolved flows.
 //
-// PRE-STAGED on node:0's agent host: /root/agent-c36-gclow.yaml — the
-// node's normal config with tiny gc watermarks, e.g.
-//
-//	gc:
-//	  pressure_high_watermark: 0.0001   # ~6 of 65,536 entries
-//	  pressure_low_watermark:  0.00005  # ~3 entries
-//
-// The opening RestartAgentStep backs up the real config, and the closing
-// one restores it, so the node is left as found.
+// Nothing has to be pre-staged on the agent host: the opening
+// RestartAgentStep derives the low-watermark config from whatever the
+// node already runs (SetConfig overrides two keys, everything else —
+// broker list, WAL path, credentials — is preserved), backs the original
+// up, and the closing RestoreConfig puts it back. So the scenario runs
+// on any cluster with agent_control configured.
 //
 // Debugging note: if the exposed bytes come up short, check
 // lachesis_unresolved_buffer_evictions_total{reason="lru"} before
@@ -51,9 +48,14 @@ func gcPressureRelief() *scenariotest.Scenario {
 		Builder:   b,
 		Placement: scenariotest.Placement{"vm-g": "node:0"},
 		Steps: []scenariotest.Step{
-			// Lower the watermarks so real flows trip the trigger. This
-			// backs up the node's real config for the final restore.
-			scenariotest.RestartAgentStep{Node: "node:0", AltConfig: "/root/agent-c36-gclow.yaml"},
+			// Lower the watermarks so real flows trip the trigger: ~6 of
+			// 65,536 entries to start a relief cycle, ~3 to end it. Derived
+			// from the node's own config, which is backed up for the final
+			// restore.
+			scenariotest.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
+				"gc.pressure_high_watermark": "0.0001",
+				"gc.pressure_low_watermark":  "0.00005",
+			}},
 			scenariotest.CaptureStep{},
 			// Real traffic on a learned MAC: enough flows to sit above the
 			// lowered high watermark, and enough bytes for the assertions
