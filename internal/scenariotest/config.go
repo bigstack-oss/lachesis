@@ -103,6 +103,14 @@ type AgentControlConfig struct {
 	// ReadyTimeout bounds the post-restart wait for /metrics to answer
 	// and the taps to re-attach; defaults to [DefaultAgentReadyTimeout].
 	ReadyTimeout time.Duration `yaml:"ready_timeout"`
+	// WALPath is the agent's on-host WAL file — only needed by
+	// cold-restart scenarios ([RestartAgentStep].RemoveWAL deletes it
+	// and its .bak between stop and start).
+	WALPath string `yaml:"wal_path"`
+	// PinPath is the agent's bpffs pin directory — only needed by
+	// cold-restart scenarios ([RestartAgentStep].RemovePins removes it
+	// to simulate a host reboot's kernel-state loss).
+	PinPath string `yaml:"pin_path"`
 }
 
 // SSHConfig projects the agent-control block onto the shared
