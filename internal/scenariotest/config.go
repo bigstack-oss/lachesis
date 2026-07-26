@@ -96,8 +96,9 @@ type AgentControlConfig struct {
 	// Unit is the systemd unit to restart; defaults to "lachesis-agent".
 	Unit string `yaml:"unit"`
 	// ConfigPath is the agent config file the unit reads —
-	// [RestartAgentStep]'s AltConfig is copied over this path before a
-	// restart. Only needed for alternate-config restarts.
+	// [RestartAgentStep]'s SetConfig derives its overrides from this file
+	// and writes them back here. Only needed by scenarios that change the
+	// agent's config.
 	ConfigPath string `yaml:"config_path"`
 	// ReadyTimeout bounds the post-restart wait for /metrics to answer
 	// and the taps to re-attach; defaults to [DefaultAgentReadyTimeout].

@@ -1302,37 +1302,32 @@ func (s SleepStep) Run(ctx context.Context, env *StepEnv) error {
 // scenarios. It restarts the agent; the billing-continuity assertions
 // (monotone, no reset) are the scenario's own steps after it.
 //
-// With AltConfig set (a path already staged on the agent host) the
-// step copies it over the configured agent config before restarting,
-// bringing the agent back under different tunables; the original is
-// backed up to <config>.scenariotest.bak on the host. Restoring it is
-// the scenario's concern (a later RestartAgentStep, or teardown) —
-// deliberately not automatic, since a step has no post-hook.
+// With SetConfig the step derives a modified config from the one the
+// node already runs before restarting, bringing the agent back under
+// different tunables; the original is backed up to
+// <config>.scenariotest.bak on the host. Restoring it is the scenario's
+// concern (a later RestartAgentStep with RestoreConfig) — deliberately
+// not automatic, since a step has no post-hook.
 type RestartAgentStep struct {
 	// Node selects the agent: a placement slot ("node:0") or a literal
 	// agent host. Empty means the sole agent (errors if more than one).
 	Node string
-	// AltConfig is an optional agent-host path to install as the agent
-	// config before the restart. Prefer [RestartAgentStep.SetConfig]:
-	// AltConfig needs a file hand-staged on every agent host, which makes
-	// a scenario unrunnable on a cluster where nobody staged it.
-	AltConfig string
 	// SetConfig overrides individual keys in the node's OWN agent config
 	// before the restart — dotted YAML path to value, e.g.
 	// {"gc.pressure_high_watermark": "0.0001"}. Values are decoded as
 	// YAML scalars, so they land with their natural type (float, bool,
 	// duration string). Everything not named is preserved, and the
-	// original is backed up exactly as an AltConfig swap would be, so a
-	// later RestoreConfig undoes it.
+	// original is backed up to <config_path>.scenariotest.bak, so a later
+	// RestoreConfig undoes it.
 	//
 	// This is the cluster-portable way to run an agent under different
 	// tunables: nothing has to be pre-staged, and the derived config
 	// keeps the node's own broker list, WAL path and credentials.
-	// Mutually exclusive with AltConfig and RestoreConfig.
+	// Mutually exclusive with RestoreConfig.
 	SetConfig map[string]string
-	// RestoreConfig restores the config an earlier AltConfig swap backed
-	// up (<config_path>.scenariotest.bak) before the restart — the
-	// cluster-portable way to end an alt-config phase.
+	// RestoreConfig restores the config an earlier SetConfig backed up
+	// (<config_path>.scenariotest.bak) before the restart — how a
+	// scenario ends a modified-config phase and leaves the node as found.
 	RestoreConfig bool
 	// Timeout overrides [AgentControlConfig.ReadyTimeout] for the
 	// post-restart readiness wait.
@@ -1372,15 +1367,14 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
 	// Validate the config-source combination BEFORE touching the host: a
-	// check that fires after the AltConfig swap would abort the scenario
-	// with the node already on the alt config and its restore step never
-	// reached.
-	if len(s.SetConfig) > 0 {
-		if s.AltConfig != "" || s.RestoreConfig {
-			return fmt.Errorf("restart-agent: SetConfig is mutually exclusive with AltConfig and RestoreConfig")
-		}
+	// check that fired after the config swap would abort the scenario with
+	// the node already modified and its restore step never reached.
+	if len(s.SetConfig) > 0 && s.RestoreConfig {
+		return fmt.Errorf("restart-agent: SetConfig and RestoreConfig are mutually exclusive")
+	}
+	if len(s.SetConfig) > 0 || s.RestoreConfig {
 		if ac.ConfigPath == "" {
-			return fmt.Errorf("restart-agent: SetConfig set but agent_control.config_path is empty")
+			return fmt.Errorf("restart-agent: config changes need agent_control.config_path")
 		}
 		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
 			return fmt.Errorf("restart-agent: %w", err)
@@ -1402,36 +1396,15 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	// and any running new PID counts as evidence.
 	oldPID, _ := agentMainPID(ctx, env, host, unit)
 
-	altConfig := s.AltConfig
 	if s.RestoreConfig {
-		if altConfig != "" {
-			return fmt.Errorf("restart-agent: AltConfig and RestoreConfig are mutually exclusive")
+		// Copy the backup an earlier SetConfig took back over the live
+		// config. No backup-first here: the source IS the backup, so
+		// backing up would clobber it (a self-destroying restore).
+		restore := fmt.Sprintf("sudo cp -f %s.scenariotest.bak %s", ac.ConfigPath, ac.ConfigPath)
+		if out, err := env.AgentExec.Run(ctx, host, restore); err != nil {
+			return fmt.Errorf("restart-agent: restore config on %s: %w (output: %s)", host, err, out)
 		}
-		altConfig = ac.ConfigPath + ".scenariotest.bak"
-	}
-	if altConfig != "" {
-		if ac.ConfigPath == "" {
-			return fmt.Errorf("restart-agent: AltConfig set but agent_control.config_path is empty")
-		}
-		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
-			return fmt.Errorf("restart-agent: %w", err)
-		}
-		if err := shellSafe("AltConfig", altConfig); err != nil {
-			return fmt.Errorf("restart-agent: %w", err)
-		}
-		// An AltConfig install backs the real config up first; a
-		// RestoreConfig MUST NOT — its source IS the backup, and the
-		// backup-first spelling would clobber it with the alt config
-		// before "restoring" it (a self-destroying restore).
-		swap := fmt.Sprintf("sudo cp -f %s %s", altConfig, ac.ConfigPath)
-		if !s.RestoreConfig {
-			swap = fmt.Sprintf("sudo cp -f %s %s.scenariotest.bak && sudo cp -f %s %s",
-				ac.ConfigPath, ac.ConfigPath, altConfig, ac.ConfigPath)
-		}
-		if out, err := env.AgentExec.Run(ctx, host, swap); err != nil {
-			return fmt.Errorf("restart-agent: install alt config on %s: %w (output: %s)", host, err, out)
-		}
-		env.Log.Info("restart-agent: alt config installed", "host", host, "alt", altConfig, "path", ac.ConfigPath, "restore", s.RestoreConfig)
+		env.Log.Info("restart-agent: config restored", "host", host, "path", ac.ConfigPath)
 	}
 
 	if len(s.SetConfig) > 0 {
@@ -1567,32 +1540,26 @@ func (s EvictionsGrewStep) Run(ctx context.Context, env *StepEnv) error {
 // fields take effect (docs/operations/runtime.md); a restart would
 // discard the buffer this scenario depends on.
 //
-// PRECONDITION when AltConfig is set: unlike [RestartAgentStep], this
+// PRECONDITION when SetConfig is set: unlike [RestartAgentStep], this
 // deliberately does NOT back up the current config (a reload chains
-// after a restart's alt-config swap, and a second backup would clobber
+// after a restart's config change, and a second backup would clobber
 // that restart's original-config backup). So it is only safe after a
 // RestartAgentStep has already backed up the real config, and the
-// scenario must restore it explicitly (its final RestartAgentStep).
-// Used standalone with AltConfig, it would overwrite the config with no
+// scenario must restore it explicitly (its final RestartAgentStep with
+// RestoreConfig). Used standalone, it would modify the config with no
 // way back.
 type ReloadAgentStep struct {
 	// Node selects the agent (a placement slot or literal host); empty
 	// means the sole agent.
 	Node string
-	// AltConfig is an agent-host path copied over the agent config before
-	// the SIGHUP. Unlike [RestartAgentStep], NO backup is taken first —
-	// see the PRECONDITION on the type. Prefer SetConfig, which needs
-	// nothing staged on the host.
-	AltConfig string
 	// SetConfig overrides individual keys in the config the node is
 	// currently running, before the SIGHUP — dotted YAML path to value,
 	// like [RestartAgentStep.SetConfig]. Because it patches the CURRENT
 	// config, overrides an earlier restart applied stay in force and this
 	// step only names what changes.
 	//
-	// As with AltConfig, NO backup is taken (the same PRECONDITION
-	// applies): the earlier restart's backup is the scenario's way home.
-	// Mutually exclusive with AltConfig.
+	// NO backup is taken (see the PRECONDITION on the type): the earlier
+	// restart's backup is the scenario's way home.
 	SetConfig map[string]string
 }
 
@@ -1620,9 +1587,6 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	// Validate before mutating the host — see the same note on
 	// [RestartAgentStep.Run].
 	if len(s.SetConfig) > 0 {
-		if s.AltConfig != "" {
-			return fmt.Errorf("reload-agent: SetConfig and AltConfig are mutually exclusive")
-		}
 		if ac.ConfigPath == "" {
 			return fmt.Errorf("reload-agent: SetConfig set but agent_control.config_path is empty")
 		}
@@ -1631,28 +1595,9 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		}
 	}
 	host := agent.sshHost()
-	if s.AltConfig != "" {
-		if ac.ConfigPath == "" {
-			return fmt.Errorf("reload-agent: AltConfig set but agent_control.config_path is empty")
-		}
-		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
-			return fmt.Errorf("reload-agent: %w", err)
-		}
-		if err := shellSafe("AltConfig", s.AltConfig); err != nil {
-			return fmt.Errorf("reload-agent: %w", err)
-		}
-		// No backup here (unlike [RestartAgentStep]): a reload chains after
-		// a restart's alt-config swap, and backing up would clobber that
-		// restart's original-config backup. Restoring the real config is
-		// the scenario's explicit final step.
-		swap := fmt.Sprintf("sudo cp -f %s %s", s.AltConfig, ac.ConfigPath)
-		if out, err := env.AgentExec.Run(ctx, host, swap); err != nil {
-			return fmt.Errorf("reload-agent: install alt config on %s: %w (output: %s)", host, err, out)
-		}
-	}
 	if len(s.SetConfig) > 0 {
-		// backup=false, same PRECONDITION as the AltConfig path above: the
-		// earlier restart's backup holds the real config and must survive.
+		// backup=false, per the PRECONDITION on the type: the earlier
+		// restart's backup holds the real config and must survive.
 		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig, false); err != nil {
 			return fmt.Errorf("reload-agent: %w", err)
 		}
@@ -1666,7 +1611,7 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	if out, err := env.AgentExec.Run(ctx, host, "sudo systemctl kill -s HUP "+unit); err != nil {
 		return fmt.Errorf("reload-agent: SIGHUP %s on %s: %w (output: %s)", unit, host, err, out)
 	}
-	env.Log.Info("reload-agent: SIGHUP sent", "host", host, "unit", unit, "alt", s.AltConfig)
+	env.Log.Info("reload-agent: SIGHUP sent", "host", host, "unit", unit)
 	return nil
 }
 

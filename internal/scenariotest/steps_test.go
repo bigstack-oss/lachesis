@@ -793,34 +793,6 @@ func TestSteps_RestartAgent(t *testing.T) {
 	}
 }
 
-func TestSteps_RestartAgentAltConfig(t *testing.T) {
-	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
-	ac := AgentControlConfig{User: "root", KeyPath: "/k", ConfigPath: "/etc/lachesis/agent.yaml", ReadyTimeout: time.Second}
-	exec := &restartExec{}
-
-	if err := (RestartAgentStep{AltConfig: "/tmp/shrunk.yaml"}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil)); err != nil {
-		t.Fatalf("restart alt: %v", err)
-	}
-	if !exec.has("/etc/lachesis/agent.yaml.scenariotest.bak") || !exec.has("cp -f /tmp/shrunk.yaml /etc/lachesis/agent.yaml") {
-		t.Errorf("alt-config swap not issued (backup + copy): %+v", exec.calls)
-	}
-	if !exec.has("systemctl restart") {
-		t.Errorf("restart not issued after swap: %+v", exec.calls)
-	}
-
-	// AltConfig without a config_path is a usage error, before any SSH.
-	acNoPath := AgentControlConfig{User: "root", KeyPath: "/k", ReadyTimeout: time.Second}
-	exec2 := &restartExec{}
-	if err := (RestartAgentStep{AltConfig: "/tmp/x.yaml"}).Run(context.Background(), restartEnv(t, agents, acNoPath, exec2, nil)); err == nil {
-		t.Error("AltConfig with no config_path must error")
-	}
-	if exec2.has("systemctl restart") {
-		t.Error("must not restart when config is invalid")
-	}
-}
-
-// TestSteps_RestartAgentAwaitsReattach: the step must keep polling until
-// the taps have re-attached, not return on the boot re-attach dip.
 func TestSteps_RestartAgentAwaitsReattach(t *testing.T) {
 	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
 	ac := AgentControlConfig{User: "root", KeyPath: "/k", ReadyTimeout: 5 * time.Second}
@@ -1388,11 +1360,6 @@ func TestSteps_RestartAgentRestoreConfig(t *testing.T) {
 			t.Errorf("restore must NOT back up first (clobbers its own source): %q", c.command)
 		}
 	}
-
-	// AltConfig and RestoreConfig together is a usage error.
-	if err := (RestartAgentStep{AltConfig: "/tmp/x.yaml", RestoreConfig: true}).Run(context.Background(), restartEnv(t, agents, ac, &restartExec{}, nil)); err == nil {
-		t.Error("AltConfig + RestoreConfig must error")
-	}
 }
 
 // stdinExecFake is a fakeExec that also accepts stdin streams,
@@ -1800,39 +1767,15 @@ func TestEvictionsGrewStep(t *testing.T) {
 func TestReloadAgentStep(t *testing.T) {
 	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m", SSHHost: "10.0.0.10"}}
 
-	// AltConfig swap + SIGHUP, and NO backup (reload chains after a
-	// restart's backup — backing up here would clobber it).
-	t.Run("swaps config and SIGHUPs without a backup", func(t *testing.T) {
-		ac := AgentControlConfig{User: "root", KeyPath: "/k", ConfigPath: "/etc/lachesis/agent.yaml", Unit: "lachesis-agent"}
-		exec := &restartExec{}
-		if err := (ReloadAgentStep{AltConfig: "/root/resume.yaml"}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil)); err != nil {
-			t.Fatalf("reload: %v", err)
-		}
-		if !exec.has("cp -f /root/resume.yaml /etc/lachesis/agent.yaml") {
-			t.Errorf("alt-config swap not issued: %+v", exec.calls)
-		}
-		if exec.has(".scenariotest.bak") {
-			t.Errorf("reload must NOT back up the config (it chains after a restart's backup): %+v", exec.calls)
-		}
-		if !exec.has("systemctl kill -s HUP lachesis-agent") {
-			t.Errorf("SIGHUP not issued: %+v", exec.calls)
-		}
-		for _, c := range exec.calls {
-			if c.addr != "10.0.0.10" {
-				t.Errorf("SSHed to %q, want the agent's ssh_host 10.0.0.10", c.addr)
-			}
-		}
-	})
-
-	// No AltConfig → pure re-read: SIGHUP only, no config swap.
-	t.Run("no alt config sends SIGHUP only", func(t *testing.T) {
+	// No SetConfig → pure re-read: SIGHUP only, no config write.
+	t.Run("no config overrides sends SIGHUP only", func(t *testing.T) {
 		ac := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis-agent"}
 		exec := &restartExec{}
 		if err := (ReloadAgentStep{}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil)); err != nil {
 			t.Fatalf("reload: %v", err)
 		}
-		if exec.has("cp -f") {
-			t.Errorf("no AltConfig, but a config swap was issued: %+v", exec.calls)
+		if exec.has("cp -f") || exec.has("base64 -d") {
+			t.Errorf("no SetConfig, but a config write was issued: %+v", exec.calls)
 		}
 		if !exec.has("systemctl kill -s HUP lachesis-agent") {
 			t.Errorf("SIGHUP not issued: %+v", exec.calls)
@@ -1848,10 +1791,10 @@ func TestReloadAgentStep(t *testing.T) {
 		step    ReloadAgentStep
 		wantErr string
 	}{
-		"no agent exec":        {agents, ac, nil, ReloadAgentStep{}, "no agent-host SSH transport"},
-		"missing creds":        {agents, AgentControlConfig{}, &restartExec{}, ReloadAgentStep{}, "user and agent_control.key_path"},
-		"alt without cfg path": {agents, AgentControlConfig{User: "root", KeyPath: "/k"}, &restartExec{}, ReloadAgentStep{AltConfig: "/root/x.yaml"}, "config_path is empty"},
-		"unsafe unit":          {agents, AgentControlConfig{User: "root", KeyPath: "/k", Unit: "u; rm -rf /"}, &restartExec{}, ReloadAgentStep{}, "unsafe for a shell command"},
+		"no agent exec":               {agents, ac, nil, ReloadAgentStep{}, "no agent-host SSH transport"},
+		"missing creds":               {agents, AgentControlConfig{}, &restartExec{}, ReloadAgentStep{}, "user and agent_control.key_path"},
+		"set-config without cfg path": {agents, AgentControlConfig{User: "root", KeyPath: "/k"}, &restartExec{}, ReloadAgentStep{SetConfig: map[string]string{"a.b": "1"}}, "config_path is empty"},
+		"unsafe unit":                 {agents, AgentControlConfig{User: "root", KeyPath: "/k", Unit: "u; rm -rf /"}, &restartExec{}, ReloadAgentStep{}, "unsafe for a shell command"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1867,7 +1810,7 @@ func TestReloadAgentStep(t *testing.T) {
 }
 
 // SetConfig patches the node's own config and restarts; it must refuse to
-// combine with the hand-staged AltConfig / RestoreConfig spellings.
+// combine with RestoreConfig, and must validate before touching the host.
 func TestRestartAgentStep_SetConfig(t *testing.T) {
 	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m", SSHHost: "10.0.0.10"}}
 	ac := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis", ConfigPath: "/root/agent.yaml"}
@@ -1891,20 +1834,8 @@ func TestRestartAgentStep_SetConfig(t *testing.T) {
 	})
 
 	// A rejected combination must fail BEFORE touching the host: erroring
-	// after the AltConfig swap would abort the scenario with the node left
-	// on the alt config and its restore step never reached.
-	t.Run("rejects AltConfig combination without mutating the host", func(t *testing.T) {
-		exec := &restartExec{catOut: "gc: {}\n"}
-		env := restartEnv(t, agents, ac, exec, nil)
-		step := RestartAgentStep{AltConfig: "/root/alt.yaml", SetConfig: map[string]string{"a.b": "1"}}
-		if err := step.Run(context.Background(), env); err == nil {
-			t.Error("AltConfig + SetConfig should error")
-		}
-		if exec.has("cp -f") || exec.has("systemctl restart") {
-			t.Errorf("host mutated before the combination was rejected: %+v", exec.calls)
-		}
-	})
-
+	// after the config write would abort the scenario with the node left
+	// modified and its restore step never reached.
 	t.Run("rejects RestoreConfig combination without mutating the host", func(t *testing.T) {
 		exec := &restartExec{catOut: "gc: {}\n"}
 		env := restartEnv(t, agents, ac, exec, nil)
@@ -1919,10 +1850,14 @@ func TestRestartAgentStep_SetConfig(t *testing.T) {
 
 	t.Run("requires config_path", func(t *testing.T) {
 		bare := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis"}
-		env := restartEnv(t, agents, bare, &restartExec{catOut: "gc: {}\n"}, nil)
+		exec := &restartExec{catOut: "gc: {}\n"}
+		env := restartEnv(t, agents, bare, exec, nil)
 		step := RestartAgentStep{SetConfig: map[string]string{"a.b": "1"}}
 		if err := step.Run(context.Background(), env); err == nil {
 			t.Error("SetConfig without agent_control.config_path should error")
+		}
+		if exec.has("systemctl restart") {
+			t.Error("must not restart when the config change is invalid")
 		}
 	})
 }
@@ -1950,17 +1885,10 @@ func TestReloadAgentStep_SetConfig(t *testing.T) {
 		if !exec.has("systemctl kill -s HUP lachesis") {
 			t.Errorf("did not SIGHUP the unit: %+v", exec.calls)
 		}
-	})
-
-	t.Run("rejects AltConfig combination without mutating the host", func(t *testing.T) {
-		exec := &restartExec{catOut: "gc: {}\n"}
-		env := restartEnv(t, agents, ac, exec, nil)
-		step := ReloadAgentStep{AltConfig: "/root/alt.yaml", SetConfig: map[string]string{"a.b": "1"}}
-		if err := step.Run(context.Background(), env); err == nil {
-			t.Error("AltConfig + SetConfig should error")
-		}
-		if exec.has("cp -f") || exec.has("HUP") {
-			t.Errorf("host mutated before the combination was rejected: %+v", exec.calls)
+		for _, c := range exec.calls {
+			if c.addr != "10.0.0.10" {
+				t.Errorf("SSHed to %q, want the agent's ssh_host 10.0.0.10", c.addr)
+			}
 		}
 	})
 
