@@ -400,9 +400,9 @@ func scrapeSampleCount(t *testing.T, reg *prometheus.Registry) uint64 {
 	return 0
 }
 
-// Every tick is timed, including one whose drain failed — the time was
-// still spent, and a tick that errors is exactly the case an operator
-// wants visible.
+// Successful ticks are timed; a tick whose drain failed is NOT — it did
+// only a fraction of the work, so folding it in would drag the quantiles
+// down exactly when drains are breaking.
 func TestTick_ObservesScrapeDuration(t *testing.T) {
 	r := &fakeReader{
 		returns: []map[bpf.FlowKey]bpf.FlowMetrics{
@@ -430,8 +430,8 @@ func TestTick_ObservesScrapeDuration(t *testing.T) {
 	if err := s.Tick(); err == nil {
 		t.Fatal("second Tick: want the synthetic reader failure")
 	}
-	if got := scrapeSampleCount(t, reg); got != 2 {
-		t.Errorf("observations after a failed tick = %d, want 2 (failed ticks are timed too)", got)
+	if got := scrapeSampleCount(t, reg); got != 1 {
+		t.Errorf("observations after a failed tick = %d, want 1 (a failed drain must not be timed)", got)
 	}
 }
 

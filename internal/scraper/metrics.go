@@ -14,7 +14,7 @@ import (
 //
 // The bundle mirrors docs/architecture/metrics.md:
 //
-//   - lachesis_scrape_duration_seconds   one drain+integrate tick
+//   - lachesis_scrape_duration_seconds   one successful drain+integrate tick
 type Metrics struct {
 	scrapeDuration prometheus.Histogram
 }
@@ -29,7 +29,7 @@ func NewMetrics() *Metrics {
 	return &Metrics{
 		scrapeDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "lachesis_scrape_duration_seconds",
-			Help:    "Duration of one scraper tick: telemetry_map BatchLookup drain, delta integration, and the pressure-relief pass.",
+			Help:    "Duration of one successful scraper tick: telemetry_map BatchLookup drain, delta integration, and the pressure-relief pass. Failed drains are excluded (see lachesis_scraper_errors_total).",
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 11), // 1ms..1.024s
 		}),
 	}
@@ -41,8 +41,11 @@ func (m *Metrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{m.scrapeDuration}
 }
 
-// ObserveScrape records one tick's wall time, including a tick that
-// failed partway (the time was still spent). nil-safe.
+// ObserveScrape records one completed tick's wall time. Only successful
+// ticks are observed — a tick whose drain failed did a fraction of the
+// work, and mixing those in would pull the quantiles down precisely when
+// drains are failing; lachesis_scraper_errors_total carries that signal.
+// nil-safe.
 func (m *Metrics) ObserveScrape(d time.Duration) {
 	if m == nil {
 		return
