@@ -87,7 +87,7 @@ scrape:
 		map[string]string{
 			"gc.pressure_high_watermark": "0.0001",
 			"gc.pressure_low_watermark":  "0.00005",
-		})
+		}, true)
 	if err != nil {
 		t.Fatalf("applySetConfig: %v", err)
 	}
@@ -134,5 +134,40 @@ scrape:
 	}
 	if got["scrape"].(map[string]any)["interval"] != "10s" {
 		t.Errorf("unrelated section lost: %v", got)
+	}
+}
+
+// A reload patches the config already in force and must NOT re-back-up:
+// the earlier restart's backup holds the pristine original and is the
+// scenario's only way home. Backing up here would overwrite it with the
+// already-patched config — a self-destroying restore.
+func TestApplySetConfig_NoBackupLeavesTheRestoreIntact(t *testing.T) {
+	exec := &restartExec{catOut: "reconcile:\n  interval: 600s\nkafka:\n  enabled: false\n"}
+	err := applySetConfig(context.Background(), exec, "10.0.0.1", "/root/agent.yaml",
+		map[string]string{"reconcile.interval": "15s"}, false)
+	if err != nil {
+		t.Fatalf("applySetConfig: %v", err)
+	}
+	if exec.has(".scenariotest.bak") {
+		t.Error("reload path took a backup — it would clobber the restart's copy of the real config")
+	}
+	// The patch still lands, on top of the in-force config.
+	var written string
+	for _, c := range exec.calls {
+		if m := regexp.MustCompile(`printf %s ([A-Za-z0-9+/=]+) \| base64 -d`).FindStringSubmatch(c.command); m != nil {
+			b, _ := base64.StdEncoding.DecodeString(m[1])
+			written = string(b)
+		}
+	}
+	var got map[string]any
+	if err := yaml.Unmarshal([]byte(written), &got); err != nil {
+		t.Fatalf("bad YAML written: %v", err)
+	}
+	if got["reconcile"].(map[string]any)["interval"] != "15s" {
+		t.Errorf("override not applied: %v", got)
+	}
+	// The suppression an earlier restart applied must still be in force.
+	if got["kafka"].(map[string]any)["enabled"] != false {
+		t.Errorf("earlier restart's override was lost: %v", got)
 	}
 }

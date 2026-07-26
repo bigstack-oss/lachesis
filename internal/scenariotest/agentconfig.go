@@ -22,15 +22,20 @@ import (
 )
 
 // applySetConfig reads the agent config at path on host, overrides the
-// dotted keys in set, and writes the result back — backing the original
-// up to <path>.scenariotest.bak first, so a later
-// [RestartAgentStep.RestoreConfig] puts it back untouched.
+// dotted keys in set, and writes the result back.
+//
+// With backup set it first copies the original to <path>.scenariotest.bak,
+// so a later [RestartAgentStep.RestoreConfig] puts it back untouched. A
+// mid-scenario reload passes false: its source is a config an earlier
+// restart already patched, and backing up again would overwrite that
+// restart's copy of the REAL config with the patched one — leaving the
+// scenario no way home.
 //
 // Comments and key order in the rewritten file are NOT preserved (it is
 // a YAML round-trip through a map). That is acceptable because the file
 // is a scenario-scoped temporary and the pristine original is the backup
 // that gets restored.
-func applySetConfig(ctx context.Context, exec VMExec, host, path string, set map[string]string) error {
+func applySetConfig(ctx context.Context, exec VMExec, host, path string, set map[string]string, backup bool) error {
 	raw, err := exec.Run(ctx, host, "sudo cat "+path)
 	if err != nil {
 		return fmt.Errorf("read agent config %s on %s: %w (output: %s)", path, host, err, raw)
@@ -60,8 +65,11 @@ func applySetConfig(ctx context.Context, exec VMExec, host, path string, set map
 	// base64 so arbitrary YAML (quotes, newlines, $, backticks) crosses the
 	// SSH command line untouched — the encoded form is alphanumeric, + / =
 	// only, so nothing in the config can break out of the command.
-	cmd := fmt.Sprintf("sudo cp -f %s %s.scenariotest.bak && printf %%s %s | base64 -d | sudo tee %s >/dev/null",
-		path, path, base64.StdEncoding.EncodeToString(out), path)
+	cmd := fmt.Sprintf("printf %%s %s | base64 -d | sudo tee %s >/dev/null",
+		base64.StdEncoding.EncodeToString(out), path)
+	if backup {
+		cmd = fmt.Sprintf("sudo cp -f %s %s.scenariotest.bak && %s", path, path, cmd)
+	}
 	if o, err := exec.Run(ctx, host, cmd); err != nil {
 		return fmt.Errorf("write agent config %s on %s: %w (output: %s)", path, host, err, o)
 	}

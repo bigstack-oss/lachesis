@@ -21,7 +21,7 @@ import (
 // refreshes the binding — the miss is only reachable in the
 // reconcile-diff path, i.e. when events were lost (a first-class
 // degraded mode: "metadata staleness bounded by the periodic
-// reconcile"). RestartAgentStep swaps in a kafka-off config for the
+// reconcile"). RestartAgentStep derives a kafka-off config for the
 // scenario and restores the original at the end, so it SKIPs cleanly on
 // clusters without agent_control configured.
 //
@@ -59,7 +59,9 @@ func macPinnedPortRecreate() *scenariotest.Scenario {
 			// Model the Kafka outage for the node under test. The
 			// kafka-off config is staged beside the agent config on the
 			// agent hosts (operator contract, like agent_control itself).
-			scenariotest.RestartAgentStep{Node: "node:0", AltConfig: "/root/agent-nokafka.yaml"},
+			scenariotest.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
+				"kafka.enabled": "false",
+			}},
 
 			// Baseline NIC: fresh port, traffic, and the port tier
 			// attributes it to nic2's id (sanity — green everywhere).

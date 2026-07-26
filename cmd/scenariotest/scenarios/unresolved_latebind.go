@@ -23,9 +23,9 @@ import (
 // park→resolve must fit inside the buffer TTL, so the resume config
 // uses a short interval and the assertions poll.
 //
-// The agent-control config points at node:0's host; the alt configs
-// (kafka-off/long-reconcile "suppress", kafka-off/short-reconcile
-// "resume", and a "normal" restore) are pre-staged on that host.
+// Nothing is pre-staged on that host: each phase names the keys it
+// changes and the step derives the config from what the node already
+// runs, so the final RestoreConfig returns the node's own original.
 func unresolvedLatebind() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").
@@ -44,7 +44,10 @@ func unresolvedLatebind() *scenariotest.Scenario {
 		Steps: []scenariotest.Step{
 			// Suppress metadata on node:0: kafka off + long reconcile, so a
 			// VM booted next is not learned.
-			scenariotest.RestartAgentStep{Node: "node:0", AltConfig: "/root/agent-c36-suppress.yaml"},
+			scenariotest.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
+				"kafka.enabled":      "false",
+				"reconcile.interval": "600s",
+			}},
 			// Boot vm-x — its MAC won't enter node:0's map (no kafka kick,
 			// reconcile far off).
 			scenariotest.BootVMStep{VM: "vm-x"},
@@ -57,7 +60,11 @@ func unresolvedLatebind() *scenariotest.Scenario {
 			// Resume metadata: SIGHUP a short reconcile interval in. The
 			// running agent's next reconcile learns vm-x; the buffer stays
 			// intact (no restart).
-			scenariotest.ReloadAgentStep{Node: "node:0", AltConfig: "/root/agent-c36-resume.yaml"},
+			// Only the interval changes; kafka stays off from the restart
+			// above, because SetConfig patches the config now in force.
+			scenariotest.ReloadAgentStep{Node: "node:0", SetConfig: map[string]string{
+				"reconcile.interval": "15s",
+			}},
 
 			// The buffered flow late-bound (was parked unresolved, then
 			// re-attributed) — you cannot resolve what was never buffered.
@@ -82,7 +89,7 @@ func unresolvedLatebind() *scenariotest.Scenario {
 				Budget: 1500 << 10, Note: "re-attributed once — write-back prevented a double-count"},
 
 			// Restore node:0's normal config (kafka on) for later runs.
-			scenariotest.RestartAgentStep{Node: "node:0", AltConfig: "/root/agent-c36-normal.yaml"},
+			scenariotest.RestartAgentStep{Node: "node:0", RestoreConfig: true},
 		},
 	}
 }
