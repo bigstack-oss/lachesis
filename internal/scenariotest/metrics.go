@@ -37,6 +37,12 @@ const (
 	// 60s grace), this gauge rises the instant a MAC is MarkDelete'd — the
 	// immediate signal that something was marked gone (docs/architecture/data-structures.md#lingering-ghost).
 	metricLingeringGhosts = "lachesis_lingering_ghosts_active"
+	// metricCountersReset is the agent's state-restart epoch — the
+	// discontinuity marker behind the cold-restart scenario
+	// (docs/architecture/boot-and-recovery.md#counters-reset-epoch). Constant per
+	// process; a changed value across an agent restart means the agent
+	// declared its counter baselines incomparable with what preceded them.
+	metricCountersReset = "lachesis_agent_counters_reset_timestamp_seconds"
 	// metricServerBytesTotal is the per-server billing family
 	// (docs/architecture/billing.md). Absent on agents predating the per-server export;
 	// only expectations with a VM target need it, and assert refuses
@@ -150,6 +156,9 @@ type ScrapeResult struct {
 	// Anomalies is lachesis_neutron_anomalies broken out by its
 	// `class` label.
 	Anomalies map[string]float64
+	// CountersResetEpoch is this agent's state-restart epoch gauge
+	// (0 when the family is absent — a pre-epoch build).
+	CountersResetEpoch float64
 }
 
 // MetricsSnapshot aggregates one scrape across all configured agents:
@@ -170,6 +179,9 @@ type MetricsSnapshot struct {
 	PressureReliefEvictions float64
 	// Anomalies sums each anomaly class across all agents.
 	Anomalies map[string]float64
+	// CountersResetEpochs is each agent's state-restart epoch, keyed by
+	// agent host — per-instance by nature, never summed.
+	CountersResetEpochs map[string]float64
 }
 
 // MACLookup is one agent's answer to "have you learned this MAC?" —
@@ -234,7 +246,8 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	r := ScrapeResult{Present: map[string]bool{}}
 	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures,
 		metricSettledFlows, metricLingeringGhosts, metricServerBytesTotal, metricNeutronAnomalies,
-		metricTenantSettledTuples, metricUnresolvedResolved, metricGCEvictions} {
+		metricTenantSettledTuples, metricUnresolvedResolved, metricGCEvictions,
+		metricCountersReset} {
 		_, ok := fams[n]
 		r.Present[n] = ok
 	}
@@ -251,6 +264,7 @@ func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, err
 	r.Servers = serverSamples(fams)
 	r.PortBytes = portSamples(fams)
 	r.Anomalies = anomalySamples(fams)
+	r.CountersResetEpoch = familySum(fams, metricCountersReset)
 	return r, nil
 }
 
@@ -366,6 +380,10 @@ func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) 
 				snap.Anomalies[class] = v
 			}
 		}
+		if snap.CountersResetEpochs == nil {
+			snap.CountersResetEpochs = map[string]float64{}
+		}
+		snap.CountersResetEpochs[a.Host] = r.CountersResetEpoch
 	}
 	return snap, nil
 }

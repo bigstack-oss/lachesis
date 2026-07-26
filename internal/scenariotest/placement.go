@@ -77,7 +77,36 @@ func skipReason(sc *Scenario, cfg Config) string {
 	if needsAgentControl(sc) && cfg.AgentControl.KeyPath == "" {
 		return "restarts an agent but agent_control.key_path is unset"
 	}
+	// Cold-restart scenarios additionally need to know where the agent
+	// keeps its durable state on the host — also an environment
+	// property, not a defect.
+	if needsWALPath(sc) && cfg.AgentControl.WALPath == "" {
+		return "removes the agent WAL but agent_control.wal_path is unset"
+	}
+	if needsPinPath(sc) && cfg.AgentControl.PinPath == "" {
+		return "removes the agent's map pins but agent_control.pin_path is unset"
+	}
 	return ""
+}
+
+// needsWALPath / needsPinPath report whether any step performs the
+// corresponding state removal, requiring its agent_control path.
+func needsWALPath(sc *Scenario) bool {
+	for _, st := range sc.Steps {
+		if r, ok := st.(RestartAgentStep); ok && r.RemoveWAL {
+			return true
+		}
+	}
+	return false
+}
+
+func needsPinPath(sc *Scenario) bool {
+	for _, st := range sc.Steps {
+		if r, ok := st.(RestartAgentStep); ok && r.RemovePins {
+			return true
+		}
+	}
+	return false
 }
 
 // needsAgentControl reports whether any of sc's steps drives the agent

@@ -99,6 +99,7 @@ type StepEnv struct {
 	// diff against them.
 	captured          map[tuple]float64
 	capturedServers   map[serverTuple]float64
+	capturedEpochs    map[string]float64
 	settledBase       float64
 	settledTuplesBase float64
 	resolvedBase      float64
@@ -316,6 +317,7 @@ func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 	env.captured = sumByTuple(snap.Bytes)
 	env.capturedServers = sumByServerTuple(snap.Servers)
+	env.capturedEpochs = snap.CountersResetEpochs
 	env.settledBase = snap.SettledFlows
 	env.settledTuplesBase = snap.SettledTuples
 	env.resolvedBase = snap.UnresolvedResolved
@@ -1343,6 +1345,84 @@ func dashEmpty(s string) string {
 	return s
 }
 
+// removeStateCmd builds the state-removal command for a cold restart:
+// the WAL (and .bak) always; the bpffs pins when RemovePins asks for a
+// full host-reboot simulation. Paths come from agent_control so
+// scenarios stay cluster-portable.
+func (s RestartAgentStep) removeStateCmd(ac AgentControlConfig) (string, error) {
+	if !s.RemoveWAL {
+		return "", fmt.Errorf("RemovePins without RemoveWAL is not a modeled failure shape — pins cannot vanish while the WAL survives a running host")
+	}
+	if ac.WALPath == "" {
+		return "", fmt.Errorf("RemoveWAL set but agent_control.wal_path is empty")
+	}
+	if err := shellSafe("agent_control.wal_path", ac.WALPath); err != nil {
+		return "", err
+	}
+	cmd := fmt.Sprintf("sudo rm -f %s %s.bak", ac.WALPath, ac.WALPath)
+	if s.RemovePins {
+		if ac.PinPath == "" {
+			return "", fmt.Errorf("RemovePins set but agent_control.pin_path is empty")
+		}
+		if err := shellSafe("agent_control.pin_path", ac.PinPath); err != nil {
+			return "", err
+		}
+		cmd += fmt.Sprintf(" && sudo rm -rf %s", ac.PinPath)
+	}
+	return cmd, nil
+}
+
+// EpochStep asserts the counters-reset epoch's behaviour across the
+// most recent [CaptureStep]: Changed false pins the warm-restart
+// contract (the stored epoch carries forward — the gauge keeps naming
+// the last TRUE state restart), Changed true pins the cold-boot one
+// (an empty-WAL start stamps a fresh, later epoch, scrapable as soon
+// as /metrics answers — the readiness gate inside [RestartAgentStep]
+// already proved that timing before this step runs).
+type EpochStep struct {
+	// Node selects the agent, as in [RestartAgentStep]. Empty = the
+	// sole agent.
+	Node string
+	// Changed is the expectation: true = a fresh epoch was stamped
+	// (strictly later than the captured one), false = the captured
+	// epoch carried through unchanged.
+	Changed bool
+	Note    string
+}
+
+func (EpochStep) Kind() string { return "assert-epoch" }
+
+func (EpochStep) requiredMetrics() []string {
+	return []string{metricCountersReset}
+}
+
+func (s EpochStep) Run(ctx context.Context, env *StepEnv) error {
+	agent, err := agentForNode(env.Config, s.Node)
+	if err != nil {
+		return fmt.Errorf("assert-epoch: %w", err)
+	}
+	base, ok := env.capturedEpochs[agent.Host]
+	if !ok {
+		return fmt.Errorf("assert-epoch: no captured epoch for %s — add a CaptureStep before the restart", agent.Host)
+	}
+	res, err := env.Metrics.Scrape(ctx, agent.MetricsURL)
+	if err != nil {
+		return fmt.Errorf("assert-epoch: scrape %s: %w", agent.MetricsURL, err)
+	}
+	cur := res.CountersResetEpoch
+	pass := cur == base && cur != 0
+	if s.Changed {
+		pass = cur > base
+	}
+	env.addRow(AssertRow{
+		Tenant:   agent.Host,
+		Zone:     "epoch",
+		Baseline: base, Current: cur, Delta: cur - base,
+		Pass: pass, Note: s.Note,
+	})
+	return nil
+}
+
 // SleepStep pauses the script — the timing primitive for scenarios
 // that must outwait an external cadence no metric signals (agent
 // restart windows, scrape-interval boundaries).
@@ -1396,6 +1476,16 @@ type RestartAgentStep struct {
 	// (<config_path>.scenariotest.bak) before the restart — how a
 	// scenario ends a modified-config phase and leaves the node as found.
 	RestoreConfig bool
+	// RemoveWAL deletes the agent's WAL and its .bak (agent_control.wal_path)
+	// between stop and start — the WAL-destroyed cold boot of the
+	// counters-reset-epoch design (docs/architecture/boot-and-recovery.md#counters-reset-epoch).
+	// With pinned maps still in place the restart is the ADOPTED shape:
+	// the kernel counters carry on and only the WAL-held state is lost.
+	RemoveWAL bool
+	// RemovePins additionally removes the agent's bpffs pin directory
+	// (agent_control.pin_path) — combined with RemoveWAL this simulates
+	// a host reboot: the true restart-from-zero shape.
+	RemovePins bool
 	// Timeout overrides [AgentControlConfig.ReadyTimeout] for the
 	// post-restart readiness wait.
 	Timeout time.Duration
@@ -1484,10 +1574,21 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 			"host", host, "path", ac.ConfigPath, "keys", len(s.SetConfig))
 	}
 
-	if out, err := env.AgentExec.Run(ctx, host, "sudo systemctl restart "+unit); err != nil {
-		return fmt.Errorf("restart-agent: systemctl restart %s on %s: %w (output: %s)", unit, host, err, out)
+	cycle := "sudo systemctl restart " + unit
+	if s.RemoveWAL || s.RemovePins {
+		rm, err := s.removeStateCmd(ac)
+		if err != nil {
+			return fmt.Errorf("restart-agent: %w", err)
+		}
+		// Stop first so the final flush cannot re-create the WAL after
+		// the removal; the gap is the cold boot under test.
+		cycle = "sudo systemctl stop " + unit + " && " + rm + " && sudo systemctl start " + unit
 	}
-	env.Log.Info("restart-agent: restart issued", "host", host, "unit", unit, "old_pid", oldPID)
+	if out, err := env.AgentExec.Run(ctx, host, cycle); err != nil {
+		return fmt.Errorf("restart-agent: cycle %s on %s: %w (output: %s)", unit, host, err, out)
+	}
+	env.Log.Info("restart-agent: restart issued", "host", host, "unit", unit,
+		"old_pid", oldPID, "remove_wal", s.RemoveWAL, "remove_pins", s.RemovePins)
 
 	return s.awaitReady(ctx, env, agent, host, unit, oldPID, base.AttachedInterfaces)
 }

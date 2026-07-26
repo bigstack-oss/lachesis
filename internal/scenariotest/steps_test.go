@@ -1959,3 +1959,126 @@ func TestSteps_EnableForwarding(t *testing.T) {
 		}
 	})
 }
+
+// TestRemoveStateCmd pins the cold-restart removal command: WAL always
+// (with its .bak), pins only on request, missing paths and the
+// pins-without-WAL shape refused, shell-unsafe paths rejected.
+func TestRemoveStateCmd(t *testing.T) {
+	cases := []struct {
+		name    string
+		step    RestartAgentStep
+		ac      AgentControlConfig
+		want    string
+		wantErr string
+	}{
+		{
+			name: "wal only",
+			step: RestartAgentStep{RemoveWAL: true},
+			ac:   AgentControlConfig{WALPath: "/var/lib/lachesis/wal.json"},
+			want: "sudo rm -f /var/lib/lachesis/wal.json /var/lib/lachesis/wal.json.bak",
+		},
+		{
+			name: "wal and pins",
+			step: RestartAgentStep{RemoveWAL: true, RemovePins: true},
+			ac:   AgentControlConfig{WALPath: "/var/lib/lachesis/wal.json", PinPath: "/sys/fs/bpf/lachesis"},
+			want: "sudo rm -f /var/lib/lachesis/wal.json /var/lib/lachesis/wal.json.bak && sudo rm -rf /sys/fs/bpf/lachesis",
+		},
+		{
+			name:    "pins without wal refused",
+			step:    RestartAgentStep{RemovePins: true},
+			ac:      AgentControlConfig{PinPath: "/sys/fs/bpf/lachesis"},
+			wantErr: "not a modeled failure shape",
+		},
+		{
+			name:    "missing wal_path",
+			step:    RestartAgentStep{RemoveWAL: true},
+			ac:      AgentControlConfig{},
+			wantErr: "agent_control.wal_path is empty",
+		},
+		{
+			name:    "missing pin_path",
+			step:    RestartAgentStep{RemoveWAL: true, RemovePins: true},
+			ac:      AgentControlConfig{WALPath: "/w.json"},
+			wantErr: "agent_control.pin_path is empty",
+		},
+		{
+			name:    "shell-unsafe wal_path",
+			step:    RestartAgentStep{RemoveWAL: true},
+			ac:      AgentControlConfig{WALPath: "/tmp/wal; rm -rf /"},
+			wantErr: "agent_control.wal_path",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.step.removeStateCmd(tc.ac)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("cmd = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEpochStep pins the assertion semantics: Changed=false demands
+// the captured epoch back exactly (and nonzero — an absent gauge must
+// not pass as "unchanged"); Changed=true demands a strictly later one.
+func TestEpochStep(t *testing.T) {
+	cases := []struct {
+		name     string
+		captured float64
+		current  float64
+		changed  bool
+		wantPass bool
+	}{
+		{"carried epoch passes unchanged", 1000, 1000, false, true},
+		{"new epoch fails unchanged", 1000, 2000, false, false},
+		{"zero gauge fails unchanged", 0, 0, false, false},
+		{"later epoch passes changed", 1000, 2000, true, true},
+		{"same epoch fails changed", 1000, 1000, true, false},
+		{"earlier epoch fails changed", 2000, 1000, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			host := cfg.Cluster.Agents[0].Host
+			env := &StepEnv{
+				Config:         cfg,
+				Log:            slog.New(slog.DiscardHandler),
+				Report:         &AssertReport{OK: true},
+				Metrics:        &epochMetrics{epoch: tc.current},
+				capturedEpochs: map[string]float64{host: tc.captured},
+			}
+			if err := (EpochStep{Changed: tc.changed}).Run(context.Background(), env); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			rows := env.Report.Rows
+			if len(rows) != 1 {
+				t.Fatalf("rows = %d, want 1", len(rows))
+			}
+			if rows[0].Pass != tc.wantPass {
+				t.Fatalf("pass = %v, want %v (baseline %v current %v)", rows[0].Pass, tc.wantPass, tc.captured, tc.current)
+			}
+		})
+	}
+}
+
+// epochMetrics is a MetricsSource stub returning a fixed epoch gauge.
+type epochMetrics struct{ epoch float64 }
+
+func (m *epochMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
+	return ScrapeResult{CountersResetEpoch: m.epoch}, nil
+}
+func (m *epochMetrics) LookupMAC(context.Context, string, string) (MACLookup, error) {
+	return MACLookup{}, nil
+}
+func (m *epochMetrics) LookupFlows(context.Context, string, string) ([]FlowRow, error) {
+	return nil, nil
+}
