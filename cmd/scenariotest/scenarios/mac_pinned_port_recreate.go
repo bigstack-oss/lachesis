@@ -56,9 +56,10 @@ func macPinnedPortRecreate() *scenariotest.Scenario {
 			"vm-b": "node:0",
 		},
 		Steps: []scenariotest.Step{
-			// Model the Kafka outage for the node under test. The
-			// kafka-off config is staged beside the agent config on the
-			// agent hosts (operator contract, like agent_control itself).
+			// Model the Kafka outage for the node under test. The kafka-off
+			// config is derived from the node's own — nothing is staged on
+			// the agent hosts — and the closing RestoreConfig puts the
+			// original back.
 			scenariotest.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
 				"kafka.enabled": "false",
 			}},

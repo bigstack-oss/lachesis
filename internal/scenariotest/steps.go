@@ -1371,6 +1371,21 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	if err := shellSafe("agent_control.unit", unit); err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
+	// Validate the config-source combination BEFORE touching the host: a
+	// check that fires after the AltConfig swap would abort the scenario
+	// with the node already on the alt config and its restore step never
+	// reached.
+	if len(s.SetConfig) > 0 {
+		if s.AltConfig != "" || s.RestoreConfig {
+			return fmt.Errorf("restart-agent: SetConfig is mutually exclusive with AltConfig and RestoreConfig")
+		}
+		if ac.ConfigPath == "" {
+			return fmt.Errorf("restart-agent: SetConfig set but agent_control.config_path is empty")
+		}
+		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+			return fmt.Errorf("restart-agent: %w", err)
+		}
+	}
 
 	// Baseline THIS agent's tap count so readiness can wait for the
 	// re-attach (the boot zombie-hunt drops filters, then re-attaches).
@@ -1420,15 +1435,8 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 
 	if len(s.SetConfig) > 0 {
-		if s.AltConfig != "" || s.RestoreConfig {
-			return fmt.Errorf("restart-agent: SetConfig is mutually exclusive with AltConfig and RestoreConfig")
-		}
-		if ac.ConfigPath == "" {
-			return fmt.Errorf("restart-agent: SetConfig set but agent_control.config_path is empty")
-		}
-		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
-			return fmt.Errorf("restart-agent: %w", err)
-		}
+		// Combination and path already validated above, before any host
+		// mutation could have happened.
 		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig, true); err != nil {
 			return fmt.Errorf("restart-agent: %w", err)
 		}
@@ -1609,6 +1617,19 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	if err := shellSafe("agent_control.unit", unit); err != nil {
 		return fmt.Errorf("reload-agent: %w", err)
 	}
+	// Validate before mutating the host — see the same note on
+	// [RestartAgentStep.Run].
+	if len(s.SetConfig) > 0 {
+		if s.AltConfig != "" {
+			return fmt.Errorf("reload-agent: SetConfig and AltConfig are mutually exclusive")
+		}
+		if ac.ConfigPath == "" {
+			return fmt.Errorf("reload-agent: SetConfig set but agent_control.config_path is empty")
+		}
+		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+			return fmt.Errorf("reload-agent: %w", err)
+		}
+	}
 	host := agent.sshHost()
 	if s.AltConfig != "" {
 		if ac.ConfigPath == "" {
@@ -1630,15 +1651,6 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		}
 	}
 	if len(s.SetConfig) > 0 {
-		if s.AltConfig != "" {
-			return fmt.Errorf("reload-agent: SetConfig and AltConfig are mutually exclusive")
-		}
-		if ac.ConfigPath == "" {
-			return fmt.Errorf("reload-agent: SetConfig set but agent_control.config_path is empty")
-		}
-		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
-			return fmt.Errorf("reload-agent: %w", err)
-		}
 		// backup=false, same PRECONDITION as the AltConfig path above: the
 		// earlier restart's backup holds the real config and must survive.
 		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig, false); err != nil {
