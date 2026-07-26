@@ -75,8 +75,11 @@ func gcPressureRelief() *scenariotest.Scenario {
 			// ...and counted once. A flow re-created after its eviction
 			// re-baselines from a fresh kernel counter; the delta math's
 			// current<lastRaw branch must not re-add the flushed bytes.
+			// The budget sits between one transfer and two: comfortably
+			// above the ~4 MiB driven, well below the ~8.2 MiB a full
+			// double-count would produce.
 			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "external",
-				Budget: 8 << 20, Note: "evict-then-recreate counted once, not twice"},
+				Budget: 6 << 20, Note: "evict-then-recreate counted once, not twice"},
 
 			// Restore the node's real watermarks.
 			scenariotest.RestartAgentStep{Node: "node:0", RestoreConfig: true},
