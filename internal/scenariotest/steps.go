@@ -1429,7 +1429,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
 			return fmt.Errorf("restart-agent: %w", err)
 		}
-		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig); err != nil {
+		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig, true); err != nil {
 			return fmt.Errorf("restart-agent: %w", err)
 		}
 		env.Log.Info("restart-agent: config overrides applied",
@@ -1573,8 +1573,19 @@ type ReloadAgentStep struct {
 	Node string
 	// AltConfig is an agent-host path copied over the agent config before
 	// the SIGHUP. Unlike [RestartAgentStep], NO backup is taken first —
-	// see the PRECONDITION on the type.
+	// see the PRECONDITION on the type. Prefer SetConfig, which needs
+	// nothing staged on the host.
 	AltConfig string
+	// SetConfig overrides individual keys in the config the node is
+	// currently running, before the SIGHUP — dotted YAML path to value,
+	// like [RestartAgentStep.SetConfig]. Because it patches the CURRENT
+	// config, overrides an earlier restart applied stay in force and this
+	// step only names what changes.
+	//
+	// As with AltConfig, NO backup is taken (the same PRECONDITION
+	// applies): the earlier restart's backup is the scenario's way home.
+	// Mutually exclusive with AltConfig.
+	SetConfig map[string]string
 }
 
 func (ReloadAgentStep) Kind() string { return "reload-agent" }
@@ -1618,6 +1629,25 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 			return fmt.Errorf("reload-agent: install alt config on %s: %w (output: %s)", host, err, out)
 		}
 	}
+	if len(s.SetConfig) > 0 {
+		if s.AltConfig != "" {
+			return fmt.Errorf("reload-agent: SetConfig and AltConfig are mutually exclusive")
+		}
+		if ac.ConfigPath == "" {
+			return fmt.Errorf("reload-agent: SetConfig set but agent_control.config_path is empty")
+		}
+		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+			return fmt.Errorf("reload-agent: %w", err)
+		}
+		// backup=false, same PRECONDITION as the AltConfig path above: the
+		// earlier restart's backup holds the real config and must survive.
+		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig, false); err != nil {
+			return fmt.Errorf("reload-agent: %w", err)
+		}
+		env.Log.Info("reload-agent: config overrides applied",
+			"host", host, "path", ac.ConfigPath, "keys", len(s.SetConfig))
+	}
+
 	// SIGHUP the unit's main process (no ExecReload on the unit — send the
 	// signal directly). The agent re-reads its YAML and applies the
 	// hot-reloadable fields; the process keeps running.
