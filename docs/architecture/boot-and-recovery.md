@@ -116,6 +116,17 @@ are separate goroutines. This is [Contract 4](./contracts.md#required-contracts)
 - WAL gives us up-to-60s-old GlobalState.
 - **Net data loss: ≤60s of bytes** (the WAL flush window).
 
+### Counters-reset epoch
+
+The paths above keep the exposed series continuous. The remaining shapes — WAL destroyed, WAL-dir volume replaced, agent reinstalled without a reboot, or the WAL disabled — start with **empty billing state**, and the exposed series restart with baselines that are not comparable to what preceded them (from zero when the kernel maps also restarted; from the adopted kernel cumulative when pinned maps survived a WAL loss). Without a declaration, the billing ETL's day-window subtraction reads the drop as a negative delta and clamps the day to zero — real usage silently lost.
+
+`lachesis_agent_counters_reset_timestamp_seconds` is that declaration (the `process_start_time_seconds` idiom). Decided **once**, during the boot-time WAL restore (step 5), before any worker starts:
+
+- **Warm boot** (`Primary`/`Backup` load) → carry the epoch stored in the snapshot: the gauge keeps declaring the last *true* restart across any number of clean restarts. A pre-epoch snapshot (upgrade path; stored value 0 = unknown) re-stamps once.
+- **Empty start** (both files missing, corrupt-then-quarantined, or WAL disabled) → stamp `now`, and **flush it to disk immediately** — waiting for the first periodic flush would let a crash inside that window forget the reset, and a forgotten reset is a silently-clamped billing day.
+
+The semantics are deliberately a **discontinuity marker** ("baselines not comparable across T"), not "counters at zero": with pinned maps a WAL-less boot re-adopts the surviving kernel counters and restarts *high*. The consumer contract ([billing.md](./billing.md#lifetimes-and-the-etl-contract)) splits day windows at each distinct gauge value and baselines every post-epoch segment on its **first in-window sample** — exact for both restart shapes, and self-correcting when a declaration was spurious (splitting a continuous series with real-sample baselines telescopes back to plain subtraction). That self-correction is why the agent stamps on *any* empty-WAL boot without needing to distinguish adopted from fresh pins. Alert on `changes(lachesis_agent_counters_reset_timestamp_seconds[1d]) > 0` — a lost WAL is an incident regardless of billing compensation.
+
 ### Why not `BPF_MAP_TYPE_PERCPU_LRU_HASH`?
 
 LRU silently evicts entries between scrapes. Bytes accumulated on an evicted entry are lost forever — unrecoverable. Pressure-relief GC (in Go) flushes to GlobalState **before** evicting, so the bytes survive. See [ADR 0005](../adr/0005-pressure-relief-gc-over-lru-hash.md).

@@ -120,6 +120,7 @@ or sum by (tenant_id) (rate(lachesis_tenant_bytes_total[1m]))
 | `lachesis_wal_flush_latency_seconds` | histogram | — | WAL writer, write+fsync+rename phase (no lock held). Buckets: 1ms..1s |
 | `lachesis_wal_flush_failures_total` | counter | `stage="marshal\|write\|fsync\|rename_bak\|rename_current\|dir_sync"` | WAL writer |
 | `lachesis_wal_load_fallback_total` | counter | `from="bak\|empty"` | boot loader |
+| `lachesis_agent_counters_reset_timestamp_seconds` | gauge | — | unix time the agent's billing state last restarted — counter baselines are not comparable across this instant; constant per process, carried across warm restarts via the WAL, stamped on any empty-WAL boot. Each distinct value in a TSDB window is one discontinuity the billing ETL splits its day segments at ([billing.md](./billing.md), [boot-and-recovery.md](./boot-and-recovery.md#counters-reset-epoch)) |
 | `lachesis_neutron_sync_age_seconds` | gauge | — | last successful cold-start or full reconcile; -1 = never synced |
 | `lachesis_neutron_api_errors_total` | counter | `endpoint, code` (HTTP status, or `network` for connection-level failures) | Neutron client |
 | `lachesis_neutron_unknown_device_owner_total` | counter | `owner` | port admissions outside the IsKnownVMOwner allowlist |
