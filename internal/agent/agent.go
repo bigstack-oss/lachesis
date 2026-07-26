@@ -133,6 +133,13 @@ type Agent struct {
 	walServerSettledBuf []state.ServerSettledRecord
 	walTotalSettledBuf  []state.TotalSettledRecord
 
+	// countersResetAt is the unix-seconds state-restart epoch behind
+	// lachesis_agent_counters_reset_timestamp_seconds — decided once by
+	// the WAL restore during bootstrap, constant for the process
+	// lifetime, persisted on every flush. Written before any worker
+	// starts; read only by the flush goroutine afterwards.
+	countersResetAt int64
+
 	// buildID stamps the WAL envelope's agent_build field. Resolved
 	// once at construction from the binary's embedded VCS revision;
 	// see agentBuildID in walflush.go.
@@ -217,4 +224,12 @@ func (a *Agent) SeedServerSettled(records []state.ServerSettledRecord) {
 // that keeps the total tier monotone across restarts.
 func (a *Agent) SeedTotalSettled(records []state.TotalSettledRecord) {
 	a.state.RestoreTotalSettled(records)
+}
+
+// setCountersReset records the state-restart epoch on the agent (for
+// WAL persistence) and publishes it on the gauge. Called once, during
+// bootstrap's WAL restore, before any worker starts.
+func (a *Agent) setCountersReset(unixSeconds int64) {
+	a.countersResetAt = unixSeconds
+	a.mx.wal.SetCountersReset(unixSeconds)
 }

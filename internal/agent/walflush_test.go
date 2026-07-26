@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -29,10 +30,11 @@ import (
 // newIdleAgent constructs an agent without starting Run — the WAL
 // restore executes between New and Run, so these tests drive it
 // directly via RestoreFromWALForTest.
-func newIdleAgent(t *testing.T) *agent.Agent {
+func newIdleAgent(t *testing.T, walCfg config.WALConfig) *agent.Agent {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.HTTP.Listen = "127.0.0.1:0"
+	cfg.WAL = walCfg
 	log, err := logging.Init(cfg.Logging, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("logging.Init: %v", err)
@@ -67,7 +69,7 @@ func seedSnapshots(t *testing.T, path string) {
 		},
 	}}
 	for i := 0; i < 2; i++ {
-		if err := wal.Save(path, "", records, nil, nil, nil, nil); err != nil {
+		if err := wal.Save(path, "", records, nil, nil, nil, 1753400000, nil); err != nil {
 			t.Fatalf("seed save %d: %v", i+1, err)
 		}
 	}
@@ -116,8 +118,8 @@ func TestRestoreFromWAL_SchemaNewerIsFatalAndLeavesFileUntouched(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	ag := newIdleAgent(t)
-	err = agent.RestoreFromWALForTest(ag, config.WALConfig{Enabled: true, Path: path})
+	ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path})
+	err = agent.RestoreFromWALForTest(ag)
 	if !errors.Is(err, wal.ErrSchemaNewer) {
 		t.Fatalf("restore = %v, want error wrapping ErrSchemaNewer", err)
 	}
@@ -143,8 +145,8 @@ func TestRestoreFromWAL_CorruptPrimaryQuarantinedAndBackupRestored(t *testing.T)
 		t.Fatalf("corrupt primary: %v", err)
 	}
 
-	ag := newIdleAgent(t)
-	if err := agent.RestoreFromWALForTest(ag, config.WALConfig{Enabled: true, Path: path}); err != nil {
+	ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path})
+	if err := agent.RestoreFromWALForTest(ag); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
@@ -178,8 +180,8 @@ func TestRestoreFromWAL_BothCorruptStartsEmptyAndQuarantinesPrimary(t *testing.T
 		t.Fatalf("seed backup: %v", err)
 	}
 
-	ag := newIdleAgent(t)
-	if err := agent.RestoreFromWALForTest(ag, config.WALConfig{Enabled: true, Path: path}); err != nil {
+	ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path})
+	if err := agent.RestoreFromWALForTest(ag); err != nil {
 		t.Fatalf("restore should start empty, got: %v", err)
 	}
 
@@ -226,4 +228,118 @@ func TestBuildIDFrom_ExtractsShortVCSRevision(t *testing.T) {
 			}
 		})
 	}
+}
+
+// countersResetGauge reads lachesis_agent_counters_reset_timestamp_seconds
+// off the agent's WAL metrics bundle.
+func countersResetGauge(t *testing.T, ag *agent.Agent) float64 {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	for _, c := range ag.WALMetrics().Collectors() {
+		reg.MustRegister(c)
+	}
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, fam := range mf {
+		if fam.GetName() == "lachesis_agent_counters_reset_timestamp_seconds" {
+			return fam.GetMetric()[0].GetGauge().GetValue()
+		}
+	}
+	t.Fatal("lachesis_agent_counters_reset_timestamp_seconds not found")
+	return 0
+}
+
+// TestRestoreFromWAL_CountersResetDecision drives the epoch decision
+// matrix (docs/architecture/boot-and-recovery.md#counters-reset-epoch):
+// a warm boot carries the stored epoch; an empty start stamps now and
+// persists it IMMEDIATELY (a crash before the first periodic flush
+// must not forget the reset); a pre-v6 snapshot (stored epoch 0 =
+// unknown) re-stamps once.
+func TestRestoreFromWAL_CountersResetDecision(t *testing.T) {
+	t.Run("empty start stamps now and persists immediately", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "wal.json")
+		ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path})
+		before := time.Now().Unix()
+		if err := agent.RestoreFromWALForTest(ag); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		got := int64(countersResetGauge(t, ag))
+		if got < before || got > time.Now().Unix() {
+			t.Fatalf("gauge = %d, want a now-ish stamp (≥ %d)", got, before)
+		}
+		// The immediate flush persisted it: a second agent warm-boots
+		// off the file and carries the SAME epoch.
+		res, err := wal.Load(path)
+		if err != nil {
+			t.Fatalf("Load after stamp: %v", err)
+		}
+		if res.CountersResetAt != got {
+			t.Fatalf("persisted epoch = %d, want the stamped %d", res.CountersResetAt, got)
+		}
+	})
+
+	t.Run("warm boot carries the stored epoch", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "wal.json")
+		if err := wal.Save(path, "", nil, nil, nil, nil, 1753400000, nil); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path})
+		if err := agent.RestoreFromWALForTest(ag); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		if got := int64(countersResetGauge(t, ag)); got != 1753400000 {
+			t.Fatalf("gauge = %d, want the carried 1753400000", got)
+		}
+	})
+
+	t.Run("pre-epoch snapshot re-stamps once", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "wal.json")
+		if err := wal.Save(path, "", nil, nil, nil, nil, 0, nil); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path})
+		before := time.Now().Unix()
+		if err := agent.RestoreFromWALForTest(ag); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		got := int64(countersResetGauge(t, ag))
+		if got < before {
+			t.Fatalf("gauge = %d, want a fresh stamp for the unknown epoch", got)
+		}
+		res, err := wal.Load(path)
+		if err != nil {
+			t.Fatalf("Load after re-stamp: %v", err)
+		}
+		if res.CountersResetAt != got {
+			t.Fatalf("persisted epoch = %d, want %d", res.CountersResetAt, got)
+		}
+	})
+
+	t.Run("unreadable snapshots quarantine then stamp", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "wal.json")
+		if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+			t.Fatalf("write corrupt: %v", err)
+		}
+		ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path})
+		before := time.Now().Unix()
+		if err := agent.RestoreFromWALForTest(ag); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		if got := int64(countersResetGauge(t, ag)); got < before {
+			t.Fatalf("gauge = %d, want a now-ish stamp after quarantine", got)
+		}
+	})
+
+	t.Run("disabled WAL stamps every boot", func(t *testing.T) {
+		ag := newIdleAgent(t, config.WALConfig{Enabled: false})
+		before := time.Now().Unix()
+		if err := agent.RestoreFromWALForTest(ag); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		if got := int64(countersResetGauge(t, ag)); got < before {
+			t.Fatalf("gauge = %d, want a now-ish stamp with WAL disabled", got)
+		}
+	})
 }

@@ -40,7 +40,15 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 //     additive — a v4 file is a valid v5 file with no total-settled
 //     buckets (no project had died yet), so Load reads it without
 //     migration.
-const SchemaVersion uint = 5
+//   - v6: adds counters_reset_at_s — the epoch behind
+//     lachesis_agent_counters_reset_timestamp_seconds, carried across
+//     warm restarts so the gauge keeps declaring the last true state
+//     restart (docs/architecture/boot-and-recovery.md). Purely
+//     additive — the field decodes as 0 from a v5 file, which the boot
+//     restore treats as "epoch unknown" and re-stamps once (a spurious
+//     discontinuity is billing-free under the ETL's per-segment
+//     baseline subtraction; the one-time alert at upgrade is accepted).
+const SchemaVersion uint = 6
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
 // previous snapshot. TempSuffix is the in-progress write target.
@@ -91,13 +99,16 @@ const (
 // which predate the settled section; ServerSettled is nil for LoadEmpty
 // and for v1–v3 snapshots, which predate the server-settled section;
 // TotalSettled is nil for LoadEmpty and for v1–v4 snapshots, which
-// predate the total-settled section.
+// predate the total-settled section. CountersResetAt is 0 for
+// LoadEmpty and for v1–v5 snapshots, which predate the epoch field —
+// the restore treats 0 as "unknown" and stamps a fresh epoch.
 type LoadResult struct {
-	Records       []state.Record
-	TenantSettled []state.TenantSettledRecord
-	ServerSettled []state.ServerSettledRecord
-	TotalSettled  []state.TotalSettledRecord
-	Source        LoadSource
+	Records         []state.Record
+	TenantSettled   []state.TenantSettledRecord
+	ServerSettled   []state.ServerSettledRecord
+	TotalSettled    []state.TotalSettledRecord
+	CountersResetAt int64
+	Source          LoadSource
 }
 
 // snapshotWire is the on-disk envelope. Field order and JSON tags
@@ -112,6 +123,11 @@ type snapshotWire struct {
 	TenantSettled []tenantSettledWire `json:"tenant_settled,omitempty"`
 	ServerSettled []serverSettledWire `json:"server_settled,omitempty"`
 	TotalSettled  []totalSettledWire  `json:"total_settled,omitempty"`
+	// CountersResetAtS is the unix-seconds epoch of the last state
+	// restart (v6+): the moment counter baselines last became
+	// incomparable with what preceded them. Written on every flush so
+	// warm restarts carry the last true reset forward.
+	CountersResetAtS int64 `json:"counters_reset_at_s,omitempty"`
 	// LegacySettled reads the ≤v3 on-disk key `settled` (the tenant
 	// accumulator's pre-four-layer name). Load merges it into
 	// TenantSettled; Save never writes it (always nil + omitempty).

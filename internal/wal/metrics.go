@@ -19,12 +19,18 @@ import (
 //   - lachesis_wal_flush_latency_seconds        write+fsync+rename phase
 //   - lachesis_wal_flush_failures_total{stage}  per-stage failure counter
 //   - lachesis_wal_load_fallback_total{from}    boot-load fallback counter
+//
+// plus the state-restart epoch the boot restore decides
+// (docs/architecture/boot-and-recovery.md):
+//
+//   - lachesis_agent_counters_reset_timestamp_seconds  discontinuity marker
 type Metrics struct {
 	snapshotCopySeconds prometheus.Histogram
 	marshalSeconds      prometheus.Histogram
 	flushLatencySeconds prometheus.Histogram
 	flushFailures       *prometheus.CounterVec
 	loadFallback        *prometheus.CounterVec
+	countersReset       prometheus.Gauge
 }
 
 // NewMetrics constructs the WAL instrument bundle. Buckets follow
@@ -59,6 +65,10 @@ func NewMetrics() *Metrics {
 			Name: "lachesis_wal_load_fallback_total",
 			Help: "WAL boot loader fallbacks — bak when primary was unusable, empty on first boot or when both files were unreadable.",
 		}, []string{"from"}),
+		countersReset: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lachesis_agent_counters_reset_timestamp_seconds",
+			Help: "Unix time the agent's billing state last restarted — counter baselines are not comparable across this instant. Constant per process; each distinct value in a TSDB window is one declared discontinuity the billing ETL splits its day segments at (docs/architecture/billing.md).",
+		}),
 	}
 	for _, stage := range []string{StageWrite, StageFsync, StageRenameBak, StageRenameCurrent, StageDirSync} {
 		m.flushFailures.WithLabelValues(stage).Add(0)
@@ -78,6 +88,7 @@ func (m *Metrics) Collectors() []prometheus.Collector {
 		m.flushLatencySeconds,
 		m.flushFailures,
 		m.loadFallback,
+		m.countersReset,
 	}
 }
 
@@ -113,6 +124,16 @@ func (m *Metrics) observeFailure(stage string) {
 		return
 	}
 	m.flushFailures.WithLabelValues(stage).Inc()
+}
+
+// SetCountersReset publishes the state-restart epoch the boot
+// restore decided — once, before workers start; the value then holds
+// for the process lifetime (the process_start_time_seconds idiom).
+func (m *Metrics) SetCountersReset(unixSeconds int64) {
+	if m == nil {
+		return
+	}
+	m.countersReset.Set(float64(unixSeconds))
 }
 
 // RecordLoadFallback bumps the load-fallback counter. The caller

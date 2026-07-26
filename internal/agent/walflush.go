@@ -12,7 +12,6 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/bigstack-oss/lachesis/internal/config"
 	"github.com/bigstack-oss/lachesis/internal/wal"
 )
 
@@ -64,7 +63,7 @@ func (a *Agent) flushWAL() error {
 	copyStart := time.Now()
 	a.walRecBuf, a.walTenantSettledBuf, a.walServerSettledBuf, a.walTotalSettledBuf = a.state.SnapshotForWAL(a.walRecBuf[:0], a.walTenantSettledBuf[:0], a.walServerSettledBuf[:0], a.walTotalSettledBuf[:0])
 	a.mx.wal.ObserveCopy(time.Since(copyStart))
-	return wal.Save(a.cfg.WAL.Path, a.buildID, a.walRecBuf, a.walTenantSettledBuf, a.walServerSettledBuf, a.walTotalSettledBuf, a.mx.wal)
+	return wal.Save(a.cfg.WAL.Path, a.buildID, a.walRecBuf, a.walTenantSettledBuf, a.walServerSettledBuf, a.walTotalSettledBuf, a.countersResetAt, a.mx.wal)
 }
 
 // restoreFromWAL reads the on-disk snapshot (if enabled) and seeds
@@ -85,9 +84,11 @@ func (a *Agent) flushWAL() error {
 // Load fallbacks (bak or empty) are recorded on the agent's WAL
 // metrics so an operator can grep lachesis_wal_load_fallback_total
 // to spot a corrupt primary or a first-boot.
-func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
+func restoreFromWAL(ag *Agent) error {
+	cfg := ag.cfg.WAL
 	if !cfg.Enabled {
 		slog.Info("disabled; starting with empty state", "component", componentWAL)
+		ag.setCountersReset(time.Now().Unix())
 		return nil
 	}
 	res, err := wal.Load(cfg.Path)
@@ -98,7 +99,7 @@ func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 		slog.Warn("restore failed; agent will start with empty state",
 			"component", componentWAL, "err", err)
 		quarantineWAL(cfg.Path)
-		return nil
+		return stampCountersReset(ag)
 	}
 	switch res.Source {
 	case wal.LoadFromPrimary:
@@ -128,6 +129,33 @@ func restoreFromWAL(ag *Agent, cfg config.WALConfig) error {
 	}
 	if len(res.TotalSettled) > 0 {
 		ag.SeedTotalSettled(res.TotalSettled)
+	}
+	// The counters-reset epoch is decided here, once, from the load
+	// outcome (docs/architecture/boot-and-recovery.md#counters-reset-epoch): a
+	// warm boot carries the snapshot's stored epoch — the gauge keeps
+	// declaring the last TRUE state restart — while an empty start (and
+	// a pre-v6 snapshot whose field decodes 0: epoch unknown) stamps
+	// now. A spurious stamp is billing-free under the ETL's per-segment
+	// baseline subtraction, so no adopted-vs-fresh pin detection is
+	// needed.
+	if res.Source != wal.LoadEmpty && res.CountersResetAt != 0 {
+		ag.setCountersReset(res.CountersResetAt)
+		return nil
+	}
+	return stampCountersReset(ag)
+}
+
+// stampCountersReset declares a state discontinuity at now and flushes
+// it to disk immediately — waiting for the first periodic flush would
+// let a crash inside that window forget the reset, and a forgotten
+// reset is a silently-clamped billing day. The flush also seeds the
+// on-disk snapshot for the flush rotation, so it doubles as the
+// first-boot WAL creation.
+func stampCountersReset(ag *Agent) error {
+	ag.setCountersReset(time.Now().Unix())
+	if err := ag.flushWAL(); err != nil {
+		slog.Warn("could not persist the counters-reset epoch; a crash before the next flush re-stamps it",
+			"component", componentWAL, "path", ag.cfg.WAL.Path, "err", err)
 	}
 	return nil
 }

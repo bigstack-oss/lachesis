@@ -70,20 +70,22 @@ type stageErr struct {
 func (e *stageErr) Error() string { return fmt.Sprintf("wal %s: %v", e.Stage, e.Err) }
 func (e *stageErr) Unwrap() error { return e.Err }
 
-// Save writes records and the three settled accumulators to path via
-// the atomic tmp+fsync+rename rotation described in the package doc.
+// Save writes records, the three settled accumulators, and the
+// counters-reset epoch to path via the atomic tmp+fsync+rename
+// rotation described in the package doc.
 // The slices must come from one [state.GlobalState.SnapshotForWAL]
 // call — slices snapshotted separately can tear across a concurrent
 // settle fold and persist the folded bytes twice or not at all.
 // agentBuild is informational (correlation with build logs); empty is
 // acceptable. m may be nil when phase timings and failure stages are
 // not needed.
-func Save(path, agentBuild string, records []state.Record, settled []state.TenantSettledRecord, serverSettled []state.ServerSettledRecord, totalSettled []state.TotalSettledRecord, m *Metrics) error {
+func Save(path, agentBuild string, records []state.Record, settled []state.TenantSettledRecord, serverSettled []state.ServerSettledRecord, totalSettled []state.TotalSettledRecord, countersResetAt int64, m *Metrics) error {
 	snap := snapshotWire{
-		SchemaVersion: SchemaVersion,
-		AgentBuild:    agentBuild,
-		WrittenAtNs:   uint64(time.Now().UnixNano()),
-		GlobalState:   make([]entryWire, len(records)),
+		SchemaVersion:    SchemaVersion,
+		AgentBuild:       agentBuild,
+		WrittenAtNs:      uint64(time.Now().UnixNano()),
+		GlobalState:      make([]entryWire, len(records)),
+		CountersResetAtS: countersResetAt,
 	}
 	for i := range records {
 		snap.GlobalState[i] = toWire(records[i])
@@ -238,7 +240,7 @@ func writeAndFsync(path string, data []byte) error {
 func Load(path string) (LoadResult, error) {
 	primary, primaryErr := readAndParse(path)
 	if primaryErr == nil {
-		return LoadResult{Records: fromSnapshot(primary), TenantSettled: fromTenantSettled(primary), ServerSettled: fromServerSettled(primary), TotalSettled: fromTotalSettled(primary), Source: LoadFromPrimary}, nil
+		return LoadResult{Records: fromSnapshot(primary), TenantSettled: fromTenantSettled(primary), ServerSettled: fromServerSettled(primary), TotalSettled: fromTotalSettled(primary), CountersResetAt: primary.CountersResetAtS, Source: LoadFromPrimary}, nil
 	}
 
 	// The .bak behind a newer-schema primary may well parse — it can
@@ -251,7 +253,7 @@ func Load(path string) (LoadResult, error) {
 	bakPath := path + BackupSuffix
 	backup, backupErr := readAndParse(bakPath)
 	if backupErr == nil {
-		return LoadResult{Records: fromSnapshot(backup), TenantSettled: fromTenantSettled(backup), ServerSettled: fromServerSettled(backup), TotalSettled: fromTotalSettled(backup), Source: LoadFromBackup}, nil
+		return LoadResult{Records: fromSnapshot(backup), TenantSettled: fromTenantSettled(backup), ServerSettled: fromServerSettled(backup), TotalSettled: fromTotalSettled(backup), CountersResetAt: backup.CountersResetAtS, Source: LoadFromBackup}, nil
 	}
 
 	// Both missing is the first-boot path; report as empty.

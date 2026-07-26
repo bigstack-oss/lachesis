@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/boot"
-	"github.com/bigstack-oss/lachesis/internal/config"
 	"github.com/bigstack-oss/lachesis/internal/gc"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/tunables"
@@ -24,8 +23,8 @@ func (a *Agent) CloseListenerForTest() error {
 // package can exercise the boot-time error classes (schema-newer is
 // fatal; corruption quarantines the primary and starts empty) without
 // a Linux Bootstrap.
-func RestoreFromWALForTest(a *Agent, cfg config.WALConfig) error {
-	return restoreFromWAL(a, cfg)
+func RestoreFromWALForTest(a *Agent) error {
+	return restoreFromWAL(a)
 }
 
 // BuildIDFromForTest exposes buildIDFrom so the extraction of the

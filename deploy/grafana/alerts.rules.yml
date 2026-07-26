@@ -70,3 +70,24 @@ groups:
             committed and will be retried next pass. Persistent failures mean the
             kernel maps are full or mis-sized — check the "BPF Maps" row and
             lachesis_bpf_update_failures_total.
+
+      # A counters-reset epoch changed: the agent declared a billing-state
+      # discontinuity (WAL destroyed / volume replaced / reinstall without
+      # reboot / first boot of a host). The billing ETL compensates via
+      # per-segment baseline subtraction, so no revenue is silently lost —
+      # but a lost WAL is an operational incident regardless: something
+      # deleted or detached durable state out from under the agent.
+      - alert: LachesisCountersReset
+        expr: changes(lachesis_agent_counters_reset_timestamp_seconds[1d]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'lachesis billing state restarted on {{ $labels.instance }}'
+          description: >-
+            lachesis_agent_counters_reset_timestamp_seconds changed: the agent
+            booted with empty billing state and declared a counters-reset epoch.
+            Exposed series baselines are not comparable across the reset; the
+            billing ETL splits its day windows at the declared instant (see
+            docs/architecture/billing.md, "Declared discontinuities"). Find out
+            what happened to the WAL — first boot and host replacement are
+            expected sources; anything else means durable state was lost.
