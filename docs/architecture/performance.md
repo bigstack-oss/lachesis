@@ -100,18 +100,36 @@ indistinguishable from run-to-run noise** — no measurable throughput penalty.
 - Userspace `BatchLookup` polls every 10s (default). Single syscall, full snapshot. (`Iterate` is an alternative with the same data-volume cost; only syscall overhead differs.)
 - **Map snapshot data volume = `entries × N_CPU × 24` bytes.** This is the kernel→userspace data transfer per scrape regardless of which API is used:
 
-| Scenario | Volume | Wall time (memcpy + sum at ~50 GB/s) |
+| Scenario | Volume | Extrapolated tick (at the measured ~0.22 GB/s) |
 |---|---|---|
-| 32-core, 10k flows | 7.5 MB | ~5 ms |
-| 64-core, 10k flows | 15 MB | ~10 ms |
-| 128-core, 10k flows | 30 MB | ~30 ms |
-| 128-core, 50k flows | 150 MB | ~100+ ms |
+| 32-core, 10k flows | 7.5 MB | ~35 ms |
+| 48-core, 45k flows | 49 MB | **~216 ms — measured, see below** |
+| 64-core, 10k flows | 15 MB | ~70 ms |
+| 128-core, 10k flows | 30 MB | ~140 ms |
+| 128-core, 50k flows | 150 MB | ~700 ms |
 
-  At high core counts a flat "5 ms" scrape estimate is not realistic; the scrape
-  budget must account for the actual N_CPU. The wall times above are **modelled,
-  not measured** — size a real budget against the
-  `lachesis_scrape_duration_seconds` histogram, which times one successful
-  scraper tick (drain + integrate + pressure relief) on the node itself.
+  **Measured on a 48-core c36 compute node:** filling `telemetry_map` to 45,004
+  entries (68.7% — deliberately below the GC high watermark, with
+  `lachesis_gc_evictions_total{reason="pressure_relief"}` confirmed at 0, so no
+  eviction is folded in) gives a mean tick of **216 ms** (range 193–239 over six
+  samples) moving 49.4 MB, i.e. **~0.22 GB/s effective**. An empty map ticks in
+  0.70 ms. At the 10 s default interval that is a 2.2% duty cycle.
+
+  Earlier revisions of this table were badly optimistic: the wall times implied
+  ~1.0–1.5 GB/s (and a parenthetical claimed ~50 GB/s), which would predict
+  ~39 ms and ~1 ms respectively for that 49 MB. The real figure is **~6×** the
+  table's own implied rate and **~223×** the "50 GB/s" prose. The rows above are
+  rescaled to the measured rate, but treat them as an order-of-magnitude guide —
+  the honest number for a given node is its own histogram.
+
+  Note the metric times a whole scraper tick — `BatchLookup` **plus** the
+  per-entry delta integration and sink classification — not the raw memcpy. That
+  is the operationally meaningful cost (it is what must fit inside the scrape
+  interval), but it is an upper bound on the transfer alone.
+
+  At high core counts a flat "5 ms" scrape estimate is therefore not realistic;
+  the scrape budget must account for the actual N_CPU. Size a real budget
+  against the `lachesis_scrape_duration_seconds` histogram on the node itself.
 
   Note `lachesis_collect_duration_seconds` is **not** that number (an earlier
   revision of this page pointed at it). It times the Prometheus `Collect` pass
