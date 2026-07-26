@@ -394,9 +394,6 @@ func (h *HTTPMetrics) fetch(ctx context.Context, url string) (map[string]*dto.Me
 	return fams, nil
 }
 
-// familySum totals every sample in a metric family, whatever its
-// value type. Used for the attach gauge and the attach-failure
-// counter, neither of which scenariotest cares to break down by label.
 // reasonSum sums only the samples of family name whose `reason` label
 // equals want. The eviction families pack several distinct reasons into
 // one family, so [familySum] would conflate unrelated eviction paths —
@@ -418,6 +415,9 @@ func reasonSum(fams map[string]*dto.MetricFamily, name, want string) float64 {
 	return total
 }
 
+// familySum totals every sample in a metric family, whatever its
+// value type. Used for the attach gauge and the attach-failure
+// counter, neither of which scenariotest cares to break down by label.
 func familySum(fams map[string]*dto.MetricFamily, name string) float64 {
 	fam, ok := fams[name]
 	if !ok {
