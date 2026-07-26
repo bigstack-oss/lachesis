@@ -167,7 +167,6 @@ func (s *Scraper) Run(ctx context.Context) {
 // for the loadtest harness; the production path is [Scraper.Run].
 func (s *Scraper) Tick() error {
 	start := time.Now()
-	defer func() { s.mx.ObserveScrape(time.Since(start)) }()
 	clear(s.buf)
 	if err := s.reader.BatchLookup(s.buf); err != nil {
 		s.errors.Add(1)
@@ -194,6 +193,11 @@ func (s *Scraper) Tick() error {
 	if s.evictor != nil {
 		s.evictor.Relieve(s.buf)
 	}
+	// Timed here, not in a defer: a tick that failed its drain exits above
+	// having done only a fraction of the work, and folding those into the
+	// same histogram would drag the quantiles DOWN exactly when things are
+	// breaking. Failures are counted separately (lachesis_scraper_errors_total).
+	s.mx.ObserveScrape(time.Since(start))
 	return nil
 }
 
