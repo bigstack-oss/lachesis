@@ -472,7 +472,7 @@ func (b *bootstrapper) prepareWALDir() error {
 // build — propagates here and aborts the boot (docs/architecture/data-structures.md#userspace-structures
 // migration policy).
 func (b *bootstrapper) restoreWAL() error {
-	if err := restoreFromWAL(b.ag, b.cfg.WAL); err != nil {
+	if err := restoreFromWAL(b.ag); err != nil {
 		return err
 	}
 	return b.seq.Advance(boot.PhaseStateRestored)

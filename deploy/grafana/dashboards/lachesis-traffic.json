@@ -1,6 +1,20 @@
 {
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "lachesis-prometheus"
+        },
+        "enable": true,
+        "expr": "changes(lachesis_agent_counters_reset_timestamp_seconds[1m]) > 0",
+        "iconColor": "red",
+        "name": "Counters reset",
+        "titleFormat": "Billing state restarted",
+        "textFormat": "The agent on {{instance}} declared a counters-reset epoch \u2014 series baselines are not comparable across this instant (docs/architecture/boot-and-recovery.md).",
+        "useValueForTime": false
+      }
+    ]
   },
   "editable": true,
   "fiscalYearStartMonth": 0,
@@ -413,7 +427,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Traffic rate split by destination class: external (internet), same_tenant, other_tenant, infra (DHCP/metadata/LB plumbing), shared, miss (unclassifiable), and multicast (platform-L2 chatter — counted but never billed). Each zone bills at a different rate.",
+      "description": "Traffic rate split by destination class: external (internet), same_tenant, other_tenant, infra (DHCP/metadata/LB plumbing), shared, miss (unclassifiable), and multicast (platform-L2 chatter \u2014 counted but never billed). Each zone bills at a different rate.",
       "gridPos": {
         "x": 12,
         "y": 10,

@@ -1,6 +1,20 @@
 {
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "lachesis-prometheus"
+        },
+        "enable": true,
+        "expr": "changes(lachesis_agent_counters_reset_timestamp_seconds[1m]) > 0",
+        "iconColor": "red",
+        "name": "Counters reset",
+        "titleFormat": "Billing state restarted",
+        "textFormat": "The agent on {{instance}} declared a counters-reset epoch \u2014 series baselines are not comparable across this instant (docs/architecture/boot-and-recovery.md).",
+        "useValueForTime": false
+      }
+    ]
   },
   "editable": true,
   "fiscalYearStartMonth": 0,
