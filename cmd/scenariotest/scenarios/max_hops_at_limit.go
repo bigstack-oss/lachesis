@@ -8,21 +8,56 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// resolverMaxHops mirrors internal/neutron's maxStaticRouteHops (16):
-// the resolver follows at most this many router-interface nexthops per
-// route. The two max-hops scenarios pin the boundary from both sides
-// against the live resolver — an off-by-one encoded identically in
-// code and unit test would only surface here.
-const resolverMaxHops = 16
+// resolverMaxHops is the hop limit the two max-hops scenarios IMPOSE
+// on the agent under test via the hot `neutron.max_static_route_hops`
+// knob — deliberately small, not the 16 default.
+//
+// Why not probe the default: a 16-hop boundary needs a ~17-router
+// chain per scenario, which only fits under raised Neutron
+// router/subnet/network/port quotas. Retuning the limit makes these
+// explicit boundary tests (the harness picks the boundary and builds a
+// chain sized to it) instead of mirrors of a compile-time constant,
+// and keeps them inside default quotas.
+const resolverMaxHops = 4
+
+// maxHopsSteps brackets a max-hops probe with the agent-side knob
+// change: back up node:0's config while shortening its reconcile so the
+// hot change lands promptly, retune the hop limit with a SIGHUP (no
+// restart — the knob is hot), let one reconcile rebuild the trie at the
+// new limit, then drive and assert, and finally restore the config.
+//
+// The restart is what creates the config backup [scenariotest.ReloadAgentStep]
+// deliberately does not take, so the final RestoreConfig is the way home.
+func maxHopsSteps(dstIP, zone string) []scenariotest.Step {
+	return []scenariotest.Step{
+		scenariotest.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
+			"reconcile.interval": "15s",
+		}},
+		// HOT: retune resolver depth without cycling the process. The
+		// reload also kicks the reconciler, so the re-resolve is seconds
+		// away rather than a full interval.
+		scenariotest.ReloadAgentStep{Node: "node:0", SetConfig: map[string]string{
+			"neutron.max_static_route_hops": fmt.Sprint(resolverMaxHops),
+		}},
+		scenariotest.SleepStep{Duration: reconcileSettle},
+		scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			{From: "vm-a", To: scenariotest.ExternalTarget(dstIP), Bytes: 1 << 20, Proto: scenariotest.TCP},
+		}},
+		scenariotest.AssertStep{Expect: []scenariotest.Expect{
+			{TenantID: "T1", Zone: zone, Direction: "tx", MinBytes: 1 << 20},
+		}},
+		scenariotest.RestartAgentStep{Node: "node:0", RestoreConfig: true},
+	}
+}
 
 // chainedRouteTopology builds the boundary probe: vm-a behind r-0,
 // then `hops` intermediate routers r-1…r-N daisy-chained over per-leg
 // transit subnets (one shared admin network), with dstCIDR — owned by
 // tenant "T2" — attached on the LAST router. Resolving vm-a's route to
-// dstCIDR consumes exactly `hops` nexthop follows, so hops =
-// [resolverMaxHops] still resolves other_tenant and one more falls
-// back to external. Transit CIDRs live in 172.30.<i>.0/24 to stay
-// clear of every other scenario.
+// dstCIDR consumes exactly `hops` nexthop follows, so with the agent
+// limited to [resolverMaxHops] a chain of that length still resolves
+// other_tenant and one more falls back to external. Transit CIDRs live
+// in 172.30.<i>.0/24 to stay clear of every other scenario.
 func chainedRouteTopology(hops int, dstCIDR string) *scenario.Builder {
 	b := scenario.New()
 	b.Network("net-T1", "T1").
@@ -61,19 +96,18 @@ func gatewayOf(cidr string) string {
 
 // maxHopsAtLimit: a chain at exactly the resolver's hop limit must
 // still resolve to the true owner's zone (other_tenant), NOT the
-// external fallback — pinning the `for hop < maxStaticRouteHops`
-// semantics against reality from the inside.
+// external fallback — pinning the `for hop < ri.maxHops` semantics
+// against reality from the inside. The limit is imposed at run time
+// (see [resolverMaxHops]) and the chain is built to match it.
 func maxHopsAtLimit() *scenariotest.Scenario {
 	const dstCIDR = "10.0.29.0/24"
 	return &scenariotest.Scenario{
 		Name:    "max-hops-at-limit",
 		Desc:    "A static-route chain at exactly MAX_HOPS still resolves other_tenant.",
 		Builder: chainedRouteTopology(resolverMaxHops, dstCIDR),
-		Flows: []scenariotest.Flow{
-			{From: "vm-a", To: scenariotest.ExternalTarget("10.0.29.5"), Bytes: 1 << 20, Proto: scenariotest.TCP},
-		},
-		Expect: []scenariotest.Expect{
-			{TenantID: "T1", Zone: "other_tenant", Direction: "tx", MinBytes: 1 << 20},
-		},
+		// The knob is per-agent, so the billing agent must be the one
+		// retuned: pin vm-a to the node whose config the steps edit.
+		Placement: scenariotest.Placement{"vm-a": "node:0"},
+		Steps:     maxHopsSteps("10.0.29.5", "other_tenant"),
 	}
 }
