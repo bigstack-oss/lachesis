@@ -212,11 +212,18 @@ const codeNetwork = "network"
 // only meaningful for off-cluster clients.
 const defaultInterface = "internal"
 
-// maxStaticRouteHops bounds the multi-hop trace. Real OpenStack
-// deployments rarely exceed 3–4 hops; 16 is generous and an
-// exceedance almost certainly indicates a routing misconfig (per
+// defaultMaxStaticRouteHops bounds the multi-hop trace when no
+// operator value is supplied — the value the argument-free
+// [BuildTrie] resolves with. Real OpenStack deployments rarely exceed
+// 3–4 hops; 16 is generous and an exceedance almost certainly
+// indicates a routing misconfig (per
 // docs/architecture/trie-construction.md#the-static-route-resolver).
-const maxStaticRouteHops = 16
+//
+// The production path does NOT read this: [Neutron.Sync] passes the
+// hot tunable `neutron.max_static_route_hops` (which defaults to the
+// same 16 in config.Defaults), so an operator can retune resolver
+// depth with a SIGHUP.
+const defaultMaxStaticRouteHops = 16
 
 // Neutron device_owner vocabulary. deviceOwnerNetworkPrefix is the
 // reserved `network:` namespace that [IsInfraPort] / [IsVMPort] use to

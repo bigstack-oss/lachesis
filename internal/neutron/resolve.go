@@ -18,13 +18,25 @@ type resolveIndex struct {
 	networks      map[string]Network         // by network ID
 	routerSubnets map[string][]string        // routerID → subnet IDs attached via network:router_interface
 	portsInSubnet map[string]map[string]Port // subnetID → IPAddress → Port
+	// maxHops bounds every resolveStaticRouteZone traversal on this
+	// index. Captured at build time from the operator's hot tunable so
+	// one trie build resolves every route against one consistent limit,
+	// even if a SIGHUP lands mid-build.
+	maxHops int
 }
 
 // newResolveIndex builds the lookup tables from the raw Neutron
 // snapshot. IPv6 fixed-IPs and subnets are admitted to the maps
 // without filtering — anchorSubnet checks IPVersion at lookup time
 // so resolveStaticRouteZone safely operates only on IPv4 chains.
-func newResolveIndex(snap Snapshot) *resolveIndex {
+//
+// maxHops bounds the multi-hop trace; values below 1 fall back to
+// [defaultMaxStaticRouteHops], so a zero-valued caller can never
+// silently resolve every static route as EXTERNAL.
+func newResolveIndex(snap Snapshot, maxHops int) *resolveIndex {
+	if maxHops < 1 {
+		maxHops = defaultMaxStaticRouteHops
+	}
 	networks, subnets, ports, routers := snap.Networks, snap.Subnets, snap.Ports, snap.Routers
 	ri := &resolveIndex{
 		routers:       make(map[string]Router, len(routers)),
@@ -32,6 +44,7 @@ func newResolveIndex(snap Snapshot) *resolveIndex {
 		networks:      make(map[string]Network, len(networks)),
 		routerSubnets: make(map[string][]string),
 		portsInSubnet: make(map[string]map[string]Port),
+		maxHops:       maxHops,
 	}
 	for _, n := range networks {
 		ri.networks[n.ID] = n
@@ -95,7 +108,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 	currentNexthop := initialNexthop
 	visited := map[string]struct{}{r.ID: {}}
 
-	for hop := 0; hop < maxStaticRouteHops; hop++ {
+	for hop := 0; hop < ri.maxHops; hop++ {
 		// Step A — anchor on the iface subnet whose CIDR contains currentNexthop.
 		ifaceSubnet, ok := ri.anchorSubnet(currentRouter.ID, currentNexthop)
 		if !ok {
@@ -173,7 +186,7 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 		"component", componentNeutron,
 		"source_tenant", sourceTenant,
 		"destination", destination.String(),
-		"max_hops", maxStaticRouteHops)
+		"max_hops", ri.maxHops)
 	return bpf.ZoneExternal, nil, nil
 }
 

@@ -84,15 +84,28 @@ type NeutronConfig struct {
 	// operator's informed consent — ambiguous routes systematically
 	// mis-bill the cross-tenant CIDR they cover.
 	UnsafeAllowAmbiguousRoutes bool `yaml:"unsafe_allow_ambiguous_routes"`
+
+	// MaxStaticRouteHops bounds the static-route resolver's multi-hop
+	// trace (docs/architecture/trie-construction.md#the-static-route-resolver):
+	// at most this many router-interface nexthops are followed per route
+	// before the resolver gives up and classifies EXTERNAL. Real
+	// deployments rarely exceed 3–4 hops, so the default 16 is generous
+	// and an exceedance almost certainly indicates a routing misconfig.
+	//
+	// Hot-reloadable: the resolver reads it when it rebuilds the trie
+	// (cold-start and each reconcile), never on the packet path, so a
+	// SIGHUP retunes resolver depth without a restart.
+	MaxStaticRouteHops int `yaml:"max_static_route_hops"`
 }
 
 func neutronDefaults() NeutronConfig {
 	return NeutronConfig{
-		Enabled:        false,
-		UserDomain:     "default",
-		ProjectDomain:  "default",
-		RequestTimeout: 30 * time.Second,
-		RefreshLead:    5 * time.Minute,
+		Enabled:            false,
+		UserDomain:         "default",
+		ProjectDomain:      "default",
+		RequestTimeout:     30 * time.Second,
+		RefreshLead:        5 * time.Minute,
+		MaxStaticRouteHops: 16,
 	}
 }
 
@@ -146,6 +159,12 @@ func (c NeutronConfig) Validate() error {
 	}
 	if c.RefreshLead <= 0 {
 		return fmt.Errorf("refresh_lead %v must be positive", c.RefreshLead)
+	}
+	// Defaults() seeds 16 and LoadYAML decodes over it, so a zero here
+	// means the operator wrote max_static_route_hops: 0 — which would
+	// resolve every static route as EXTERNAL.
+	if c.MaxStaticRouteHops < 1 {
+		return fmt.Errorf("max_static_route_hops %d must be at least 1", c.MaxStaticRouteHops)
 	}
 	return nil
 }

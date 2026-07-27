@@ -162,7 +162,7 @@ func New(opts Options) (*Agent, error) {
 	meta := metadata.New()
 	routers := metadata.NewRouterMACs()
 	tun := tunables.New(opts.Config.Tunables())
-	n, err := neutron.New(opts.Config.Neutron)
+	n, err := neutron.New(opts.Config.Neutron, tun)
 	if err != nil {
 		return nil, fmt.Errorf("agent: neutron credentials: %w", err)
 	}

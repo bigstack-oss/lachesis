@@ -121,5 +121,6 @@ func (c Config) Tunables() tunables.Values {
 		PressureHighWatermark: c.GC.PressureHighWatermark,
 		PressureLowWatermark:  c.GC.PressureLowWatermark,
 		PressureMaxPerPass:    c.GC.PressureMaxPerPass,
+		MaxStaticRouteHops:    c.Neutron.MaxStaticRouteHops,
 	}
 }

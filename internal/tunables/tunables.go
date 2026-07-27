@@ -62,6 +62,12 @@ type Values struct {
 	PressureHighWatermark float64 `knob:"gc.pressure_high_watermark"`
 	PressureLowWatermark  float64 `knob:"gc.pressure_low_watermark"`
 	PressureMaxPerPass    int     `knob:"gc.pressure_max_per_pass"`
+	// MaxStaticRouteHops bounds the static-route resolver's multi-hop
+	// trace (docs/architecture/trie-construction.md#the-static-route-resolver).
+	// Read where the trie is rebuilt — cold-start and each reconcile —
+	// so a change applies to the next resolve, never mid-traversal; the
+	// rebuilt trie is swapped atomically as always.
+	MaxStaticRouteHops int `knob:"neutron.max_static_route_hops"`
 }
 
 // Change is one knob transition a reload produced, named by the

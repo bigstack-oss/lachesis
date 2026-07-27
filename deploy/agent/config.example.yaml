@@ -129,6 +129,14 @@ neutron:
   # Flag: -unsafe-allow-ambiguous-routes
   unsafe_allow_ambiguous_routes: false
 
+  # HOT (SIGHUP). How many router-interface nexthops the static-route
+  # resolver follows per route before classifying EXTERNAL. Real
+  # deployments rarely exceed 3-4 hops, so 16 is generous and an
+  # exceedance almost certainly indicates a routing misconfig. Read
+  # when the trie is rebuilt (cold-start and each reconcile), never on
+  # the packet path. Must be >= 1.
+  max_static_route_hops: 16
+
 gc:
   # Pressure-relief eviction of the kernel telemetry_map (DESIGN §3.1).
   # The whole section is HOT-RELOADABLE on SIGHUP (YAML only — no env or
