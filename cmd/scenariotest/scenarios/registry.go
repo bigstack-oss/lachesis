@@ -53,6 +53,7 @@ func All() []*scenariotest.Scenario {
 		routerRegateway(),
 		ghostGraceWindow(),
 		unresolvedLatebind(),
+		vmApplianceNexthop(),
 		gcPressureRelief(),
 	}
 }

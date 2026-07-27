@@ -1901,3 +1901,61 @@ func TestReloadAgentStep_SetConfig(t *testing.T) {
 		}
 	})
 }
+
+// forwardExec answers the ip_forward read-back with a canned value; the
+// ssh-ready probe ("true") gets an empty reply like the plain fake.
+type forwardExec struct {
+	calls    []execCall
+	readback string
+}
+
+func (e *forwardExec) Run(_ context.Context, addr, command string) (string, error) {
+	e.calls = append(e.calls, execCall{addr, command})
+	if strings.Contains(command, "ip_forward") {
+		return e.readback, nil
+	}
+	return "", nil
+}
+
+func TestSteps_EnableForwarding(t *testing.T) {
+	// Happy path: the guest reports forwarding on, over the SSH FIP.
+	t.Run("sets and verifies ip_forward", func(t *testing.T) {
+		_, _, senv := nicFixture(t)
+		exec := &forwardExec{readback: "1\n0\n"}
+		senv.Exec = exec
+		if err := (EnableForwardingStep{VM: "vm-a"}).Run(context.Background(), senv); err != nil {
+			t.Fatalf("enable-forwarding: %v", err)
+		}
+		last := exec.calls[len(exec.calls)-1]
+		if last.addr != "203.0.113.9" {
+			t.Errorf("ran over %s, want the SSH FIP", last.addr)
+		}
+		for _, want := range []string{"ip_forward", "rp_filter", "sort -u"} {
+			if !strings.Contains(last.command, want) {
+				t.Errorf("command lacks %q: %s", want, last.command)
+			}
+		}
+	})
+
+	// The branch that matters: a sysctl that did not take (a per-device
+	// rp_filter left at 1, a read-only /proc) must fail HERE, not as a
+	// mystifying zero-delta at the appliance's tap — which is exactly how
+	// it presented the first time this scenario ran live.
+	t.Run("a surviving rp_filter fails", func(t *testing.T) {
+		_, _, senv := nicFixture(t)
+		senv.Exec = &forwardExec{readback: "1\n1\n"} // a per-device rp_filter survived
+		err := (EnableForwardingStep{VM: "vm-a"}).Run(context.Background(), senv)
+		if err == nil || !strings.Contains(err.Error(), "want [1 0]") {
+			t.Fatalf("want a read-back error, got %v", err)
+		}
+	})
+
+	// No SSH FIP is a scenario bug, caught before any exec.
+	t.Run("missing FIP errors", func(t *testing.T) {
+		_, _, senv := nicFixture(t)
+		senv.State.FIPs = nil
+		if err := (EnableForwardingStep{VM: "vm-a"}).Run(context.Background(), senv); err == nil {
+			t.Error("missing SSH FIP must error")
+		}
+	})
+}
