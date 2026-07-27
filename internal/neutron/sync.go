@@ -41,8 +41,17 @@ func (n *Neutron) Sync(ctx context.Context) (SyncResult, error) {
 	if err != nil {
 		return SyncResult{}, err
 	}
-	// One Get per sync: every route in this build resolves against the
-	// same hop limit even if a SIGHUP lands while the trie is building.
+	return n.resultFor(snap), nil
+}
+
+// resultFor turns a fetched snapshot into the sync outputs: it is the
+// half of [Neutron.Sync] that needs no API client, so a test can drive
+// the real trie-build path — including the operator's hop limit coming
+// off the tunables store — without a live cluster.
+//
+// One Get per build: every route resolves against the same hop limit
+// even if a SIGHUP lands while the trie is building.
+func (n *Neutron) resultFor(snap Snapshot) SyncResult {
 	entries, ambiguities, cycles := buildTrie(snap, n.metrics, n.tun.Get().MaxStaticRouteHops)
 	return SyncResult{
 		Snapshot:    snap,
@@ -50,7 +59,7 @@ func (n *Neutron) Sync(ctx context.Context) (SyncResult, error) {
 		Ambiguities: ambiguities,
 		Cycles:      cycles,
 		Anomalies:   DetectAnomalies(snap, entries, cycles, ambiguities),
-	}, nil
+	}
 }
 
 // fetchAll issues the list calls in sequence and records
