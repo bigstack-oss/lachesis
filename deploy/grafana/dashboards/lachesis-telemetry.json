@@ -916,8 +916,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (instance) (rate(lachesis_gc_settled_flows_total{instance=~\"$node\"}[5m]))",
-          "legendFormat": "{{instance}}",
+          "expr": "sum(rate(lachesis_gc_settled_flows_total{instance=~\"$node\"}[5m]))",
+          "legendFormat": "settled folds/s",
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
@@ -1087,7 +1087,7 @@
     },
     {
       "id": 102,
-      "title": "BPF Maps",
+      "title": "BPF Maps \u00b7 $instance",
       "type": "row",
       "collapsed": false,
       "gridPos": {
@@ -1115,7 +1115,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_bpf_map_current_entries{instance=~\"$node\"} / lachesis_bpf_map_max_entries{instance=~\"$node\"}",
+          "expr": "lachesis_bpf_map_current_entries{instance=~\"$instance\"} / lachesis_bpf_map_max_entries{instance=~\"$instance\"}",
           "legendFormat": "{{map}}",
           "datasource": {
             "type": "prometheus",
@@ -1184,7 +1184,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_bpf_map_current_entries{instance=~\"$node\"}",
+          "expr": "lachesis_bpf_map_current_entries{instance=~\"$instance\"}",
           "legendFormat": "{{map}} current",
           "datasource": {
             "type": "prometheus",
@@ -1193,7 +1193,7 @@
         },
         {
           "refId": "B",
-          "expr": "lachesis_bpf_map_max_entries{instance=~\"$node\"}",
+          "expr": "lachesis_bpf_map_max_entries{instance=~\"$instance\"}",
           "legendFormat": "{{map}} max",
           "datasource": {
             "type": "prometheus",
@@ -1226,7 +1226,7 @@
     },
     {
       "id": 103,
-      "title": "Scraper & Collector",
+      "title": "Scraper & Collector \u00b7 $instance",
       "type": "row",
       "collapsed": false,
       "gridPos": {
@@ -1254,7 +1254,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(lachesis_scraper_errors_total{instance=~\"$node\"}[5m])",
+          "expr": "rate(lachesis_scraper_errors_total{instance=~\"$instance\"}[5m])",
           "legendFormat": "errors/s",
           "datasource": {
             "type": "prometheus",
@@ -1302,7 +1302,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - lachesis_scraper_last_success_unix_seconds{instance=~\"$node\"}",
+          "expr": "time() - lachesis_scraper_last_success_unix_seconds{instance=~\"$instance\"}",
           "legendFormat": "lag",
           "datasource": {
             "type": "prometheus",
@@ -1369,7 +1369,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, rate(lachesis_collect_duration_seconds_bucket{instance=~\"$node\"}[5m]))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(lachesis_collect_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "p50",
           "datasource": {
             "type": "prometheus",
@@ -1378,7 +1378,7 @@
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.99, rate(lachesis_collect_duration_seconds_bucket{instance=~\"$node\"}[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(lachesis_collect_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "p99",
           "datasource": {
             "type": "prometheus",
@@ -1411,7 +1411,7 @@
     },
     {
       "id": 104,
-      "title": "Neutron",
+      "title": "Neutron \u00b7 $instance",
       "type": "row",
       "collapsed": false,
       "gridPos": {
@@ -1439,7 +1439,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (endpoint, code) (rate(lachesis_neutron_api_errors_total{instance=~\"$node\"}[5m]))",
+          "expr": "sum by (endpoint, code) (rate(lachesis_neutron_api_errors_total{instance=~\"$instance\"}[5m]))",
           "legendFormat": "{{endpoint}} {{code}}",
           "datasource": {
             "type": "prometheus",
@@ -1487,7 +1487,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_neutron_builder_step_duration_seconds_sum{instance=~\"$node\"} / lachesis_neutron_builder_step_duration_seconds_count{instance=~\"$node\"}",
+          "expr": "lachesis_neutron_builder_step_duration_seconds_sum{instance=~\"$instance\"} / lachesis_neutron_builder_step_duration_seconds_count{instance=~\"$instance\"}",
           "legendFormat": "{{step}}",
           "instant": true,
           "datasource": {
@@ -1544,7 +1544,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_neutron_unknown_device_owner_total{instance=~\"$node\"} or label_replace(0 * absent(lachesis_neutron_unknown_device_owner_total{instance=~\"$node\"}), \"owner\", \"none\", \"\", \"\")",
+          "expr": "lachesis_neutron_unknown_device_owner_total{instance=~\"$instance\"} or label_replace(0 * absent(lachesis_neutron_unknown_device_owner_total{instance=~\"$instance\"}), \"owner\", \"none\", \"\", \"\")",
           "instant": true,
           "format": "table",
           "datasource": {
@@ -1596,7 +1596,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_neutron_anomalies{instance=~\"$node\"}",
+          "expr": "lachesis_neutron_anomalies{instance=~\"$instance\"}",
           "legendFormat": "{{class}}",
           "datasource": {
             "type": "prometheus",
@@ -1631,7 +1631,7 @@
     },
     {
       "id": 105,
-      "title": "WAL",
+      "title": "WAL \u00b7 $instance",
       "type": "row",
       "collapsed": false,
       "gridPos": {
@@ -1659,7 +1659,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.99, rate(lachesis_wal_snapshot_copy_seconds_bucket{instance=~\"$node\"}[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(lachesis_wal_snapshot_copy_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "copy (lock held)",
           "datasource": {
             "type": "prometheus",
@@ -1668,7 +1668,7 @@
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.99, rate(lachesis_wal_marshal_seconds_bucket{instance=~\"$node\"}[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(lachesis_wal_marshal_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "marshal",
           "datasource": {
             "type": "prometheus",
@@ -1677,7 +1677,7 @@
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, rate(lachesis_wal_flush_latency_seconds_bucket{instance=~\"$node\"}[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(lachesis_wal_flush_latency_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "write+fsync+rename",
           "datasource": {
             "type": "prometheus",
@@ -1745,7 +1745,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (stage) (increase(lachesis_wal_flush_failures_total{instance=~\"$node\"}[5m]))",
+          "expr": "sum by (stage) (increase(lachesis_wal_flush_failures_total{instance=~\"$instance\"}[5m]))",
           "legendFormat": "flush fail: {{stage}}",
           "datasource": {
             "type": "prometheus",
@@ -1754,7 +1754,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (from) (increase(lachesis_wal_load_fallback_total{instance=~\"$node\"}[5m]))",
+          "expr": "sum by (from) (increase(lachesis_wal_load_fallback_total{instance=~\"$instance\"}[5m]))",
           "legendFormat": "load fallback: {{from}}",
           "datasource": {
             "type": "prometheus",
@@ -1787,7 +1787,7 @@
     },
     {
       "id": 106,
-      "title": "Netlink / TC",
+      "title": "Netlink / TC \u00b7 $instance",
       "type": "row",
       "collapsed": false,
       "gridPos": {
@@ -1815,7 +1815,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_attached_interfaces{instance=~\"$node\"}",
+          "expr": "lachesis_attached_interfaces{instance=~\"$instance\"}",
           "legendFormat": "attached",
           "datasource": {
             "type": "prometheus",
@@ -1863,7 +1863,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (iface_kind) (rate(lachesis_tc_attach_failures_total{instance=~\"$node\"}[5m]))",
+          "expr": "sum by (iface_kind) (rate(lachesis_tc_attach_failures_total{instance=~\"$instance\"}[5m]))",
           "legendFormat": "{{iface_kind}}",
           "datasource": {
             "type": "prometheus",
@@ -1911,7 +1911,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_zombie_filters_cleaned_total{instance=~\"$node\"}",
+          "expr": "lachesis_zombie_filters_cleaned_total{instance=~\"$instance\"}",
           "instant": true,
           "datasource": {
             "type": "prometheus",
@@ -1955,7 +1955,7 @@
     },
     {
       "id": 107,
-      "title": "GC & Eviction",
+      "title": "GC & Eviction \u00b7 $instance",
       "type": "row",
       "collapsed": false,
       "gridPos": {
@@ -1983,7 +1983,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_unresolved_buffer_depth{instance=~\"$node\"}",
+          "expr": "lachesis_unresolved_buffer_depth{instance=~\"$instance\"}",
           "legendFormat": "depth",
           "datasource": {
             "type": "prometheus",
@@ -2056,7 +2056,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(lachesis_gc_evictions_total{instance=~\"$node\"}[5m])",
+          "expr": "rate(lachesis_gc_evictions_total{instance=~\"$instance\"}[5m])",
           "legendFormat": "gc {{reason}}",
           "datasource": {
             "type": "prometheus",
@@ -2065,7 +2065,7 @@
         },
         {
           "refId": "B",
-          "expr": "rate(lachesis_unresolved_buffer_evictions_total{instance=~\"$node\"}[5m])",
+          "expr": "rate(lachesis_unresolved_buffer_evictions_total{instance=~\"$instance\"}[5m])",
           "legendFormat": "buffer {{reason}}",
           "datasource": {
             "type": "prometheus",
@@ -2074,7 +2074,7 @@
         },
         {
           "refId": "C",
-          "expr": "rate(lachesis_gc_pressure_relief_runs_total{instance=~\"$node\"}[5m])",
+          "expr": "rate(lachesis_gc_pressure_relief_runs_total{instance=~\"$instance\"}[5m])",
           "legendFormat": "pressure-relief runs",
           "datasource": {
             "type": "prometheus",
@@ -2130,7 +2130,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_lingering_ghosts_active{instance=~\"$node\"}",
+          "expr": "lachesis_lingering_ghosts_active{instance=~\"$instance\"}",
           "legendFormat": "ghosts active",
           "datasource": {
             "type": "prometheus",
@@ -2139,7 +2139,7 @@
         },
         {
           "refId": "B",
-          "expr": "rate(lachesis_unresolved_resolved_total{instance=~\"$node\"}[5m])",
+          "expr": "rate(lachesis_unresolved_resolved_total{instance=~\"$instance\"}[5m])",
           "legendFormat": "resolved/s",
           "datasource": {
             "type": "prometheus",
@@ -2180,7 +2180,7 @@
     },
     {
       "id": 108,
-      "title": "Live Updates (Kafka & Reconcile)",
+      "title": "Live Updates (Kafka & Reconcile) \u00b7 $instance",
       "type": "row",
       "collapsed": false,
       "gridPos": {
@@ -2208,7 +2208,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "lachesis_kafka_lag_messages{instance=~\"$node\"}",
+          "expr": "lachesis_kafka_lag_messages{instance=~\"$instance\"}",
           "legendFormat": "{{topic}}",
           "datasource": {
             "type": "prometheus",
@@ -2264,7 +2264,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(lachesis_kafka_consume_errors_total{instance=~\"$node\"}[5m])",
+          "expr": "rate(lachesis_kafka_consume_errors_total{instance=~\"$instance\"}[5m])",
           "legendFormat": "{{topic}}",
           "datasource": {
             "type": "prometheus",
@@ -2320,7 +2320,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(lachesis_reconcile_runs_total{instance=~\"$node\"}[5m])",
+          "expr": "rate(lachesis_reconcile_runs_total{instance=~\"$instance\"}[5m])",
           "legendFormat": "{{result}}",
           "datasource": {
             "type": "prometheus",
@@ -2713,7 +2713,7 @@
       },
       {
         "name": "node",
-        "label": "Node",
+        "label": "Nodes (fleet)",
         "type": "query",
         "datasource": {
           "type": "prometheus",
@@ -2736,6 +2736,25 @@
             "$__all"
           ]
         },
+        "sort": 1,
+        "options": []
+      },
+      {
+        "name": "instance",
+        "label": "Node (drill-down)",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(up{job=\"lachesis-agent\"}, instance)",
+          "refId": "instance"
+        },
+        "refresh": 2,
+        "multi": false,
+        "includeAll": false,
+        "current": {},
         "sort": 1,
         "options": []
       }
