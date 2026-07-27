@@ -192,7 +192,7 @@ The `shared` check sits **above** the owner check so that a shared network owned
 
 **Cycle detection.** A misconfigured deployment can have routing loops (R2 forwards to R3, R3 forwards back to R2). The `visited` set bounds the walk to each router at most once and bails to `EXTERNAL` on detection. Without this, the resolver would infinite-loop at cold-start.
 
-**Hop limit.** `MAX_HOPS = 16` (`maxStaticRouteHops`, `internal/neutron/schema.go`) is generous — real OpenStack deployments rarely exceed 3–4 hops. If hit, it's almost certainly a configuration issue worth surfacing.
+**Hop limit.** The default `MAX_HOPS = 16` (`defaultMaxStaticRouteHops`, `internal/neutron/schema.go`) is generous — real OpenStack deployments rarely exceed 3–4 hops. If hit, it's almost certainly a configuration issue worth surfacing. Operators can retune it live via the hot knob `neutron.max_static_route_hops` ([runtime.md](../operations/runtime.md)); the resolver reads it where the trie is rebuilt (cold-start and each reconcile), so a SIGHUP applies to the next resolve and never mid-traversal. The argument-free exported `BuildTrie` always resolves at the default.
 
 **Performance.** Each iteration is O(1) hashmap lookups against the cached Neutron snapshot. A typical resolution completes in microseconds. Cold-start runtime is dominated by API fetch latency, not the trace.
 

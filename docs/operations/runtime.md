@@ -46,6 +46,7 @@ added to the config but never registered in the projection.
 | `wal.flush_interval` | WAL flusher | durability window (the ≤60s loss bound) |
 | `unresolved.cap` | UnresolvedBuffer | entry bound (floor ≥ 1 — Contract 1) |
 | `unresolved.ttl` | UnresolvedBuffer | late-binding window |
+| `neutron.max_static_route_hops` | static-route resolver | traversal bound, applied at the next trie rebuild ([trie-construction.md](../architecture/trie-construction.md#the-static-route-resolver); floor ≥ 1) |
 | `logging.level` | all | applied atomically via the logging handle |
 
 Everything else is **load-time**: edit the YAML, restart the agent. A field

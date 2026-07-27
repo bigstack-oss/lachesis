@@ -42,7 +42,52 @@ func (f *fixture) addRouter(id, project string, routes ...Route) {
 }
 
 func (f *fixture) index() *resolveIndex {
-	return newResolveIndex(Snapshot{Networks: f.networks, Subnets: f.subnets, Ports: f.ports, Routers: f.routers})
+	return f.indexMaxHops(defaultMaxStaticRouteHops)
+}
+
+// indexMaxHops builds the index with an explicit hop limit — the
+// operator's `neutron.max_static_route_hops` in production.
+func (f *fixture) indexMaxHops(maxHops int) *resolveIndex {
+	return newResolveIndex(Snapshot{
+		Networks: f.networks, Subnets: f.subnets, Ports: f.ports, Routers: f.routers,
+	}, maxHops)
+}
+
+// chainFixture builds `chainLen` admin routers daisy-chained over
+// per-leg transit subnets, every router carrying an extraroute for
+// 10.99.0.0/16 pointing at the next hop, and NO router having the
+// destination directly attached. Resolving from R1 therefore advances
+// one hop per iteration and can only end by exhausting the hop limit —
+// the shape both hop-limit tests need, differing only in length.
+// Returns the fixture; the source router is f.routers[0].
+func chainFixture(chainLen int) *fixture {
+	var f fixture
+	for i := 0; i < chainLen; i++ {
+		// Transit i connects R(i+1) and R(i+2). CIDR 10.10.(i+1).0/24.
+		f.addNetwork(fmt.Sprintf("transit-%d", i), "admin", true, false)
+		f.addSubnet(fmt.Sprintf("sub-%d", i), fmt.Sprintf("transit-%d", i), "admin",
+			fmt.Sprintf("10.10.%d.0/24", i+1))
+	}
+	for i := 0; i < chainLen; i++ {
+		// 10.10.(i+1).2 is R(i+2)'s IP on transit-i, so Step D always
+		// matches and the trace never bottoms out early.
+		f.addRouter(fmt.Sprintf("R%d", i+1), "admin",
+			rte("10.99.0.0/16", fmt.Sprintf("10.10.%d.2", i+1)))
+	}
+	for i := 0; i < chainLen; i++ {
+		rid := fmt.Sprintf("R%d", i+1)
+		// R(i+1) has interfaces on transit-(i-1) (incoming) and transit-i
+		// (outgoing). Skip the incoming side for i==0 (R1 is the source).
+		if i > 0 {
+			f.addPort(fmt.Sprintf("p-%s-in", rid), fmt.Sprintf("transit-%d", i-1), "admin",
+				"network:router_interface", rid,
+				fip(fmt.Sprintf("sub-%d", i-1), fmt.Sprintf("10.10.%d.2", i)))
+		}
+		f.addPort(fmt.Sprintf("p-%s-out", rid), fmt.Sprintf("transit-%d", i), "admin",
+			"network:router_interface", rid,
+			fip(fmt.Sprintf("sub-%d", i), fmt.Sprintf("10.10.%d.1", i+1)))
+	}
+	return &f
 }
 
 func fip(subnetID, ip string) FixedIP { return FixedIP{SubnetID: subnetID, IPAddress: ip} }
@@ -178,49 +223,11 @@ func TestResolveStaticRoute_Cycle_FallsBackExternal(t *testing.T) {
 }
 
 func TestResolveStaticRoute_MaxHopsExceeded_FallsBackExternal(t *testing.T) {
-	// Chain of (maxStaticRouteHops + 1) routers, each forwarding
-	// 10.99.0.0/16 to the next. The loop runs maxStaticRouteHops
-	// times, advancing on every iteration; falls out the bottom
-	// without ever finding a direct attach → MAX_HOPS exceeded.
-	var f fixture
-	const chainLen = maxStaticRouteHops + 1
-	for i := 0; i < chainLen; i++ {
-		// Transit i connects R(i+1) and R(i+2). CIDR 10.10.(i+1).0/24.
-		netID := fmt.Sprintf("transit-%d", i)
-		subID := fmt.Sprintf("sub-%d", i)
-		cidr := fmt.Sprintf("10.10.%d.0/24", i+1)
-		f.addNetwork(netID, "admin", true, false)
-		f.addSubnet(subID, netID, "admin", cidr)
-	}
-	for i := 0; i < chainLen; i++ {
-		rid := fmt.Sprintf("R%d", i+1)
-		var routes []Route
-		// Every router (including the last in the test chain) carries an
-		// extraroute pointing to the next hop, so Step D always matches
-		// and the loop runs the full maxStaticRouteHops iterations.
-		// 10.10.(i+1).2 is R(i+2)'s IP on transit-i.
-		nh := fmt.Sprintf("10.10.%d.2", i+1)
-		routes = []Route{rte("10.99.0.0/16", nh)}
-		f.addRouter(rid, "admin", routes...)
-	}
-	for i := 0; i < chainLen; i++ {
-		// R(i+1) has interfaces on transit-(i-1) (incoming) and
-		// transit-i (outgoing). Skip the incoming side for i==0
-		// (R1 is the source).
-		rid := fmt.Sprintf("R%d", i+1)
-		if i > 0 {
-			prevNetID := fmt.Sprintf("transit-%d", i-1)
-			prevSubID := fmt.Sprintf("sub-%d", i-1)
-			f.addPort(fmt.Sprintf("p-%s-in", rid), prevNetID, "admin",
-				"network:router_interface", rid,
-				fip(prevSubID, fmt.Sprintf("10.10.%d.2", i)))
-		}
-		netID := fmt.Sprintf("transit-%d", i)
-		subID := fmt.Sprintf("sub-%d", i)
-		f.addPort(fmt.Sprintf("p-%s-out", rid), netID, "admin",
-			"network:router_interface", rid,
-			fip(subID, fmt.Sprintf("10.10.%d.1", i+1)))
-	}
+	// Chain of (defaultMaxStaticRouteHops + 1) routers, each forwarding
+	// 10.99.0.0/16 to the next. The loop runs the full limit,
+	// advancing on every iteration; falls out the bottom without ever
+	// finding a direct attach → MAX_HOPS exceeded.
+	f := chainFixture(defaultMaxStaticRouteHops + 1)
 
 	got, _, _ := f.index().resolveStaticRouteZone(f.routers[0],
 		netip.MustParsePrefix("10.99.0.0/16"),
@@ -228,6 +235,75 @@ func TestResolveStaticRoute_MaxHopsExceeded_FallsBackExternal(t *testing.T) {
 	if got != bpf.ZoneExternal {
 		t.Fatalf("zone = %v, want EXTERNAL (MAX_HOPS)", got)
 	}
+}
+
+// TestResolveStaticRoute_HonoursConfiguredMaxHops: the traversal bound
+// is the operator's `neutron.max_static_route_hops`, not a compile-time
+// constant. A chain longer than the configured limit must fall back to
+// EXTERNAL even though the DEFAULT limit would have been generous
+// enough — the property the two live max-hops scenarios rely on to
+// probe the boundary with small (quota-friendly) topologies.
+func TestResolveStaticRoute_HonoursConfiguredMaxHops(t *testing.T) {
+	dst := netip.MustParsePrefix("10.99.0.0/16")
+	firstNexthop := netip.MustParseAddr("10.10.1.2")
+
+	cases := []struct {
+		name     string
+		maxHops  int
+		chainLen int
+	}{
+		// Chains that outrun a small limit stop at EXTERNAL...
+		{"limit 4, chain 5 exceeds", 4, 5},
+		{"limit 1, chain 2 exceeds", 1, 2},
+		// ...and a chain exactly AT the limit still exhausts it here,
+		// because chainFixture never attaches the destination — proving
+		// the loop ran `maxHops` times, no more and no fewer, is the job
+		// of the hop-count assertion below.
+		{"limit 4, chain 4 exhausts", 4, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := chainFixture(tc.chainLen)
+			got, _, _ := f.indexMaxHops(tc.maxHops).resolveStaticRouteZone(
+				f.routers[0], dst, firstNexthop)
+			if got != bpf.ZoneExternal {
+				t.Fatalf("zone = %v, want EXTERNAL (configured limit %d, chain %d)",
+					got, tc.maxHops, tc.chainLen)
+			}
+		})
+	}
+
+	// The limit is honoured in the generous direction too: with a limit
+	// ABOVE the chain length the trace still ends EXTERNAL (nothing is
+	// attached), so instead assert the boundary the scenarios pin — a
+	// chain one shorter than the limit resolves the true owner's zone.
+	// R(N) owns the destination directly, so hop N-1 finds it via Step C.
+	t.Run("resolves within the configured limit", func(t *testing.T) {
+		const maxHops = 4
+		f := chainFixture(maxHops) // 4 legs, but attach dst on the last router
+		f.addNetwork("net-T2", "T2", false, false)
+		f.addSubnet("sub-T2", "net-T2", "T2", "10.99.0.0/16")
+		last := fmt.Sprintf("R%d", maxHops)
+		f.addPort("p-dst", "net-T2", "T2", "network:router_interface", last,
+			fip("sub-T2", "10.99.0.1"))
+
+		got, _, _ := f.indexMaxHops(maxHops).resolveStaticRouteZone(
+			f.routers[0], dst, firstNexthop)
+		if got != bpf.ZoneOtherTenant {
+			t.Fatalf("zone = %v, want OTHER_TENANT (chain fits inside limit %d)", got, maxHops)
+		}
+	})
+
+	// A caller passing a nonsense limit gets the default, never a
+	// resolver that follows zero hops.
+	t.Run("non-positive limit falls back to the default", func(t *testing.T) {
+		for _, bad := range []int{0, -1} {
+			if got := newResolveIndex(Snapshot{}, bad).maxHops; got != defaultMaxStaticRouteHops {
+				t.Errorf("newResolveIndex(_, %d).maxHops = %d, want %d",
+					bad, got, defaultMaxStaticRouteHops)
+			}
+		}
+	})
 }
 
 func TestResolveStaticRoute_AmbiguousOwners_FallsBackExternal(t *testing.T) {

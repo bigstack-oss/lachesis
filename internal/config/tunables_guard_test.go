@@ -31,6 +31,7 @@ func TestTunablesProjection_CoversEveryField(t *testing.T) {
 	perturbed.WAL.FlushInterval = 77 * time.Second
 	perturbed.Unresolved.Cap = 78
 	perturbed.Unresolved.TTL = 79 * time.Second
+	perturbed.Neutron.MaxStaticRouteHops = 8
 
 	base := Defaults().Tunables()
 	got := perturbed.Tunables()

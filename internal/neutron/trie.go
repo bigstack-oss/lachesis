@@ -97,20 +97,23 @@ import (
 // the kernel map writer will use. Global rows (TenantID="") sort
 // first; per-tenant runs follow in tenant-ID order.
 //
-// BuildTrie does not observe metrics; [Neutron.Sync] runs the
-// internal metrics-observing variant.
+// BuildTrie does not observe metrics and resolves static routes with
+// [defaultMaxStaticRouteHops]; [Neutron.Sync] runs the internal
+// metrics-observing variant with the operator's configured hop limit.
 func BuildTrie(snap Snapshot) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
-	return buildTrie(snap, nil)
+	return buildTrie(snap, nil, defaultMaxStaticRouteHops)
 }
 
 // buildTrie is the implementation behind [BuildTrie], with the
 // per-step durations observed on m's
 // `lachesis_neutron_builder_step_duration_seconds` histogram (m may
-// be nil — every [Metrics] helper no-ops on nil receivers). The body
-// is a literal transcription of the docs/architecture/trie-construction.md#the-five-step-algorithm step order; each step's
+// be nil — every [Metrics] helper no-ops on nil receivers) and the
+// static-route trace bounded by maxHops (below 1 falls back to
+// [defaultMaxStaticRouteHops]). The body is a literal transcription of
+// the docs/architecture/trie-construction.md#the-five-step-algorithm step order; each step's
 // logic lives on its [trieBuilder] emit* method.
-func buildTrie(snap Snapshot, m *Metrics) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
-	b := newTrieBuilder(snap, m)
+func buildTrie(snap Snapshot, m *Metrics, maxHops int) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
+	b := newTrieBuilder(snap, m, maxHops)
 	b.step(stepCatchall, b.emitCatchall)
 	b.step(stepOwned, b.emitOwnedSubnets)
 	b.step(stepShared, b.emitSharedSubnets)
@@ -142,7 +145,8 @@ type trieBuilder struct {
 }
 
 // newTrieBuilder precomputes the lookup views shared across steps.
-func newTrieBuilder(snap Snapshot, m *Metrics) *trieBuilder {
+// maxHops bounds the static-route resolver for this build.
+func newTrieBuilder(snap Snapshot, m *Metrics, maxHops int) *trieBuilder {
 	subnetsByNetwork := groupSubnetsByNetwork(snap.Subnets)
 	sharedPrefixes := buildSharedPrefixes(snap.Networks, subnetsByNetwork)
 	infraPrefixes := buildInfraPrefixes(snap.Subnets, snap.Ports)
@@ -153,7 +157,7 @@ func newTrieBuilder(snap Snapshot, m *Metrics) *trieBuilder {
 		tenants:          collectTenants(snap.Networks, snap.Ports, snap.Routers),
 		sharedPrefixes:   sharedPrefixes,
 		infraPrefixes:    infraPrefixes,
-		ri:               newResolveIndex(snap),
+		ri:               newResolveIndex(snap, maxHops),
 		metrics:          m,
 		// Capacity hint: globals + an over-approximation of per-tenant
 		// rows (every IPv4 subnet may emit one SAME_TENANT row). Extra-

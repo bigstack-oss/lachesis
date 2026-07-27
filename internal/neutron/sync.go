@@ -41,7 +41,9 @@ func (n *Neutron) Sync(ctx context.Context) (SyncResult, error) {
 	if err != nil {
 		return SyncResult{}, err
 	}
-	entries, ambiguities, cycles := buildTrie(snap, n.metrics)
+	// One Get per sync: every route in this build resolves against the
+	// same hop limit even if a SIGHUP lands while the trie is building.
+	entries, ambiguities, cycles := buildTrie(snap, n.metrics, n.tun.Get().MaxStaticRouteHops)
 	return SyncResult{
 		Snapshot:    snap,
 		Entries:     entries,

@@ -20,23 +20,25 @@ func TestNeutronValidate_DisabledIsAlwaysOK(t *testing.T) {
 
 func TestNeutronValidate(t *testing.T) {
 	enabledFile := config.NeutronConfig{
-		Enabled:         true,
-		CredentialsFile: "/etc/admin-openrc.sh",
-		UserDomain:      "default",
-		ProjectDomain:   "default",
-		RequestTimeout:  30 * time.Second,
-		RefreshLead:     5 * time.Minute,
+		Enabled:            true,
+		CredentialsFile:    "/etc/admin-openrc.sh",
+		UserDomain:         "default",
+		ProjectDomain:      "default",
+		RequestTimeout:     30 * time.Second,
+		RefreshLead:        5 * time.Minute,
+		MaxStaticRouteHops: 16,
 	}
 	enabledInline := config.NeutronConfig{
-		Enabled:        true,
-		AuthURL:        "http://keystone.example:5000/v3",
-		Username:       "admin_cli",
-		Password:       "secret",
-		ProjectName:    "admin",
-		UserDomain:     "default",
-		ProjectDomain:  "default",
-		RequestTimeout: 30 * time.Second,
-		RefreshLead:    5 * time.Minute,
+		Enabled:            true,
+		AuthURL:            "http://keystone.example:5000/v3",
+		Username:           "admin_cli",
+		Password:           "secret",
+		ProjectName:        "admin",
+		UserDomain:         "default",
+		ProjectDomain:      "default",
+		RequestTimeout:     30 * time.Second,
+		RefreshLead:        5 * time.Minute,
+		MaxStaticRouteHops: 16,
 	}
 
 	cases := []struct {
@@ -92,6 +94,16 @@ func TestNeutronValidate(t *testing.T) {
 			c.RefreshLead = 0
 			return c
 		}(), false, "refresh_lead"},
+		{"zero max_static_route_hops", func() config.NeutronConfig {
+			c := enabledFile
+			c.MaxStaticRouteHops = 0
+			return c
+		}(), false, "max_static_route_hops"},
+		{"one hop is the floor", func() config.NeutronConfig {
+			c := enabledFile
+			c.MaxStaticRouteHops = 1
+			return c
+		}(), true, ""},
 	}
 
 	for _, tc := range cases {

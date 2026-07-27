@@ -30,10 +30,12 @@
 package neutron
 
 import (
+	"errors"
 	"sync/atomic"
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/config"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 // Neutron carries the full Neutron subsystem state for one agent
@@ -49,6 +51,10 @@ import (
 type Neutron struct {
 	creds   Credentials
 	metrics *Metrics
+	// tun supplies the hot resolver knobs, read once per
+	// [Neutron.Sync] so one trie build uses one consistent limit.
+	// Never nil (the tunables required-dependency rule).
+	tun *tunables.Store
 	// info emits the identity info-metric families (lachesis_tenant_info,
 	// lachesis_server_info) from the committed snapshot. Registered by
 	// the agent alongside the metrics bundle. Never nil.
@@ -78,14 +84,19 @@ type Neutron struct {
 	lastSync atomic.Int64
 }
 
-// New constructs the subsystem from its config. Credentials are
-// resolved eagerly (including reading a credentials_file) so a
-// malformed openrc fails construction instead of spinning inside the
-// caller's sync retry loop. When cfg.Enabled is false the credentials
-// stay zero and [Neutron.Sync] must not be called; the accessors and
-// the metrics bundle still work, reporting the never-synced state.
-func New(cfg config.NeutronConfig) (*Neutron, error) {
-	n := &Neutron{}
+// New constructs the subsystem from its config and the shared
+// hot-knob store (required, never nil — the resolver reads its hop
+// limit from it on every sync). Credentials are resolved eagerly
+// (including reading a credentials_file) so a malformed openrc fails
+// construction instead of spinning inside the caller's sync retry
+// loop. When cfg.Enabled is false the credentials stay zero and
+// [Neutron.Sync] must not be called; the accessors and the metrics
+// bundle still work, reporting the never-synced state.
+func New(cfg config.NeutronConfig, tun *tunables.Store) (*Neutron, error) {
+	if tun == nil {
+		return nil, errors.New("neutron: tunables store is required")
+	}
+	n := &Neutron{tun: tun}
 	if cfg.Enabled {
 		creds, err := FromConfig(cfg)
 		if err != nil {
