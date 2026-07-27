@@ -37,6 +37,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/config"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
 func TestRenderLivePages(t *testing.T) {
@@ -49,8 +50,10 @@ func TestRenderLivePages(t *testing.T) {
 	}
 
 	// Same Sync → Commit pair the agent's cold-start drives, minus
-	// the kernel push in between (nothing to push here).
-	n, err := neutron.New(cfg)
+	// the kernel push in between (nothing to push here). The tunables
+	// store is a required dependency; defaults are what the agent runs
+	// with unless an operator retunes.
+	n, err := neutron.New(cfg, tunables.New(config.Defaults().Tunables()))
 	if err != nil {
 		t.Fatalf("neutron credentials: %v", err)
 	}

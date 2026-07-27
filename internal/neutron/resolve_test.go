@@ -45,12 +45,15 @@ func (f *fixture) index() *resolveIndex {
 	return f.indexMaxHops(defaultMaxStaticRouteHops)
 }
 
+// snapshot is the fixture as the Snapshot a real sync would carry.
+func (f *fixture) snapshot() Snapshot {
+	return Snapshot{Networks: f.networks, Subnets: f.subnets, Ports: f.ports, Routers: f.routers}
+}
+
 // indexMaxHops builds the index with an explicit hop limit — the
 // operator's `neutron.max_static_route_hops` in production.
 func (f *fixture) indexMaxHops(maxHops int) *resolveIndex {
-	return newResolveIndex(Snapshot{
-		Networks: f.networks, Subnets: f.subnets, Ports: f.ports, Routers: f.routers,
-	}, maxHops)
+	return newResolveIndex(f.snapshot(), maxHops)
 }
 
 // chainFixture builds `chainLen` admin routers daisy-chained over
@@ -252,14 +255,14 @@ func TestResolveStaticRoute_HonoursConfiguredMaxHops(t *testing.T) {
 		maxHops  int
 		chainLen int
 	}{
-		// Chains that outrun a small limit stop at EXTERNAL...
+		// Chains that outrun a small limit stop at EXTERNAL. These
+		// discriminate the knob: the default 16 would resolve them.
 		{"limit 4, chain 5 exceeds", 4, 5},
 		{"limit 1, chain 2 exceeds", 1, 2},
-		// ...and a chain exactly AT the limit still exhausts it here,
-		// because chainFixture never attaches the destination — proving
-		// the loop ran `maxHops` times, no more and no fewer, is the job
-		// of the hop-count assertion below.
-		{"limit 4, chain 4 exhausts", 4, 4},
+		// chainFixture attaches the destination nowhere, so a chain no
+		// longer than the limit still exhausts it rather than resolving.
+		// Sanity only — the default limit would land here too.
+		{"limit 4, chain 4 exhausts (sanity)", 4, 4},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -273,24 +276,32 @@ func TestResolveStaticRoute_HonoursConfiguredMaxHops(t *testing.T) {
 		})
 	}
 
-	// The limit is honoured in the generous direction too: with a limit
-	// ABOVE the chain length the trace still ends EXTERNAL (nothing is
-	// attached), so instead assert the boundary the scenarios pin — a
-	// chain one shorter than the limit resolves the true owner's zone.
-	// R(N) owns the destination directly, so hop N-1 finds it via Step C.
-	t.Run("resolves within the configured limit", func(t *testing.T) {
-		const maxHops = 4
-		f := chainFixture(maxHops) // 4 legs, but attach dst on the last router
-		f.addNetwork("net-T2", "T2", false, false)
-		f.addSubnet("sub-T2", "net-T2", "T2", "10.99.0.0/16")
-		last := fmt.Sprintf("R%d", maxHops)
-		f.addPort("p-dst", "net-T2", "T2", "network:router_interface", last,
-			fip("sub-T2", "10.99.0.1"))
+	// Both faces of the boundary the live scenarios pin, with the owner
+	// actually attached so resolution is possible: a chain of N routers
+	// costs N-1 nexthop follows, so N-1 resolves and N-2 is one short.
+	t.Run("boundary with the destination attached", func(t *testing.T) {
+		const chainLen = 5
+		ownedChain := func() *fixture {
+			f := chainFixture(chainLen)
+			f.addNetwork("net-T2", "T2", false, false)
+			f.addSubnet("sub-T2", "net-T2", "T2", "10.99.0.0/16")
+			f.addPort("p-dst", "net-T2", "T2", "network:router_interface",
+				fmt.Sprintf("R%d", chainLen), fip("sub-T2", "10.99.0.1"))
+			return f
+		}
+		zoneAt := func(maxHops int) bpf.ZoneCode {
+			f := ownedChain()
+			zone, _, _ := f.indexMaxHops(maxHops).resolveStaticRouteZone(
+				f.routers[0], dst, firstNexthop)
+			return zone
+		}
+		const enough, oneShort = chainLen - 1, chainLen - 2
 
-		got, _, _ := f.indexMaxHops(maxHops).resolveStaticRouteZone(
-			f.routers[0], dst, firstNexthop)
-		if got != bpf.ZoneOtherTenant {
-			t.Fatalf("zone = %v, want OTHER_TENANT (chain fits inside limit %d)", got, maxHops)
+		if got := zoneAt(enough); got != bpf.ZoneOtherTenant {
+			t.Errorf("zone at limit %d = %v, want OTHER_TENANT (exactly enough hops)", enough, got)
+		}
+		if got := zoneAt(oneShort); got != bpf.ZoneExternal {
+			t.Errorf("zone at limit %d = %v, want EXTERNAL (one hop short)", oneShort, got)
 		}
 	})
 
