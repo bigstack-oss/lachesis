@@ -993,6 +993,73 @@ func (s AddRouteStep) Run(ctx context.Context, env *StepEnv) error {
 	return nil
 }
 
+// EnableForwardingStep turns a VM into a router, which takes two
+// sysctls, not one:
+//
+//   - `net.ipv4.ip_forward=1` so packets addressed through the VM are
+//     forwarded rather than dropped.
+//   - `rp_filter=0` (all + default) so they survive reverse-path
+//     filtering. This one is easy to miss and fails silently: a packet
+//     arriving on the transit NIC carries the ORIGINAL sender's source
+//     address, and the appliance has no route back to that subnet via
+//     the NIC it arrived on (its only default route is via its boot
+//     NIC), so with rp_filter on, Linux discards it before forwarding
+//     — no counter moves anywhere, which reads exactly like "the
+//     platform never delivered the traffic".
+//
+// Together they are what makes a VM usable as an extraroute nexthop
+// (`device_owner compute:*`) — the resolver's Step B case
+// (docs/architecture/trie-construction.md#the-static-route-resolver),
+// exercised live by the vm-appliance-nexthop scenario.
+//
+// The forwarded packet keeps the ORIGINAL source IP, so the port it
+// leaves by must ALSO have port security disabled
+// ([PortSpec.PortSecurityOff] / [AttachPortStep.PortSecurityOff]) or
+// OVN anti-spoofing drops it on the way out. Same absolute-path +
+// SSH-FIP spelling as [AddRouteStep].
+type EnableForwardingStep struct {
+	VM string
+}
+
+func (EnableForwardingStep) Kind() string { return "enable-forwarding" }
+
+func (s EnableForwardingStep) Run(ctx context.Context, env *StepEnv) error {
+	fip := ""
+	for _, f := range env.State.FIPs {
+		if f.VMID == s.VM && f.Network == "" { // the provider SSH FIP
+			fip = f.Address
+		}
+	}
+	if fip == "" {
+		return fmt.Errorf("run-state has no SSH FIP for VM %q", s.VM)
+	}
+	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
+		return fmt.Errorf("enable-forwarding: %w", err)
+	}
+	// Written straight to /proc: cirros has no /sbin/sysctl in sudo's
+	// PATH, and tee-ing the pseudo-files is the portable spelling. Both
+	// values are read back so a silently-ignored write fails HERE rather
+	// than as a mystifying zero-delta at the appliance's tap.
+	// Every conf/*/rp_filter, not just conf/all: the kernel takes
+	// max(conf.all, conf.<dev>), so a per-device 1 left over from
+	// interface creation would still drop the forwarded packet. The
+	// read-back collapses them with sort -u, so any surviving 1 shows up.
+	const cmd = "echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward >/dev/null; " +
+		"for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo 0 | sudo tee $f >/dev/null; done; " +
+		"cat /proc/sys/net/ipv4/ip_forward; " +
+		"cat /proc/sys/net/ipv4/conf/*/rp_filter | sort -u"
+	out, err := env.Exec.Run(ctx, fip, cmd)
+	if err != nil {
+		return fmt.Errorf("enable-forwarding on %s: %w (output: %s)", s.VM, err, out)
+	}
+	got := strings.Fields(strings.TrimSpace(out))
+	if len(got) != 2 || got[0] != "1" || got[1] != "0" {
+		return fmt.Errorf("enable-forwarding on %s: ip_forward/rp_filter read %v, want [1 0]", s.VM, got)
+	}
+	env.Log.Info("enable-forwarding", "vm", s.VM, "ip_forward", 1, "rp_filter", 0)
+	return nil
+}
+
 // AssertFlowPeerStep proves WHICH interface carried driven bytes: it
 // resolves the named router's interface port on the given attach IP
 // (declared by the DSL, MAC recorded in the run-state), queries every
