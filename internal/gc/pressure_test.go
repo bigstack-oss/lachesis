@@ -226,3 +226,77 @@ func TestPressureTunables_HotSwapTakesEffect(t *testing.T) {
 		t.Error("no eviction after lowering the high watermark below the fill — hot swap not applied")
 	}
 }
+
+// recordingInvalidator records which keys the reliever declared dead.
+type recordingInvalidator struct{ keys []bpf.FlowKey }
+
+func (r *recordingInvalidator) InvalidateBaseline(k bpf.FlowKey) {
+	r.keys = append(r.keys, k)
+}
+
+func (r *recordingInvalidator) has(k bpf.FlowKey) bool {
+	for _, got := range r.keys {
+		if got == k {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRelieve_InvalidatesBaselineOnlyForDeletedKeys is the other half of
+// the lachesis#287 regression, and it guards the direction that would be
+// WORSE than the original bug.
+//
+// A successful eviction must drop the flow's delta baseline, or the
+// re-created entry is diffed against a baseline that no longer exists and
+// its bytes go unbilled. But a FAILED delete leaves the entry live with
+// its counter still climbing from the value we last read — invalidating
+// there would make the next reading count the flow's entire history a
+// second time, converting silent under-billing into over-billing.
+func TestRelieve_InvalidatesBaselineOnlyForDeletedKeys(t *testing.T) {
+	maxN := bpf.MapTelemetryMaxEntries
+	n := int(testHigh*float64(maxN)) + 1
+	drained := make(map[bpf.FlowKey]bpf.FlowMetrics, n)
+	for i := uint32(0); i < uint32(n); i++ {
+		drained[flowKey(i)] = bpf.FlowMetrics{LastSeenNs: uint64(i)}
+	}
+	// flowKey(0) is the very oldest, so it is certain to be a victim —
+	// and its delete fails.
+	failing := flowKey(0)
+	ev := &mapFlowEvictor{m: drained, failOn: map[bpf.FlowKey]bool{failing: true}}
+	inv := &recordingInvalidator{}
+	p := newRelieverWith(ev, maxN, NewMetrics(), testHigh, testLow, testCap)
+	p.baselines = inv
+	p.Relieve(drained)
+
+	if inv.has(failing) {
+		t.Error("a FAILED delete invalidated the baseline: the entry is still live and " +
+			"still climbing, so the next reading would re-count its whole history (over-billing)")
+	}
+	if len(ev.deleted) == 0 {
+		t.Fatal("no key was evicted; the fixture does not exercise the success path")
+	}
+	for _, k := range ev.deleted {
+		if !inv.has(k) {
+			t.Errorf("evicted key %v kept its baseline: the re-created entry will be diffed "+
+				"against a dead baseline and its bytes go unbilled (lachesis#287)", k)
+		}
+	}
+	if len(inv.keys) != len(ev.deleted) {
+		t.Errorf("invalidated %d baselines for %d confirmed deletes — the two must match exactly",
+			len(inv.keys), len(ev.deleted))
+	}
+}
+
+// TestRelieve_NilInvalidatorIsSafe: the seam is optional at the type
+// level so existing constructions (and the no-op paths) cannot panic.
+func TestRelieve_NilInvalidatorIsSafe(t *testing.T) {
+	maxN := bpf.MapTelemetryMaxEntries
+	n := int(testHigh*float64(maxN)) + 1
+	drained := make(map[bpf.FlowKey]bpf.FlowMetrics, n)
+	for i := uint32(0); i < uint32(n); i++ {
+		drained[flowKey(i)] = bpf.FlowMetrics{LastSeenNs: uint64(i)}
+	}
+	p := newReliever(&mapFlowEvictor{m: drained}, maxN, NewMetrics())
+	p.Relieve(drained) // must not panic with baselines unset
+}

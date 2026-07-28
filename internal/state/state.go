@@ -145,6 +145,38 @@ func (g *GlobalState) Add(key bpf.FlowKey, m bpf.FlowMetrics) {
 	g.mu.Unlock()
 }
 
+// InvalidateBaseline zeroes a flow's LastEbpfRaw while leaving Total
+// untouched. The caller is telling us something [GlobalState.ApplyDelta]
+// cannot work out for itself: this flow's kernel telemetry_map entry has
+// been REMOVED, so whatever value is read for the key next started from
+// zero.
+//
+// Without it, the reset is only ever inferred from the value —
+// [AddDelta] treats current<lastRaw as a restart — and that inference
+// fails silently whenever a re-created entry climbs back to or past the
+// old baseline inside one scrape interval. ApplyDelta then computes
+// current−lastRaw against a baseline that no longer exists and discards
+// lastRaw worth of real traffic. At a steady rate whose per-interval
+// bytes approach lastRaw, nearly every delta collapses to zero
+// (lachesis#287: measured 17.6% of transmitted bytes counted).
+//
+// Total is deliberately preserved: dropping the row instead would send
+// the next sighting through ApplyDelta's first-sight branch, which sets
+// Total=raw and would REGRESS the cumulative — trading a silent
+// under-count for a visible counter reset and breaking the monotonicity
+// of Contract 7. Zeroing only the baseline keeps the series monotone and
+// makes the next delta the full re-created value.
+//
+// A key that is not present is a no-op: the flow was never in
+// GlobalState, so there is no baseline to invalidate.
+func (g *GlobalState) InvalidateBaseline(key bpf.FlowKey) {
+	g.mu.Lock()
+	if c, ok := g.counts[key]; ok {
+		c.LastEbpfRaw = bpf.FlowMetrics{}
+	}
+	g.mu.Unlock()
+}
+
 // Resolve credits a late-bound flow whose VM MAC just became known: it
 // folds total (the bytes the UnresolvedBuffer accumulated while the MAC
 // was unknown) into the flow's GlobalState total, and sets LastEbpfRaw
