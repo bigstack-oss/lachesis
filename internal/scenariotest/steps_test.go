@@ -142,10 +142,10 @@ func (m *stepMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	}
 
 	present := map[string]bool{
-		metricBytesTotal:         true,
-		metricAttachedInterfaces: true,
-		metricAttachFailures:     true,
-		metricSettledFlows:       !m.noSettled,
+		MetricBytesTotal:         true,
+		MetricAttachedInterfaces: true,
+		MetricAttachFailures:     true,
+		MetricSettledFlows:       !m.noSettled,
 	}
 	return ScrapeResult{
 		Present:            present,
@@ -317,7 +317,7 @@ func TestSteps_DetectsRebucketRegression(t *testing.T) {
 // mid-scenario.
 func TestSteps_RefusesPreFoldAgent(t *testing.T) {
 	cloud, _, _, _, err := stepsFixture(t, &stepMetrics{noSettled: true}, macReuseScenario())
-	if err == nil || !strings.Contains(err.Error(), metricSettledFlows) {
+	if err == nil || !strings.Contains(err.Error(), MetricSettledFlows) {
 		t.Fatalf("want pre-fold agent refusal, got %v", err)
 	}
 	if len(cloud.servers) != 0 {
@@ -512,10 +512,10 @@ func (m *extPathMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	created := Mangle("scenariotest", "run1", "net-ext2")
 	return ScrapeResult{
 		Present: map[string]bool{
-			metricBytesTotal:         true,
-			metricAttachedInterfaces: true,
-			metricAttachFailures:     true,
-			metricNeutronAnomalies:   true,
+			MetricBytesTotal:         true,
+			MetricAttachedInterfaces: true,
+			MetricAttachFailures:     true,
+			MetricNeutronAnomalies:   true,
 		},
 		AttachedInterfaces: m.env.baseAttached + float64(m.env.booted),
 		Anomalies:          map[string]float64{"multi_external_path": extraFIP},
@@ -704,8 +704,8 @@ func (m *restartMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	}
 	return ScrapeResult{
 		Present: map[string]bool{
-			metricBytesTotal: true, metricAttachedInterfaces: true,
-			metricSettledFlows: true, metricServerBytesTotal: true,
+			MetricBytesTotal: true, MetricAttachedInterfaces: true,
+			MetricSettledFlows: true, MetricServerBytesTotal: true,
 		},
 		AttachedInterfaces: a,
 	}, nil
@@ -882,9 +882,9 @@ func (m *nicMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	}
 	return ScrapeResult{
 		Present: map[string]bool{
-			metricBytesTotal: true, metricAttachedInterfaces: true,
-			metricAttachFailures: true, metricSettledFlows: true,
-			metricServerBytesTotal: true, metricLingeringGhosts: true,
+			MetricBytesTotal: true, MetricAttachedInterfaces: true,
+			MetricAttachFailures: true, MetricSettledFlows: true,
+			MetricServerBytesTotal: true, MetricLingeringGhosts: true,
 		},
 		AttachedInterfaces: m.env.baseAttached + float64(m.env.booted) + float64(len(m.cloud.hotAttached)) - float64(deleted),
 		AttachFailures:     m.env.failures,
@@ -1145,7 +1145,7 @@ type sweepMetrics struct {
 func (m *sweepMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	m.scrapes++
 	return ScrapeResult{
-		Present:      map[string]bool{metricSettledFlows: true, metricBytesTotal: true, metricAttachedInterfaces: true},
+		Present:      map[string]bool{MetricSettledFlows: true, MetricBytesTotal: true, MetricAttachedInterfaces: true},
 		SettledFlows: m.settledStart + float64(m.scrapes), // always rising
 	}, nil
 }
@@ -1227,7 +1227,7 @@ type perAgentSweep struct {
 }
 
 func (m *perAgentSweep) Scrape(context.Context, string) (ScrapeResult, error) {
-	return ScrapeResult{Present: map[string]bool{metricBytesTotal: true, metricAttachedInterfaces: true}}, nil
+	return ScrapeResult{Present: map[string]bool{MetricBytesTotal: true, MetricAttachedInterfaces: true}}, nil
 }
 func (m *perAgentSweep) LookupMAC(_ context.Context, url, _ string) (MACLookup, error) {
 	if m.errAll {
@@ -1484,7 +1484,7 @@ type tupleMetrics struct{ tuples float64 }
 
 func (m tupleMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	return ScrapeResult{
-		Present:       map[string]bool{metricTenantSettledTuples: true, metricBytesTotal: true, metricAttachedInterfaces: true},
+		Present:       map[string]bool{MetricTenantSettledTuples: true, MetricBytesTotal: true, MetricAttachedInterfaces: true},
 		SettledTuples: m.tuples,
 	}, nil
 }
@@ -1658,7 +1658,7 @@ type resolvedMetrics struct{ resolved float64 }
 
 func (m resolvedMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	return ScrapeResult{
-		Present:            map[string]bool{metricUnresolvedResolved: true, metricBytesTotal: true, metricAttachedInterfaces: true},
+		Present:            map[string]bool{MetricUnresolvedResolved: true, MetricBytesTotal: true, MetricAttachedInterfaces: true},
 		UnresolvedResolved: m.resolved,
 	}, nil
 }
@@ -1714,7 +1714,7 @@ type evictionMetrics struct{ evictions float64 }
 
 func (m evictionMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	return ScrapeResult{
-		Present:                 map[string]bool{metricGCEvictions: true, metricBytesTotal: true, metricAttachedInterfaces: true},
+		Present:                 map[string]bool{MetricGCEvictions: true, MetricBytesTotal: true, MetricAttachedInterfaces: true},
 		PressureReliefEvictions: m.evictions,
 	}, nil
 }

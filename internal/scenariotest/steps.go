@@ -189,7 +189,7 @@ func (e *StepEnv) addRow(row AssertRow) {
 
 // scrape samples all configured agents once.
 func (e *StepEnv) scrape(ctx context.Context) (MetricsSnapshot, error) {
-	return sampleAcross(ctx, e.Metrics, e.Config.Cluster.Agents)
+	return SampleAcross(ctx, e.Metrics, e.Config.Cluster.Agents)
 }
 
 // project resolves a DSL project name via the run-state.
@@ -493,7 +493,7 @@ func (s AwaitSweepStep) requiredMetrics() []string {
 	if s.ForMACOf != "" {
 		return nil // uses /debug/lookup, not a metric family
 	}
-	return []string{metricSettledFlows}
+	return []string{MetricSettledFlows}
 }
 
 func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
@@ -992,7 +992,7 @@ type SettledTuplesGrewStep struct {
 
 func (SettledTuplesGrewStep) Kind() string { return "assert-settled-tuples-grew" }
 
-func (SettledTuplesGrewStep) requiredMetrics() []string { return []string{metricTenantSettledTuples} }
+func (SettledTuplesGrewStep) requiredMetrics() []string { return []string{MetricTenantSettledTuples} }
 
 func (s SettledTuplesGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
@@ -1270,7 +1270,7 @@ type AssertAnomalyStep struct {
 
 func (AssertAnomalyStep) Kind() string { return "assert-anomaly" }
 
-func (AssertAnomalyStep) requiredMetrics() []string { return []string{metricNeutronAnomalies} }
+func (AssertAnomalyStep) requiredMetrics() []string { return []string{MetricNeutronAnomalies} }
 
 func (s AssertAnomalyStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
@@ -1385,7 +1385,7 @@ func (s MigrateStep) Run(ctx context.Context, env *StepEnv) error {
 			// increments the failure counter (benign — the link is
 			// gone). Without a fresh baseline the next drive's recheck
 			// reads that noise as taps lost since up.
-			if snap, err := sampleAcross(ctx, env.Metrics, env.Config.Cluster.Agents); err == nil {
+			if snap, err := SampleAcross(ctx, env.Metrics, env.Config.Cluster.Agents); err == nil {
 				env.State.Attach.Failures = snap.AttachFailures
 			} else {
 				return fmt.Errorf("migrate: attach re-baseline scrape: %w", err)
@@ -1463,7 +1463,7 @@ type EpochStep struct {
 func (EpochStep) Kind() string { return "assert-epoch" }
 
 func (EpochStep) requiredMetrics() []string {
-	return []string{metricCountersReset}
+	return []string{MetricCountersReset}
 }
 
 func (s EpochStep) Run(ctx context.Context, env *StepEnv) error {
@@ -1568,7 +1568,7 @@ func (RestartAgentStep) Kind() string { return "restart-agent" }
 // front on an agent missing either — not just the one this step reads
 // for the tap baseline.
 func (RestartAgentStep) requiredMetrics() []string {
-	return []string{metricBytesTotal, metricAttachedInterfaces}
+	return []string{MetricBytesTotal, MetricAttachedInterfaces}
 }
 
 func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
@@ -1684,7 +1684,7 @@ type ResolvedGrewStep struct {
 
 func (ResolvedGrewStep) Kind() string { return "assert-resolved-grew" }
 
-func (ResolvedGrewStep) requiredMetrics() []string { return []string{metricUnresolvedResolved} }
+func (ResolvedGrewStep) requiredMetrics() []string { return []string{MetricUnresolvedResolved} }
 
 func (s ResolvedGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
@@ -1742,7 +1742,7 @@ type EvictionsGrewStep struct {
 
 func (EvictionsGrewStep) Kind() string { return "assert-evictions-grew" }
 
-func (EvictionsGrewStep) requiredMetrics() []string { return []string{metricGCEvictions} }
+func (EvictionsGrewStep) requiredMetrics() []string { return []string{MetricGCEvictions} }
 
 func (s EvictionsGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
@@ -2593,7 +2593,7 @@ type MaxSettledStep struct {
 
 func (MaxSettledStep) Kind() string { return "assert-max-settled" }
 
-func (MaxSettledStep) requiredMetrics() []string { return []string{metricSettledFlows} }
+func (MaxSettledStep) requiredMetrics() []string { return []string{MetricSettledFlows} }
 
 func (s MaxSettledStep) Run(ctx context.Context, env *StepEnv) error {
 	snap, err := env.scrape(ctx)
@@ -2625,7 +2625,7 @@ type MaxGhostsStep struct {
 
 func (MaxGhostsStep) Kind() string { return "assert-max-ghosts" }
 
-func (MaxGhostsStep) requiredMetrics() []string { return []string{metricLingeringGhosts} }
+func (MaxGhostsStep) requiredMetrics() []string { return []string{MetricLingeringGhosts} }
 
 func (s MaxGhostsStep) Run(ctx context.Context, env *StepEnv) error {
 	snap, err := env.scrape(ctx)

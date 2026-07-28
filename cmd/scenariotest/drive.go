@@ -6,6 +6,7 @@ import (
 	"os/signal"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/remote"
 	"github.com/spf13/cobra"
 )
 
@@ -33,7 +34,7 @@ func newDriveCmd(opts *rootOptions) *cobra.Command {
 				State:     rs,
 				StatePath: opts.state,
 				Metrics:   newMetrics(log),
-				Exec:      scenariotest.NewSSHExec(cfg.SSH, log),
+				Exec:      remote.NewSSH(cfg.SSH, log),
 				Log:       log,
 			})
 			if err != nil {

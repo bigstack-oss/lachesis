@@ -64,7 +64,7 @@ type driveMetrics struct {
 
 func (m driveMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	return ScrapeResult{
-		Present:            map[string]bool{metricBytesTotal: true, metricAttachedInterfaces: true},
+		Present:            map[string]bool{MetricBytesTotal: true, MetricAttachedInterfaces: true},
 		AttachedInterfaces: m.attached,
 		AttachFailures:     m.failures,
 		Bytes:              m.bytes,

@@ -29,7 +29,7 @@ type runMetrics struct {
 func (m *runMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	m.val += float64(2 << 20)
 	return ScrapeResult{
-		Present:            map[string]bool{metricBytesTotal: true, metricAttachedInterfaces: true},
+		Present:            map[string]bool{MetricBytesTotal: true, MetricAttachedInterfaces: true},
 		AttachedInterfaces: m.env.baseAttached + float64(m.env.booted),
 		AttachFailures:     m.env.failures,
 		Bytes: []BytesSample{

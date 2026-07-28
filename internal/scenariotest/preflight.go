@@ -112,7 +112,7 @@ func checkPlacement(p Placement, hosts []string) error {
 }
 
 func requiredMetrics(res ScrapeResult) error {
-	for _, m := range []string{metricBytesTotal, metricAttachedInterfaces} {
+	for _, m := range []string{MetricBytesTotal, MetricAttachedInterfaces} {
 		if !res.Present[m] {
 			return fmt.Errorf("agent /metrics missing %s", m)
 		}

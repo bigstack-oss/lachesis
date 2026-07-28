@@ -10,6 +10,8 @@ import (
 
 	"github.com/bigstack-oss/lachesis/cmd/scenariotest/scenarios"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/agentmetrics"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/openstack"
 	"github.com/charmbracelet/lipgloss"
 	charmlog "github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
@@ -53,8 +55,8 @@ func (o *rootOptions) logger() *slog.Logger {
 
 // newMetrics builds the agent-scrape source with the wire-trace
 // transport installed; the lines only surface under --trace.
-func newMetrics(log *slog.Logger) *scenariotest.HTTPMetrics {
-	return scenariotest.NewHTTPMetrics(&http.Client{
+func newMetrics(log *slog.Logger) *agentmetrics.Client {
+	return agentmetrics.New(&http.Client{
 		Transport: scenariotest.NewTraceTransport(nil, log),
 	})
 }
@@ -154,7 +156,7 @@ func loadRunState(statePath string, sc *scenariotest.Scenario, sub string) (*sce
 }
 
 // newCloud authenticates the live OpenStack client (credential
-// resolution happens inside NewOpenStack).
+// resolution happens inside openstack.New).
 func newCloud(ctx context.Context, cfg scenariotest.Config, log *slog.Logger) (scenariotest.Cloud, error) {
-	return scenariotest.NewOpenStack(ctx, cfg.OpenStack, log)
+	return openstack.New(ctx, cfg.OpenStack, log)
 }

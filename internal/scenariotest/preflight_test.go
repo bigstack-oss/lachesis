@@ -126,5 +126,5 @@ func TestPreflight_AgentMissingMetric(t *testing.T) {
 type halfMetrics struct{ instantMACs }
 
 func (halfMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
-	return ScrapeResult{Present: map[string]bool{metricBytesTotal: true, metricAttachedInterfaces: false}}, nil
+	return ScrapeResult{Present: map[string]bool{MetricBytesTotal: true, MetricAttachedInterfaces: false}}, nil
 }

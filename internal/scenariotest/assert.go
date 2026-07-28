@@ -111,7 +111,7 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 
 	var report AssertReport
 	for {
-		snap, err := sampleAcross(ctx, opts.Metrics, opts.Config.Cluster.Agents)
+		snap, err := SampleAcross(ctx, opts.Metrics, opts.Config.Cluster.Agents)
 		if err != nil {
 			return AssertReport{}, fmt.Errorf("assert: scrape: %w", err)
 		}
@@ -202,7 +202,7 @@ func evaluate(sc *Scenario, cfg Config, rs *RunState, base, cur baselines, haveS
 		switch {
 		case e.VM != "":
 			if !haveServers {
-				return AssertReport{}, fmt.Errorf("assert: expectation targets VM %q but the agent exposes no %s (predates the per-server family?)", e.VM, metricServerBytesTotal)
+				return AssertReport{}, fmt.Errorf("assert: expectation targets VM %q but the agent exposes no %s (predates the per-server family?)", e.VM, MetricServerBytesTotal)
 			}
 			serverID, ok := serverIDFor(rs, e.VM)
 			if !ok {

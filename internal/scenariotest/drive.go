@@ -138,7 +138,7 @@ type driver struct {
 // failure counter must not have grown. Skipped (with a log line) when
 // the run-state predates attach recording.
 func (d *driver) recheckAttach() error {
-	snap, err := sampleAcross(d.ctx, d.opts.Metrics, d.opts.Config.Cluster.Agents)
+	snap, err := SampleAcross(d.ctx, d.opts.Metrics, d.opts.Config.Cluster.Agents)
 	if err != nil {
 		return fmt.Errorf("attach recheck scrape: %w", err)
 	}
@@ -240,7 +240,7 @@ func (d *driver) unresolvedMACs(urls []string, want []ResourceRef) []string {
 // persists it before any traffic, so assert's deltas exclude
 // everything that happened before this drive.
 func (d *driver) captureBaseline() error {
-	snap, err := sampleAcross(d.ctx, d.opts.Metrics, d.opts.Config.Cluster.Agents)
+	snap, err := SampleAcross(d.ctx, d.opts.Metrics, d.opts.Config.Cluster.Agents)
 	if err != nil {
 		return fmt.Errorf("baseline scrape: %w", err)
 	}

@@ -141,6 +141,11 @@ type SSHConfig struct {
 	Timeout time.Duration `yaml:"timeout"`
 }
 
+// KeyFile is KeyPath with a leading ~ expanded — what an ssh client
+// must actually open. The expansion lives here rather than in the
+// transport so every consumer of the config sees the same path.
+func (s SSHConfig) KeyFile() string { return expandHome(s.KeyPath) }
+
 // NamingConfig controls the prefix mangled into every created
 // Neutron/Nova resource: "<prefix>-<run-id>-<dsl-id>". Projects
 // receive the same prefix.

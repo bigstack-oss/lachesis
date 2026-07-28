@@ -2,90 +2,83 @@ package scenariotest
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/url"
-	"strings"
-
-	dto "github.com/prometheus/client_model/go"
-	"github.com/prometheus/common/expfmt"
-	"github.com/prometheus/common/model"
 )
 
 // The metric names scenariotest reads off the agent's /metrics. These
 // are a stable exposition contract (see internal/metrics/schema.go and
 // internal/netlink/metrics.go); kept as local constants so this tool
 // does not import internal/bpf and its generated kernel bindings.
+// Exported because the whole harness speaks them: steps declare which
+// families they need, and the agentmetrics driver parses by them.
 const (
-	// metricBytesTotal is the TENANT tier of the four-layer billing
+	// MetricBytesTotal is the TENANT tier of the four-layer billing
 	// hierarchy — the family carrying tenant_id, which every tenant
 	// expectation and monotonicity assertion reads
 	// (docs/architecture/billing.md).
-	metricBytesTotal         = "lachesis_tenant_bytes_total"
-	metricAttachedInterfaces = "lachesis_attached_interfaces"
-	metricAttachFailures     = "lachesis_tc_attach_failures_total"
-	// metricSettledFlows counts GlobalState rows the agent's ghost sweep
+	MetricBytesTotal         = "lachesis_tenant_bytes_total"
+	MetricAttachedInterfaces = "lachesis_attached_interfaces"
+	MetricAttachFailures     = "lachesis_tc_attach_failures_total"
+	// MetricSettledFlows counts GlobalState rows the agent's ghost sweep
 	// folded into the settled-bytes accumulator (docs/architecture/data-structures.md#settled-bytes). The
 	// mac-reuse scenario polls it to know the sweep has processed a
 	// deleted VM. Absent on pre-fold agents — the scenario checks
 	// presence and refuses to run rather than hanging on the poll.
-	metricSettledFlows = "lachesis_gc_settled_flows_total"
-	// metricLingeringGhosts is the live count of MACs marked for deletion
+	MetricSettledFlows = "lachesis_gc_settled_flows_total"
+	// MetricLingeringGhosts is the live count of MACs marked for deletion
 	// but not yet swept (the lingering-ghost grace window). Unlike
-	// metricSettledFlows (which only moves when the sweep folds, after the
+	// MetricSettledFlows (which only moves when the sweep folds, after the
 	// 60s grace), this gauge rises the instant a MAC is MarkDelete'd — the
 	// immediate signal that something was marked gone (docs/architecture/data-structures.md#lingering-ghost).
-	metricLingeringGhosts = "lachesis_lingering_ghosts_active"
-	// metricCountersReset is the agent's state-restart epoch — the
+	MetricLingeringGhosts = "lachesis_lingering_ghosts_active"
+	// MetricCountersReset is the agent's state-restart epoch — the
 	// discontinuity marker behind the cold-restart scenario
 	// (docs/architecture/boot-and-recovery.md#counters-reset-epoch). Constant per
 	// process; a changed value across an agent restart means the agent
 	// declared its counter baselines incomparable with what preceded them.
-	metricCountersReset = "lachesis_agent_counters_reset_timestamp_seconds"
-	// metricServerBytesTotal is the per-server billing family
+	MetricCountersReset = "lachesis_agent_counters_reset_timestamp_seconds"
+	// MetricServerBytesTotal is the per-server billing family
 	// (docs/architecture/billing.md). Absent on agents predating the per-server export;
 	// only expectations with a VM target need it, and assert refuses
 	// those against agents that don't expose it.
-	metricServerBytesTotal = "lachesis_server_bytes_total"
-	// metricPortBytesTotal is the per-port drill-down family — the
+	MetricServerBytesTotal = "lachesis_server_bytes_total"
+	// MetricPortBytesTotal is the per-port drill-down family — the
 	// mortal leaf of the four-layer hierarchy (docs/architecture/billing.md).
 	// Data-dependent like the server family (a series exists only once
 	// its port carries attributed traffic), so no step preflight-gates
 	// on it; [PortSeriesStep] fails with a clear row instead.
-	metricPortBytesTotal = "lachesis_port_bytes_total"
-	// metricNeutronAnomalies is the per-class topology-anomaly gauge.
+	MetricPortBytesTotal = "lachesis_port_bytes_total"
+	// MetricNeutronAnomalies is the per-class topology-anomaly gauge.
 	// [AssertAnomalyStep] polls it; the class vocabulary is the agent's
 	// (cycle, ambiguity, …, multi_external_path).
-	metricNeutronAnomalies = "lachesis_neutron_anomalies"
+	MetricNeutronAnomalies = "lachesis_neutron_anomalies"
 	// The three settled-accumulator tuple gauges of the four-layer model
 	// (docs/architecture/data-structures.md#settled-bytes). Unlike
-	// metricSettledFlows (which only the GC sweep moves), these rise
+	// MetricSettledFlows (which only the GC sweep moves), these rise
 	// whenever ANY fold adds a tuple — including a reconcile-driven
 	// [state.SettleRebase] from an attribution change on a LIVE port. The
 	// port-reassignment / router-regateway scenarios read their SUM to
 	// prove the reconcile fold fired.
-	metricTenantSettledTuples = "lachesis_state_tenant_settled_tuples"
-	metricServerSettledTuples = "lachesis_state_server_settled_tuples"
-	metricTotalSettledTuples  = "lachesis_state_total_settled_tuples"
-	// metricUnresolvedResolved counts UnresolvedBuffer late-binding
+	MetricTenantSettledTuples = "lachesis_state_tenant_settled_tuples"
+	MetricServerSettledTuples = "lachesis_state_server_settled_tuples"
+	MetricTotalSettledTuples  = "lachesis_state_total_settled_tuples"
+	// MetricUnresolvedResolved counts UnresolvedBuffer late-binding
 	// successes: a flow whose MAC was unknown when its first bytes
 	// arrived, then became known within the TTL and was re-attributed to
 	// the right tenant (docs/architecture/data-structures.md#userspace-structures).
 	// The unresolved-latebind scenario reads it to prove the buffer
 	// resolved rather than expired to unknown.
-	metricUnresolvedResolved = "lachesis_unresolved_resolved_total"
-	// metricGCEvictions counts map entries the GC evicted, split by a
+	MetricUnresolvedResolved = "lachesis_unresolved_resolved_total"
+	// MetricGCEvictions counts map entries the GC evicted, split by a
 	// `reason` label. Only reason="pressure_relief" is the telemetry_map
 	// fill-watermark eviction [EvictionsGrewStep] asserts on; the family
 	// also carries ttl (mac_tenant_map ghost expiry) and
-	// ghost_residual_flow, so it must be read per-reason via [reasonSum]
-	// rather than summed whole
+	// ghost_residual_flow, so it must be read per-reason rather than
+	// summed whole
 	// (docs/architecture/data-structures.md#kernel-side-bpf-maps).
-	metricGCEvictions = "lachesis_gc_evictions_total"
-	// reasonPressureRelief is the [metricGCEvictions] `reason` value for a
+	MetricGCEvictions = "lachesis_gc_evictions_total"
+	// ReasonPressureRelief is the [MetricGCEvictions] `reason` value for a
 	// telemetry_map fill-watermark eviction.
-	reasonPressureRelief = "pressure_relief"
+	ReasonPressureRelief = "pressure_relief"
 )
 
 // BytesSample is one lachesis_tenant_bytes_total series: the {tenant_id, zone,
@@ -101,7 +94,7 @@ type BytesSample struct {
 	Direction       string  `json:"direction"`
 	Value           float64 `json:"value"`
 	// Node is the configured host of the agent that exposed this
-	// series, stamped by [sampleAcross] — what lets a node-targeted
+	// series, stamped by [SampleAcross] — what lets a node-targeted
 	// [Expect] evaluate one agent's tap instead of the cluster sum.
 	// Empty on samples from run-states predating per-node capture.
 	Node string `json:"node,omitempty"`
@@ -203,6 +196,8 @@ type MACLookup struct {
 // through this seam so they are testable without a live agent. url is
 // always the agent's metrics URL; the live implementation derives the
 // debug endpoint from it.
+//
+// The live implementation is internal/scenariotest/agentmetrics.
 type MetricsSource interface {
 	Scrape(ctx context.Context, url string) (ScrapeResult, error)
 	LookupMAC(ctx context.Context, url, mac string) (MACLookup, error)
@@ -222,125 +217,11 @@ type FlowRow struct {
 	Packets   float64 `json:"packets"`
 }
 
-// HTTPMetrics is the live [MetricsSource]: it GETs each /metrics URL
-// and parses the Prometheus text exposition format.
-type HTTPMetrics struct {
-	Client *http.Client
-}
-
-// NewHTTPMetrics returns an [HTTPMetrics] using c, or http.DefaultClient
-// when c is nil.
-func NewHTTPMetrics(c *http.Client) *HTTPMetrics {
-	if c == nil {
-		c = http.DefaultClient
-	}
-	return &HTTPMetrics{Client: c}
-}
-
-// Scrape fetches and parses one agent's /metrics.
-func (h *HTTPMetrics) Scrape(ctx context.Context, url string) (ScrapeResult, error) {
-	fams, err := h.fetch(ctx, url)
-	if err != nil {
-		return ScrapeResult{}, err
-	}
-	r := ScrapeResult{Present: map[string]bool{}}
-	for _, n := range []string{metricBytesTotal, metricAttachedInterfaces, metricAttachFailures,
-		metricSettledFlows, metricLingeringGhosts, metricServerBytesTotal, metricNeutronAnomalies,
-		metricTenantSettledTuples, metricUnresolvedResolved, metricGCEvictions,
-		metricCountersReset} {
-		_, ok := fams[n]
-		r.Present[n] = ok
-	}
-	r.AttachedInterfaces = familySum(fams, metricAttachedInterfaces)
-	r.AttachFailures = familySum(fams, metricAttachFailures)
-	r.SettledFlows = familySum(fams, metricSettledFlows)
-	r.SettledTuples = familySum(fams, metricTenantSettledTuples) +
-		familySum(fams, metricServerSettledTuples) +
-		familySum(fams, metricTotalSettledTuples)
-	r.UnresolvedResolved = familySum(fams, metricUnresolvedResolved)
-	r.PressureReliefEvictions = reasonSum(fams, metricGCEvictions, reasonPressureRelief)
-	r.LingeringGhosts = familySum(fams, metricLingeringGhosts)
-	r.Bytes = bytesSamples(fams)
-	r.Servers = serverSamples(fams)
-	r.PortBytes = portSamples(fams)
-	r.Anomalies = anomalySamples(fams)
-	r.CountersResetEpoch = familySum(fams, metricCountersReset)
-	return r, nil
-}
-
-// LookupMAC implements the MAC half of [MetricsSource] against the
-// agent's /debug/lookup endpoint, derived from the metrics URL (the
-// agent serves /metrics and /debug on one listener). A 200 with no
-// mac_tenant_map section decodes as not-found — the endpoint reports
-// what it saw, it does not 404 on misses.
-func (h *HTTPMetrics) LookupMAC(ctx context.Context, metricsURL, mac string) (MACLookup, error) {
-	base, ok := strings.CutSuffix(metricsURL, "/metrics")
-	if !ok {
-		return MACLookup{}, fmt.Errorf("lookup: metrics URL %q does not end in /metrics — cannot derive /debug/lookup (check cluster.agents[].metrics_url)", metricsURL)
-	}
-	u := base + "/debug/lookup?mac=" + url.QueryEscape(mac)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return MACLookup{}, fmt.Errorf("lookup: build request %s: %w", u, err)
-	}
-	resp, err := h.Client.Do(req)
-	if err != nil {
-		return MACLookup{}, fmt.Errorf("lookup: get %s: %w", u, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return MACLookup{}, fmt.Errorf("lookup: get %s: status %d", u, resp.StatusCode)
-	}
-	var body struct {
-		MAC *struct {
-			Found    bool   `json:"found"`
-			TenantID string `json:"tenant_id"`
-			PortID   string `json:"port_id"`
-		} `json:"mac_tenant_map"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return MACLookup{}, fmt.Errorf("lookup: decode %s: %w", u, err)
-	}
-	if body.MAC == nil {
-		return MACLookup{}, nil
-	}
-	return MACLookup{Found: body.MAC.Found, TenantID: body.MAC.TenantID, PortID: body.MAC.PortID}, nil
-}
-
-// LookupFlows implements the flow-query half of [MetricsSource]
-// against /debug/flows, derived from the metrics URL like [LookupMAC].
-func (h *HTTPMetrics) LookupFlows(ctx context.Context, metricsURL, mac string) ([]FlowRow, error) {
-	base, ok := strings.CutSuffix(metricsURL, "/metrics")
-	if !ok {
-		return nil, fmt.Errorf("flows: metrics URL %q does not end in /metrics — cannot derive /debug/flows (check cluster.agents[].metrics_url)", metricsURL)
-	}
-	u := base + "/debug/flows?mac=" + url.QueryEscape(mac)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, fmt.Errorf("flows: build request %s: %w", u, err)
-	}
-	resp, err := h.Client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("flows: get %s: %w", u, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("flows: get %s: status %d", u, resp.StatusCode)
-	}
-	var body struct {
-		Rows []FlowRow `json:"rows"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("flows: decode %s: %w", u, err)
-	}
-	return body.Rows, nil
-}
-
-// sampleAcross scrapes every configured agent and aggregates the
+// SampleAcross scrapes every configured agent and aggregates the
 // health gauges (each compute node exposes its own) plus the bytes
 // series, stamping each sample with its agent's host so node-targeted
 // expectations can tell the taps apart.
-func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) (MetricsSnapshot, error) {
+func SampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) (MetricsSnapshot, error) {
 	var snap MetricsSnapshot
 	for _, a := range agents {
 		r, err := src.Scrape(ctx, a.MetricsURL)
@@ -386,182 +267,4 @@ func sampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) 
 		snap.CountersResetEpochs[a.Host] = r.CountersResetEpoch
 	}
 	return snap, nil
-}
-
-func (h *HTTPMetrics) fetch(ctx context.Context, url string) (map[string]*dto.MetricFamily, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("metrics: build request %s: %w", url, err)
-	}
-	resp, err := h.Client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("metrics: scrape %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("metrics: scrape %s: status %d", url, resp.StatusCode)
-	}
-	// NewTextParser is required: a zero-value TextParser carries an
-	// unset name-validation scheme and panics. UTF8 is the library's
-	// current default and accepts the agent's metric names.
-	parser := expfmt.NewTextParser(model.UTF8Validation)
-	fams, err := parser.TextToMetricFamilies(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("metrics: parse %s: %w", url, err)
-	}
-	return fams, nil
-}
-
-// reasonSum sums only the samples of family name whose `reason` label
-// equals want. The eviction families pack several distinct reasons into
-// one family, so [familySum] would conflate unrelated eviction paths —
-// notably pressure-relief (telemetry_map fill) with the ghost sweep's
-// ttl expiry.
-func reasonSum(fams map[string]*dto.MetricFamily, name, want string) float64 {
-	fam, ok := fams[name]
-	if !ok {
-		return 0
-	}
-	var total float64
-	for _, m := range fam.GetMetric() {
-		for _, lp := range m.GetLabel() {
-			if lp.GetName() == "reason" && lp.GetValue() == want {
-				total += sampleValue(m)
-			}
-		}
-	}
-	return total
-}
-
-// familySum totals every sample in a metric family, whatever its
-// value type. Used for the attach gauge and the attach-failure
-// counter, neither of which scenariotest cares to break down by label.
-func familySum(fams map[string]*dto.MetricFamily, name string) float64 {
-	fam, ok := fams[name]
-	if !ok {
-		return 0
-	}
-	var total float64
-	for _, m := range fam.GetMetric() {
-		total += sampleValue(m)
-	}
-	return total
-}
-
-// bytesSamples extracts every lachesis_tenant_bytes_total series with its
-// {tenant_id, zone, external_network, direction} labels.
-func bytesSamples(fams map[string]*dto.MetricFamily) []BytesSample {
-	fam, ok := fams[metricBytesTotal]
-	if !ok {
-		return nil
-	}
-	out := make([]BytesSample, 0, len(fam.GetMetric()))
-	for _, m := range fam.GetMetric() {
-		s := BytesSample{Value: sampleValue(m)}
-		for _, lp := range m.GetLabel() {
-			switch lp.GetName() {
-			case "tenant_id":
-				s.TenantID = lp.GetValue()
-			case "zone":
-				s.Zone = lp.GetValue()
-			case "external_network":
-				s.ExternalNetwork = lp.GetValue()
-			case "direction":
-				s.Direction = lp.GetValue()
-			}
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
-// serverSamples extracts every lachesis_server_bytes_total series.
-// Returns nil against agents predating the per-server family.
-func serverSamples(fams map[string]*dto.MetricFamily) []ServerSample {
-	fam, ok := fams[metricServerBytesTotal]
-	if !ok {
-		return nil
-	}
-	out := make([]ServerSample, 0, len(fam.GetMetric()))
-	for _, m := range fam.GetMetric() {
-		s := ServerSample{Value: sampleValue(m)}
-		for _, lp := range m.GetLabel() {
-			switch lp.GetName() {
-			case "server_id":
-				s.ServerID = lp.GetValue()
-			case "tenant_id":
-				s.TenantID = lp.GetValue()
-			case "zone":
-				s.Zone = lp.GetValue()
-			case "external_network":
-				s.ExternalNetwork = lp.GetValue()
-			case "direction":
-				s.Direction = lp.GetValue()
-			}
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
-// portSamples extracts every lachesis_port_bytes_total series. Returns
-// nil against agents predating the port family.
-func portSamples(fams map[string]*dto.MetricFamily) []PortSample {
-	fam, ok := fams[metricPortBytesTotal]
-	if !ok {
-		return nil
-	}
-	out := make([]PortSample, 0, len(fam.GetMetric()))
-	for _, m := range fam.GetMetric() {
-		s := PortSample{Value: sampleValue(m)}
-		for _, lp := range m.GetLabel() {
-			switch lp.GetName() {
-			case "port_id":
-				s.PortID = lp.GetValue()
-			case "server_id":
-				s.ServerID = lp.GetValue()
-			case "zone":
-				s.Zone = lp.GetValue()
-			case "direction":
-				s.Direction = lp.GetValue()
-			}
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
-// anomalySamples extracts lachesis_neutron_anomalies by its class
-// label. nil when the family is absent (pre-anomaly-gauge agents).
-func anomalySamples(fams map[string]*dto.MetricFamily) map[string]float64 {
-	fam, ok := fams[metricNeutronAnomalies]
-	if !ok {
-		return nil
-	}
-	out := make(map[string]float64, len(fam.GetMetric()))
-	for _, m := range fam.GetMetric() {
-		for _, lp := range m.GetLabel() {
-			if lp.GetName() == "class" {
-				out[lp.GetValue()] += sampleValue(m)
-			}
-		}
-	}
-	return out
-}
-
-// sampleValue returns whichever typed value a metric carries. The
-// agent emits lachesis_tenant_bytes_total as a counter and the attach metrics
-// as gauge/counter; reading all three shapes keeps this robust to the
-// exact type.
-func sampleValue(m *dto.Metric) float64 {
-	switch {
-	case m.Counter != nil:
-		return m.Counter.GetValue()
-	case m.Gauge != nil:
-		return m.Gauge.GetValue()
-	case m.Untyped != nil:
-		return m.Untyped.GetValue()
-	default:
-		return 0
-	}
 }

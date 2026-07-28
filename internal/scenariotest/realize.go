@@ -140,7 +140,7 @@ func (r *realizer) run() error {
 
 	// Capture the attach baseline now: VM ports exist but are unbound,
 	// so no taps yet. Booting binds them and taps appear.
-	baseline, err := sampleAcross(r.ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
+	baseline, err := SampleAcross(r.ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
 	if err != nil {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
@@ -525,7 +525,7 @@ func (r *realizer) attachGate(baseline MetricsSnapshot, expectedTaps int) error 
 	ticker := time.NewTicker(attachPollInterval)
 	defer ticker.Stop()
 	for {
-		snap, err := sampleAcross(ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
+		snap, err := SampleAcross(ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
 		if err != nil {
 			return fmt.Errorf("attach gate scrape: %w", err)
 		}
