@@ -1,4 +1,8 @@
-package scenariotest
+// Package drive pushes a scenario's declared flows as real traffic
+// between the realized VMs, over SSH, after gating on the agents
+// having learned the participating MACs. It captures the pre-traffic
+// counter baseline the assert phase diffs against.
+package drive
 
 import (
 	"context"
@@ -6,17 +10,19 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
-// DriveOptions bundles everything `drive` needs to push a scenario's
+// Options bundles everything `drive` needs to push a scenario's
 // declared flows across the realized topology.
-type DriveOptions struct {
-	Config    Config
-	Scenario  *Scenario
-	State     *RunState
+type Options struct {
+	Config    scenariotest.Config
+	Scenario  *scenariotest.Scenario
+	State     *scenariotest.RunState
 	StatePath string
-	Metrics   MetricsSource
-	Exec      VMExec
+	Metrics   scenariotest.MetricsSource
+	Exec      scenariotest.VMExec
 	Log       *slog.Logger
 
 	// SinkDelay is the pause between starting a flow's sink and
@@ -27,10 +33,10 @@ type DriveOptions struct {
 	// [DefaultMACLearnTimeout]; tests set a small value.
 	MACLearnTimeout time.Duration
 	// ReadyTimeout bounds the per-VM SSH-readiness wait. Zero uses
-	// [defaultReadyTimeout].
+	// [scenariotest.DefaultReadyTimeout].
 	ReadyTimeout time.Duration
 	// KeepBaseline drives WITHOUT snapshotting a fresh pre-traffic
-	// baseline, so a later [AssertStep] measures the CUMULATIVE delta from
+	// baseline, so a later an assert step measures the CUMULATIVE delta from
 	// an earlier drive's baseline rather than just this drive's. Used to
 	// prove traffic ADDS to an existing (e.g. settled) total — the
 	// round-trip router-regateway drives a second time with this set so
@@ -54,12 +60,6 @@ const (
 	// defaultSinkDelay gives a just-started busybox `nc -l` a moment
 	// to bind before the stream dials it.
 	defaultSinkDelay = 2 * time.Second
-	// defaultReadyTimeout bounds how long drive waits for a VM to
-	// answer SSH. ACTIVE (Nova) precedes SSH-ready (cloud-init +
-	// dropbear) by tens of seconds on a real cluster.
-	defaultReadyTimeout = 120 * time.Second
-	// readyPollInterval is the pause between SSH-readiness probes.
-	readyPollInterval = 5 * time.Second
 	// flowBasePort is the sink port for flow 0; flow i listens on
 	// flowBasePort+i so concurrent-run leftovers never collide.
 	flowBasePort = 15000
@@ -76,19 +76,19 @@ const (
 	// DefaultMACLearnTimeout bounds the pre-drive MAC-learn gate. The
 	// agents learn a new port when Kafka kicks the reconciler (seconds)
 	// or the 5-minute periodic pass runs — same no-Kafka ceiling
-	// reasoning as [DefaultAnomalyTimeout].
+	// reasoning as DefaultAnomalyTimeout.
 	DefaultMACLearnTimeout = 8 * time.Minute
 	// macLearnPollInterval is the pause between MAC-learn gate polls
 	// (shrunk proportionally when the configured timeout is small).
 	macLearnPollInterval = 3 * time.Second
 )
 
-// Drive pushes every declared flow across the realized topology: it
+// Run pushes every declared flow across the realized topology: it
 // re-confirms the attach gate recorded by `up`, snapshots the
 // pre-traffic lachesis_tenant_bytes_total baseline into the run-state (assert
 // diffs against it), then executes the flows in declaration order.
 //
-// Flow strategies (both busybox/Cirros-safe, both validated live):
+// scenariotest.Flow strategies (both busybox/Cirros-safe, both validated live):
 //   - VM target: a `nc -l` sink starts on the target (reached via its
 //     FIP), then the source streams `dd | nc` at the target's internal
 //     IP — so the asserted bytes flow tenant-network paths, not FIPs.
@@ -96,7 +96,7 @@ const (
 //     payload. Transmitted bytes count at the tap whether or not
 //     anything answers, which is exactly the tx lower bound the
 //     external/infra scenarios assert.
-func Drive(ctx context.Context, opts DriveOptions) error {
+func Run(ctx context.Context, opts Options) error {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
@@ -128,7 +128,7 @@ func Drive(ctx context.Context, opts DriveOptions) error {
 
 type driver struct {
 	ctx  context.Context
-	opts DriveOptions
+	opts Options
 
 	ready map[string]bool // VM DSL ids already confirmed SSH-ready
 }
@@ -138,7 +138,7 @@ type driver struct {
 // failure counter must not have grown. Skipped (with a log line) when
 // the run-state predates attach recording.
 func (d *driver) recheckAttach() error {
-	snap, err := SampleAcross(d.ctx, d.opts.Metrics, d.opts.Config.Cluster.Agents)
+	snap, err := scenariotest.SampleAcross(d.ctx, d.opts.Metrics, d.opts.Config.Cluster.Agents)
 	if err != nil {
 		return fmt.Errorf("attach recheck scrape: %w", err)
 	}
@@ -165,11 +165,11 @@ func (d *driver) recheckAttach() error {
 // needs the PEER's MAC on the peer VM's node, not just the local one.
 // Skips (with a log line) when the run-state predates MAC recording.
 func (d *driver) waitMACsLearned() error {
-	var want []ResourceRef
+	var want []scenariotest.ResourceRef
 	for _, p := range d.opts.State.Ports {
 		// Router-interface MACs are deliberately never in
 		// mac_tenant_map — gating on them would wait forever. Their
-		// MACs are recorded for [AssertFlowPeerStep], not for us.
+		// MACs are recorded for an AssertFlowPeerStep, not for us.
 		if p.MAC != "" && !p.RouterInterface {
 			want = append(want, p)
 		}
@@ -178,7 +178,7 @@ func (d *driver) waitMACsLearned() error {
 		d.opts.Log.Warn("mac-learn gate: run-state records no port MACs; skipping")
 		return nil
 	}
-	urls := AgentURLs(d.opts.Config)
+	urls := scenariotest.AgentURLs(d.opts.Config)
 
 	timeout := d.opts.MACLearnTimeout
 	if timeout <= 0 {
@@ -218,7 +218,7 @@ func (d *driver) waitMACsLearned() error {
 // timeout message. A Found hit with an empty TenantID passes the
 // tenant check — a real agent always carries the tenant on a hit, so
 // the leniency only lets tenant-agnostic test stubs through.
-func (d *driver) unresolvedMACs(urls []string, want []ResourceRef) []string {
+func (d *driver) unresolvedMACs(urls []string, want []scenariotest.ResourceRef) []string {
 	var missing []string
 	for _, p := range want {
 		for _, u := range urls {
@@ -240,7 +240,7 @@ func (d *driver) unresolvedMACs(urls []string, want []ResourceRef) []string {
 // persists it before any traffic, so assert's deltas exclude
 // everything that happened before this drive.
 func (d *driver) captureBaseline() error {
-	snap, err := SampleAcross(d.ctx, d.opts.Metrics, d.opts.Config.Cluster.Agents)
+	snap, err := scenariotest.SampleAcross(d.ctx, d.opts.Metrics, d.opts.Config.Cluster.Agents)
 	if err != nil {
 		return fmt.Errorf("baseline scrape: %w", err)
 	}
@@ -253,8 +253,8 @@ func (d *driver) captureBaseline() error {
 	return nil
 }
 
-func (d *driver) runFlow(i int, f Flow) error {
-	if f.Proto != TCP {
+func (d *driver) runFlow(i int, f scenariotest.Flow) error {
+	if f.Proto != scenariotest.TCP {
 		return fmt.Errorf("only TCP flows are supported (UDP driving is a later slice)")
 	}
 	srcFIP, err := d.fip(f.From)
@@ -271,12 +271,12 @@ func (d *driver) runFlow(i int, f Flow) error {
 	return d.runExternalFlow(f, srcFIP)
 }
 
-// runVMFlow streams Bytes of TCP from the source VM to the target VM,
+// runVMFlow streams Bytes of scenariotest.TCP from the source VM to the target VM,
 // sinking into a busybox `nc -l` started via the target's FIP. A
 // VMID target dials the VM's internal IP (the asserted bytes flow
 // tenant-network paths); a FIPOf target dials the VM's floating
 // address instead, forcing the hairpin DNAT/SNAT path.
-func (d *driver) runVMFlow(i int, f Flow, srcFIP string) error {
+func (d *driver) runVMFlow(i int, f scenariotest.Flow, srcFIP string) error {
 	dstVM := f.To.VMID
 	if dstVM == "" {
 		dstVM = f.To.FIPOf
@@ -317,7 +317,7 @@ func (d *driver) runVMFlow(i int, f Flow, srcFIP string) error {
 // (127 = ping missing from the image, bad address, …) still errors,
 // so a broken driver is caught here rather than as a mystifying
 // zero-delta at assert.
-func (d *driver) runExternalFlow(f Flow, srcFIP string) error {
+func (d *driver) runExternalFlow(f scenariotest.Flow, srcFIP string) error {
 	count := (f.Bytes + pingPayloadBytes - 1) / pingPayloadBytes
 	cmd := fmt.Sprintf("ping -c %d -s %d %s >/dev/null 2>&1 || [ $? -eq 1 ]", count, pingPayloadBytes, f.To.IP)
 	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, cmd); err != nil {
@@ -339,7 +339,7 @@ func (d *driver) waitReady(vmID, addr string) error {
 	}
 	timeout := d.opts.ReadyTimeout
 	if timeout <= 0 {
-		timeout = defaultReadyTimeout
+		timeout = scenariotest.DefaultReadyTimeout
 	}
 	d.opts.Log.Info("waiting for ssh-ready", "vm", vmID, "addr", addr, "timeout", timeout)
 	ctx, cancel := context.WithTimeout(d.ctx, timeout)
@@ -353,7 +353,7 @@ func (d *driver) waitReady(vmID, addr string) error {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("vm %s (%s) not ssh-ready before deadline: %w", vmID, addr, ctx.Err())
-		case <-time.After(readyPollInterval):
+		case <-time.After(scenariotest.ReadyPollInterval):
 		}
 	}
 }
@@ -379,7 +379,7 @@ func (d *driver) fip(vmID string) (string, error) {
 
 // internalIP resolves a VM's fixed IP from the scenario's topology —
 // the same declaration realize created the port from verbatim.
-func internalIP(sc *Scenario, vmID string) (string, error) {
+func internalIP(sc *scenariotest.Scenario, vmID string) (string, error) {
 	snap := sc.Builder.Build()
 	for _, p := range snap.Ports {
 		if p.ID == vmID && len(p.FixedIPs) > 0 {

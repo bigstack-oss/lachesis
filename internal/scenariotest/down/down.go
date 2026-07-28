@@ -1,4 +1,8 @@
-package scenariotest
+// Package down tears a realized scenario back down: every resource the
+// run-state records, in dependency order, idempotently. It never
+// deletes a project, and it never deletes the run-state or report
+// files — the evidence outlives the topology.
+package down
 
 import (
 	"context"
@@ -6,19 +10,21 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
-// DownOptions bundles everything `down` needs to tear a realized
+// Options bundles everything `down` needs to tear a realized
 // topology back down.
-type DownOptions struct {
-	Config    Config
-	State     *RunState
+type Options struct {
+	Config    scenariotest.Config
+	State     *scenariotest.RunState
 	StatePath string
-	Cloud     Cloud
+	Cloud     scenariotest.Cloud
 	Log       *slog.Logger
 }
 
-// Down deletes everything the run-state records, in reverse creation
+// Run deletes everything the run-state records, in reverse creation
 // order, idempotently: every delete tolerates already-gone (a re-run
 // after a partial failure converges), errors are collected rather
 // than aborting the pass, and three things are never touched —
@@ -33,7 +39,7 @@ type DownOptions struct {
 // sweep scoped to each scenario network (platform-created ports like
 // CubeCOS's cube:mgr appear in no run-state but block deletion) →
 // subnets → networks.
-func Down(ctx context.Context, opts DownOptions) error {
+func Run(ctx context.Context, opts Options) error {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
@@ -68,7 +74,7 @@ func Down(ctx context.Context, opts DownOptions) error {
 	// before the port teardown so a swept server's tap vanishes before
 	// `down` deletes the (recorded) port it sat on — Neutron 409s a
 	// bound-port delete otherwise.
-	runPrefix := Mangle(rs.Prefix, rs.RunID, "")
+	runPrefix := scenariotest.Mangle(rs.Prefix, rs.RunID, "")
 	for _, proj := range rs.Projects {
 		found, err := opts.Cloud.ListProjectServers(ctx, proj.ID)
 		if err != nil {
@@ -154,7 +160,7 @@ func Down(ctx context.Context, opts DownOptions) error {
 // strand everything behind it.
 type downer struct {
 	ctx  context.Context
-	opts DownOptions
+	opts Options
 	errs []error
 }
 

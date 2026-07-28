@@ -1,15 +1,24 @@
-package scenariotest
+// Package preflight verifies, without mutating anything, that a live
+// cluster can run a scenario: every prerequisite resolves, any pinned
+// hypervisor exists, and every configured agent is scraping and
+// exposing the metric families the harness depends on.
+//
+// It never returns an error — every failure is captured as a failed
+// [Check] so one pass shows the full picture.
+package preflight
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
-// PreflightReport is the outcome of a read-only cluster-readiness
+// Report is the outcome of a read-only cluster-readiness
 // check. OK is true only when every Check passed.
-type PreflightReport struct {
+type Report struct {
 	Scenario string `json:"scenario"`
 	OK       bool   `json:"ok"`
 	// Skip, when non-empty, means the scenario cannot run on this
@@ -28,18 +37,18 @@ type Check struct {
 	Detail string `json:"detail"`
 }
 
-// Preflight verifies, without mutating anything, that the cluster is
+// Run verifies, without mutating anything, that the cluster is
 // ready to run sc: every prerequisite resolves, any pinned hypervisor
 // exists (placement slots resolve against the configured agents
 // first), and every configured agent is scraping and exposing the
 // metrics scenariotest depends on. It never returns an error — every
 // failure is captured as a failed [Check] so the report shows the
 // full picture in one pass.
-func Preflight(ctx context.Context, cfg Config, sc *Scenario, cloud Cloud, src MetricsSource) PreflightReport {
-	if reason := skipReason(sc, cfg); reason != "" {
-		return PreflightReport{Scenario: sc.Name, OK: true, Skip: reason}
+func Run(ctx context.Context, cfg scenariotest.Config, sc *scenariotest.Scenario, cloud scenariotest.Cloud, src scenariotest.MetricsSource) Report {
+	if reason := scenariotest.SkipReason(sc, cfg); reason != "" {
+		return Report{Scenario: sc.Name, OK: true, Skip: reason}
 	}
-	r := PreflightReport{Scenario: sc.Name, OK: true}
+	r := Report{Scenario: sc.Name, OK: true}
 	add := func(name string, err error, ok string) {
 		c := Check{Name: name, OK: err == nil, Detail: ok}
 		if err != nil {
@@ -52,7 +61,7 @@ func Preflight(ctx context.Context, cfg Config, sc *Scenario, cloud Cloud, src M
 	id, err := cloud.FindImage(ctx, cfg.Prerequisites.ImageName)
 	add("image", err, "found "+cfg.Prerequisites.ImageName+" ("+id+")")
 
-	flavor := FlavorFor(cfg, sc)
+	flavor := scenariotest.FlavorFor(cfg, sc)
 	fid, err := cloud.FindFlavor(ctx, flavor)
 	add("flavor", err, "found "+flavor+" ("+fid+")")
 
@@ -65,7 +74,7 @@ func Preflight(ctx context.Context, cfg Config, sc *Scenario, cloud Cloud, src M
 	add("external_network", err, "found "+cfg.Prerequisites.ExternalNetworkName+" ("+extid+")")
 
 	if len(sc.Placement) > 0 {
-		if resolved, rerr := ResolvePlacement(sc.Placement, cfg.Cluster.Agents); rerr != nil {
+		if resolved, rerr := scenariotest.ResolvePlacement(sc.Placement, cfg.Cluster.Agents); rerr != nil {
 			add("placement", rerr, "")
 		} else if hosts, err := cloud.Hypervisors(ctx); err != nil {
 			add("placement", err, "")
@@ -81,12 +90,12 @@ func Preflight(ctx context.Context, cfg Config, sc *Scenario, cloud Cloud, src M
 			add(name, err, "")
 			continue
 		}
-		add(name, CheckRequiredMetrics(res), "reachable; required metrics present")
+		add(name, scenariotest.CheckRequiredMetrics(res), "reachable; required metrics present")
 	}
 	return r
 }
 
-func checkPlacement(p Placement, hosts []string) error {
+func checkPlacement(p scenariotest.Placement, hosts []string) error {
 	have := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
 		have[h] = true
@@ -104,7 +113,7 @@ func checkPlacement(p Placement, hosts []string) error {
 
 // EmitJSON writes the report as indented JSON. Human rendering is a
 // presentation concern and lives with the CLI, not here.
-func (r PreflightReport) EmitJSON(w io.Writer) error {
+func (r Report) EmitJSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(r); err != nil {

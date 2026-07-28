@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -43,41 +44,41 @@ func portRecreateSameServer() *scenariotest.Scenario {
 			// vm-a's same_tenant traffic rides ONLY the hot-plugged NIC
 			// (eth0 carries just the external SSH path), so the tuple
 			// ends cleanly when that NIC's port dies.
-			scenariotest.AttachPortStep{VM: "vm-a", ID: "vm-a-nic2",
+			steps.AttachPortStep{VM: "vm-a", ID: "vm-a-nic2",
 				Network: "net-T1b", Subnet: "sub-T1b", IP: "10.0.24.9"},
-			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.24.9/24"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.24.9/24"},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 2 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "pre-delete drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "pre-delete drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", MinBytes: 2 << 20},
 			}},
 
 			// End the tuple: delete the port, let the sweep fold it.
-			scenariotest.CaptureStep{},
-			scenariotest.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true},
-			scenariotest.AwaitSweepStep{ForMACOf: "vm-a-nic2"},
-			scenariotest.MonotoneStep{Tenant: "T1",
+			steps.CaptureStep{},
+			steps.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true},
+			steps.AwaitSweepStep{ForMACOf: "vm-a-nic2"},
+			steps.MonotoneStep{Tenant: "T1",
 				Note: "tenant plane invariant across the fold"},
 
 			// Rebirth: a NEW port (fresh MAC) on the same server and
 			// subnet — the same label tuple, no shared Neutron identity.
-			scenariotest.AttachPortStep{VM: "vm-a", ID: "vm-a-nic3",
+			steps.AttachPortStep{VM: "vm-a", ID: "vm-a-nic3",
 				Network: "net-T1b", Subnet: "sub-T1b", IP: "10.0.24.9"},
-			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.24.9/24"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.24.9/24"},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "post-rebirth drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "post-rebirth drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", MinBytes: 1 << 20},
 			}},
 
 			// THE reproduction row: the reborn tuple must continue from
 			// its carried value, never restart below it. RED on today's
 			// agent (reborn ~1 MiB < captured ~2 MiB).
-			scenariotest.ServerMonotoneStep{VM: "vm-a",
+			steps.ServerMonotoneStep{VM: "vm-a",
 				Note: "reborn tuple continues from the carried value (lachesis#227)"},
-			scenariotest.MonotoneStep{Tenant: "T1",
+			steps.MonotoneStep{Tenant: "T1",
 				Note: "tenant plane invariant at scenario end"},
 		},
 	}

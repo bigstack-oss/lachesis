@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -28,12 +29,12 @@ func resolverDanglingRoute() *scenariotest.Scenario {
 		Desc:    "Off-port nexthop raises the dangling_route anomaly; bytes fall back to external.",
 		Builder: b,
 		Steps: []scenariotest.Step{
-			scenariotest.AssertAnomalyStep{Class: "dangling_route", Min: 1, Max: 1,
+			steps.AssertAnomalyStep{Class: "dangling_route", Min: 1, Max: 1,
 				Note: "the black-hole nexthop is reported"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("10.98.0.5"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "dangling-routed CIDR bills the external fallback", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "dangling-routed CIDR bills the external fallback", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20},
 			}},
 		},

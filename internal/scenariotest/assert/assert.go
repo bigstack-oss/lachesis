@@ -1,24 +1,33 @@
-package scenariotest
+// Package assert evaluates a scenario's declared expectations against
+// the agents' live /metrics as lower bounds on the delta from the
+// drive-time baseline, polling until every expectation passes or the
+// stabilize deadline fires.
+//
+// A failed expectation is a false [scenariotest.AssertReport.OK], not
+// an error; errors are reserved for evaluation being impossible.
+package assert
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
-// AssertOptions bundles everything `assert` needs to evaluate a
+// Options bundles everything `assert` needs to evaluate a
 // driven scenario's expectations against live /metrics.
-type AssertOptions struct {
-	Config   Config
-	Scenario *Scenario
-	State    *RunState
+type Options struct {
+	Config   scenariotest.Config
+	Scenario *scenariotest.Scenario
+	State    *scenariotest.RunState
 	// ReportPath is where the JSON report persists (it must survive
 	// `down`, which never deletes report or run-state files). Empty
 	// derives "<state path minus .json>-report.json" via
-	// [DefaultReportPath].
+	// [scenariotest.DefaultReportPath].
 	ReportPath string
-	Metrics    MetricsSource
+	Metrics    scenariotest.MetricsSource
 	Log        *slog.Logger
 
 	// StabilizeTimeout bounds the poll-until-pass loop: counters appear
@@ -42,25 +51,25 @@ const (
 	noteBaselineInvalidated = "baseline invalidated (counter dropped — ghost GC evicted a prior run's flows); re-run drive"
 )
 
-// Assert evaluates every declared expectation as a MinBytes lower
+// Run evaluates every declared expectation as a MinBytes lower
 // bound on the delta between the drive-time baseline and the live
 // counters, polling until all pass or the stabilize timeout fires. The
 // report is persisted to ReportPath either way; the returned error is
 // reserved for evaluation being impossible (no baseline, unknown
 // tenant, scrape failure) — a failed expectation is a false OK in the
 // report, not an error.
-func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
+func Run(ctx context.Context, opts Options) (scenariotest.AssertReport, error) {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
 	rs := opts.State
 	if len(rs.Baseline) == 0 {
-		return AssertReport{}, fmt.Errorf("assert: run-state has no baseline — run drive first")
+		return scenariotest.AssertReport{}, fmt.Errorf("assert: run-state has no baseline — run drive first")
 	}
 	base := baselines{
-		tuples:     SumByTuple(rs.Baseline),
-		ext:        SumByExtTuple(rs.Baseline),
-		servers:    SumByServerTuple(rs.BaselineServers),
+		tuples:     scenariotest.SumByTuple(rs.Baseline),
+		ext:        scenariotest.SumByExtTuple(rs.Baseline),
+		servers:    scenariotest.SumByServerTuple(rs.BaselineServers),
 		rawBytes:   rs.Baseline,
 		rawServers: rs.BaselineServers,
 	}
@@ -71,22 +80,22 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 	}
 	deadline := time.Now().Add(timeout)
 
-	var report AssertReport
+	var report scenariotest.AssertReport
 	for {
-		snap, err := SampleAcross(ctx, opts.Metrics, opts.Config.Cluster.Agents)
+		snap, err := scenariotest.SampleAcross(ctx, opts.Metrics, opts.Config.Cluster.Agents)
 		if err != nil {
-			return AssertReport{}, fmt.Errorf("assert: scrape: %w", err)
+			return scenariotest.AssertReport{}, fmt.Errorf("assert: scrape: %w", err)
 		}
 		cur := baselines{
-			tuples:     SumByTuple(snap.Bytes),
-			ext:        SumByExtTuple(snap.Bytes),
-			servers:    SumByServerTuple(snap.Servers),
+			tuples:     scenariotest.SumByTuple(snap.Bytes),
+			ext:        scenariotest.SumByExtTuple(snap.Bytes),
+			servers:    scenariotest.SumByServerTuple(snap.Servers),
 			rawBytes:   snap.Bytes,
 			rawServers: snap.Servers,
 		}
 		report, err = evaluate(opts.Scenario, opts.Config, rs, base, cur, len(snap.Servers) > 0)
 		if err != nil {
-			return AssertReport{}, err
+			return scenariotest.AssertReport{}, err
 		}
 		if report.OK {
 			break
@@ -125,67 +134,67 @@ func Assert(ctx context.Context, opts AssertOptions) (AssertReport, error) {
 // family's sums — plus the raw samples, which node-targeted
 // expectations filter directly (the aggregations sum across nodes).
 type baselines struct {
-	tuples     map[Tuple]float64
-	ext        map[ExtTuple]float64
-	servers    map[ServerTuple]float64
-	rawBytes   []BytesSample
-	rawServers []ServerSample
+	tuples     map[scenariotest.Tuple]float64
+	ext        map[scenariotest.ExtTuple]float64
+	servers    map[scenariotest.ServerTuple]float64
+	rawBytes   []scenariotest.BytesSample
+	rawServers []scenariotest.ServerSample
 }
 
 // evaluate builds one report from a pair of aggregated snapshots.
 // haveServers reports whether the live scrape exposed the per-server
 // family at all — an expectation with a VM target against an agent
 // predating it is an evaluation error, not a silent zero-delta fail.
-func evaluate(sc *Scenario, cfg Config, rs *RunState, base, cur baselines, haveServers bool) (AssertReport, error) {
-	report := AssertReport{Scenario: rs.Scenario, RunID: rs.RunID, OK: true}
-	baselineHasNodes := HasNodeInfo(base.rawBytes, base.rawServers)
+func evaluate(sc *scenariotest.Scenario, cfg scenariotest.Config, rs *scenariotest.RunState, base, cur baselines, haveServers bool) (scenariotest.AssertReport, error) {
+	report := scenariotest.AssertReport{Scenario: rs.Scenario, RunID: rs.RunID, OK: true}
+	baselineHasNodes := scenariotest.HasNodeInfo(base.rawBytes, base.rawServers)
 	for _, e := range sc.Expect {
 		ref, ok := rs.Projects[e.TenantID]
 		if !ok {
-			return AssertReport{}, fmt.Errorf("assert: expectation references tenant %q but run-state has no such project", e.TenantID)
+			return scenariotest.AssertReport{}, fmt.Errorf("assert: expectation references tenant %q but run-state has no such project", e.TenantID)
 		}
 		ext := resolveExternalNetwork(sc, cfg, rs, e.ExternalNetwork)
-		row := AssertRow{
+		row := scenariotest.AssertRow{
 			Tenant: e.TenantID, TenantID: ref.ID,
 			Zone: e.Zone, ExternalNetwork: ext, Direction: e.Direction,
 			MinBytes: e.MinBytes,
 		}
 		node := ""
 		if e.Node != "" {
-			host, err := ResolveNode(e.Node, cfg.Cluster.Agents)
+			host, err := scenariotest.ResolveNode(e.Node, cfg.Cluster.Agents)
 			if err != nil {
-				return AssertReport{}, fmt.Errorf("assert: %w", err)
+				return scenariotest.AssertReport{}, fmt.Errorf("assert: %w", err)
 			}
 			if !baselineHasNodes {
-				return AssertReport{}, fmt.Errorf("assert: expectation targets node %q but the baseline carries no node identity — re-run drive with this scenariotest build", e.Node)
+				return scenariotest.AssertReport{}, fmt.Errorf("assert: expectation targets node %q but the baseline carries no node identity — re-run drive with this scenariotest build", e.Node)
 			}
 			node, row.Node = host, host
 		}
 		switch {
 		case e.VM != "":
 			if !haveServers {
-				return AssertReport{}, fmt.Errorf("assert: expectation targets VM %q but the agent exposes no %s (predates the per-server family?)", e.VM, MetricServerBytesTotal)
+				return scenariotest.AssertReport{}, fmt.Errorf("assert: expectation targets VM %q but the agent exposes no %s (predates the per-server family?)", e.VM, scenariotest.MetricServerBytesTotal)
 			}
-			serverID, ok := ServerIDFor(rs, e.VM)
+			serverID, ok := scenariotest.ServerIDFor(rs, e.VM)
 			if !ok {
-				return AssertReport{}, fmt.Errorf("assert: expectation references VM %q but run-state has no such server", e.VM)
+				return scenariotest.AssertReport{}, fmt.Errorf("assert: expectation references VM %q but run-state has no such server", e.VM)
 			}
 			row.VM, row.ServerID = e.VM, serverID
 			if node != "" {
-				row.Baseline = SumServersOnNode(base.rawServers, node, serverID, e.Zone, ext, e.Direction)
-				row.Current = SumServersOnNode(cur.rawServers, node, serverID, e.Zone, ext, e.Direction)
+				row.Baseline = scenariotest.SumServersOnNode(base.rawServers, node, serverID, e.Zone, ext, e.Direction)
+				row.Current = scenariotest.SumServersOnNode(cur.rawServers, node, serverID, e.Zone, ext, e.Direction)
 			} else {
-				row.Baseline = SumServer(base.servers, serverID, e.Zone, ext, e.Direction)
-				row.Current = SumServer(cur.servers, serverID, e.Zone, ext, e.Direction)
+				row.Baseline = scenariotest.SumServer(base.servers, serverID, e.Zone, ext, e.Direction)
+				row.Current = scenariotest.SumServer(cur.servers, serverID, e.Zone, ext, e.Direction)
 			}
 		case node != "":
-			row.Baseline = SumBytesOnNode(base.rawBytes, node, ref.ID, e.Zone, ext, e.Direction)
-			row.Current = SumBytesOnNode(cur.rawBytes, node, ref.ID, e.Zone, ext, e.Direction)
+			row.Baseline = scenariotest.SumBytesOnNode(base.rawBytes, node, ref.ID, e.Zone, ext, e.Direction)
+			row.Current = scenariotest.SumBytesOnNode(cur.rawBytes, node, ref.ID, e.Zone, ext, e.Direction)
 		case ext != "":
-			k := ExtTuple{ref.ID, e.Zone, ext, e.Direction}
+			k := scenariotest.ExtTuple{Tenant: ref.ID, Zone: e.Zone, Ext: ext, Direction: e.Direction}
 			row.Baseline, row.Current = base.ext[k], cur.ext[k]
 		default:
-			k := Tuple{ref.ID, e.Zone, e.Direction}
+			k := scenariotest.Tuple{Tenant: ref.ID, Zone: e.Zone, Direction: e.Direction}
 			row.Baseline, row.Current = base.tuples[k], cur.tuples[k]
 		}
 		row.Delta = row.Current - row.Baseline
@@ -203,18 +212,18 @@ func evaluate(sc *Scenario, cfg Config, rs *RunState, base, cur baselines, haveS
 
 // resolveExternalNetwork maps an expectation's ExternalNetwork to the
 // label value to match — the same indirection realize applies: empty
-// stays empty (no filter); a marker in [Scenario.CreateExternalNets]
+// stays empty (no filter); a marker in [scenariotest.Scenario.CreateExternalNets]
 // resolves to its run-mangled created name (the network Name the agent
 // labels by); any other DSL external-network marker id resolves to the
 // provider network the config binds it to; anything else — including
 // the "none" sentinel — is literal.
-func resolveExternalNetwork(sc *Scenario, cfg Config, rs *RunState, name string) string {
+func resolveExternalNetwork(sc *scenariotest.Scenario, cfg scenariotest.Config, rs *scenariotest.RunState, name string) string {
 	if name == "" || sc.Builder == nil {
 		return name
 	}
 	for _, created := range sc.CreateExternalNets {
 		if created == name {
-			return Mangle(cfg.Naming.Prefix, rs.RunID, name)
+			return scenariotest.Mangle(cfg.Naming.Prefix, rs.RunID, name)
 		}
 	}
 	for _, n := range sc.Builder.Build().Networks {

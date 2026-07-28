@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -45,41 +46,41 @@ func multiPortPartialDelete() *scenariotest.Scenario {
 		Builder: b,
 		Steps: []scenariotest.Step{
 			// Second NIC onto vm-a, then bring it up in the guest.
-			scenariotest.AttachPortStep{VM: "vm-a", ID: "vm-a-nic2",
+			steps.AttachPortStep{VM: "vm-a", ID: "vm-a-nic2",
 				Network: "net-T1b", Subnet: "sub-T1b", IP: "10.0.22.9"},
-			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.22.9/24"},
+			steps.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.22.9/24"},
 
 			// Both NICs feed the same {vm-a, same_tenant, tx} tuple:
 			// eth0 to vm-b (connected subnet), eth1 to vm-c (connected
 			// subnet after configure-nic).
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 				{From: "vm-a", To: scenariotest.VMTarget("vm-c"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "two-NIC drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "two-NIC drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 2 << 20},
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", MinBytes: 2 << 20},
 			}},
 
 			// Delete NIC2's port outright and let the ghost sweep fold it.
-			scenariotest.CaptureStep{},
-			scenariotest.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true},
-			scenariotest.AwaitSweepStep{ForMACOf: "vm-a-nic2"},
+			steps.CaptureStep{},
+			steps.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true},
+			steps.AwaitSweepStep{ForMACOf: "vm-a-nic2"},
 
 			// THE reproduction row: the server's tuple still has live
 			// rows (eth0), so its series must not have dipped. RED on
 			// today's agent — the folded eth1 bytes leave the series.
-			scenariotest.ServerMonotoneStep{VM: "vm-a",
+			steps.ServerMonotoneStep{VM: "vm-a",
 				Note: "per-server series survives a partial fold (lachesis#226)"},
 			// The contrast row: the tenant plane absorbs the fold.
-			scenariotest.MonotoneStep{Tenant: "T1",
+			steps.MonotoneStep{Tenant: "T1",
 				Note: "tenant plane invariant across the fold"},
 
 			// The surviving NIC keeps accruing normally.
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "surviving NIC accrues", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "surviving NIC accrues", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", MinBytes: 1 << 20},
 			}},
 		},

@@ -13,6 +13,7 @@ import (
 	"github.com/bigstack-oss/lachesis/cmd/scenariotest/scenarios"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/remote"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/run"
 	"github.com/spf13/cobra"
 )
 
@@ -195,7 +196,7 @@ func runOne(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, 
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
 	}
-	res, err := scenariotest.Run(ctx, scenariotest.RunOptions{
+	res, err := run.Run(ctx, run.Options{
 		Config:     cfg,
 		Scenario:   sc,
 		RunID:      runID,
@@ -327,7 +328,7 @@ func runSuiteOne(ctx, hardStop context.Context, cfg scenariotest.Config, cloud s
 	report := scenariotest.DefaultReportPath(row.State)
 
 	start := time.Now()
-	res, err := scenariotest.Run(ctx, scenariotest.RunOptions{
+	res, err := run.Run(ctx, run.Options{
 		Config:     cfg,
 		Scenario:   sc,
 		RunID:      runID,

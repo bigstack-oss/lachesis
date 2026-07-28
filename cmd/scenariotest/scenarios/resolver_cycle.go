@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -42,12 +43,12 @@ func resolverCycle() *scenariotest.Scenario {
 			// symmetric two-router loop yields 2 (confirmed live). The
 			// billing-meaningful property is "a cycle was detected", so
 			// assert ≥1 with a loose ceiling that still catches a runaway.
-			scenariotest.AssertAnomalyStep{Class: "cycle", Min: 1, Max: 32,
+			steps.AssertAnomalyStep{Class: "cycle", Min: 1, Max: 32,
 				Note: "extraroute loop detected"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("10.99.0.5"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "looped CIDR bills the external fallback", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "looped CIDR bills the external fallback", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20},
 			}},
 		},

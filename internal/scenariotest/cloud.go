@@ -4,7 +4,7 @@ import "context"
 
 // Cloud is the live OpenStack surface that scenariotest's preflight
 // and realize steps consume. The gophercloud-backed implementation is
-// [OpenStack]; unit tests substitute a recording fake. Read-only
+// the openstack package; unit tests substitute a recording fake. Read-only
 // lookups back preflight; the per-project creation methods back `up`.
 //
 // Methods that create project-owned resources take a projectID; the
@@ -65,11 +65,11 @@ type Cloud interface {
 	// set.
 	AddRouterInterface(ctx context.Context, projectID, routerID, subnetID, portID string) error
 	// SetRouterRoutes replaces a router's static (extra) routes. Also
-	// the mid-run extraroute-mutation vehicle ([SetRouterRoutesStep]).
+	// the mid-run extraroute-mutation vehicle (SetRouterRoutesStep).
 	SetRouterRoutes(ctx context.Context, projectID, routerID string, routes []RouteSpec) error
 	// SetRouterGateway replaces (or, with an empty network id, clears) a
 	// router's external gateway — the re-gateway mutation of the
-	// router-regateway scenario ([SetRouterGatewayStep]).
+	// router-regateway scenario (SetRouterGatewayStep).
 	SetRouterGateway(ctx context.Context, projectID, routerID, externalNetworkID string) error
 	// CreateServer boots a Nova server on a pre-created port.
 	CreateServer(ctx context.Context, projectID string, spec ServerSpec) (id string, err error)
@@ -80,7 +80,7 @@ type Cloud interface {
 	// it, returning the allocation ID and the assigned address.
 	CreateFIP(ctx context.Context, projectID string, spec FIPCreateSpec) (id, addr string, err error)
 
-	// --- live migration ([MigrateStep]) ---
+	// --- live migration (MigrateStep) ---
 
 	// ServerHost returns the compute host currently running the server
 	// (OS-EXT-SRV-ATTR:host — the same name the hypervisor list and
@@ -93,8 +93,8 @@ type Cloud interface {
 	// [Cloud.WaitServerActive] for completion.
 	LiveMigrateServer(ctx context.Context, projectID, serverID, targetHost string) error
 
-	// --- server NIC hot-plug ([AttachPortStep] / [ReattachPortStep] /
-	// [DetachPortStep]) ---
+	// --- server NIC hot-plug (AttachPortStep / ReattachPortStep /
+	// DetachPortStep) ---
 
 	// AttachInterface hot-plugs a pre-created, unbound port onto a
 	// running server (Nova os-interface attach). The kernel-side tap

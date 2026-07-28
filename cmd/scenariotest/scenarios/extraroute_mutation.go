@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -53,37 +54,37 @@ func extrarouteMutation() *scenariotest.Scenario {
 		Desc:    "Live route change reclassifies new traffic with no MISS blip.",
 		Builder: b,
 		Steps: []scenariotest.Step{
-			scenariotest.CaptureStep{},
+			steps.CaptureStep{},
 			// Before the route exists, vm-a's default route sends the packet
 			// to r-T1, which has no path to 10.0.41.0/24 and SNATs it out —
 			// external catchall. (The peer never replies; tx is what counts.)
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("10.0.41.5"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "pre-route: external catchall", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "pre-route: external catchall", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20},
 			}},
 
 			// Add the transit routes on both routers, live.
-			scenariotest.SetRouterRoutesStep{Router: "r-T1", Routes: []scenariotest.RouteSpec{
+			steps.SetRouterRoutesStep{Router: "r-T1", Routes: []scenariotest.RouteSpec{
 				{Destination: "10.0.41.0/24", Nexthop: "192.168.110.20"},
 			}},
-			scenariotest.SetRouterRoutesStep{Router: "r-T2", Routes: []scenariotest.RouteSpec{
+			steps.SetRouterRoutesStep{Router: "r-T2", Routes: []scenariotest.RouteSpec{
 				{Destination: "10.0.40.0/24", Nexthop: "192.168.110.10"},
 			}},
-			scenariotest.SleepStep{Duration: reconcileSettle},
+			steps.SleepStep{Duration: reconcileSettle},
 
 			// Same flow, now routed: the rebuilt trie resolves other_tenant.
-			scenariotest.CaptureStep{},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.CaptureStep{},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "post-route: zone flipped to other_tenant", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "post-route: zone flipped to other_tenant", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "other_tenant", Direction: "tx", MinBytes: 1 << 20},
 			}},
 			// The insert-then-delete trie update must open no MISS window:
 			// unknown/miss did not absorb the flow during the swap.
-			scenariotest.MaxGrowthStep{Tenant: "unknown", Zone: "miss",
+			steps.MaxGrowthStep{Tenant: "unknown", Zone: "miss",
 				Budget: 256 << 10, Note: "no MISS blip across the route change"},
 		},
 	}

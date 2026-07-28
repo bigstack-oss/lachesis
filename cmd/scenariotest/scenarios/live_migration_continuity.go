@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -44,33 +45,33 @@ func liveMigrationContinuity() *scenariotest.Scenario {
 		},
 		Steps: []scenariotest.Step{
 			// Pre-migration: the cross-host split attributes normally.
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "pre-migration drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "pre-migration drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: "node:0", MinBytes: 1 << 20},
 				{TenantID: "T1", Zone: "same_tenant", Direction: "rx", Node: "node:1", MinBytes: 1 << 20},
 			}},
 
 			// Move the sender across the cluster.
-			scenariotest.CaptureStep{},
-			scenariotest.MigrateStep{VM: "vm-a", Target: "node:1"},
+			steps.CaptureStep{},
+			steps.MigrateStep{VM: "vm-a", Target: "node:1"},
 
 			// The move itself billed nothing and lost nothing.
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "monotone across live migration"},
-			scenariotest.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",
+			steps.MonotoneStep{Tenant: "T1", Note: "monotone across live migration"},
+			steps.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",
 				Budget: migrationNoiseBudget, Note: "no re-bucket to unknown"},
 
 			// Post-migration bytes are observed by the DESTINATION's
 			// agent — the re-attach proof.
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "post-migration drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "post-migration drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", Node: "node:1", MinBytes: 1 << 20},
 				{TenantID: "T1", Zone: "same_tenant", Direction: "rx", Node: "node:1", MinBytes: 1 << 20},
 			}},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "series intact at scenario end"},
+			steps.MonotoneStep{Tenant: "T1", Note: "series intact at scenario end"},
 		},
 	}
 }

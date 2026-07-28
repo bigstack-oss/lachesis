@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -49,18 +50,18 @@ func byteAccuracyBounds() *scenariotest.Scenario {
 		Desc:    "Exact-size transfer boxed in [N, 1.15N] — catches systematic overcounting.",
 		Builder: b,
 		Steps: []scenariotest.Step{
-			scenariotest.CaptureStep{},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.CaptureStep{},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: accuracyDriveBytes, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "lower bound: all driven bytes attributed", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "lower bound: all driven bytes attributed", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: accuracyDriveBytes},
 				{TenantID: "T1", Zone: "same_tenant", Direction: "rx", MinBytes: accuracyDriveBytes},
 			}},
 			// Let the last kernel drain land before reading the ceiling —
 			// the assert returns at first pass, mid-drain.
-			scenariotest.SleepStep{Duration: 15 * time.Second},
-			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "same_tenant",
+			steps.SleepStep{Duration: 15 * time.Second},
+			steps.MaxGrowthStep{Tenant: "T1", Zone: "same_tenant",
 				Budget: accuracyUpperBound, Note: "upper bound: no systematic overcount"},
 		},
 	}

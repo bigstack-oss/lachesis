@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -60,52 +61,52 @@ func macPinnedPortRecreate() *scenariotest.Scenario {
 			// config is derived from the node's own — nothing is staged on
 			// the agent hosts — and the closing RestoreConfig puts the
 			// original back.
-			scenariotest.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
+			steps.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
 				"kafka.enabled": "false",
 			}},
 
 			// Baseline NIC: fresh port, traffic, and the port tier
 			// attributes it to nic2's id (sanity — green everywhere).
-			scenariotest.AttachPortStep{VM: "vm-a", ID: "vm-a-nic2",
+			steps.AttachPortStep{VM: "vm-a", ID: "vm-a-nic2",
 				Network: "net-T1b", Subnet: "sub-T1b", IP: "10.0.29.9"},
-			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.29.9/24"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.29.9/24"},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "baseline drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "baseline drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", MinBytes: 1 << 20},
 			}},
-			scenariotest.PortSeriesStep{VM: "vm-a", Port: "vm-a-nic2", MinBytes: 1 << 20,
+			steps.PortSeriesStep{VM: "vm-a", Port: "vm-a-nic2", MinBytes: 1 << 20,
 				Note: "baseline traffic attributes to nic2's port_id"},
 
 			// The swap the agent can't see: delete nic2 (its MAC is
 			// recorded), immediately recreate as nic3 pinning the SAME
 			// MAC — same server, same tenant, same network.
-			scenariotest.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true},
-			scenariotest.AttachPortStep{VM: "vm-a", ID: "vm-a-nic3",
+			steps.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true},
+			steps.AttachPortStep{VM: "vm-a", ID: "vm-a-nic3",
 				Network: "net-T1b", Subnet: "sub-T1b", IP: "10.0.29.9", MACFrom: "vm-a-nic2"},
-			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.29.9/24"},
+			steps.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.29.9/24"},
 
 			// THE reproduction row: the reconcile must rebind the MAC to
 			// nic3's port id. An agent missing the port_id comparison
 			// keeps the dead port's binding forever — timeout = RED.
-			scenariotest.AwaitPortBindingStep{VM: "vm-a", Port: "vm-a-nic3", Timeout: 2 * time.Minute,
+			steps.AwaitPortBindingStep{VM: "vm-a", Port: "vm-a-nic3", Timeout: 2 * time.Minute,
 				Note: "reconcile rebinds the reused MAC to the reborn port"},
 
 			// And the observable consequence at the metric layer: driven
 			// traffic lands under nic3's port_id, not the dead nic2's.
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.PortSeriesStep{VM: "vm-a", Port: "vm-a-nic3", MinBytes: 1 << 20,
+			steps.PortSeriesStep{VM: "vm-a", Port: "vm-a-nic3", MinBytes: 1 << 20,
 				Note: "rebirth traffic attributes to the NEW port_id"},
 
 			// The coarser tiers never flinch either way — contrast rows.
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "tenant plane invariant throughout"},
+			steps.MonotoneStep{Tenant: "T1", Note: "tenant plane invariant throughout"},
 
 			// Restore the node's real config (RestartAgentStep backed it
 			// up beside the config on the swap above).
-			scenariotest.RestartAgentStep{Node: "node:0", RestoreConfig: true},
+			steps.RestartAgentStep{Node: "node:0", RestoreConfig: true},
 		},
 	}
 }

@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -43,39 +44,39 @@ func macReuse() *scenariotest.Scenario {
 		Deferred: []string{"vm-d"},
 		Steps: []scenariotest.Step{
 			// Tenant A's traffic attributes normally.
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "tenant A drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "tenant A drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20},
 				{TenantID: "T1", Zone: "same_tenant", Direction: "rx", MinBytes: 1 << 20},
 			}},
 
 			// Delete the VM and let the agent's ghost sweep fold it.
-			scenariotest.CaptureStep{},
-			scenariotest.DeleteVMStep{VM: "vm-a"},
-			scenariotest.AwaitSweepStep{ForMACOf: "vm-a"},
+			steps.CaptureStep{},
+			steps.DeleteVMStep{VM: "vm-a"},
+			steps.AwaitSweepStep{ForMACOf: "vm-a"},
 
 			// Contract 7, live: the sweep moved nothing off the books.
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "monotone across ghost sweep"},
-			scenariotest.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",
+			steps.MonotoneStep{Tenant: "T1", Note: "monotone across ghost sweep"},
+			steps.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",
 				Budget: rebornNoiseBudget, Note: "no re-bucket to unknown"},
 
 			// The MAC comes back on the other tenant's port — clean.
-			scenariotest.BootVMStep{VM: "vm-d", MACFrom: "vm-a"},
-			scenariotest.MaxGrowthStep{Tenant: "T2", Zone: "same_tenant",
+			steps.BootVMStep{VM: "vm-d", MACFrom: "vm-a"},
+			steps.MaxGrowthStep{Tenant: "T2", Zone: "same_tenant",
 				Budget: rebornNoiseBudget, Note: "reborn MAC starts from zero"},
 
 			// Tenant B's own traffic attributes normally, and tenant
 			// A's series still holds.
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-d", To: scenariotest.VMTarget("vm-c"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "tenant B drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "tenant B drive", Expect: []scenariotest.Expect{
 				{TenantID: "T2", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20},
 				{TenantID: "T2", Zone: "same_tenant", Direction: "rx", MinBytes: 1 << 20},
 			}},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "old tenant unchanged after reuse"},
+			steps.MonotoneStep{Tenant: "T1", Note: "old tenant unchanged after reuse"},
 		},
 	}
 }

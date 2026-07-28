@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -11,7 +12,7 @@ import (
 // a large inbound transfer must key vm_mac from the RECEIVING side and
 // the remote address from the sender, or the download miskeys off the
 // VM's own subnet. The harness itself is the outside-the-cluster
-// sender: [scenariotest.IngressFlowStep] streams the byte budget into
+// sender: [steps.IngressFlowStep] streams the byte budget into
 // the VM through its floating IP (DNAT path), so at the tap the peer
 // is the harness's provider-net address — no tenant prefix matches and
 // the bytes must bill external/rx.
@@ -29,8 +30,8 @@ func fipIngressRx() *scenariotest.Scenario {
 		Desc:    "Inbound internet traffic via FIP bills external/rx.",
 		Builder: b,
 		Steps: []scenariotest.Step{
-			scenariotest.IngressFlowStep{To: "vm-a", Bytes: 4 << 20},
-			scenariotest.AssertStep{Note: "FIP ingress bills external/rx", Expect: []scenariotest.Expect{
+			steps.IngressFlowStep{To: "vm-a", Bytes: 4 << 20},
+			steps.AssertStep{Note: "FIP ingress bills external/rx", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "rx", MinBytes: 4 << 20},
 			}},
 		},

@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -57,12 +58,12 @@ func multiExternalPath() *scenariotest.Scenario {
 		CreateExternalNets: []string{"net-ext2"},
 		Steps: []scenariotest.Step{
 			// Unambiguous baseline: one FIP (the provider SSH path).
-			scenariotest.AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0,
+			steps.AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0,
 				Note: "single external path — no anomaly"},
 
 			// Second FIP from the created external → genuinely ambiguous.
-			scenariotest.AssociateFIPStep{VM: "vm-a", Network: "net-ext2"},
-			scenariotest.AssertAnomalyStep{Class: "multi_external_path", Min: 1, Max: 1,
+			steps.AssociateFIPStep{VM: "vm-a", Network: "net-ext2"},
+			steps.AssertAnomalyStep{Class: "multi_external_path", Min: 1, Max: 1,
 				Note: "second FIP surfaces the ambiguity"},
 
 			// Default-route egress bills under the network that ACTUALLY
@@ -70,11 +71,11 @@ func multiExternalPath() *scenariotest.Scenario {
 			// families. (The pre-per-flow behavior happened to agree
 			// here because the deterministic pick was the same network;
 			// the second drive below is where the two models diverge.)
-			scenariotest.CaptureStep{},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.CaptureStep{},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("8.8.8.8"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "default route bills under the carrying network", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "default route bills under the carrying network", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
 					ExternalNetwork: "net-ext"},
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
@@ -88,12 +89,12 @@ func multiExternalPath() *scenariotest.Scenario {
 			// network. This is the assertion the per-VM deterministic
 			// pick could never pass: one VM, one window, two external
 			// networks, each holding exactly its own flow's bytes.
-			scenariotest.AddRouteStep{VM: "vm-a", CIDR: "8.8.9.0/24", Via: "10.0.11.254"},
-			scenariotest.CaptureStep{},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.AddRouteStep{VM: "vm-a", CIDR: "8.8.9.0/24", Via: "10.0.11.254"},
+			steps.CaptureStep{},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("8.8.9.9"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "second-router flow bills under ITS carrying network", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "second-router flow bills under ITS carrying network", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
 					ExternalNetwork: "net-ext2"},
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
@@ -102,7 +103,7 @@ func multiExternalPath() *scenariotest.Scenario {
 			// Flow-granular gate: the driven bytes demonstrably sit on
 			// a flow whose peer IS r-ext2's interface — labels alone
 			// can't prove which router carried them.
-			scenariotest.AssertFlowPeerStep{Router: "r-ext2", Via: "10.0.11.254", Zone: "external",
+			steps.AssertFlowPeerStep{Router: "r-ext2", Via: "10.0.11.254", Zone: "external",
 				MinBytes: 1 << 20, Note: "steered bytes observed on r-ext2's interface"},
 
 			// Tier-2 fallback: ride the gateway-less router. Its
@@ -112,12 +113,12 @@ func multiExternalPath() *scenariotest.Scenario {
 			// provider network, via its FIP / the gateway-IP rule.
 			// Catches a broken fallback (label "none") and a router map
 			// that wrongly includes gateway-less interfaces.
-			scenariotest.AddRouteStep{VM: "vm-a", CIDR: "8.8.10.0/24", Via: "10.0.11.253"},
-			scenariotest.CaptureStep{},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.AddRouteStep{VM: "vm-a", CIDR: "8.8.10.0/24", Via: "10.0.11.253"},
+			steps.CaptureStep{},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("8.8.10.9"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "gateway-less router falls back to the per-VM attribution", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "gateway-less router falls back to the per-VM attribution", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
 					ExternalNetwork: "net-ext"},
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
@@ -127,14 +128,14 @@ func multiExternalPath() *scenariotest.Scenario {
 			// sit on a flow whose peer is the GATEWAY-LESS interface —
 			// tier 1 could produce the same label for default-route
 			// traffic, so only this peer check proves the fallback ran.
-			scenariotest.AssertFlowPeerStep{Router: "r-nogw", Via: "10.0.11.253", Zone: "external",
+			steps.AssertFlowPeerStep{Router: "r-nogw", Via: "10.0.11.253", Zone: "external",
 				MinBytes: 1 << 20, Note: "fallback bytes observed on the gateway-less interface"},
 
 			// Remove the second path: anomaly clears, series undisturbed.
-			scenariotest.DeleteFIPStep{VM: "vm-a", Network: "net-ext2"},
-			scenariotest.AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0,
+			steps.DeleteFIPStep{VM: "vm-a", Network: "net-ext2"},
+			steps.AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0,
 				Note: "ambiguity clears after FIP removal"},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "series stable through FIP churn"},
+			steps.MonotoneStep{Tenant: "T1", Note: "series stable through FIP churn"},
 		},
 	}
 }

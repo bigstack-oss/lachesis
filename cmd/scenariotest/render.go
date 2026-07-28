@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/preflight"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 )
@@ -27,7 +28,7 @@ var (
 )
 
 // emitPreflight writes the report in the requested output format.
-func emitPreflight(w io.Writer, format string, r scenariotest.PreflightReport) error {
+func emitPreflight(w io.Writer, format string, r preflight.Report) error {
 	switch format {
 	case "json":
 		return r.EmitJSON(w)
@@ -52,7 +53,7 @@ func emitAssert(w io.Writer, format string, r scenariotest.AssertReport) error {
 	}
 }
 
-func renderPreflight(w io.Writer, r scenariotest.PreflightReport) {
+func renderPreflight(w io.Writer, r preflight.Report) {
 	fmt.Fprintln(w, titleStyle.Render(fmt.Sprintf("PREFLIGHT %s", r.Scenario)))
 	if r.Skip != "" {
 		fmt.Fprintln(w, skipVerdict.Render("SKIPPED")+" "+r.Skip)

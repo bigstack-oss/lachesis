@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -36,16 +37,16 @@ func fipHairpin() *scenariotest.Scenario {
 		Desc:    "Same-tenant peer addressed via its FIP bills external on both taps.",
 		Builder: b,
 		Steps: []scenariotest.Step{
-			scenariotest.CaptureStep{},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.CaptureStep{},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.FIPTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "hairpin bills external both ways", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "hairpin bills external both ways", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20},
 				{TenantID: "T1", Zone: "external", Direction: "rx", MinBytes: 1 << 20},
 			}},
-			scenariotest.SleepStep{Duration: 15 * time.Second},
-			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "same_tenant",
+			steps.SleepStep{Duration: 15 * time.Second},
+			steps.MaxGrowthStep{Tenant: "T1", Zone: "same_tenant",
 				Budget: hairpinNoiseBudget, Note: "hairpin must not classify as same_tenant"},
 		},
 	}

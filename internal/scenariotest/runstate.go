@@ -37,12 +37,12 @@ type RunState struct {
 	// Placement is Scenario.Placement with its "node:<i>" slots
 	// resolved to configured agent hosts, recorded at realize so the
 	// run-state stands alone as evidence of where each VM was pinned
-	// and so deferred boots ([BootVMStep]) reuse the same resolution
+	// and so deferred boots (BootVMStep) reuse the same resolution
 	// instead of re-deriving it. Absent when the scenario pins
 	// nothing (and in run-states predating per-node placement).
 	Placement Placement `json:"placement,omitempty"`
 
-	// Migrations records every [MigrateStep] move: which VM went from
+	// Migrations records every MigrateStep move: which VM went from
 	// which host to which, in step order — the evidence per-node
 	// assertions across a migration are judged against.
 	Migrations []MigrationRecord `json:"migrations,omitempty"`
@@ -90,7 +90,7 @@ type ResourceRef struct {
 	// MAC is the port's Neutron-assigned (or step-pinned) MAC address.
 	// On VM-port refs it feeds drive's MAC-learn gate; on
 	// router-interface refs (RouterInterface true) it feeds
-	// [AssertFlowPeerStep]'s peer checks — the gate must SKIP those,
+	// AssertFlowPeerStep's peer checks — the gate must SKIP those,
 	// because router MACs are deliberately never in mac_tenant_map.
 	// Empty on non-port refs and on run-states predating the gate.
 	MAC string `json:"mac,omitempty"`
@@ -100,7 +100,7 @@ type ResourceRef struct {
 
 // FIPRef records one allocated floating IP and the VM it fronts.
 // Network is the DSL id of the external network the FIP was drawn
-// from when a step allocated it explicitly ([AssociateFIPStep]);
+// from when a step allocated it explicitly (AssociateFIPStep);
 // empty for the provider-net FIPs realize creates for SSH.
 type FIPRef struct {
 	VMID      string `json:"vm_id"`

@@ -45,10 +45,10 @@ const (
 	// mortal leaf of the four-layer hierarchy (docs/architecture/billing.md).
 	// Data-dependent like the server family (a series exists only once
 	// its port carries attributed traffic), so no step preflight-gates
-	// on it; [PortSeriesStep] fails with a clear row instead.
+	// on it; PortSeriesStep fails with a clear row instead.
 	MetricPortBytesTotal = "lachesis_port_bytes_total"
 	// MetricNeutronAnomalies is the per-class topology-anomaly gauge.
-	// [AssertAnomalyStep] polls it; the class vocabulary is the agent's
+	// AssertAnomalyStep polls it; the class vocabulary is the agent's
 	// (cycle, ambiguity, …, multi_external_path).
 	MetricNeutronAnomalies = "lachesis_neutron_anomalies"
 	// The three settled-accumulator tuple gauges of the four-layer model
@@ -70,7 +70,7 @@ const (
 	MetricUnresolvedResolved = "lachesis_unresolved_resolved_total"
 	// MetricGCEvictions counts map entries the GC evicted, split by a
 	// `reason` label. Only reason="pressure_relief" is the telemetry_map
-	// fill-watermark eviction [EvictionsGrewStep] asserts on; the family
+	// fill-watermark eviction EvictionsGrewStep asserts on; the family
 	// also carries ttl (mac_tenant_map ghost expiry) and
 	// ghost_residual_flow, so it must be read per-reason rather than
 	// summed whole
@@ -116,7 +116,7 @@ type ServerSample struct {
 }
 
 // PortSample is one lachesis_port_bytes_total series — the mortal
-// per-port leaf (docs/architecture/billing.md). [PortSeriesStep] uses it
+// per-port leaf (docs/architecture/billing.md). PortSeriesStep uses it
 // to assert which port_id actually carried driven traffic.
 type PortSample struct {
 	PortID    string  `json:"port_id"`
@@ -186,7 +186,7 @@ type MACLookup struct {
 	Found    bool
 	TenantID string
 	// PortID is the Neutron port the agent currently binds the MAC to
-	// — [AwaitPortBindingStep] polls it after a same-MAC port rebirth.
+	// — AwaitPortBindingStep polls it after a same-MAC port rebirth.
 	PortID string
 }
 
@@ -203,7 +203,7 @@ type MetricsSource interface {
 	LookupMAC(ctx context.Context, url, mac string) (MACLookup, error)
 	// LookupFlows returns the agent's live flow rows carrying mac on
 	// either side (/debug/flows) — the flow-granular evidence behind
-	// [AssertFlowPeerStep]: which peer actually carried driven bytes.
+	// AssertFlowPeerStep: which peer actually carried driven bytes.
 	LookupFlows(ctx context.Context, url, mac string) ([]FlowRow, error)
 }
 

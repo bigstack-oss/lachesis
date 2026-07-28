@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -39,24 +40,24 @@ func vrrpVMACLeak() *scenariotest.Scenario {
 		Desc:    "AAP vMAC traffic parks in unknown/miss — the pre-fix baseline for deferred item 9.",
 		Builder: b,
 		Steps: []scenariotest.Step{
-			scenariotest.AttachPortStep{VM: "vm-a", ID: "vm-a-vrrp",
+			steps.AttachPortStep{VM: "vm-a", ID: "vm-a-vrrp",
 				Network: "net-T1b", Subnet: "sub-T1b", IP: "10.0.34.9",
 				AllowedPairs: []scenariotest.AddressPair{
 					{IP: "10.0.34.100", MAC: vmac}, // the VIP a real VRRP group shares
 					{IP: "10.0.34.9", MAC: vmac},   // fixed IP under the vMAC — lets plain pings source it
 				}},
-			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.34.9/24"},
-			scenariotest.CaptureStep{},
-			scenariotest.SetNICMACStep{VM: "vm-a", Dev: "eth1", MAC: vmac},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.34.9/24"},
+			steps.CaptureStep{},
+			steps.SetNICMACStep{VM: "vm-a", Dev: "eth1", MAC: vmac},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("10.0.34.6"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.ZoneGrowthStep{Tenant: "unknown", Zone: "miss", Direction: "tx",
+			steps.ZoneGrowthStep{Tenant: "unknown", Zone: "miss", Direction: "tx",
 				MinBytes: 1 << 20, Note: "PRE-FIX baseline: vMAC bytes leak to unknown (deferred item 9)"},
 			// vm-b's echo replies (~1.07 MiB with headers) legitimately
 			// bill T1 same_tenant/tx; the forged MiB ALSO landing there
 			// would read ≈2.1 MiB. The ceiling separates the two.
-			scenariotest.ZoneGrowthStep{Tenant: "T1", Zone: "same_tenant", Direction: "tx",
+			steps.ZoneGrowthStep{Tenant: "T1", Zone: "same_tenant", Direction: "tx",
 				MaxBytes: 1600 << 10, Note: "vMAC bytes do not double-bill the owner today"},
 		},
 	}

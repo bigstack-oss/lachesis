@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -120,36 +121,36 @@ func vmApplianceNexthop() *scenariotest.Scenario {
 			// The forwarding NIC: port security OFF so the appliance may
 			// receive traffic addressed past it and re-emit it with vm-a's
 			// source IP intact.
-			scenariotest.AttachPortStep{VM: "vm-appl", ID: "vm-appl-transit",
+			steps.AttachPortStep{VM: "vm-appl", ID: "vm-appl-transit",
 				Network: "net-transit", Subnet: "sub-transit", IP: "192.168.120.50",
 				PortSecurityOff: true},
-			scenariotest.ConfigureNICStep{VM: "vm-appl", Dev: "eth1", CIDR: "192.168.120.50/24"},
-			scenariotest.EnableForwardingStep{VM: "vm-appl"},
+			steps.ConfigureNICStep{VM: "vm-appl", Dev: "eth1", CIDR: "192.168.120.50/24"},
+			steps.EnableForwardingStep{VM: "vm-appl"},
 			// Steer the forwarded traffic at r-T2 rather than the
 			// appliance's default gateway, so it leaves by the transit NIC.
-			scenariotest.AddRouteStep{VM: "vm-appl", CIDR: dstCIDR, Via: "192.168.120.20"},
+			steps.AddRouteStep{VM: "vm-appl", CIDR: dstCIDR, Via: "192.168.120.20"},
 
-			scenariotest.CaptureStep{},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.CaptureStep{},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("10.0.62.5"), Bytes: applianceDriveBytes, Proto: scenariotest.TCP},
 			}},
 
 			// Source side: the appliance nexthop resolved, and resolved to
 			// the shared transit it was met on.
-			scenariotest.AssertStep{Note: "compute nexthop resolves to the appliance's shared segment",
+			steps.AssertStep{Note: "compute nexthop resolves to the appliance's shared segment",
 				Expect: []scenariotest.Expect{
 					{TenantID: "T1", Zone: "shared", Direction: "tx", MinBytes: applianceDriveBytes},
 				}},
 			// ...and NOT to the catchall, which is what an unhandled peer
 			// device type would have produced.
-			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "external",
+			steps.MaxGrowthStep{Tenant: "T1", Zone: "external",
 				Budget: applianceNoiseBudget, Note: "Step B fired — not the external catchall"},
 
 			// The documented double-count: the appliance's own tap bills the
 			// forwarded egress. Its peer there is r-T2 (a router MAC, so the
 			// trie decides) and the destination is T2's own subnet, so the
 			// appliance's tenant sees the same bytes as same_tenant/tx.
-			scenariotest.ZoneGrowthStep{Tenant: "T2", Zone: "same_tenant", Direction: "tx",
+			steps.ZoneGrowthStep{Tenant: "T2", Zone: "same_tenant", Direction: "tx",
 				MinBytes: applianceForwardedFloor,
 				Note:     "case 21 double-count: the same bytes billed again at the appliance's tap"},
 		},

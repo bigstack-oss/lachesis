@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -34,30 +35,30 @@ func walRestartContinuity() *scenariotest.Scenario {
 		Desc:    "Restart the agent mid-run; WAL restores counters, taps re-attach, series stay monotone (lachesis#184/#185, step-scripted).",
 		Builder: b,
 		Steps: []scenariotest.Step{
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "pre-restart drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "pre-restart drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20},
 				{TenantID: "T1", Zone: "same_tenant", Direction: "rx", MinBytes: 1 << 20},
 			}},
 
 			// Warm restart: WAL intact. The agent re-reads it, the zombie
 			// hunter re-attaches the taps, /metrics comes back.
-			scenariotest.CaptureStep{},
-			scenariotest.RestartAgentStep{},
+			steps.CaptureStep{},
+			steps.RestartAgentStep{},
 
 			// No reset: the restored counters are at or above capture.
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "series monotone across agent restart"},
+			steps.MonotoneStep{Tenant: "T1", Note: "series monotone across agent restart"},
 
 			// The re-attached taps still count new traffic.
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "post-restart drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "post-restart drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", MinBytes: 1 << 20},
 			}},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "series intact at scenario end"},
+			steps.MonotoneStep{Tenant: "T1", Note: "series intact at scenario end"},
 		},
 	}
 }

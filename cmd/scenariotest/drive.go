@@ -5,7 +5,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/drive"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/remote"
 	"github.com/spf13/cobra"
 )
@@ -28,7 +28,7 @@ func newDriveCmd(opts *rootOptions) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
 			log := opts.logger()
-			err = scenariotest.Drive(ctx, scenariotest.DriveOptions{
+			err = drive.Run(ctx, drive.Options{
 				Config:    cfg,
 				Scenario:  sc,
 				State:     rs,

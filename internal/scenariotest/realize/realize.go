@@ -1,4 +1,8 @@
-package scenariotest
+// Package realize stands a scenario's declared topology up on the live
+// cluster and blocks until the agents have attached to the new taps.
+// It writes run-state after every created resource, so a partial
+// failure still leaves a record [down] can clean up.
+package realize
 
 import (
 	"context"
@@ -8,48 +12,37 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
-// RealizeOptions bundles everything `up` needs to stand a scenario up.
-type RealizeOptions struct {
-	Config    Config
-	Scenario  *Scenario
+// Options bundles everything `up` needs to stand a scenario up.
+type Options struct {
+	Config    scenariotest.Config
+	Scenario  *scenariotest.Scenario
 	RunID     string
 	StatePath string
-	Cloud     Cloud
-	Metrics   MetricsSource
+	Cloud     scenariotest.Cloud
+	Metrics   scenariotest.MetricsSource
 	Log       *slog.Logger
 
 	// AttachTimeout bounds the attach-ready gate. Zero uses
-	// [DefaultAttachTimeout].
+	// [scenariotest.DefaultAttachTimeout].
 	AttachTimeout time.Duration
 }
 
-const (
-	// DefaultAttachTimeout bounds how long `up` waits for the agents
-	// to attach to the new VM taps before giving up.
-	DefaultAttachTimeout = 90 * time.Second
-	// attachPollInterval is how often the attach gate re-scrapes.
-	attachPollInterval = 2 * time.Second
-	// serverActiveTimeout bounds each server's boot wait. Without it a
-	// server stuck in BUILD would hang `up` forever — the only other
-	// cancellation is the operator's SIGINT.
-	serverActiveTimeout = 5 * time.Minute
-)
-
-// Realize stands the scenario's topology up on the live cluster and
+// Run stands the scenario's topology up on the live cluster and
 // blocks until the agents have attached to the new taps. It writes
 // run-state to opts.StatePath after every created resource, so a
 // partial failure still leaves a record `down` can clean up. It never
-// deletes a project. The returned RunState is the realized topology.
-func Realize(ctx context.Context, opts RealizeOptions) (*RunState, error) {
+// deletes a project. The returned scenariotest.RunState is the realized topology.
+func Run(ctx context.Context, opts Options) (*scenariotest.RunState, error) {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
 	r := &realizer{
 		ctx:           ctx,
 		opts:          opts,
-		rs:            NewRunState(opts.RunID, opts.Scenario.Name, opts.Config.Naming.Prefix),
+		rs:            scenariotest.NewRunState(opts.RunID, opts.Scenario.Name, opts.Config.Naming.Prefix),
 		netLive:       map[string]string{},
 		netExternal:   map[string]bool{},
 		subnetLive:    map[string]string{},
@@ -68,8 +61,8 @@ func Realize(ctx context.Context, opts RealizeOptions) (*RunState, error) {
 
 type realizer struct {
 	ctx  context.Context
-	opts RealizeOptions
-	rs   *RunState
+	opts Options
+	rs   *scenariotest.RunState
 
 	// resolved prerequisites (live IDs)
 	extNetID   string
@@ -91,9 +84,9 @@ type realizer struct {
 	vmOrder      []string // VM DSL ids (one per server) in creation order
 	taps         int      // total VM ports created — one tap each, the attach-gate target
 
-	// placement is Scenario.Placement with "node:<i>" slots resolved
+	// placement is scenariotest.Scenario.Placement with "node:<i>" slots resolved
 	// to configured agent hosts; set before any resource is created.
-	placement Placement
+	placement scenariotest.Placement
 }
 
 func (r *realizer) run() error {
@@ -104,7 +97,7 @@ func (r *realizer) run() error {
 
 	// Resolve placement slots first: a scenario asking for more nodes
 	// than the config lists must fail with nothing created yet.
-	placement, err := ResolvePlacement(r.opts.Scenario.Placement, r.opts.Config.Cluster.Agents)
+	placement, err := scenariotest.ResolvePlacement(r.opts.Scenario.Placement, r.opts.Config.Cluster.Agents)
 	if err != nil {
 		return err
 	}
@@ -138,9 +131,9 @@ func (r *realizer) run() error {
 		return err
 	}
 
-	// Capture the attach baseline now: VM ports exist but are unbound,
+	// scenariotest.Capture the attach baseline now: VM ports exist but are unbound,
 	// so no taps yet. Booting binds them and taps appear.
-	baseline, err := SampleAcross(r.ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
+	baseline, err := scenariotest.SampleAcross(r.ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
 	if err != nil {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
@@ -167,7 +160,7 @@ func (r *realizer) resolvePrereqs() error {
 	if r.extNetID, err = r.opts.Cloud.FindExternalNetwork(r.ctx, p.ExternalNetworkName); err != nil {
 		return err
 	}
-	if r.flavorID, err = r.opts.Cloud.FindFlavor(r.ctx, FlavorFor(r.opts.Config, r.opts.Scenario)); err != nil {
+	if r.flavorID, err = r.opts.Cloud.FindFlavor(r.ctx, scenariotest.FlavorFor(r.opts.Config, r.opts.Scenario)); err != nil {
 		return err
 	}
 	if r.imageID, err = r.opts.Cloud.FindImage(r.ctx, p.ImageName); err != nil {
@@ -187,7 +180,7 @@ func (r *realizer) networks(snap neutron.Snapshot) error {
 	for _, n := range snap.Networks {
 		// External networks are normally never created — the router
 		// gateways to the real provider external network, and so do
-		// the VMs' FIPs. [Scenario.CreateExternalNets] opts a marker
+		// the VMs' FIPs. [scenariotest.Scenario.CreateExternalNets] opts a marker
 		// out: it is created as a segmentless `router:external`
 		// network (FIP-allocatable, no wire traffic) and its subnets
 		// realize like any tenant subnet.
@@ -200,13 +193,13 @@ func (r *realizer) networks(snap neutron.Snapshot) error {
 		if err != nil {
 			return err
 		}
-		name := Mangle(r.prefix(), r.opts.RunID, n.ID)
-		id, err := r.opts.Cloud.CreateNetwork(r.ctx, proj, NetworkSpec{Name: name, Shared: n.Shared, External: n.IsExternal})
+		name := scenariotest.Mangle(r.prefix(), r.opts.RunID, n.ID)
+		id, err := r.opts.Cloud.CreateNetwork(r.ctx, proj, scenariotest.NetworkSpec{Name: name, Shared: n.Shared, External: n.IsExternal})
 		if err != nil {
 			return err
 		}
 		r.netLive[n.ID] = id
-		r.rs.Networks = append(r.rs.Networks, ResourceRef{DSLID: n.ID, ID: id, Name: name, ProjectID: proj})
+		r.rs.Networks = append(r.rs.Networks, scenariotest.ResourceRef{DSLID: n.ID, ID: id, Name: name, ProjectID: proj})
 		if err := r.save(); err != nil {
 			return err
 		}
@@ -226,8 +219,8 @@ func (r *realizer) subnets(snap neutron.Snapshot) error {
 		if err != nil {
 			return err
 		}
-		name := Mangle(r.prefix(), r.opts.RunID, s.ID)
-		id, err := r.opts.Cloud.CreateSubnet(r.ctx, proj, SubnetSpec{
+		name := scenariotest.Mangle(r.prefix(), r.opts.RunID, s.ID)
+		id, err := r.opts.Cloud.CreateSubnet(r.ctx, proj, scenariotest.SubnetSpec{
 			Name:      name,
 			NetworkID: r.netLive[s.NetworkID],
 			CIDR:      s.CIDR,
@@ -237,7 +230,7 @@ func (r *realizer) subnets(snap neutron.Snapshot) error {
 			return err
 		}
 		r.subnetLive[s.ID] = id
-		r.rs.Subnets = append(r.rs.Subnets, ResourceRef{DSLID: s.ID, ID: id, Name: name, ProjectID: proj})
+		r.rs.Subnets = append(r.rs.Subnets, scenariotest.ResourceRef{DSLID: s.ID, ID: id, Name: name, ProjectID: proj})
 		if err := r.save(); err != nil {
 			return err
 		}
@@ -259,13 +252,13 @@ func (r *realizer) routers(snap neutron.Snapshot) error {
 				extID = r.extNetID
 			}
 		}
-		name := Mangle(r.prefix(), r.opts.RunID, rt.ID)
-		id, err := r.opts.Cloud.CreateRouter(r.ctx, proj, RouterSpec{Name: name, ExternalNetworkID: extID})
+		name := scenariotest.Mangle(r.prefix(), r.opts.RunID, rt.ID)
+		id, err := r.opts.Cloud.CreateRouter(r.ctx, proj, scenariotest.RouterSpec{Name: name, ExternalNetworkID: extID})
 		if err != nil {
 			return err
 		}
 		r.routerLive[rt.ID] = id
-		r.rs.Routers = append(r.rs.Routers, ResourceRef{DSLID: rt.ID, ID: id, Name: name, ProjectID: proj})
+		r.rs.Routers = append(r.rs.Routers, scenariotest.ResourceRef{DSLID: rt.ID, ID: id, Name: name, ProjectID: proj})
 		if err := r.save(); err != nil {
 			return err
 		}
@@ -285,9 +278,9 @@ func (r *realizer) routerRoutes(snap neutron.Snapshot) error {
 		if err != nil {
 			return err
 		}
-		routes := make([]RouteSpec, len(rt.Routes))
+		routes := make([]scenariotest.RouteSpec, len(rt.Routes))
 		for i, rr := range rt.Routes {
-			routes[i] = RouteSpec{Destination: rr.Destination, Nexthop: rr.Nexthop}
+			routes[i] = scenariotest.RouteSpec{Destination: rr.Destination, Nexthop: rr.Nexthop}
 		}
 		if err := r.opts.Cloud.SetRouterRoutes(r.ctx, proj, r.routerLive[rt.ID], routes); err != nil {
 			return err
@@ -329,8 +322,8 @@ func (r *realizer) routerInterfaces(snap neutron.Snapshot) error {
 			continue
 		}
 
-		name := Mangle(r.prefix(), r.opts.RunID, p.ID)
-		portID, err := r.opts.Cloud.CreatePort(r.ctx, proj, PortSpec{
+		name := scenariotest.Mangle(r.prefix(), r.opts.RunID, p.ID)
+		portID, err := r.opts.Cloud.CreatePort(r.ctx, proj, scenariotest.PortSpec{
 			Name:      name,
 			NetworkID: r.netLive[p.NetworkID],
 			SubnetID:  subnetID,
@@ -343,7 +336,7 @@ func (r *realizer) routerInterfaces(snap neutron.Snapshot) error {
 		if err != nil {
 			return err
 		}
-		r.rs.Ports = append(r.rs.Ports, ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj, MAC: mac, RouterInterface: true})
+		r.rs.Ports = append(r.rs.Ports, scenariotest.ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj, MAC: mac, RouterInterface: true})
 		if err := r.save(); err != nil {
 			return err
 		}
@@ -357,7 +350,7 @@ func (r *realizer) routerInterfaces(snap neutron.Snapshot) error {
 
 // vmPorts creates a Neutron port for every non-deferred compute port
 // and groups them by server identity (the shared DeviceID) so a
-// multi-homed VM — one [Builder.NIC] call per extra NIC — becomes ONE
+// multi-homed VM — one [scenario.Builder.NIC] call per extra NIC — becomes ONE
 // server carrying several ports. The primary port (DSL id == the VM
 // id, i.e. DeviceID without its "-instance" suffix) is eth0, the one
 // [allocateFIPs] fronts; the rest are extras. Single-NIC VMs (the
@@ -380,7 +373,7 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 			return fmt.Errorf("vm %q is Deferred but declares an extra NIC (%s); deferred VMs are single-NIC (BootVMStep boots only the primary port)", vmID, p.ID)
 		}
 		// Deferred VMs are declared but not realized: no port, no
-		// server, no FIP, no attach-gate slot. A [BootVMStep] creates
+		// server, no FIP, no attach-gate slot. A a BootVMStep creates
 		// them mid-script. Keyed by the VM id, so a NIC on a deferred VM
 		// is deferred with it.
 		if deferred[vmID] {
@@ -392,8 +385,8 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 			return err
 		}
 		fip := p.FixedIPs[0]
-		name := Mangle(r.prefix(), r.opts.RunID, p.ID)
-		portID, err := r.opts.Cloud.CreatePort(r.ctx, proj, PortSpec{
+		name := scenariotest.Mangle(r.prefix(), r.opts.RunID, p.ID)
+		portID, err := r.opts.Cloud.CreatePort(r.ctx, proj, scenariotest.PortSpec{
 			Name:       name,
 			NetworkID:  r.netLive[p.NetworkID],
 			SubnetID:   r.subnetLive[fip.SubnetID],
@@ -408,7 +401,7 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 			return err
 		}
 		r.taps++
-		r.rs.Ports = append(r.rs.Ports, ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj, MAC: mac})
+		r.rs.Ports = append(r.rs.Ports, scenariotest.ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj, MAC: mac})
 		if p.ID == vmID {
 			// Primary NIC: this is the server, tracked for boot + FIP.
 			r.vmPort[vmID] = portID
@@ -429,23 +422,23 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 func (r *realizer) bootServers() error {
 	for _, vmID := range r.vmOrder {
 		proj := r.vmProject[vmID]
-		name := Mangle(r.prefix(), r.opts.RunID, vmID)
+		name := scenariotest.Mangle(r.prefix(), r.opts.RunID, vmID)
 		// No security group here: the VM boots on a pre-created port
 		// that already carries it, and Nova ignores boot-time secgroups
 		// for pre-existing ports anyway.
-		id, err := r.opts.Cloud.CreateServer(r.ctx, proj, ServerSpec{
+		id, err := r.opts.Cloud.CreateServer(r.ctx, proj, scenariotest.ServerSpec{
 			Name:             name,
 			FlavorID:         r.flavorID,
 			ImageID:          r.imageID,
 			PortID:           r.vmPort[vmID],
 			ExtraPortIDs:     r.vmExtraPorts[vmID],
 			KeypairName:      r.opts.Config.Prerequisites.KeypairName,
-			AvailabilityZone: PlacementAZ(r.placement, vmID),
+			AvailabilityZone: scenariotest.PlacementAZ(r.placement, vmID),
 		})
 		if err != nil {
 			return err
 		}
-		r.rs.Servers = append(r.rs.Servers, ResourceRef{DSLID: vmID, ID: id, Name: name, ProjectID: proj})
+		r.rs.Servers = append(r.rs.Servers, scenariotest.ResourceRef{DSLID: vmID, ID: id, Name: name, ProjectID: proj})
 		if err := r.save(); err != nil {
 			return err
 		}
@@ -465,10 +458,10 @@ func (r *realizer) waitActive() error {
 }
 
 // waitOneActive bounds a single server's boot wait with
-// [serverActiveTimeout] so a server stuck in BUILD fails the run
+// [scenariotest.ServerActiveTimeout] so a server stuck in BUILD fails the run
 // instead of hanging it.
-func (r *realizer) waitOneActive(s ResourceRef) error {
-	ctx, cancel := context.WithTimeout(r.ctx, serverActiveTimeout)
+func (r *realizer) waitOneActive(s scenariotest.ResourceRef) error {
+	ctx, cancel := context.WithTimeout(r.ctx, scenariotest.ServerActiveTimeout)
 	defer cancel()
 	return r.opts.Cloud.WaitServerActive(ctx, s.ProjectID, s.ID)
 }
@@ -485,7 +478,7 @@ func (r *realizer) allocateFIPs() error {
 			}
 			extNetID = id
 		}
-		id, addr, err := r.opts.Cloud.CreateFIP(r.ctx, proj, FIPCreateSpec{
+		id, addr, err := r.opts.Cloud.CreateFIP(r.ctx, proj, scenariotest.FIPCreateSpec{
 			ExternalNetworkID: extNetID,
 			PortID:            r.vmPort[vmID],
 			FixedIP:           r.vmInternalIP[vmID],
@@ -494,7 +487,7 @@ func (r *realizer) allocateFIPs() error {
 		if err != nil {
 			return err
 		}
-		r.rs.FIPs = append(r.rs.FIPs, FIPRef{VMID: vmID, ID: id, Address: addr, ProjectID: proj})
+		r.rs.FIPs = append(r.rs.FIPs, scenariotest.FIPRef{VMID: vmID, ID: id, Address: addr, ProjectID: proj})
 		if err := r.save(); err != nil {
 			return err
 		}
@@ -509,23 +502,23 @@ func (r *realizer) allocateFIPs() error {
 // the only HTTP-visible attach signal — there is no per-interface
 // surface — so it can be fooled by background tenant churn moving the
 // count; that limitation is inherent and documented.
-func (r *realizer) attachGate(baseline MetricsSnapshot, expectedTaps int) error {
+func (r *realizer) attachGate(baseline scenariotest.MetricsSnapshot, expectedTaps int) error {
 	if expectedTaps == 0 {
 		return nil
 	}
 	timeout := r.opts.AttachTimeout
 	if timeout <= 0 {
-		timeout = DefaultAttachTimeout
+		timeout = scenariotest.DefaultAttachTimeout
 	}
 	target := baseline.AttachedInterfaces + float64(expectedTaps)
 	r.opts.Log.Info("attach gate: waiting", "target", target, "baseline", baseline.AttachedInterfaces, "taps", expectedTaps)
 
 	ctx, cancel := context.WithTimeout(r.ctx, timeout)
 	defer cancel()
-	ticker := time.NewTicker(attachPollInterval)
+	ticker := time.NewTicker(scenariotest.AttachPollInterval)
 	defer ticker.Stop()
 	for {
-		snap, err := SampleAcross(ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
+		snap, err := scenariotest.SampleAcross(ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
 		if err != nil {
 			return fmt.Errorf("attach gate scrape: %w", err)
 		}
@@ -536,7 +529,7 @@ func (r *realizer) attachGate(baseline MetricsSnapshot, expectedTaps int) error 
 			r.opts.Log.Info("attach gate: green", "attached", snap.AttachedInterfaces, "target", target)
 			// Record the green state so a standalone `drive` can
 			// re-confirm the taps are still attached before traffic.
-			r.rs.Attach = AttachRecord{Target: target, Failures: snap.AttachFailures}
+			r.rs.Attach = scenariotest.AttachRecord{Target: target, Failures: snap.AttachFailures}
 			return r.save()
 		}
 		select {
@@ -566,13 +559,13 @@ func (r *realizer) projectID(dslName string) (string, error) {
 	if ref, ok := r.rs.Projects[dslName]; ok {
 		return ref.ID, nil
 	}
-	mangled := MangleProject(r.prefix(), dslName)
+	mangled := scenariotest.MangleProject(r.prefix(), dslName)
 	id, found, err := r.opts.Cloud.FindProject(r.ctx, mangled)
 	if err != nil {
 		return "", err
 	}
 	policy := r.opts.Scenario.Projects[dslName]
-	if found && policy == ForceFresh {
+	if found && policy == scenariotest.ForceFresh {
 		return "", fmt.Errorf("project %q exists but scenario policy is ForceFresh", mangled)
 	}
 	created := false
@@ -585,7 +578,7 @@ func (r *realizer) projectID(dslName string) (string, error) {
 	if err := r.opts.Cloud.GrantAdminRole(r.ctx, id); err != nil {
 		return "", err
 	}
-	r.rs.Projects[dslName] = ProjectRef{Name: mangled, ID: id, Created: created}
+	r.rs.Projects[dslName] = scenariotest.ProjectRef{Name: mangled, ID: id, Created: created}
 	if err := r.save(); err != nil {
 		return "", err
 	}
