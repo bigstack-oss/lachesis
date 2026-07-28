@@ -40,6 +40,11 @@ const (
 	DefaultAgentReadyTimeout = 90 * time.Second
 	// agentReadyPollInterval is the pause between readiness scrapes.
 	agentReadyPollInterval = 2 * time.Second
+	// configRestoreTimeout bounds the end-of-run sweep that puts back
+	// agent configs a run left modified ([StepEnv.restoreDirtyConfigs]).
+	// One restore is a file copy plus a unit restart, so this covers a
+	// couple of nodes without letting a wedged host hang the exit.
+	configRestoreTimeout = 3 * time.Minute
 )
 
 // sweepPollInterval is the pause between [AwaitSweepStep] polls. A var,
@@ -108,6 +113,71 @@ type StepEnv struct {
 	// macs records each deleted VM's MAC ([DeleteVMStep] captures it
 	// just before the delete) for a later BootVMStep's MACFrom.
 	macs map[string]string
+	// configDirty names the agent nodes whose on-host config a step has
+	// modified and not yet put back, in the order they were modified.
+	// [runSteps] restores whatever is still listed when the run ends,
+	// however it ends — see [StepEnv.restoreDirtyConfigs].
+	configDirty []string
+}
+
+// markConfigDirty records that node's on-host agent config has been
+// modified and owes a restore. Idempotent: a node already owing one is
+// not listed twice.
+func (e *StepEnv) markConfigDirty(node string) {
+	for _, n := range e.configDirty {
+		if n == node {
+			return
+		}
+	}
+	e.configDirty = append(e.configDirty, node)
+}
+
+// clearConfigDirty drops node's outstanding restore — called when a
+// scenario restores it explicitly, so the end-of-run sweep has nothing
+// left to do.
+func (e *StepEnv) clearConfigDirty(node string) {
+	for i, n := range e.configDirty {
+		if n == node {
+			e.configDirty = append(e.configDirty[:i], e.configDirty[i+1:]...)
+			return
+		}
+	}
+}
+
+// restoreDirtyConfigs puts back every agent config a step modified and
+// did not restore. It is the safety net for the abort paths: a step
+// error returns straight out of [runSteps], so a scenario's trailing
+// restore step is never reached and the host would otherwise keep
+// serving the scenario's temporary config — silently, into whatever
+// runs next (lachesis#274).
+//
+// Deliberately best-effort and loud: a failure here is logged at error
+// level naming the host, never returned, because it must not mask the
+// original step error that caused the abort. Restores run newest-first
+// and through the ordinary [RestartAgentStep] path, so the running
+// agent ends up on the restored file rather than merely the file being
+// right on disk.
+//
+// The context is detached from ctx (a cancelled run — Ctrl-C — is
+// exactly when config gets stranded) but bounded, so a wedged host
+// cannot hang the run's exit.
+func (e *StepEnv) restoreDirtyConfigs(ctx context.Context) {
+	if len(e.configDirty) == 0 {
+		return
+	}
+	nodes := e.configDirty
+	e.configDirty = nil
+
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), configRestoreTimeout)
+	defer cancel()
+	for i := len(nodes) - 1; i >= 0; i-- {
+		node := nodes[i]
+		e.Log.Warn("restoring an agent config the run left modified", "node", node)
+		if err := (RestartAgentStep{Node: node, RestoreConfig: true}).Run(rctx, e); err != nil {
+			e.Log.Error("agent config NOT restored — the host is still on the scenario's config",
+				"node", node, "err", err)
+		}
+	}
 }
 
 func (e *StepEnv) addRow(row AssertRow) {
@@ -1561,6 +1631,9 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		if out, err := env.AgentExec.Run(ctx, host, restore); err != nil {
 			return fmt.Errorf("restart-agent: restore config on %s: %w (output: %s)", host, err, out)
 		}
+		// The node no longer owes a restore, so the end-of-run sweep has
+		// nothing to redo (lachesis#274).
+		env.clearConfigDirty(s.Node)
 		env.Log.Info("restart-agent: config restored", "host", host, "path", ac.ConfigPath)
 	}
 
@@ -1570,6 +1643,9 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig, true); err != nil {
 			return fmt.Errorf("restart-agent: %w", err)
 		}
+		// This step took the backup, so it owns the debt: if the run ends
+		// before a restore step runs, the sweep uses it (lachesis#274).
+		env.markConfigDirty(s.Node)
 		env.Log.Info("restart-agent: config overrides applied",
 			"host", host, "path", ac.ConfigPath, "keys", len(s.SetConfig))
 	}
@@ -1769,6 +1845,12 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig, false); err != nil {
 			return fmt.Errorf("reload-agent: %w", err)
 		}
+		// Idempotent with the restart that took the backup (the documented
+		// precondition), so the normal chained case records one debt, not
+		// two. Used standalone — where no backup exists — this turns a
+		// silently-modified host into a loud end-of-run failure instead
+		// (lachesis#274).
+		env.markConfigDirty(s.Node)
 		env.Log.Info("reload-agent: config overrides applied",
 			"host", host, "path", ac.ConfigPath, "keys", len(s.SetConfig))
 	}

@@ -189,11 +189,8 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 		MACLearnTimeout: opts.MACLearnTimeout,
 		Report:          &report,
 	}
-	for i, st := range steps {
-		opts.Log.Info("step", "n", i+1, "of", len(steps), "kind", st.Kind())
-		if err := st.Run(ctx, env); err != nil {
-			return report, fmt.Errorf("run: %s: %w", st.Kind(), err)
-		}
+	if err := runSteps(ctx, env, steps); err != nil {
+		return report, err
 	}
 
 	if err := report.Save(opts.ReportPath); err != nil {
@@ -201,6 +198,27 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 	}
 	opts.Log.Info("report written", "path", opts.ReportPath)
 	return report, nil
+}
+
+// runSteps executes a scenario's steps in order, stopping at the first
+// step that errors (a FAILING assertion is not an error — the step
+// records its rows and returns nil, so the script continues).
+//
+// It owns the guarantee that an aborted run does not leave an agent
+// host on the scenario's temporary config: the deferred sweep restores
+// whatever a step modified and did not put back, on every exit path
+// (lachesis#274). That mirrors how [Run] already defers resource
+// teardown — a run that dies half-way must not leave state behind,
+// whether that state is a Neutron port or a config file.
+func runSteps(ctx context.Context, env *StepEnv, steps []Step) error {
+	defer env.restoreDirtyConfigs(ctx)
+	for i, st := range steps {
+		env.Log.Info("step", "n", i+1, "of", len(steps), "kind", st.Kind())
+		if err := st.Run(ctx, env); err != nil {
+			return fmt.Errorf("run: %s: %w", st.Kind(), err)
+		}
+	}
+	return nil
 }
 
 // preflightResume is the resume-path replacement for the full
