@@ -30,8 +30,6 @@ const (
 	// generously above one scrape interval so a drive's bytes have
 	// drained before the row is declared failing.
 	DefaultPortSeriesTimeout = 60 * time.Second
-	// agentReadyPollInterval is the pause between readiness scrapes.
-	agentReadyPollInterval = 2 * time.Second
 	// configRestoreTimeout bounds the end-of-run sweep that puts back
 	// agent configs a run left modified ([scenariotest.StepEnv.restoreDirtyConfigs]).
 	// One restore is a file copy plus a unit restart, so this covers a

@@ -777,15 +777,6 @@ func (e *restartExec) Run(_ context.Context, addr, command string) (string, erro
 	return "", nil
 }
 
-func (e *restartExec) has(substr string) bool {
-	for _, c := range e.Calls {
-		if strings.Contains(c.Command, substr) {
-			return true
-		}
-	}
-	return false
-}
-
 // restartMetrics is a minimal agent /metrics. Attached is the tap
 // count; when notReadyPolls > 0 the readiness scrapes (every call after
 // the pre-restart baseline, call #1) report one tap short for that many
