@@ -1,0 +1,44 @@
+[Unit]
+Description=Lachesis per-tenant network telemetry agent
+After=network.target
+
+[Service]
+# Root, not a capability set. The agent loads TC programs, writes pinned maps
+# under /sys/fs/bpf, and subscribes to netlink — CAP_BPF + CAP_NET_ADMIN +
+# CAP_PERFMON at minimum, and the boot-time zombie hunt also deletes filters
+# left by a previous crash.
+User=root
+Group=root
+Type=simple
+ExecStart=/usr/local/bin/lachesis -config /etc/cube/lachesis/lachesis.yaml
+
+# SIGHUP re-reads the config file (logging.level and the gc section are
+# hot-reloadable; everything else warns and waits for a restart).
+ExecReload=/bin/kill -HUP $MAINPID
+
+TimeoutSec=120
+Restart=always
+RestartSec=5
+
+# The agent logs structured JSON to stderr (internal/agent/bootstrap_linux.go
+# hands os.Stderr to logging.Init) and has no file sink of its own, so systemd
+# does the redirection — the CubeCOS convention for a per-service log file
+# (compare core/kafka/kafka.service, core/octavia/octavia-api.service,
+# core/monasca/agent/*.service).
+#
+# This is what makes copytruncate mandatory in the matching LogRotateConf:
+# systemd holds this file open, so a rename-and-create rotate would leave it
+# writing to the orphaned inode forever.
+#
+# Never route these to null — that discards billing-path error records.
+StandardOutput=append:/var/log/lachesis/lachesis.log
+StandardError=append:/var/log/lachesis/lachesis.log
+
+# check with `systemd-cgtop`
+CPUAccounting=true
+BlockIOAccounting=true
+MemoryAccounting=true
+TasksAccounting=true
+
+[Install]
+WantedBy=multi-user.target
