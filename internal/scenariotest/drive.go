@@ -178,7 +178,7 @@ func (d *driver) waitMACsLearned() error {
 		d.opts.Log.Warn("mac-learn gate: run-state records no port MACs; skipping")
 		return nil
 	}
-	urls := agentURLs(d.opts.Config)
+	urls := AgentURLs(d.opts.Config)
 
 	timeout := d.opts.MACLearnTimeout
 	if timeout <= 0 {
@@ -398,13 +398,4 @@ func mibCount(bytes int64) int64 {
 		c = 1
 	}
 	return c
-}
-
-// agentURLs lists every configured agent's /metrics URL.
-func agentURLs(cfg Config) []string {
-	urls := make([]string, 0, len(cfg.Cluster.Agents))
-	for _, a := range cfg.Cluster.Agents {
-		urls = append(urls, a.MetricsURL)
-	}
-	return urls
 }

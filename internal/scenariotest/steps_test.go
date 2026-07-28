@@ -941,7 +941,7 @@ func TestSteps_NICLifecycle(t *testing.T) {
 	if err := (AttachPortStep{VM: "vm-a", ID: "vm-a-nic2", Network: "net-b", Subnet: "sub-b", IP: "10.0.31.9"}).Run(ctx, senv); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	nicID := liveID(senv.State.Ports, "vm-a-nic2")
+	nicID := LiveID(senv.State.Ports, "vm-a-nic2")
 	if nicID == "" {
 		t.Fatal("attach recorded no nic ref")
 	}
@@ -970,7 +970,7 @@ func TestSteps_NICLifecycle(t *testing.T) {
 	if err := (DetachPortStep{VM: "vm-a", Port: "vm-a-nic2"}).Run(ctx, senv); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
-	if liveID(senv.State.Ports, "vm-a-nic2") == "" {
+	if LiveID(senv.State.Ports, "vm-a-nic2") == "" {
 		t.Error("detach without Delete must keep the ref")
 	}
 	// The detached MAC is recorded so a following AwaitSweepStep{ForMACOf}
@@ -989,7 +989,7 @@ func TestSteps_NICLifecycle(t *testing.T) {
 	if err := (DetachPortStep{VM: "vm-a", Port: "vm-a-nic2", Delete: true}).Run(ctx, senv); err != nil {
 		t.Fatalf("detach+delete: %v", err)
 	}
-	if liveID(senv.State.Ports, "vm-a-nic2") != "" {
+	if LiveID(senv.State.Ports, "vm-a-nic2") != "" {
 		t.Error("detach with Delete must drop the ref (truthful inventory)")
 	}
 	if !cloud.deleted["port:"+nicID] {
@@ -1073,7 +1073,7 @@ func TestSteps_ServerMonotone(t *testing.T) {
 	}
 
 	// No captured tuples for the VM is a scenario bug, not a pass.
-	senv.capturedServers = map[serverTuple]float64{}
+	senv.Captured.Servers = map[ServerTuple]float64{}
 	if err := (ServerMonotoneStep{VM: "vm-a"}).Run(ctx, senv); err == nil {
 		t.Error("no captured tuples must error")
 	}
@@ -1165,13 +1165,13 @@ func (m *sweepMetrics) LookupFlows(context.Context, string, string) ([]FlowRow, 
 func sweepEnv(t *testing.T, m MetricsSource) *StepEnv {
 	t.Helper()
 	return &StepEnv{
-		Config:      testConfig(), // one agent
-		State:       &RunState{RunID: "r"},
-		Metrics:     m,
-		Log:         slog.New(slog.DiscardHandler),
-		Report:      &AssertReport{OK: true},
-		macs:        map[string]string{"nic": "fa:16:3e:00:00:aa"},
-		settledBase: 10,
+		Config:   testConfig(), // one agent
+		State:    &RunState{RunID: "r"},
+		Metrics:  m,
+		Log:      slog.New(slog.DiscardHandler),
+		Report:   &AssertReport{OK: true},
+		macs:     map[string]string{"nic": "fa:16:3e:00:00:aa"},
+		Captured: Capture{SettledFlows: 10},
 	}
 }
 
@@ -1299,7 +1299,7 @@ func TestSteps_AttachPortMACFrom(t *testing.T) {
 		IP: "10.0.31.10", MACFrom: "vm-a-nic2"}).Run(ctx, senv); err != nil {
 		t.Fatalf("attach with MACFrom: %v", err)
 	}
-	nicID := liveID(senv.State.Ports, "vm-a-nic3")
+	nicID := LiveID(senv.State.Ports, "vm-a-nic3")
 	if got := cloud.portMAC[nicID]; got != "fa:16:3e:00:00:aa" {
 		t.Errorf("created port MAC = %q, want the pinned MAC", got)
 	}
@@ -1443,7 +1443,7 @@ func TestZoneGrowthStep(t *testing.T) {
 	defer func(s, p time.Duration) { zoneGrowthSettle, sweepPollInterval = s, p }(zoneGrowthSettle, sweepPollInterval)
 	zoneGrowthSettle, sweepPollInterval = 0, time.Millisecond
 
-	k := tuple{"u1", "external", "tx"}
+	k := Tuple{"u1", "external", "tx"}
 	cases := []struct {
 		name     string
 		min, max int64
@@ -1464,7 +1464,7 @@ func TestZoneGrowthStep(t *testing.T) {
 				Metrics:  driveMetrics{bytes: []BytesSample{{TenantID: "u1", Zone: "external", Direction: "tx", Value: tc.current}}},
 				Log:      slog.New(slog.DiscardHandler),
 				Report:   &AssertReport{OK: true},
-				captured: map[tuple]float64{k: 0},
+				Captured: Capture{Tuples: map[Tuple]float64{k: 0}},
 			}
 			step := ZoneGrowthStep{Tenant: "u1", Zone: "external", Direction: "tx",
 				MinBytes: tc.min, MaxBytes: tc.max, Timeout: 10 * time.Millisecond}
@@ -1515,12 +1515,12 @@ func TestSettledTuplesGrewStep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := &StepEnv{
-				Config:            testConfig(),
-				State:             &RunState{},
-				Metrics:           tupleMetrics{tuples: tc.current},
-				Log:               slog.New(slog.DiscardHandler),
-				Report:            &AssertReport{OK: true},
-				settledTuplesBase: tc.base,
+				Config:   testConfig(),
+				State:    &RunState{},
+				Metrics:  tupleMetrics{tuples: tc.current},
+				Log:      slog.New(slog.DiscardHandler),
+				Report:   &AssertReport{OK: true},
+				Captured: Capture{SettledTuples: tc.base},
 			}
 			step := SettledTuplesGrewStep{Min: tc.min, Timeout: 10 * time.Millisecond}
 			if err := step.Run(context.Background(), env); err != nil {
@@ -1689,12 +1689,12 @@ func TestResolvedGrewStep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := &StepEnv{
-				Config:       testConfig(),
-				State:        &RunState{},
-				Metrics:      resolvedMetrics{resolved: tc.current},
-				Log:          slog.New(slog.DiscardHandler),
-				Report:       &AssertReport{OK: true},
-				resolvedBase: tc.base,
+				Config:   testConfig(),
+				State:    &RunState{},
+				Metrics:  resolvedMetrics{resolved: tc.current},
+				Log:      slog.New(slog.DiscardHandler),
+				Report:   &AssertReport{OK: true},
+				Captured: Capture{Resolved: tc.base},
 			}
 			step := ResolvedGrewStep{Min: tc.min, Timeout: 10 * time.Millisecond}
 			if err := step.Run(context.Background(), env); err != nil {
@@ -1745,12 +1745,12 @@ func TestEvictionsGrewStep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := &StepEnv{
-				Config:        testConfig(),
-				State:         &RunState{},
-				Metrics:       evictionMetrics{evictions: tc.current},
-				Log:           slog.New(slog.DiscardHandler),
-				Report:        &AssertReport{OK: true},
-				evictionsBase: tc.base,
+				Config:   testConfig(),
+				State:    &RunState{},
+				Metrics:  evictionMetrics{evictions: tc.current},
+				Log:      slog.New(slog.DiscardHandler),
+				Report:   &AssertReport{OK: true},
+				Captured: Capture{Evictions: tc.base},
 			}
 			step := EvictionsGrewStep{Min: tc.min, Timeout: 10 * time.Millisecond}
 			if err := step.Run(context.Background(), env); err != nil {
@@ -2050,11 +2050,11 @@ func TestEpochStep(t *testing.T) {
 			cfg := testConfig()
 			host := cfg.Cluster.Agents[0].Host
 			env := &StepEnv{
-				Config:         cfg,
-				Log:            slog.New(slog.DiscardHandler),
-				Report:         &AssertReport{OK: true},
-				Metrics:        &epochMetrics{epoch: tc.current},
-				capturedEpochs: map[string]float64{host: tc.captured},
+				Config:   cfg,
+				Log:      slog.New(slog.DiscardHandler),
+				Report:   &AssertReport{OK: true},
+				Metrics:  &epochMetrics{epoch: tc.current},
+				Captured: Capture{Epochs: map[string]float64{host: tc.captured}},
 			}
 			if err := (EpochStep{Changed: tc.changed}).Run(context.Background(), env); err != nil {
 				t.Fatalf("Run: %v", err)

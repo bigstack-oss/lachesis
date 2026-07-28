@@ -14,15 +14,6 @@ import (
 // hanging an unattended run forever.
 const teardownTimeout = 5 * time.Minute
 
-// SkipError reports that the scenario cannot run on this cluster —
-// its placement slots need more nodes than the config lists. Not a
-// failure: the CLI maps it to a SKIPPED verdict and exit 0, and the
-// suite counts it separately (`--no-skip` tightens both to failures,
-// for clusters that are supposed to satisfy every scenario).
-type SkipError struct{ Reason string }
-
-func (e *SkipError) Error() string { return "skipped: " + e.Reason }
-
 // RunOptions bundles everything the composed `run` needs.
 type RunOptions struct {
 	Config     Config
@@ -211,7 +202,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 // teardown — a run that dies half-way must not leave state behind,
 // whether that state is a Neutron port or a config file.
 func runSteps(ctx context.Context, env *StepEnv, steps []Step) error {
-	defer env.restoreDirtyConfigs(ctx)
+	defer restoreDirtyConfigs(ctx, env)
 	for i, st := range steps {
 		env.Log.Info("step", "n", i+1, "of", len(steps), "kind", st.Kind())
 		if err := st.Run(ctx, env); err != nil {
@@ -228,12 +219,12 @@ func runSteps(ctx context.Context, env *StepEnv, steps []Step) error {
 // longer depend on them, and a prerequisite deleted after `up` must
 // not block iterating against the topology it built.
 func preflightResume(ctx context.Context, cfg Config, m MetricsSource) error {
-	for _, u := range agentURLs(cfg) {
+	for _, u := range AgentURLs(cfg) {
 		res, err := m.Scrape(ctx, u)
 		if err != nil {
 			return fmt.Errorf("run: scrape %s: %w", u, err)
 		}
-		if err := requiredMetrics(res); err != nil {
+		if err := CheckRequiredMetrics(res); err != nil {
 			return fmt.Errorf("run: agent at %s: %w", u, err)
 		}
 	}
@@ -251,7 +242,7 @@ func checkStepMetrics(ctx context.Context, opts RunOptions, steps []Step) error 
 	if len(required) == 0 {
 		return nil
 	}
-	for _, u := range agentURLs(opts.Config) {
+	for _, u := range AgentURLs(opts.Config) {
 		r, err := opts.Metrics.Scrape(ctx, u)
 		if err != nil {
 			return fmt.Errorf("run: scrape %s: %w", u, err)

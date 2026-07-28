@@ -70,55 +70,42 @@ func skipReason(sc *Scenario, cfg Config) string {
 	if req := RequiredNodes(sc); req > len(cfg.Cluster.Agents) {
 		return fmt.Sprintf("needs %d node(s) (placement slots); config lists %d agent(s)", req, len(cfg.Cluster.Agents))
 	}
-	// A scenario that restarts an agent can't run without agent-host SSH
-	// creds; that is a property of the environment (creds not staged),
-	// not a defect, so skip rather than fail — same rationale as the
-	// node-count skip above.
-	if needsAgentControl(sc) && cfg.AgentControl.KeyPath == "" {
+	// A scenario that drives an agent host can't run without agent-host
+	// SSH creds, and a cold-restart scenario additionally needs to know
+	// where the agent keeps its durable state. Both are properties of
+	// the environment (creds/paths not staged), not defects, so skip
+	// rather than fail — same rationale as the node-count skip above.
+	needs := scenarioHostNeeds(sc)
+	if needs.AgentSSH && cfg.AgentControl.KeyPath == "" {
 		return "restarts an agent but agent_control.key_path is unset"
 	}
-	// Cold-restart scenarios additionally need to know where the agent
-	// keeps its durable state on the host — also an environment
-	// property, not a defect.
-	if needsWALPath(sc) && cfg.AgentControl.WALPath == "" {
+	if needs.WALPath && cfg.AgentControl.WALPath == "" {
 		return "removes the agent WAL but agent_control.wal_path is unset"
 	}
-	if needsPinPath(sc) && cfg.AgentControl.PinPath == "" {
+	if needs.PinPath && cfg.AgentControl.PinPath == "" {
 		return "removes the agent's map pins but agent_control.pin_path is unset"
 	}
 	return ""
 }
 
-// needsWALPath / needsPinPath report whether any step performs the
-// corresponding state removal, requiring its agent_control path.
-func needsWALPath(sc *Scenario) bool {
+// scenarioHostNeeds unions what every step in sc declares through
+// [HostRequirer]. Steps that drive no host declare nothing and are
+// invisible here — which is the point: the core asks the vocabulary
+// what it needs instead of switching on concrete step types it would
+// then have to import.
+func scenarioHostNeeds(sc *Scenario) HostNeeds {
+	var n HostNeeds
 	for _, st := range sc.Steps {
-		if r, ok := st.(RestartAgentStep); ok && r.RemoveWAL {
-			return true
+		r, ok := st.(HostRequirer)
+		if !ok {
+			continue
 		}
+		m := r.HostNeeds()
+		n.AgentSSH = n.AgentSSH || m.AgentSSH
+		n.WALPath = n.WALPath || m.WALPath
+		n.PinPath = n.PinPath || m.PinPath
 	}
-	return false
-}
-
-func needsPinPath(sc *Scenario) bool {
-	for _, st := range sc.Steps {
-		if r, ok := st.(RestartAgentStep); ok && r.RemovePins {
-			return true
-		}
-	}
-	return false
-}
-
-// needsAgentControl reports whether any of sc's steps drives the agent
-// host over SSH (a [RestartAgentStep]), which requires agent_control
-// creds to be configured.
-func needsAgentControl(sc *Scenario) bool {
-	for _, st := range sc.Steps {
-		if _, ok := st.(RestartAgentStep); ok {
-			return true
-		}
-	}
-	return false
+	return n
 }
 
 // resolveNode maps an [Expect.Node] target to the configured agent
@@ -126,7 +113,7 @@ func needsAgentControl(sc *Scenario) bool {
 // resolves like Placement does; a literal value must name a
 // configured agent host (anything else would silently sum zero
 // samples — an error beats a mute FAIL).
-func resolveNode(val string, agents []AgentConfig) (string, error) {
+func ResolveNode(val string, agents []AgentConfig) (string, error) {
 	idx, isSlot, err := slotIndex(val)
 	if isSlot {
 		if err != nil {
@@ -149,14 +136,14 @@ func resolveNode(val string, agents []AgentConfig) (string, error) {
 // for vm, or "" when vm is unpinned. Both boot paths (realize-time
 // and deferred BootVMStep) go through here so the AZ scheme has one
 // owner. p must already be resolved.
-func placementAZ(p Placement, vm string) string {
+func PlacementAZ(p Placement, vm string) string {
 	if host := p[vm]; host != "" {
 		return "nova:" + host
 	}
 	return ""
 }
 
-func resolvePlacement(p Placement, agents []AgentConfig) (Placement, error) {
+func ResolvePlacement(p Placement, agents []AgentConfig) (Placement, error) {
 	if len(p) == 0 {
 		return p, nil
 	}

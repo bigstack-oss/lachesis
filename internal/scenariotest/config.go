@@ -73,9 +73,9 @@ type AgentConfig struct {
 	SSHHost    string `yaml:"ssh_host"`
 }
 
-// sshHost is the address [RestartAgentStep] SSHes to for this agent —
+// SSHAddr is the address [RestartAgentStep] SSHes to for this agent —
 // the explicit ssh_host, else the hypervisor Host.
-func (a AgentConfig) sshHost() string {
+func (a AgentConfig) SSHAddr() string {
 	if a.SSHHost != "" {
 		return a.SSHHost
 	}

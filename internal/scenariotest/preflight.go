@@ -52,7 +52,7 @@ func Preflight(ctx context.Context, cfg Config, sc *Scenario, cloud Cloud, src M
 	id, err := cloud.FindImage(ctx, cfg.Prerequisites.ImageName)
 	add("image", err, "found "+cfg.Prerequisites.ImageName+" ("+id+")")
 
-	flavor := flavorFor(cfg, sc)
+	flavor := FlavorFor(cfg, sc)
 	fid, err := cloud.FindFlavor(ctx, flavor)
 	add("flavor", err, "found "+flavor+" ("+fid+")")
 
@@ -65,7 +65,7 @@ func Preflight(ctx context.Context, cfg Config, sc *Scenario, cloud Cloud, src M
 	add("external_network", err, "found "+cfg.Prerequisites.ExternalNetworkName+" ("+extid+")")
 
 	if len(sc.Placement) > 0 {
-		if resolved, rerr := resolvePlacement(sc.Placement, cfg.Cluster.Agents); rerr != nil {
+		if resolved, rerr := ResolvePlacement(sc.Placement, cfg.Cluster.Agents); rerr != nil {
 			add("placement", rerr, "")
 		} else if hosts, err := cloud.Hypervisors(ctx); err != nil {
 			add("placement", err, "")
@@ -81,18 +81,9 @@ func Preflight(ctx context.Context, cfg Config, sc *Scenario, cloud Cloud, src M
 			add(name, err, "")
 			continue
 		}
-		add(name, requiredMetrics(res), "reachable; required metrics present")
+		add(name, CheckRequiredMetrics(res), "reachable; required metrics present")
 	}
 	return r
-}
-
-// flavorFor returns the flavor a scenario boots with: its own
-// override, else the global prerequisite.
-func flavorFor(cfg Config, sc *Scenario) string {
-	if sc.Flavor != "" {
-		return sc.Flavor
-	}
-	return cfg.Prerequisites.FlavorName
 }
 
 func checkPlacement(p Placement, hosts []string) error {
@@ -106,15 +97,6 @@ func checkPlacement(p Placement, hosts []string) error {
 		}
 		if !have[host] {
 			return fmt.Errorf("hypervisor %q (pinned for VM %q) not in hypervisor list", host, vm)
-		}
-	}
-	return nil
-}
-
-func requiredMetrics(res ScrapeResult) error {
-	for _, m := range []string{MetricBytesTotal, MetricAttachedInterfaces} {
-		if !res.Present[m] {
-			return fmt.Errorf("agent /metrics missing %s", m)
 		}
 	}
 	return nil
