@@ -1,13 +1,16 @@
-package steps
+package agentctl
 
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/fake"
 )
 
 func TestSetDotted_TypesAndNesting(t *testing.T) {
@@ -83,13 +86,13 @@ scrape:
   interval: 10s
 `
 	exec := &restartExec{catOut: nodeConfig}
-	err := applySetConfig(context.Background(), exec, "10.0.0.1", "/root/agent.yaml",
+	err := applySet(context.Background(), exec, "10.0.0.1", "/root/agent.yaml",
 		map[string]string{
 			"gc.pressure_high_watermark": "0.0001",
 			"gc.pressure_low_watermark":  "0.00005",
 		}, true)
 	if err != nil {
-		t.Fatalf("applySetConfig: %v", err)
+		t.Fatalf("applySet: %v", err)
 	}
 
 	if !exec.has("sudo cat /root/agent.yaml") {
@@ -143,10 +146,10 @@ scrape:
 // already-patched config — a self-destroying restore.
 func TestApplySetConfig_NoBackupLeavesTheRestoreIntact(t *testing.T) {
 	exec := &restartExec{catOut: "reconcile:\n  interval: 600s\nkafka:\n  enabled: false\n"}
-	err := applySetConfig(context.Background(), exec, "10.0.0.1", "/root/agent.yaml",
+	err := applySet(context.Background(), exec, "10.0.0.1", "/root/agent.yaml",
 		map[string]string{"reconcile.interval": "15s"}, false)
 	if err != nil {
-		t.Fatalf("applySetConfig: %v", err)
+		t.Fatalf("applySet: %v", err)
 	}
 	if exec.has(".scenariotest.bak") {
 		t.Error("reload path took a backup — it would clobber the restart's copy of the real config")
@@ -170,4 +173,45 @@ func TestApplySetConfig_NoBackupLeavesTheRestoreIntact(t *testing.T) {
 	if got["kafka"].(map[string]any)["enabled"] != false {
 		t.Errorf("earlier restart's override was lost: %v", got)
 	}
+}
+
+// restartExec models the agent host: it records commands, reports the
+// unit's MainPID (bumping it once a restart is issued, so awaitReady's
+// PID-change evidence fires), and can be told to never cycle (the
+// restart-didn't-take case) or to fail a command matching failOn.
+type restartExec struct {
+	Calls     []fake.ExecCall
+	restarted bool
+	noCycle   bool   // MainPID never changes — restart did not take
+	failOn    string // a command substring that returns an error
+	catOut    string // what `sudo cat <config>` returns (SetConfig reads it)
+}
+
+func (e *restartExec) Run(_ context.Context, addr, command string) (string, error) {
+	e.Calls = append(e.Calls, fake.ExecCall{Addr: addr, Command: command})
+	if e.failOn != "" && strings.Contains(command, e.failOn) {
+		return "", fmt.Errorf("fake ssh: command failed: %s", command)
+	}
+	switch {
+	case strings.Contains(command, "systemctl restart"):
+		e.restarted = true
+		return "", nil
+	case strings.Contains(command, "MainPID"):
+		if e.restarted && !e.noCycle {
+			return "MainPID=2222\n", nil
+		}
+		return "MainPID=1111\n", nil
+	case strings.HasPrefix(command, "sudo cat "):
+		return e.catOut, nil
+	}
+	return "", nil
+}
+
+func (e *restartExec) has(substr string) bool {
+	for _, c := range e.Calls {
+		if strings.Contains(c.Command, substr) {
+			return true
+		}
+	}
+	return false
 }
