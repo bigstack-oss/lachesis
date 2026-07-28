@@ -104,7 +104,7 @@ func (r *realizer) run() error {
 
 	// Resolve placement slots first: a scenario asking for more nodes
 	// than the config lists must fail with nothing created yet.
-	placement, err := resolvePlacement(r.opts.Scenario.Placement, r.opts.Config.Cluster.Agents)
+	placement, err := ResolvePlacement(r.opts.Scenario.Placement, r.opts.Config.Cluster.Agents)
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func (r *realizer) resolvePrereqs() error {
 	if r.extNetID, err = r.opts.Cloud.FindExternalNetwork(r.ctx, p.ExternalNetworkName); err != nil {
 		return err
 	}
-	if r.flavorID, err = r.opts.Cloud.FindFlavor(r.ctx, flavorFor(r.opts.Config, r.opts.Scenario)); err != nil {
+	if r.flavorID, err = r.opts.Cloud.FindFlavor(r.ctx, FlavorFor(r.opts.Config, r.opts.Scenario)); err != nil {
 		return err
 	}
 	if r.imageID, err = r.opts.Cloud.FindImage(r.ctx, p.ImageName); err != nil {
@@ -440,7 +440,7 @@ func (r *realizer) bootServers() error {
 			PortID:           r.vmPort[vmID],
 			ExtraPortIDs:     r.vmExtraPorts[vmID],
 			KeypairName:      r.opts.Config.Prerequisites.KeypairName,
-			AvailabilityZone: placementAZ(r.placement, vmID),
+			AvailabilityZone: PlacementAZ(r.placement, vmID),
 		})
 		if err != nil {
 			return err

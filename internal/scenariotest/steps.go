@@ -17,9 +17,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -50,179 +48,6 @@ const (
 // sweepPollInterval is the pause between [AwaitSweepStep] polls. A var,
 // not a const, so poll-loop tests can shrink it.
 var sweepPollInterval = 5 * time.Second
-
-// Step is one instruction in a scripted scenario. Run performs the
-// step against env, appending any assertion rows to env.Report; it
-// returns an error only for mechanical failures (a failed assertion is
-// a false row, not an error — the run continues so the report shows
-// every check). Kind is the short name used in logs and step-scoped
-// error wrapping.
-type Step interface {
-	Kind() string
-	Run(ctx context.Context, env *StepEnv) error
-}
-
-// metricRequirer is an optional Step extension: steps that depend on a
-// specific /metrics family declare it, and `run` refuses up front when
-// an agent does not expose it — failing before any topology exists
-// beats timing out mid-scenario for the wrong reason.
-type metricRequirer interface {
-	requiredMetrics() []string
-}
-
-// StepEnv is the shared environment a scripted run threads through its
-// steps: the realized run-state, the seams, the accumulating report,
-// and the cross-step captures (counter snapshot, settled base, MACs of
-// deleted VMs).
-type StepEnv struct {
-	Config     Config
-	Scenario   *Scenario
-	State      *RunState
-	StatePath  string
-	ReportPath string
-	Cloud      Cloud
-	Metrics    MetricsSource
-	Exec       VMExec
-	// AgentExec runs commands on the agent HOSTS (not the VMs) —
-	// [RestartAgentStep]'s SSH transport, built from
-	// [Config.AgentControl]. Nil unless a scenario restarts an agent.
-	AgentExec VMExec
-	Log       *slog.Logger
-	SinkDelay time.Duration
-	// MACLearnTimeout passes through to [DriveOptions.MACLearnTimeout];
-	// zero uses the default, tests set a small value.
-	MACLearnTimeout time.Duration
-
-	// Report accumulates every step's assertion rows; `run` persists
-	// it once the script completes.
-	Report *AssertReport
-
-	// captured is the per-tuple counter snapshot taken by the most
-	// recent [CaptureStep]; capturedServers is the per-server family's
-	// counterpart; settledBase is the summed settled-flows counter at
-	// the same instant. Monotone/growth assertions and the sweep wait
-	// diff against them.
-	captured          map[tuple]float64
-	capturedServers   map[serverTuple]float64
-	capturedEpochs    map[string]float64
-	settledBase       float64
-	settledTuplesBase float64
-	resolvedBase      float64
-	evictionsBase     float64
-	ghostsBase        float64
-	// macs records each deleted VM's MAC ([DeleteVMStep] captures it
-	// just before the delete) for a later BootVMStep's MACFrom.
-	macs map[string]string
-	// configDirty names the agent nodes whose on-host config a step has
-	// modified and not yet put back, in the order they were modified.
-	// [runSteps] restores whatever is still listed when the run ends,
-	// however it ends — see [StepEnv.restoreDirtyConfigs].
-	configDirty []string
-}
-
-// markConfigDirty records that node's on-host agent config has been
-// modified and owes a restore. Idempotent: a node already owing one is
-// not listed twice.
-func (e *StepEnv) markConfigDirty(node string) {
-	for _, n := range e.configDirty {
-		if n == node {
-			return
-		}
-	}
-	e.configDirty = append(e.configDirty, node)
-}
-
-// clearConfigDirty drops node's outstanding restore — called when a
-// scenario restores it explicitly, so the end-of-run sweep has nothing
-// left to do.
-func (e *StepEnv) clearConfigDirty(node string) {
-	for i, n := range e.configDirty {
-		if n == node {
-			e.configDirty = append(e.configDirty[:i], e.configDirty[i+1:]...)
-			return
-		}
-	}
-}
-
-// restoreDirtyConfigs puts back every agent config a step modified and
-// did not restore. It is the safety net for the abort paths: a step
-// error returns straight out of [runSteps], so a scenario's trailing
-// restore step is never reached and the host would otherwise keep
-// serving the scenario's temporary config — silently, into whatever
-// runs next (lachesis#274).
-//
-// Deliberately best-effort and loud: a failure here is logged at error
-// level naming the host, never returned, because it must not mask the
-// original step error that caused the abort. Restores run newest-first
-// and through the ordinary [RestartAgentStep] path, so the running
-// agent ends up on the restored file rather than merely the file being
-// right on disk.
-//
-// The context is detached from ctx (a cancelled run — Ctrl-C — is
-// exactly when config gets stranded) but bounded, so a wedged host
-// cannot hang the run's exit.
-func (e *StepEnv) restoreDirtyConfigs(ctx context.Context) {
-	if len(e.configDirty) == 0 {
-		return
-	}
-	nodes := e.configDirty
-	e.configDirty = nil
-
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), configRestoreTimeout)
-	defer cancel()
-	for i := len(nodes) - 1; i >= 0; i-- {
-		node := nodes[i]
-		e.Log.Warn("restoring an agent config the run left modified", "node", node)
-		if err := (RestartAgentStep{Node: node, RestoreConfig: true}).Run(rctx, e); err != nil {
-			e.Log.Error("agent config NOT restored — the host is still on the scenario's config",
-				"node", node, "err", err)
-		}
-	}
-}
-
-func (e *StepEnv) addRow(row AssertRow) {
-	if !row.Pass {
-		e.Report.OK = false
-	}
-	e.Report.Rows = append(e.Report.Rows, row)
-}
-
-// scrape samples all configured agents once.
-func (e *StepEnv) scrape(ctx context.Context) (MetricsSnapshot, error) {
-	return SampleAcross(ctx, e.Metrics, e.Config.Cluster.Agents)
-}
-
-// project resolves a DSL project name via the run-state.
-func (e *StepEnv) project(dsl string) (ProjectRef, error) {
-	ref, ok := e.State.Projects[dsl]
-	if !ok {
-		return ProjectRef{}, fmt.Errorf("run-state has no project %q", dsl)
-	}
-	return ref, nil
-}
-
-// tenantLabel resolves what a step's Tenant field matches against the
-// metric's tenant_id label: a DSL project name resolves to its
-// Keystone UUID; anything else (notably "unknown") is taken literally.
-func (e *StepEnv) tenantLabel(tenant string) string {
-	if ref, ok := e.State.Projects[tenant]; ok {
-		return ref.ID
-	}
-	return tenant
-}
-
-// vmMAC returns a VM's MAC: recorded at deletion for VMs already gone,
-// read live from its port otherwise.
-func (e *StepEnv) vmMAC(ctx context.Context, vm string) (string, error) {
-	if mac, ok := e.macs[vm]; ok {
-		return mac, nil
-	}
-	portID := liveID(e.State.Ports, vm)
-	if portID == "" {
-		return "", fmt.Errorf("run-state has no port for VM %q", vm)
-	}
-	return e.Cloud.PortMAC(ctx, portID)
-}
 
 // --- the vocabulary ---
 
@@ -368,7 +193,7 @@ func (s AssertStep) Run(ctx context.Context, env *StepEnv) error {
 		if row.Note == "" {
 			row.Note = s.Note
 		}
-		env.addRow(row)
+		env.AddRow(row)
 	}
 	return nil
 }
@@ -381,23 +206,7 @@ type CaptureStep struct{}
 func (CaptureStep) Kind() string { return "capture" }
 
 func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
-	snap, err := env.scrape(ctx)
-	if err != nil {
-		return err
-	}
-	env.captured = sumByTuple(snap.Bytes)
-	env.capturedServers = sumByServerTuple(snap.Servers)
-	env.capturedEpochs = snap.CountersResetEpochs
-	env.settledBase = snap.SettledFlows
-	env.settledTuplesBase = snap.SettledTuples
-	env.resolvedBase = snap.UnresolvedResolved
-	env.evictionsBase = snap.PressureReliefEvictions
-	env.ghostsBase = snap.LingeringGhosts
-	env.Log.Info("capture", "tuples", len(env.captured),
-		"server_tuples", len(env.capturedServers), "settled_flows", env.settledBase,
-		"settled_tuples", env.settledTuplesBase, "unresolved_resolved", env.resolvedBase,
-		"pressure_relief_evictions", env.evictionsBase, "lingering_ghosts", env.ghostsBase)
-	return nil
+	return env.TakeCapture(ctx)
 }
 
 // DeleteVMStep tears down exactly one VM — FIP, then server (waiting
@@ -413,14 +222,11 @@ type DeleteVMStep struct {
 func (DeleteVMStep) Kind() string { return "delete-vm" }
 
 func (s DeleteVMStep) Run(ctx context.Context, env *StepEnv) error {
-	mac, err := env.vmMAC(ctx, s.VM)
+	mac, err := env.VMMAC(ctx, s.VM)
 	if err != nil {
 		return err
 	}
-	if env.macs == nil {
-		env.macs = map[string]string{}
-	}
-	env.macs[s.VM] = mac
+	env.RecordMAC(s.VM, mac)
 
 	for _, f := range env.State.FIPs {
 		if f.VMID != s.VM {
@@ -489,7 +295,7 @@ type AwaitSweepStep struct {
 
 func (AwaitSweepStep) Kind() string { return "await-sweep" }
 
-func (s AwaitSweepStep) requiredMetrics() []string {
+func (s AwaitSweepStep) RequiredMetrics() []string {
 	if s.ForMACOf != "" {
 		return nil // uses /debug/lookup, not a metric family
 	}
@@ -506,14 +312,14 @@ func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
 	if s.ForMACOf != "" {
 		return s.awaitMACSwept(ctx, env, timeout)
 	}
-	env.Log.Warn("await-sweep: waiting on the GLOBAL settled counter — unreliable on a shared agent (lachesis#240); set ForMACOf", "settled_flows_above", env.settledBase, "timeout", timeout)
+	env.Log.Warn("await-sweep: waiting on the GLOBAL settled counter — unreliable on a shared agent (lachesis#240); set ForMACOf", "settled_flows_above", env.Captured.SettledFlows, "timeout", timeout)
 	for {
-		snap, err := env.scrape(ctx)
+		snap, err := env.Scrape(ctx)
 		if err != nil {
 			return err
 		}
-		if snap.SettledFlows > env.settledBase {
-			env.Log.Info("await-sweep: observed", "settled_flows_from", env.settledBase, "settled_flows_to", snap.SettledFlows)
+		if snap.SettledFlows > env.Captured.SettledFlows {
+			env.Log.Info("await-sweep: observed", "settled_flows_from", env.Captured.SettledFlows, "settled_flows_to", snap.SettledFlows)
 			return nil
 		}
 		select {
@@ -530,7 +336,7 @@ func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
 // userspace metadata delete that ends the ghost sweep, which happens
 // after the fold.
 func (s AwaitSweepStep) awaitMACSwept(ctx context.Context, env *StepEnv, timeout time.Duration) error {
-	mac, err := env.vmMAC(ctx, s.ForMACOf)
+	mac, err := env.VMMAC(ctx, s.ForMACOf)
 	if err != nil {
 		return fmt.Errorf("await-sweep: no MAC known for %q (delete or detach it first): %w", s.ForMACOf, err)
 	}
@@ -539,7 +345,7 @@ func (s AwaitSweepStep) awaitMACSwept(ctx context.Context, env *StepEnv, timeout
 	var lastErr error  // most recent transient lookup failure, surfaced on timeout
 	for {
 		gone := true
-		for _, u := range agentURLs(env.Config) {
+		for _, u := range AgentURLs(env.Config) {
 			res, err := env.Metrics.LookupMAC(ctx, u, mac)
 			if err != nil {
 				// A momentarily-unreachable agent can't confirm the MAC is
@@ -590,22 +396,22 @@ type MonotoneStep struct {
 func (MonotoneStep) Kind() string { return "assert-monotone" }
 
 func (s MonotoneStep) Run(ctx context.Context, env *StepEnv) error {
-	ref, err := env.project(s.Tenant)
+	ref, err := env.Project(s.Tenant)
 	if err != nil {
 		return err
 	}
-	snap, err := env.scrape(ctx)
+	snap, err := env.Scrape(ctx)
 	if err != nil {
 		return err
 	}
-	cur := sumByTuple(snap.Bytes)
-	for k, base := range env.captured {
-		if k.tenant != ref.ID {
+	cur := SumByTuple(snap.Bytes)
+	for k, base := range env.Captured.Tuples {
+		if k.Tenant != ref.ID {
 			continue
 		}
-		env.addRow(AssertRow{
-			Tenant: s.Tenant, TenantID: k.tenant,
-			Zone: k.zone, Direction: k.direction,
+		env.AddRow(AssertRow{
+			Tenant: s.Tenant, TenantID: k.Tenant,
+			Zone: k.Zone, Direction: k.Direction,
 			Baseline: base, Current: cur[k], Delta: cur[k] - base,
 			Pass: cur[k] >= base, Note: s.Note,
 		})
@@ -629,19 +435,19 @@ type MaxGrowthStep struct {
 func (MaxGrowthStep) Kind() string { return "assert-max-growth" }
 
 func (s MaxGrowthStep) Run(ctx context.Context, env *StepEnv) error {
-	label := env.tenantLabel(s.Tenant)
-	snap, err := env.scrape(ctx)
+	label := env.TenantLabel(s.Tenant)
+	snap, err := env.Scrape(ctx)
 	if err != nil {
 		return err
 	}
-	cur := sumByTuple(snap.Bytes)
+	cur := SumByTuple(snap.Bytes)
 	for _, dir := range []string{"tx", "rx"} {
-		k := tuple{label, s.Zone, dir}
-		env.addRow(AssertRow{
+		k := Tuple{label, s.Zone, dir}
+		env.AddRow(AssertRow{
 			Tenant: s.Tenant, TenantID: label,
 			Zone: s.Zone, Direction: dir,
-			Baseline: env.captured[k], Current: cur[k], Delta: cur[k] - env.captured[k],
-			Pass: cur[k]-env.captured[k] < float64(s.Budget),
+			Baseline: env.Captured.Tuples[k], Current: cur[k], Delta: cur[k] - env.Captured.Tuples[k],
+			Pass: cur[k]-env.Captured.Tuples[k] < float64(s.Budget),
 			Note: s.Note,
 		})
 	}
@@ -676,24 +482,24 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 	if project == "" {
 		return fmt.Errorf("scenario declares no VM %q", s.VM)
 	}
-	proj, err := env.project(project)
+	proj, err := env.Project(project)
 	if err != nil {
 		return err
 	}
-	netID := liveID(env.State.Networks, network)
-	subnetID := liveID(env.State.Subnets, subnet)
+	netID := LiveID(env.State.Networks, network)
+	subnetID := LiveID(env.State.Subnets, subnet)
 	if netID == "" || subnetID == "" {
 		return fmt.Errorf("run-state has no live ids for %s/%s", network, subnet)
 	}
 
 	mac := ""
 	if s.MACFrom != "" {
-		if mac, err = env.vmMAC(ctx, s.MACFrom); err != nil {
+		if mac, err = env.VMMAC(ctx, s.MACFrom); err != nil {
 			return err
 		}
 	}
 	p := env.Config.Prerequisites
-	flavorID, err := env.Cloud.FindFlavor(ctx, flavorFor(env.Config, env.Scenario))
+	flavorID, err := env.Cloud.FindFlavor(ctx, FlavorFor(env.Config, env.Scenario))
 	if err != nil {
 		return err
 	}
@@ -710,7 +516,7 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 		return err
 	}
 
-	baseline, err := env.scrape(ctx)
+	baseline, err := env.Scrape(ctx)
 	if err != nil {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
@@ -744,7 +550,7 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 	placement := env.State.Placement
 	if placement == nil {
 		var perr error
-		if placement, perr = resolvePlacement(env.Scenario.Placement, env.Config.Cluster.Agents); perr != nil {
+		if placement, perr = ResolvePlacement(env.Scenario.Placement, env.Config.Cluster.Agents); perr != nil {
 			return perr
 		}
 	}
@@ -754,7 +560,7 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 		ImageID:          imageID,
 		PortID:           portID,
 		KeypairName:      p.KeypairName,
-		AvailabilityZone: placementAZ(placement, s.VM),
+		AvailabilityZone: PlacementAZ(placement, s.VM),
 	})
 	if err != nil {
 		return err
@@ -803,7 +609,7 @@ func awaitAttachRise(ctx context.Context, env *StepEnv, baseline MetricsSnapshot
 	ctx, cancel := context.WithTimeout(ctx, DefaultAttachTimeout)
 	defer cancel()
 	for {
-		snap, err := env.scrape(ctx)
+		snap, err := env.Scrape(ctx)
 		if err != nil {
 			return fmt.Errorf("attach gate scrape: %w", err)
 		}
@@ -849,15 +655,15 @@ func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	if project == "" {
 		return fmt.Errorf("scenario declares no VM %q", s.VM)
 	}
-	proj, err := env.project(project)
+	proj, err := env.Project(project)
 	if err != nil {
 		return err
 	}
-	portID := liveID(env.State.Ports, s.VM)
+	portID := LiveID(env.State.Ports, s.VM)
 	if portID == "" {
 		return fmt.Errorf("run-state has no live port for %q", s.VM)
 	}
-	netID := liveID(env.State.Networks, s.Network)
+	netID := LiveID(env.State.Networks, s.Network)
 	if netID == "" {
 		// Provider-bound external marker (not a CreateExternalNets net in
 		// run-state) resolves to the config's external network, the same
@@ -949,7 +755,7 @@ func (s SetRouterGatewayStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	netID := liveID(env.State.Networks, s.ExternalNet)
+	netID := LiveID(env.State.Networks, s.ExternalNet)
 	if netID == "" {
 		// Not a created (CreateExternalNets) network in run-state — a
 		// provider-bound external marker resolves to the config's external
@@ -992,7 +798,7 @@ type SettledTuplesGrewStep struct {
 
 func (SettledTuplesGrewStep) Kind() string { return "assert-settled-tuples-grew" }
 
-func (SettledTuplesGrewStep) requiredMetrics() []string { return []string{MetricTenantSettledTuples} }
+func (SettledTuplesGrewStep) RequiredMetrics() []string { return []string{MetricTenantSettledTuples} }
 
 func (s SettledTuplesGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
@@ -1002,11 +808,11 @@ func (s SettledTuplesGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	deadline := time.Now().Add(timeout)
 	var delta float64
 	for {
-		snap, err := env.scrape(ctx)
+		snap, err := env.Scrape(ctx)
 		if err != nil {
 			return err
 		}
-		delta = snap.SettledTuples - env.settledTuplesBase
+		delta = snap.SettledTuples - env.Captured.SettledTuples
 		if delta >= float64(s.Min) || time.Now().After(deadline) {
 			break
 		}
@@ -1016,9 +822,9 @@ func (s SettledTuplesGrewStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(sweepPollInterval):
 		}
 	}
-	env.addRow(AssertRow{
+	env.AddRow(AssertRow{
 		Tenant: "settled-tuples", Zone: "-", Direction: "-",
-		Baseline: env.settledTuplesBase, Current: env.settledTuplesBase + delta, Delta: delta,
+		Baseline: env.Captured.SettledTuples, Current: env.Captured.SettledTuples + delta, Delta: delta,
 		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
 	})
 	return nil
@@ -1176,7 +982,7 @@ func (s AssertFlowPeerStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 
 	var total float64
-	for _, u := range agentURLs(env.Config) {
+	for _, u := range AgentURLs(env.Config) {
 		rows, err := env.Metrics.LookupFlows(ctx, u, mac)
 		if err != nil {
 			return fmt.Errorf("assert-flow-peer: %w", err)
@@ -1187,7 +993,7 @@ func (s AssertFlowPeerStep) Run(ctx context.Context, env *StepEnv) error {
 			}
 		}
 	}
-	env.addRow(AssertRow{
+	env.AddRow(AssertRow{
 		Tenant: "flow-peer", Zone: s.Zone, Direction: "-",
 		Current: total, Delta: total, MinBytes: s.MinBytes,
 		Pass: total >= float64(s.MinBytes),
@@ -1270,7 +1076,7 @@ type AssertAnomalyStep struct {
 
 func (AssertAnomalyStep) Kind() string { return "assert-anomaly" }
 
-func (AssertAnomalyStep) requiredMetrics() []string { return []string{MetricNeutronAnomalies} }
+func (AssertAnomalyStep) RequiredMetrics() []string { return []string{MetricNeutronAnomalies} }
 
 func (s AssertAnomalyStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
@@ -1281,7 +1087,7 @@ func (s AssertAnomalyStep) Run(ctx context.Context, env *StepEnv) error {
 	deadline := time.Now().Add(timeout)
 	var last float64
 	for {
-		snap, err := env.scrape(ctx)
+		snap, err := env.Scrape(ctx)
 		if err != nil {
 			return err
 		}
@@ -1298,7 +1104,7 @@ func (s AssertAnomalyStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(anomalyPollInterval):
 		}
 	}
-	env.addRow(AssertRow{
+	env.AddRow(AssertRow{
 		Tenant: "anomaly", Zone: s.Class, Direction: "-",
 		Current: last, Delta: last, MinBytes: s.Min,
 		Pass: last >= float64(s.Min) && last <= float64(s.Max),
@@ -1347,7 +1153,7 @@ func (s MigrateStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 	target := ""
 	if s.Target != "" {
-		host, err := resolveNode(s.Target, env.Config.Cluster.Agents)
+		host, err := ResolveNode(s.Target, env.Config.Cluster.Agents)
 		if err != nil {
 			return fmt.Errorf("migrate: %w", err)
 		}
@@ -1426,7 +1232,7 @@ func (s RestartAgentStep) removeStateCmd(ac AgentControlConfig) (string, error) 
 	if ac.WALPath == "" {
 		return "", fmt.Errorf("RemoveWAL set but agent_control.wal_path is empty")
 	}
-	if err := shellSafe("agent_control.wal_path", ac.WALPath); err != nil {
+	if err := ShellSafe("agent_control.wal_path", ac.WALPath); err != nil {
 		return "", err
 	}
 	cmd := fmt.Sprintf("sudo rm -f %s %s.bak", ac.WALPath, ac.WALPath)
@@ -1434,7 +1240,7 @@ func (s RestartAgentStep) removeStateCmd(ac AgentControlConfig) (string, error) 
 		if ac.PinPath == "" {
 			return "", fmt.Errorf("RemovePins set but agent_control.pin_path is empty")
 		}
-		if err := shellSafe("agent_control.pin_path", ac.PinPath); err != nil {
+		if err := ShellSafe("agent_control.pin_path", ac.PinPath); err != nil {
 			return "", err
 		}
 		cmd += fmt.Sprintf(" && sudo rm -rf %s", ac.PinPath)
@@ -1462,16 +1268,16 @@ type EpochStep struct {
 
 func (EpochStep) Kind() string { return "assert-epoch" }
 
-func (EpochStep) requiredMetrics() []string {
+func (EpochStep) RequiredMetrics() []string {
 	return []string{MetricCountersReset}
 }
 
 func (s EpochStep) Run(ctx context.Context, env *StepEnv) error {
-	agent, err := agentForNode(env.Config, s.Node)
+	agent, err := AgentForNode(env.Config, s.Node)
 	if err != nil {
 		return fmt.Errorf("assert-epoch: %w", err)
 	}
-	base, ok := env.capturedEpochs[agent.Host]
+	base, ok := env.Captured.Epochs[agent.Host]
 	if !ok {
 		return fmt.Errorf("assert-epoch: no captured epoch for %s — add a CaptureStep before the restart", agent.Host)
 	}
@@ -1484,7 +1290,7 @@ func (s EpochStep) Run(ctx context.Context, env *StepEnv) error {
 	if s.Changed {
 		pass = cur > base
 	}
-	env.addRow(AssertRow{
+	env.AddRow(AssertRow{
 		Tenant:   agent.Host,
 		Zone:     "epoch",
 		Baseline: base, Current: cur, Delta: cur - base,
@@ -1563,11 +1369,17 @@ type RestartAgentStep struct {
 
 func (RestartAgentStep) Kind() string { return "restart-agent" }
 
+// HostNeeds declares the agent_control keys this step reads, so a
+// cluster that has not staged them SKIPs rather than failing mid-run.
+func (s RestartAgentStep) HostNeeds() HostNeeds {
+	return HostNeeds{AgentSSH: true, WALPath: s.RemoveWAL, PinPath: s.RemovePins}
+}
+
 // requiredMetrics declares both families the readiness gate checks
 // ([requiredMetrics]), so the pre-create step-metric gate refuses up
 // front on an agent missing either — not just the one this step reads
 // for the tap baseline.
-func (RestartAgentStep) requiredMetrics() []string {
+func (RestartAgentStep) RequiredMetrics() []string {
 	return []string{MetricBytesTotal, MetricAttachedInterfaces}
 }
 
@@ -1579,7 +1391,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	if ac.KeyPath == "" || ac.User == "" {
 		return fmt.Errorf("restart-agent: agent_control.user and agent_control.key_path are required")
 	}
-	agent, err := agentForNode(env.Config, s.Node)
+	agent, err := AgentForNode(env.Config, s.Node)
 	if err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
@@ -1590,7 +1402,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	// The unit and any config paths are interpolated into an SSH command
 	// line; reject shell-unsafe values (operator/scenario-controlled, but
 	// a stray metacharacter would misexecute as root).
-	if err := shellSafe("agent_control.unit", unit); err != nil {
+	if err := ShellSafe("agent_control.unit", unit); err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
 	// Validate the config-source combination BEFORE touching the host: a
@@ -1603,7 +1415,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		if ac.ConfigPath == "" {
 			return fmt.Errorf("restart-agent: config changes need agent_control.config_path")
 		}
-		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+		if err := ShellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
 			return fmt.Errorf("restart-agent: %w", err)
 		}
 	}
@@ -1615,7 +1427,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		return fmt.Errorf("restart-agent: baseline scrape %s: %w", agent.MetricsURL, err)
 	}
 
-	host := agent.sshHost()
+	host := agent.SSHAddr()
 	// Restart evidence: the unit's MainPID before the restart. Readiness
 	// then requires a DIFFERENT, running PID — proof the process actually
 	// cycled, not that a level happens to match on the old one. Best
@@ -1633,7 +1445,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		}
 		// The node no longer owes a restore, so the end-of-run sweep has
 		// nothing to redo (lachesis#274).
-		env.clearConfigDirty(s.Node)
+		env.ClearConfigDirty(s.Node)
 		env.Log.Info("restart-agent: config restored", "host", host, "path", ac.ConfigPath)
 	}
 
@@ -1645,7 +1457,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		}
 		// This step took the backup, so it owns the debt: if the run ends
 		// before a restore step runs, the sweep uses it (lachesis#274).
-		env.markConfigDirty(s.Node)
+		env.MarkConfigDirty(s.Node)
 		env.Log.Info("restart-agent: config overrides applied",
 			"host", host, "path", ac.ConfigPath, "keys", len(s.SetConfig))
 	}
@@ -1684,7 +1496,7 @@ type ResolvedGrewStep struct {
 
 func (ResolvedGrewStep) Kind() string { return "assert-resolved-grew" }
 
-func (ResolvedGrewStep) requiredMetrics() []string { return []string{MetricUnresolvedResolved} }
+func (ResolvedGrewStep) RequiredMetrics() []string { return []string{MetricUnresolvedResolved} }
 
 func (s ResolvedGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
@@ -1694,11 +1506,11 @@ func (s ResolvedGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	deadline := time.Now().Add(timeout)
 	var delta float64
 	for {
-		snap, err := env.scrape(ctx)
+		snap, err := env.Scrape(ctx)
 		if err != nil {
 			return err
 		}
-		delta = snap.UnresolvedResolved - env.resolvedBase
+		delta = snap.UnresolvedResolved - env.Captured.Resolved
 		if delta >= float64(s.Min) || time.Now().After(deadline) {
 			break
 		}
@@ -1708,9 +1520,9 @@ func (s ResolvedGrewStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(sweepPollInterval):
 		}
 	}
-	env.addRow(AssertRow{
+	env.AddRow(AssertRow{
 		Tenant: "unresolved-resolved", Zone: "-", Direction: "-",
-		Baseline: env.resolvedBase, Current: env.resolvedBase + delta, Delta: delta,
+		Baseline: env.Captured.Resolved, Current: env.Captured.Resolved + delta, Delta: delta,
 		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
 	})
 	return nil
@@ -1742,7 +1554,7 @@ type EvictionsGrewStep struct {
 
 func (EvictionsGrewStep) Kind() string { return "assert-evictions-grew" }
 
-func (EvictionsGrewStep) requiredMetrics() []string { return []string{MetricGCEvictions} }
+func (EvictionsGrewStep) RequiredMetrics() []string { return []string{MetricGCEvictions} }
 
 func (s EvictionsGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	timeout := s.Timeout
@@ -1752,11 +1564,11 @@ func (s EvictionsGrewStep) Run(ctx context.Context, env *StepEnv) error {
 	deadline := time.Now().Add(timeout)
 	var delta float64
 	for {
-		snap, err := env.scrape(ctx)
+		snap, err := env.Scrape(ctx)
 		if err != nil {
 			return err
 		}
-		delta = snap.PressureReliefEvictions - env.evictionsBase
+		delta = snap.PressureReliefEvictions - env.Captured.Evictions
 		if delta >= float64(s.Min) || time.Now().After(deadline) {
 			break
 		}
@@ -1766,9 +1578,9 @@ func (s EvictionsGrewStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(sweepPollInterval):
 		}
 	}
-	env.addRow(AssertRow{
+	env.AddRow(AssertRow{
 		Tenant: "gc-pressure-relief", Zone: "-", Direction: "-",
-		Baseline: env.evictionsBase, Current: env.evictionsBase + delta, Delta: delta,
+		Baseline: env.Captured.Evictions, Current: env.Captured.Evictions + delta, Delta: delta,
 		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
 	})
 	return nil
@@ -1817,7 +1629,7 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	if ac.KeyPath == "" || ac.User == "" {
 		return fmt.Errorf("reload-agent: agent_control.user and agent_control.key_path are required")
 	}
-	agent, err := agentForNode(env.Config, s.Node)
+	agent, err := AgentForNode(env.Config, s.Node)
 	if err != nil {
 		return fmt.Errorf("reload-agent: %w", err)
 	}
@@ -1825,7 +1637,7 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	if unit == "" {
 		unit = "lachesis-agent"
 	}
-	if err := shellSafe("agent_control.unit", unit); err != nil {
+	if err := ShellSafe("agent_control.unit", unit); err != nil {
 		return fmt.Errorf("reload-agent: %w", err)
 	}
 	// Validate before mutating the host — see the same note on
@@ -1834,11 +1646,11 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		if ac.ConfigPath == "" {
 			return fmt.Errorf("reload-agent: SetConfig set but agent_control.config_path is empty")
 		}
-		if err := shellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+		if err := ShellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
 			return fmt.Errorf("reload-agent: %w", err)
 		}
 	}
-	host := agent.sshHost()
+	host := agent.SSHAddr()
 	if len(s.SetConfig) > 0 {
 		// backup=false, per the PRECONDITION on the type: the earlier
 		// restart's backup holds the real config and must survive.
@@ -1850,7 +1662,7 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		// two. Used standalone — where no backup exists — this turns a
 		// silently-modified host into a loud end-of-run failure instead
 		// (lachesis#274).
-		env.markConfigDirty(s.Node)
+		env.MarkConfigDirty(s.Node)
 		env.Log.Info("reload-agent: config overrides applied",
 			"host", host, "path", ac.ConfigPath, "keys", len(s.SetConfig))
 	}
@@ -1893,7 +1705,7 @@ func (s RestartAgentStep) awaitReady(ctx context.Context, env *StepEnv, agent Ag
 		}
 		if restarted {
 			res, err := env.Metrics.Scrape(ctx, agent.MetricsURL)
-			if err == nil && requiredMetrics(res) == nil && res.AttachedInterfaces >= baseTaps {
+			if err == nil && CheckRequiredMetrics(res) == nil && res.AttachedInterfaces >= baseTaps {
 				env.Log.Info("restart-agent: ready", "host", host,
 					"attached", res.AttachedInterfaces, "baseline", baseTaps)
 				return nil
@@ -1920,17 +1732,6 @@ func agentMainPID(ctx context.Context, env *StepEnv, host, unit string) (string,
 	}
 	// Output is "MainPID=<n>" (possibly with surrounding whitespace).
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "MainPID=")), nil
-}
-
-// shellSafe rejects a value with characters outside a conservative set
-// (alphanumerics and common path/unit punctuation), so config- and
-// scenario-supplied tokens interpolated into an SSH command line cannot
-// inject shell syntax. Real unit names and file paths use only these.
-func shellSafe(field, v string) error {
-	if v == "" || !shellSafeToken.MatchString(v) {
-		return fmt.Errorf("%s %q contains characters unsafe for a shell command", field, v)
-	}
-	return nil
 }
 
 // awaitSSHReady polls a trivial command until the VM answers SSH — the
@@ -1982,7 +1783,7 @@ type PortSeriesStep struct {
 func (PortSeriesStep) Kind() string { return "assert-port-series" }
 
 func (s PortSeriesStep) Run(ctx context.Context, env *StepEnv) error {
-	portID := liveID(env.State.Ports, s.Port)
+	portID := LiveID(env.State.Ports, s.Port)
 	if portID == "" {
 		return fmt.Errorf("assert-port-series: run-state has no live port for %q", s.Port)
 	}
@@ -1994,7 +1795,7 @@ func (s PortSeriesStep) Run(ctx context.Context, env *StepEnv) error {
 	defer cancel()
 	var sum float64
 	for {
-		snap, err := env.scrape(ctx)
+		snap, err := env.Scrape(ctx)
 		if err != nil {
 			return err
 		}
@@ -2011,7 +1812,7 @@ func (s PortSeriesStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-ctx.Done():
 			env.Log.Warn("assert-port-series: timeout — traffic never attributed to the port",
 				"port", s.Port, "id", portID, "sum", sum, "min", s.MinBytes)
-			env.addRow(AssertRow{
+			env.AddRow(AssertRow{
 				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
 				Baseline: s.MinBytes, Current: sum, Delta: sum - s.MinBytes,
 				Pass: false, Note: s.Note,
@@ -2020,7 +1821,7 @@ func (s PortSeriesStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(sweepPollInterval):
 		}
 	}
-	env.addRow(AssertRow{
+	env.AddRow(AssertRow{
 		Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
 		Baseline: s.MinBytes, Current: sum, Delta: sum - s.MinBytes,
 		Pass: true, Note: s.Note,
@@ -2065,7 +1866,7 @@ func (s AwaitPortBindingStep) Run(ctx context.Context, env *StepEnv) error {
 	var last string
 	for {
 		bound := true
-		for _, u := range agentURLs(env.Config) {
+		for _, u := range AgentURLs(env.Config) {
 			res, err := env.Metrics.LookupMAC(ctx, u, ref.MAC)
 			if err != nil || !res.Found || res.PortID != ref.ID {
 				bound = false
@@ -2076,7 +1877,7 @@ func (s AwaitPortBindingStep) Run(ctx context.Context, env *StepEnv) error {
 		}
 		if bound {
 			env.Log.Info("await-port-binding: rebound", "port", s.Port, "id", ref.ID)
-			env.addRow(AssertRow{
+			env.AddRow(AssertRow{
 				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
 				Baseline: 1, Current: 1, Delta: 0, Pass: true, Note: s.Note,
 			})
@@ -2088,7 +1889,7 @@ func (s AwaitPortBindingStep) Run(ctx context.Context, env *StepEnv) error {
 			// stale (dead) port id — the port tier is mislabeling.
 			env.Log.Warn("await-port-binding: timeout — MAC still bound to a stale port",
 				"port", s.Port, "want", ref.ID, "stale", last)
-			env.addRow(AssertRow{
+			env.AddRow(AssertRow{
 				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
 				Baseline: 1, Current: 0, Delta: -1, Pass: false, Note: s.Note,
 			})
@@ -2142,16 +1943,16 @@ func (s AttachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	if project == "" {
 		return fmt.Errorf("scenario declares no VM %q", s.VM)
 	}
-	proj, err := env.project(project)
+	proj, err := env.Project(project)
 	if err != nil {
 		return err
 	}
-	serverID, ok := serverIDFor(env.State, s.VM)
+	serverID, ok := ServerIDFor(env.State, s.VM)
 	if !ok {
 		return fmt.Errorf("run-state has no server for VM %q", s.VM)
 	}
-	netID := liveID(env.State.Networks, s.Network)
-	subnetID := liveID(env.State.Subnets, s.Subnet)
+	netID := LiveID(env.State.Networks, s.Network)
+	subnetID := LiveID(env.State.Subnets, s.Subnet)
 	if netID == "" || subnetID == "" {
 		return fmt.Errorf("run-state has no live ids for %s/%s", s.Network, s.Subnet)
 	}
@@ -2160,14 +1961,14 @@ func (s AttachPortStep) Run(ctx context.Context, env *StepEnv) error {
 		return err
 	}
 
-	baseline, err := env.scrape(ctx)
+	baseline, err := env.Scrape(ctx)
 	if err != nil {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
 
 	pinnedMAC := ""
 	if s.MACFrom != "" {
-		pinnedMAC = env.macs[s.MACFrom]
+		pinnedMAC = env.RecordedMAC(s.MACFrom)
 		if pinnedMAC == "" {
 			return fmt.Errorf("attach-port: no MAC recorded for %q (delete or detach it first)", s.MACFrom)
 		}
@@ -2222,11 +2023,11 @@ func (s ReattachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	if ref.ID == "" {
 		return fmt.Errorf("run-state has no port %q", s.Port)
 	}
-	serverID, ok := serverIDFor(env.State, s.VM)
+	serverID, ok := ServerIDFor(env.State, s.VM)
 	if !ok {
 		return fmt.Errorf("run-state has no server for VM %q", s.VM)
 	}
-	baseline, err := env.scrape(ctx)
+	baseline, err := env.Scrape(ctx)
 	if err != nil {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
@@ -2269,15 +2070,12 @@ func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 	// Record the MAC so a following [AwaitSweepStep]{ForMACOf: s.Port} can
 	// wait for THIS NIC's ghost fold — even after Delete drops the ref.
-	if env.macs == nil {
-		env.macs = map[string]string{}
-	}
-	env.macs[s.Port] = ref.MAC
-	serverID, ok := serverIDFor(env.State, s.VM)
+	env.RecordMAC(s.Port, ref.MAC)
+	serverID, ok := ServerIDFor(env.State, s.VM)
 	if !ok {
 		return fmt.Errorf("run-state has no server for VM %q", s.VM)
 	}
-	baseline, err := env.scrape(ctx)
+	baseline, err := env.Scrape(ctx)
 	if err != nil {
 		return fmt.Errorf("detach baseline scrape: %w", err)
 	}
@@ -2291,7 +2089,7 @@ func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	waitCtx, cancel := context.WithTimeout(ctx, DefaultAttachTimeout)
 	defer cancel()
 	for {
-		snap, err := env.scrape(waitCtx)
+		snap, err := env.Scrape(waitCtx)
 		if err != nil {
 			return fmt.Errorf("detach gate scrape: %w", err)
 		}
@@ -2356,7 +2154,7 @@ func (s ConfigureNICStep) Run(ctx context.Context, env *StepEnv) error {
 	// Dev is interpolated unquoted into the SSH command; reject a
 	// stray metacharacter. CIDR needs no such guard — net.ParseCIDR
 	// below rejects anything that isn't digits/dots/slash.
-	if err := shellSafe("configure-nic.dev", s.Dev); err != nil {
+	if err := ShellSafe("configure-nic.dev", s.Dev); err != nil {
 		return err
 	}
 	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
@@ -2403,10 +2201,10 @@ func (s SetNICMACStep) Run(ctx context.Context, env *StepEnv) error {
 	if fip == "" {
 		return fmt.Errorf("set-nic-mac: run-state has no SSH FIP for VM %q", s.VM)
 	}
-	if err := shellSafe("set-nic-mac.dev", s.Dev); err != nil {
+	if err := ShellSafe("set-nic-mac.dev", s.Dev); err != nil {
 		return err
 	}
-	if err := shellSafe("set-nic-mac.mac", s.MAC); err != nil {
+	if err := ShellSafe("set-nic-mac.mac", s.MAC); err != nil {
 		return err
 	}
 	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
@@ -2458,8 +2256,8 @@ type ZoneGrowthStep struct {
 func (ZoneGrowthStep) Kind() string { return "assert-zone-growth" }
 
 func (s ZoneGrowthStep) Run(ctx context.Context, env *StepEnv) error {
-	label := env.tenantLabel(s.Tenant)
-	k := tuple{label, s.Zone, s.Direction}
+	label := env.TenantLabel(s.Tenant)
+	k := Tuple{label, s.Zone, s.Direction}
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultPortSeriesTimeout
@@ -2476,11 +2274,11 @@ func (s ZoneGrowthStep) Run(ctx context.Context, env *StepEnv) error {
 	deadline := time.Now().Add(timeout)
 	var delta float64
 	for {
-		snap, err := env.scrape(ctx)
+		snap, err := env.Scrape(ctx)
 		if err != nil {
 			return err
 		}
-		delta = sumByTuple(snap.Bytes)[k] - env.captured[k]
+		delta = SumByTuple(snap.Bytes)[k] - env.Captured.Tuples[k]
 		if delta >= float64(s.MinBytes) || time.Now().After(deadline) {
 			break
 		}
@@ -2491,10 +2289,10 @@ func (s ZoneGrowthStep) Run(ctx context.Context, env *StepEnv) error {
 		}
 	}
 	pass := delta >= float64(s.MinBytes) && (s.MaxBytes <= 0 || delta <= float64(s.MaxBytes))
-	env.addRow(AssertRow{
+	env.AddRow(AssertRow{
 		Tenant: s.Tenant, TenantID: label,
 		Zone: s.Zone, Direction: s.Direction,
-		Baseline: env.captured[k], Current: env.captured[k] + delta, Delta: delta,
+		Baseline: env.Captured.Tuples[k], Current: env.Captured.Tuples[k] + delta, Delta: delta,
 		MinBytes: s.MinBytes,
 		Pass:     pass, Note: s.Note,
 	})
@@ -2522,27 +2320,27 @@ func (ServerMonotoneStep) Kind() string { return "assert-server-monotone" }
 // run on a freshly-started agent (observed live on c36). If the family is
 // genuinely never produced, [ServerMonotoneStep.Run] fails with a clear
 // "no captured server tuples" error instead.
-func (ServerMonotoneStep) requiredMetrics() []string { return nil }
+func (ServerMonotoneStep) RequiredMetrics() []string { return nil }
 
 func (s ServerMonotoneStep) Run(ctx context.Context, env *StepEnv) error {
-	serverID, ok := serverIDFor(env.State, s.VM)
+	serverID, ok := ServerIDFor(env.State, s.VM)
 	if !ok {
 		return fmt.Errorf("run-state has no server for VM %q", s.VM)
 	}
-	snap, err := env.scrape(ctx)
+	snap, err := env.Scrape(ctx)
 	if err != nil {
 		return err
 	}
-	cur := sumByServerTuple(snap.Servers)
+	cur := SumByServerTuple(snap.Servers)
 	rows := 0
-	for k, base := range env.capturedServers {
-		if k.server != serverID {
+	for k, base := range env.Captured.Servers {
+		if k.Server != serverID {
 			continue
 		}
 		rows++
-		env.addRow(AssertRow{
+		env.AddRow(AssertRow{
 			Tenant: s.VM, VM: s.VM, ServerID: serverID,
-			Zone: k.zone, ExternalNetwork: k.ext, Direction: k.direction,
+			Zone: k.Zone, ExternalNetwork: k.Ext, Direction: k.Direction,
 			Baseline: base, Current: cur[k], Delta: cur[k] - base,
 			Pass: cur[k] >= base, Note: s.Note,
 		})
@@ -2551,31 +2349,6 @@ func (s ServerMonotoneStep) Run(ctx context.Context, env *StepEnv) error {
 		return fmt.Errorf("assert-server-monotone: no captured server tuples for VM %q — capture after its traffic was driven", s.VM)
 	}
 	return nil
-}
-
-var shellSafeToken = regexp.MustCompile(`^[A-Za-z0-9@%.:_/+-]+$`)
-
-// agentForNode resolves a RestartAgentStep's Node to its AgentConfig: a
-// placement slot or literal host, or the sole agent when Node is empty.
-func agentForNode(cfg Config, node string) (AgentConfig, error) {
-	if node == "" {
-		if len(cfg.Cluster.Agents) != 1 {
-			return AgentConfig{}, fmt.Errorf("node is required when the cluster has %d agents", len(cfg.Cluster.Agents))
-		}
-		return cfg.Cluster.Agents[0], nil
-	}
-	host, err := resolveNode(node, cfg.Cluster.Agents)
-	if err != nil {
-		return AgentConfig{}, err
-	}
-	for _, a := range cfg.Cluster.Agents {
-		if a.Host == host {
-			return a, nil
-		}
-	}
-	// resolveNode only returns a configured host, so this is a safety
-	// net, not a reachable path.
-	return AgentConfig{}, fmt.Errorf("resolved host %q has no agent entry", host)
 }
 
 // MaxSettledStep asserts the ghost-fold counter (settled_flows) grew by
@@ -2593,17 +2366,17 @@ type MaxSettledStep struct {
 
 func (MaxSettledStep) Kind() string { return "assert-max-settled" }
 
-func (MaxSettledStep) requiredMetrics() []string { return []string{MetricSettledFlows} }
+func (MaxSettledStep) RequiredMetrics() []string { return []string{MetricSettledFlows} }
 
 func (s MaxSettledStep) Run(ctx context.Context, env *StepEnv) error {
-	snap, err := env.scrape(ctx)
+	snap, err := env.Scrape(ctx)
 	if err != nil {
 		return err
 	}
-	delta := snap.SettledFlows - env.settledBase
-	env.addRow(AssertRow{
+	delta := snap.SettledFlows - env.Captured.SettledFlows
+	env.AddRow(AssertRow{
 		Tenant: "settled-flows", Zone: "-", Direction: "-",
-		Baseline: env.settledBase, Current: snap.SettledFlows, Delta: delta,
+		Baseline: env.Captured.SettledFlows, Current: snap.SettledFlows, Delta: delta,
 		Pass: delta <= float64(s.Budget), Note: s.Note,
 	})
 	return nil
@@ -2625,31 +2398,54 @@ type MaxGhostsStep struct {
 
 func (MaxGhostsStep) Kind() string { return "assert-max-ghosts" }
 
-func (MaxGhostsStep) requiredMetrics() []string { return []string{MetricLingeringGhosts} }
+func (MaxGhostsStep) RequiredMetrics() []string { return []string{MetricLingeringGhosts} }
 
 func (s MaxGhostsStep) Run(ctx context.Context, env *StepEnv) error {
-	snap, err := env.scrape(ctx)
+	snap, err := env.Scrape(ctx)
 	if err != nil {
 		return err
 	}
-	delta := snap.LingeringGhosts - env.ghostsBase
-	env.addRow(AssertRow{
+	delta := snap.LingeringGhosts - env.Captured.Ghosts
+	env.AddRow(AssertRow{
 		Tenant: "lingering-ghosts", Zone: "-", Direction: "-",
-		Baseline: env.ghostsBase, Current: snap.LingeringGhosts, Delta: delta,
+		Baseline: env.Captured.Ghosts, Current: snap.LingeringGhosts, Delta: delta,
 		Pass: delta <= float64(s.Budget), Note: s.Note,
 	})
 	return nil
 }
 
-// liveID resolves a DSL id to the live resource id recorded by
-// realize; empty when absent.
-func liveID(refs []ResourceRef, dslID string) string {
-	for _, r := range refs {
-		if r.DSLID == dslID {
-			return r.ID
+// restoreDirtyConfigs puts back every agent config a step modified and
+// did not restore. It is the safety net for the abort paths: a step
+// error returns straight out of the executor, so a scenario's trailing
+// restore step is never reached and the host would otherwise keep
+// serving the scenario's temporary config — silently, into whatever
+// runs next (lachesis#274).
+//
+// Deliberately best-effort and loud: a failure here is logged at error
+// level naming the host, never returned, because it must not mask the
+// original step error that caused the abort. Restores run newest-first
+// and through the ordinary [RestartAgentStep] path, so the running
+// agent ends up on the restored file rather than merely the file being
+// right on disk.
+//
+// The context is detached from ctx (a cancelled run — Ctrl-C — is
+// exactly when config gets stranded) but bounded, so a wedged host
+// cannot hang the run's exit.
+func restoreDirtyConfigs(ctx context.Context, env *StepEnv) {
+	nodes := env.TakeConfigDirty()
+	if len(nodes) == 0 {
+		return
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), configRestoreTimeout)
+	defer cancel()
+	for i := len(nodes) - 1; i >= 0; i-- {
+		node := nodes[i]
+		env.Log.Warn("restoring an agent config the run left modified", "node", node)
+		if err := (RestartAgentStep{Node: node, RestoreConfig: true}).Run(rctx, env); err != nil {
+			env.Log.Error("agent config NOT restored — the host is still on the scenario's config",
+				"node", node, "err", err)
 		}
 	}
-	return ""
 }
 
 // defaultSteps is the classic linear loop as a script: drive every
@@ -2662,16 +2458,16 @@ func defaultSteps(sc *Scenario) []Step {
 }
 
 // requiredStepMetrics collects the /metrics families the scenario's
-// steps declare through [metricRequirer], deduplicated.
+// steps declare through [MetricRequirer], deduplicated.
 func requiredStepMetrics(steps []Step) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, st := range steps {
-		r, ok := st.(metricRequirer)
+		r, ok := st.(MetricRequirer)
 		if !ok {
 			continue
 		}
-		for _, m := range r.requiredMetrics() {
+		for _, m := range r.RequiredMetrics() {
 			if !seen[m] {
 				seen[m] = true
 				out = append(out, m)

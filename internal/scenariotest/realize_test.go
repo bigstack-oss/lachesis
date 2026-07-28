@@ -622,8 +622,8 @@ func TestRealize_MultiNIC(t *testing.T) {
 		t.Errorf("VM port refs in run-state: got %d, want 3", vmPortRefs)
 	}
 	// serverIDFor resolves vm-a to its one server across both NICs.
-	if _, ok := serverIDFor(rs, "vm-a"); !ok {
-		t.Error("serverIDFor(vm-a) not resolvable")
+	if _, ok := ServerIDFor(rs, "vm-a"); !ok {
+		t.Error("ServerIDFor(vm-a) not resolvable")
 	}
 }
 
