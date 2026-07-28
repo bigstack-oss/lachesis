@@ -2082,3 +2082,117 @@ func (m *epochMetrics) LookupMAC(context.Context, string, string) (MACLookup, er
 func (m *epochMetrics) LookupFlows(context.Context, string, string) ([]FlowRow, error) {
 	return nil, nil
 }
+
+// cyclingExec models an agent host across SEVERAL restarts: each
+// `systemctl restart` bumps MainPID, so consecutive restarts each show
+// the PID change awaitReady demands. (restartExec bumps once, which is
+// enough for a single-restart test but not for restore-after-restart.)
+type cyclingExec struct {
+	calls []execCall
+	pid   int
+}
+
+func (e *cyclingExec) Run(_ context.Context, addr, command string) (string, error) {
+	e.calls = append(e.calls, execCall{addr, command})
+	switch {
+	case strings.Contains(command, "systemctl restart"):
+		e.pid++
+		return "", nil
+	case strings.Contains(command, "MainPID"):
+		return fmt.Sprintf("MainPID=%d\n", 1000+e.pid), nil
+	}
+	return "", nil
+}
+
+func (e *cyclingExec) has(substr string) bool {
+	for _, c := range e.calls {
+		if strings.Contains(c.command, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// erroringStep fails on demand — the mid-scenario abort that used to
+// skip a scenario's trailing restore step.
+type erroringStep struct{}
+
+func (erroringStep) Kind() string { return "boom" }
+func (erroringStep) Run(context.Context, *StepEnv) error {
+	return fmt.Errorf("injected step failure")
+}
+
+// TestRunSteps_RestoresConfigWhenAStepErrors is lachesis#274: a step
+// error returns straight out of runSteps, so a scenario's trailing
+// RestartAgentStep{RestoreConfig} is never reached — the host would
+// keep serving the scenario's temporary config, silently, into whatever
+// ran next. The deferred sweep must put it back regardless.
+func TestRunSteps_RestoresConfigWhenAStepErrors(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m", SSHHost: "10.0.0.10"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis-agent",
+		ConfigPath: "/etc/lachesis/agent.yaml", ReadyTimeout: time.Second}
+	exec := &cyclingExec{}
+	env := restartEnv(t, agents, ac, exec, nil)
+
+	steps := []Step{
+		RestartAgentStep{SetConfig: map[string]string{"reconcile.interval": "15s"}},
+		erroringStep{},
+		// The scenario's own restore — deliberately unreachable here.
+		RestartAgentStep{RestoreConfig: true},
+	}
+	err := runSteps(context.Background(), env, steps)
+	if err == nil || !strings.Contains(err.Error(), "injected step failure") {
+		t.Fatalf("runSteps must surface the step error, got %v", err)
+	}
+	// The sweep ran the restore even though step 3 never did.
+	if !exec.has("cp -f /etc/lachesis/agent.yaml.scenariotest.bak /etc/lachesis/agent.yaml") {
+		t.Errorf("config was NOT restored after the abort: %+v", exec.calls)
+	}
+	if len(env.configDirty) != 0 {
+		t.Errorf("configDirty still holds %v after the sweep", env.configDirty)
+	}
+}
+
+// The happy path must not restore twice: the scenario's own restore
+// clears the debt, so the sweep has nothing left to do.
+func TestRunSteps_ExplicitRestoreLeavesNothingForTheSweep(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis-agent",
+		ConfigPath: "/etc/lachesis/agent.yaml", ReadyTimeout: time.Second}
+	exec := &cyclingExec{}
+	env := restartEnv(t, agents, ac, exec, nil)
+
+	steps := []Step{
+		RestartAgentStep{SetConfig: map[string]string{"reconcile.interval": "15s"}},
+		RestartAgentStep{RestoreConfig: true},
+	}
+	if err := runSteps(context.Background(), env, steps); err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	var restores int
+	for _, c := range exec.calls {
+		if strings.Contains(c.command, ".scenariotest.bak /etc/lachesis/agent.yaml") {
+			restores++
+		}
+	}
+	if restores != 1 {
+		t.Errorf("restore issued %d times, want exactly 1 (the sweep should be a no-op)", restores)
+	}
+}
+
+// A run that never touched config must not go near the agent host at
+// the end — the sweep is keyed on actual mutations, not on the step
+// list containing agent-control steps.
+func TestRunSteps_NoConfigChangeNoSweep(t *testing.T) {
+	agents := []AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := AgentControlConfig{User: "root", KeyPath: "/k", ReadyTimeout: time.Second}
+	exec := &restartExec{}
+	env := restartEnv(t, agents, ac, exec, nil)
+
+	if err := runSteps(context.Background(), env, []Step{erroringStep{}}); err == nil {
+		t.Fatal("want the injected error")
+	}
+	if len(exec.calls) != 0 {
+		t.Errorf("sweep touched the host with no config change to undo: %+v", exec.calls)
+	}
+}
