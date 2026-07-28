@@ -259,7 +259,7 @@ func checkStepMetrics(ctx context.Context, opts Options, script []scenariotest.S
 		}
 		for _, name := range required {
 			if !r.Present[name] {
-				return fmt.Errorf("run: agent at %s does not expose %s, which this scenario's script require — deploy a newer agent first", u, name)
+				return fmt.Errorf("run: agent at %s does not expose %s, which this scenario's steps require — deploy a newer agent first", u, name)
 			}
 		}
 	}
