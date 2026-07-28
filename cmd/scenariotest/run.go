@@ -12,6 +12,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/cmd/scenariotest/scenarios"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/remote"
 	"github.com/spf13/cobra"
 )
 
@@ -202,8 +203,8 @@ func runOne(ctx, hardStop context.Context, opts *rootOptions, log *slog.Logger, 
 		ReportPath: report,
 		Cloud:      cloud,
 		Metrics:    newMetrics(log),
-		Exec:       scenariotest.NewSSHExec(cfg.SSH, log),
-		AgentExec:  scenariotest.NewSSHExec(cfg.AgentControl.SSHConfig(), log),
+		Exec:       remote.NewSSH(cfg.SSH, log),
+		AgentExec:  remote.NewSSH(cfg.AgentControl.SSHConfig(), log),
 		Log:        log,
 		HardStop:   hardStop,
 		State:      resume,
@@ -334,8 +335,8 @@ func runSuiteOne(ctx, hardStop context.Context, cfg scenariotest.Config, cloud s
 		ReportPath: report,
 		Cloud:      cloud,
 		Metrics:    newMetrics(log),
-		Exec:       scenariotest.NewSSHExec(cfg.SSH, log),
-		AgentExec:  scenariotest.NewSSHExec(cfg.AgentControl.SSHConfig(), log),
+		Exec:       remote.NewSSH(cfg.SSH, log),
+		AgentExec:  remote.NewSSH(cfg.AgentControl.SSHConfig(), log),
 		Log:        log,
 		HardStop:   hardStop,
 		Keep:       keep,

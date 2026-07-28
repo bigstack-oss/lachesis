@@ -458,7 +458,7 @@ type fakeMetrics struct {
 
 func (m *fakeMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
 	return ScrapeResult{
-		Present:            map[string]bool{metricBytesTotal: true, metricAttachedInterfaces: true},
+		Present:            map[string]bool{MetricBytesTotal: true, MetricAttachedInterfaces: true},
 		AttachedInterfaces: m.env.baseAttached + float64(m.env.booted),
 		AttachFailures:     m.env.failures,
 	}, nil
@@ -885,7 +885,7 @@ func TestRealize_AttachGateTimesOut(t *testing.T) {
 type stuckMetrics struct{ instantMACs }
 
 func (stuckMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
-	return ScrapeResult{Present: map[string]bool{metricBytesTotal: true, metricAttachedInterfaces: true}, AttachedInterfaces: 5}, nil
+	return ScrapeResult{Present: map[string]bool{MetricBytesTotal: true, MetricAttachedInterfaces: true}, AttachedInterfaces: 5}, nil
 }
 
 // TestRealize_RecordsVMPortMACs: up records each VM port's

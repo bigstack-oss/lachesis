@@ -356,11 +356,11 @@ func twoAgentNodeFixture() (Config, *RunState, MetricsSource) {
 	}
 	m := perNodeMetrics{byURL: map[string]ScrapeResult{
 		cfg.Cluster.Agents[0].MetricsURL: {
-			Present: map[string]bool{metricBytesTotal: true},
+			Present: map[string]bool{MetricBytesTotal: true},
 			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50 + 1<<20}},
 		},
 		cfg.Cluster.Agents[1].MetricsURL: {
-			Present: map[string]bool{metricBytesTotal: true},
+			Present: map[string]bool{MetricBytesTotal: true},
 			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50}},
 		},
 	}}
@@ -451,12 +451,12 @@ func TestAssert_NodeWithVMTarget(t *testing.T) {
 	}
 	m := perNodeMetrics{byURL: map[string]ScrapeResult{
 		cfg.Cluster.Agents[0].MetricsURL: {
-			Present: map[string]bool{metricBytesTotal: true, metricServerBytesTotal: true},
+			Present: map[string]bool{MetricBytesTotal: true, MetricServerBytesTotal: true},
 			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50 + 1<<20}},
 			Servers: []ServerSample{{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10 + 1<<20}},
 		},
 		cfg.Cluster.Agents[1].MetricsURL: {
-			Present: map[string]bool{metricBytesTotal: true, metricServerBytesTotal: true},
+			Present: map[string]bool{MetricBytesTotal: true, MetricServerBytesTotal: true},
 			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50}},
 			Servers: []ServerSample{{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10}},
 		},
