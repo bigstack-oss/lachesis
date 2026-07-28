@@ -67,7 +67,38 @@ Two sanctioned one-offs (not archetypes — don't replicate): the composition ro
 | `tunables` | Store | atomic snapshot of the hot-reloadable knobs |
 | `unresolved` | Store | `Buffer` (+ `Classifier`, the scraper-driven admission adapter) |
 | `wal`, `zombie` | Library | + Metrics bundles |
-| `perfbench`, `loadtest`, `scenariotest` | CLI harness | `Run(Config)`-style single-shot entrypoints (scenariotest: one per subcommand, live-cluster IO behind the `Cloud`/`MetricsSource` seams) |
+| `perfbench`, `loadtest` | CLI harness | `Run(Config)`-style single-shot entrypoints |
+| `scenariotest` (+ sub-packages) | CLI harness | see [below](#the-scenariotest-tree) |
+
+### The scenariotest tree
+
+`scenariotest` is the one package in `internal/` that is a *tree* rather
+than a single package, because it is a whole tool rather than one
+subsystem of the agent. It follows the layering rule Kubernetes' e2e
+framework and CockroachDB's roachtest both use: **sub-packages import
+the core; the core imports no sub-package.**
+
+That rule is machine-checked by `TestCoreImportsNoSubpackage` (and
+`TestSubpackagesImportOnlyTheCore` keeps the three drivers leaves), the
+same way `internal/docs/refs_test.go` guards doc anchors. A new
+sub-package that needs something from the core moves the declaration
+*down* into the core; it never reaches up.
+
+| Package | Role |
+|---|---|
+| `scenariotest` | the core: the scenario DSL, `Step`/`StepEnv`, `RunState`, the report, and the `Cloud`/`MetricsSource`/`VMExec` seams. No live IO |
+| `openstack` | `Cloud` via gophercloud, one file per OpenStack service (identity/network/router/floatingip/compute) |
+| `agentmetrics` | `MetricsSource` via the agent's `/metrics` + `/debug` |
+| `remote` | `VMExec` via the system `ssh` binary |
+| `agentctl` | the agent host's systemd lifecycle, config swap and cold-restart state removal |
+| `gate` | the poll-until-predicate waits (attach rise, SSH ready) |
+| `realize` `drive` `assert` `down` `preflight` | the single-shot phases, each a `Run(ctx, Options)` |
+| `steps` | the step vocabulary, one file per family (traffic, lifecycle, port, network, agent, and the two assertion families) |
+| `run` | the orchestrator; the only package that depends on every phase |
+| `fake` | the shared test double — one model of the cloud for every phase's tests |
+
+A scenario is declared against the core plus `steps`, and nothing else
+(`cmd/scenariotest/scenarios`).
 
 ## Performance rules (hot paths: scrape loop + packet path)
 
