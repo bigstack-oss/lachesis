@@ -11,7 +11,21 @@
  * Design: docs/architecture/data-structures.md (data structures) and §4 (classification).
  */
 
-#include "vmlinux.h"
+/*
+ * UAPI headers, not vmlinux.h. This program touches no kernel-internal type
+ * and takes no CO-RE relocation: __sk_buff, ethhdr and iphdr are all stable
+ * UAPI, and the only skb fields read (data, data_end, len) are rewritten by
+ * the verifier rather than relocated against BTF. Depending on vmlinux.h
+ * would mean deriving a multi-megabyte header from some kernel's BTF at
+ * build time — which forces a privileged container and makes the artifact
+ * depend on whichever kernel the builder happened to run. UAPI keeps the
+ * build hermetic and reproducible off any checkout.
+ */
+#include <linux/bpf.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/types.h>
+
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 

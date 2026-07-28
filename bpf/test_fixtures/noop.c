@@ -10,7 +10,10 @@
  * to verify the driver round-trips correctly.
  */
 
-#include "vmlinux.h"
+/* UAPI headers rather than vmlinux.h — see the rationale in bpf/telemetry.c. */
+#include <linux/bpf.h>
+#include <linux/types.h>
+
 #include <bpf/bpf_helpers.h>
 
 #define TC_ACT_OK 0

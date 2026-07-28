@@ -5,4 +5,5 @@
 // the real classifier.
 package fixtures
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target bpfel -go-package fixtures Noop /app/bpf/test_fixtures/noop.c -- -I/app/.include
+// Paths are relative to this directory — see internal/bpf/telemetry.go.
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target bpfel -go-package fixtures Noop ../../../../bpf/test_fixtures/noop.c -- -I../../../../.include
