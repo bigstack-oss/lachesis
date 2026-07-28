@@ -1183,7 +1183,7 @@ func TestReloadAgentStep(t *testing.T) {
 	}{
 		"no agent exec":               {agents, ac, nil, ReloadAgentStep{}, "no agent-host SSH transport"},
 		"missing creds":               {agents, scenariotest.AgentControlConfig{}, &restartExec{}, ReloadAgentStep{}, "user and agent_control.key_path"},
-		"set-config without cfg path": {agents, scenariotest.AgentControlConfig{User: "root", KeyPath: "/k"}, &restartExec{}, ReloadAgentStep{SetConfig: map[string]string{"a.b": "1"}}, "config_path is empty"},
+		"set-config without cfg path": {agents, scenariotest.AgentControlConfig{User: "root", KeyPath: "/k"}, &restartExec{}, ReloadAgentStep{SetConfig: map[string]string{"a.b": "1"}}, "config changes need agent_control.config_path"},
 		"unsafe unit":                 {agents, scenariotest.AgentControlConfig{User: "root", KeyPath: "/k", Unit: "u; rm -rf /"}, &restartExec{}, ReloadAgentStep{}, "unsafe for a shell command"},
 	}
 	for name, tc := range cases {
@@ -1348,73 +1348,6 @@ func TestSteps_EnableForwarding(t *testing.T) {
 			t.Error("missing SSH FIP must error")
 		}
 	})
-}
-
-// TestRemoveStateCmd pins the cold-restart removal Command: WAL always
-// (with its .bak), pins only on request, missing paths and the
-// pins-without-WAL shape refused, shell-unsafe paths rejected.
-func TestRemoveStateCmd(t *testing.T) {
-	cases := []struct {
-		name    string
-		step    RestartAgentStep
-		ac      scenariotest.AgentControlConfig
-		want    string
-		wantErr string
-	}{
-		{
-			name: "wal only",
-			step: RestartAgentStep{RemoveWAL: true},
-			ac:   scenariotest.AgentControlConfig{WALPath: "/var/lib/lachesis/wal.json"},
-			want: "sudo rm -f /var/lib/lachesis/wal.json /var/lib/lachesis/wal.json.bak",
-		},
-		{
-			name: "wal and pins",
-			step: RestartAgentStep{RemoveWAL: true, RemovePins: true},
-			ac:   scenariotest.AgentControlConfig{WALPath: "/var/lib/lachesis/wal.json", PinPath: "/sys/fs/bpf/lachesis"},
-			want: "sudo rm -f /var/lib/lachesis/wal.json /var/lib/lachesis/wal.json.bak && sudo rm -rf /sys/fs/bpf/lachesis",
-		},
-		{
-			name:    "pins without wal refused",
-			step:    RestartAgentStep{RemovePins: true},
-			ac:      scenariotest.AgentControlConfig{PinPath: "/sys/fs/bpf/lachesis"},
-			wantErr: "not a modeled failure shape",
-		},
-		{
-			name:    "missing wal_path",
-			step:    RestartAgentStep{RemoveWAL: true},
-			ac:      scenariotest.AgentControlConfig{},
-			wantErr: "agent_control.wal_path is empty",
-		},
-		{
-			name:    "missing pin_path",
-			step:    RestartAgentStep{RemoveWAL: true, RemovePins: true},
-			ac:      scenariotest.AgentControlConfig{WALPath: "/w.json"},
-			wantErr: "agent_control.pin_path is empty",
-		},
-		{
-			name:    "shell-unsafe wal_path",
-			step:    RestartAgentStep{RemoveWAL: true},
-			ac:      scenariotest.AgentControlConfig{WALPath: "/tmp/wal; rm -rf /"},
-			wantErr: "agent_control.wal_path",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := tc.step.removeStateCmd(tc.ac)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("err = %v", err)
-			}
-			if got != tc.want {
-				t.Fatalf("cmd = %q, want %q", got, tc.want)
-			}
-		})
-	}
 }
 
 // TestEpochStep pins the assertion semantics: Changed=false demands

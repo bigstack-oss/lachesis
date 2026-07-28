@@ -1,4 +1,4 @@
-package steps
+package agentctl
 
 import (
 	"context"
@@ -12,11 +12,11 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
-// applySetConfig reads the agent config at path on host, overrides the
+// applySet reads the agent config at path on host, overrides the
 // dotted keys in set, and writes the result back.
 //
 // With backup set it first copies the original to <path>.scenariotest.bak,
-// so a later [RestartAgentStep.RestoreConfig] puts it back untouched. A
+// so a later a Change{Restore: true} puts it back untouched. A
 // mid-scenario reload passes false: its source is a config an earlier
 // restart already patched, and backing up again would overwrite that
 // restart's copy of the REAL config with the patched one — leaving the
@@ -26,7 +26,7 @@ import (
 // a YAML round-trip through a map). That is acceptable because the file
 // is a scenario-scoped temporary and the pristine original is the backup
 // that gets restored.
-func applySetConfig(ctx context.Context, exec scenariotest.VMExec, host, path string, set map[string]string, backup bool) error {
+func applySet(ctx context.Context, exec scenariotest.VMExec, host, path string, set map[string]string, backup bool) error {
 	raw, err := exec.Run(ctx, host, "sudo cat "+path)
 	if err != nil {
 		return fmt.Errorf("read agent config %s on %s: %w (output: %s)", path, host, err, raw)

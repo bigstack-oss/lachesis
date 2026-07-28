@@ -22,8 +22,10 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/agentctl"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/assert"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/drive"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/gate"
 )
 
 const (
@@ -145,7 +147,7 @@ func (s IngressFlowStep) Run(ctx context.Context, env *scenariotest.StepEnv) err
 	if fip == "" {
 		return fmt.Errorf("ingress-flow: run-state has no SSH FIP for VM %q", s.To)
 	}
-	if err := awaitSSHReady(ctx, env, s.To, fip); err != nil {
+	if err := gate.SSHReady(ctx, env, s.To, fip); err != nil {
 		return fmt.Errorf("ingress-flow: %w", err)
 	}
 	if out, err := stdin.RunWithStdin(ctx, fip, "cat > /dev/null", io.LimitReader(zeroReader{}, s.Bytes)); err != nil {
@@ -597,38 +599,7 @@ func (s BootVMStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 // + no-new-failures rule as realize, then refreshes the run-state's
 // attach record so a later DriveStep's recheck expects the new count.
 func (s BootVMStep) attachGate(ctx context.Context, env *scenariotest.StepEnv, baseline scenariotest.MetricsSnapshot) error {
-	return awaitAttachRise(ctx, env, baseline, "boot-vm")
-}
-
-// awaitAttachRise blocks until the agents' summed attached-interfaces
-// gauge rises one above baseline with no new attach failures, then
-// refreshes the run-state's attach record so a later DriveStep's
-// recheck expects the new count. Shared by every step that plugs one
-// new tap in ([BootVMStep], [AttachPortStep], [ReattachPortStep]).
-func awaitAttachRise(ctx context.Context, env *scenariotest.StepEnv, baseline scenariotest.MetricsSnapshot, kind string) error {
-	target := baseline.AttachedInterfaces + 1
-	ctx, cancel := context.WithTimeout(ctx, scenariotest.DefaultAttachTimeout)
-	defer cancel()
-	for {
-		snap, err := env.Scrape(ctx)
-		if err != nil {
-			return fmt.Errorf("attach gate scrape: %w", err)
-		}
-		if snap.AttachFailures > baseline.AttachFailures {
-			return fmt.Errorf("attach gate: %.0f new TC attach failure(s)", snap.AttachFailures-baseline.AttachFailures)
-		}
-		if snap.AttachedInterfaces >= target {
-			env.Log.Info(kind+": attach gate green", "attached", snap.AttachedInterfaces, "target", target)
-			env.State.Attach = scenariotest.AttachRecord{Target: target, Failures: snap.AttachFailures}
-			return env.State.Save(env.StatePath)
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("attach gate: attached_interfaces %.0f < %.0f before timeout: %w",
-				snap.AttachedInterfaces, target, ctx.Err())
-		case <-time.After(scenariotest.AttachPollInterval):
-		}
-	}
+	return gate.AttachRise(ctx, env, baseline, "boot-vm")
 }
 
 // AssociateFIPStep allocates one extra floating IP for a live VM from
@@ -859,7 +830,7 @@ func (s AddRouteStep) Run(ctx context.Context, env *scenariotest.StepEnv) error 
 	if fip == "" {
 		return fmt.Errorf("run-state has no SSH FIP for VM %q", s.VM)
 	}
-	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
+	if err := gate.SSHReady(ctx, env, s.VM, fip); err != nil {
 		return fmt.Errorf("add-route: %w", err)
 	}
 	// Absolute path: cirros sudo's PATH lacks /sbin ("sudo: ip: command
@@ -914,7 +885,7 @@ func (s EnableForwardingStep) Run(ctx context.Context, env *scenariotest.StepEnv
 	if fip == "" {
 		return fmt.Errorf("run-state has no SSH FIP for VM %q", s.VM)
 	}
-	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
+	if err := gate.SSHReady(ctx, env, s.VM, fip); err != nil {
 		return fmt.Errorf("enable-forwarding: %w", err)
 	}
 	// Written straight to /proc: cirros has no /sbin/sysctl in sudo's
@@ -1126,6 +1097,14 @@ const (
 	migratePollInterval   = 3 * time.Second
 )
 
+// dashEmpty renders an optional value for logs.
+func dashEmpty(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 // MigrateStep live-migrates a realized VM and waits until Nova
 // reports it ACTIVE on a different host. Target optionally names the
 // destination — a placement slot ("node:<i>") or a literal configured
@@ -1216,41 +1195,6 @@ func (s MigrateStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 		case <-time.After(migratePollInterval):
 		}
 	}
-}
-
-// dashEmpty renders an optional value for logs.
-func dashEmpty(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
-}
-
-// removeStateCmd builds the state-removal command for a cold restart:
-// the WAL (and .bak) always; the bpffs pins when RemovePins asks for a
-// full host-reboot simulation. Paths come from agent_control so
-// scenarios stay cluster-portable.
-func (s RestartAgentStep) removeStateCmd(ac scenariotest.AgentControlConfig) (string, error) {
-	if !s.RemoveWAL {
-		return "", fmt.Errorf("RemovePins without RemoveWAL is not a modeled failure shape — pins cannot vanish while the WAL survives a running host")
-	}
-	if ac.WALPath == "" {
-		return "", fmt.Errorf("RemoveWAL set but agent_control.wal_path is empty")
-	}
-	if err := scenariotest.ShellSafe("agent_control.wal_path", ac.WALPath); err != nil {
-		return "", err
-	}
-	cmd := fmt.Sprintf("sudo rm -f %s %s.bak", ac.WALPath, ac.WALPath)
-	if s.RemovePins {
-		if ac.PinPath == "" {
-			return "", fmt.Errorf("RemovePins set but agent_control.pin_path is empty")
-		}
-		if err := scenariotest.ShellSafe("agent_control.pin_path", ac.PinPath); err != nil {
-			return "", err
-		}
-		cmd += fmt.Sprintf(" && sudo rm -rf %s", ac.PinPath)
-	}
-	return cmd, nil
 }
 
 // EpochStep asserts the counters-reset epoch's behaviour across the
@@ -1389,101 +1333,64 @@ func (RestartAgentStep) RequiredMetrics() []string {
 }
 
 func (s RestartAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
-	if env.AgentExec == nil {
-		return fmt.Errorf("restart-agent: no agent-host SSH transport — set agent_control in the config")
-	}
-	ac := env.Config.AgentControl
-	if ac.KeyPath == "" || ac.User == "" {
-		return fmt.Errorf("restart-agent: agent_control.user and agent_control.key_path are required")
-	}
-	agent, err := scenariotest.AgentForNode(env.Config, s.Node)
+	ctl, err := agentctl.For(env, s.Node)
 	if err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
-	unit := ac.Unit
-	if unit == "" {
-		unit = "lachesis-agent"
-	}
-	// The unit and any config paths are interpolated into an SSH command
-	// line; reject shell-unsafe values (operator/scenario-controlled, but
-	// a stray metacharacter would misexecute as root).
-	if err := scenariotest.ShellSafe("agent_control.unit", unit); err != nil {
-		return fmt.Errorf("restart-agent: %w", err)
-	}
-	// Validate the config-source combination BEFORE touching the host: a
-	// check that fired after the config swap would abort the scenario with
-	// the node already modified and its restore step never reached.
-	if len(s.SetConfig) > 0 && s.RestoreConfig {
-		return fmt.Errorf("restart-agent: SetConfig and RestoreConfig are mutually exclusive")
-	}
-	if len(s.SetConfig) > 0 || s.RestoreConfig {
-		if ac.ConfigPath == "" {
-			return fmt.Errorf("restart-agent: config changes need agent_control.config_path")
-		}
-		if err := scenariotest.ShellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
-			return fmt.Errorf("restart-agent: %w", err)
-		}
-	}
-
 	// Baseline THIS agent's tap count so readiness can wait for the
 	// re-attach (the boot zombie-hunt drops filters, then re-attaches).
-	base, err := env.Metrics.Scrape(ctx, agent.MetricsURL)
+	base, err := ctl.Baseline(ctx)
 	if err != nil {
-		return fmt.Errorf("restart-agent: baseline scrape %s: %w", agent.MetricsURL, err)
+		return fmt.Errorf("restart-agent: %w", err)
 	}
-
-	host := agent.SSHAddr()
-	// Restart evidence: the unit's MainPID before the restart. Readiness
-	// then requires a DIFFERENT, running PID — proof the process actually
-	// cycled, not that a level happens to match on the old one. Best
-	// effort: if the agent is down (or the read fails) oldPID is empty
-	// and any running new PID counts as evidence.
-	oldPID, _ := agentMainPID(ctx, env, host, unit)
-
-	if s.RestoreConfig {
-		// Copy the backup an earlier SetConfig took back over the live
-		// config. No backup-first here: the source IS the backup, so
-		// backing up would clobber it (a self-destroying restore).
-		restore := fmt.Sprintf("sudo cp -f %s.scenariotest.bak %s", ac.ConfigPath, ac.ConfigPath)
-		if out, err := env.AgentExec.Run(ctx, host, restore); err != nil {
-			return fmt.Errorf("restart-agent: restore config on %s: %w (output: %s)", host, err, out)
-		}
-		// The node no longer owes a restore, so the end-of-run sweep has
-		// nothing to redo (lachesis#274).
-		env.ClearConfigDirty(s.Node)
-		env.Log.Info("restart-agent: config restored", "host", host, "path", ac.ConfigPath)
+	// Backup on Set: this step owns the restore debt, so a run that dies
+	// before the scenario's restore step still finds its way home
+	// (lachesis#274).
+	dirty, restored, err := ctl.ApplyConfig(ctx, agentctl.Change{
+		Set: s.SetConfig, Restore: s.RestoreConfig, Backup: true,
+	})
+	if err != nil {
+		return fmt.Errorf("restart-agent: %w", err)
 	}
-
-	if len(s.SetConfig) > 0 {
-		// Combination and path already validated above, before any host
-		// mutation could have happened.
-		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig, true); err != nil {
-			return fmt.Errorf("restart-agent: %w", err)
-		}
-		// This step took the backup, so it owns the debt: if the run ends
-		// before a restore step runs, the sweep uses it (lachesis#274).
+	switch {
+	case dirty:
 		env.MarkConfigDirty(s.Node)
-		env.Log.Info("restart-agent: config overrides applied",
-			"host", host, "path", ac.ConfigPath, "keys", len(s.SetConfig))
+	case restored:
+		env.ClearConfigDirty(s.Node)
 	}
+	oldPID, err := ctl.Restart(ctx, agentctl.Cycle{RemoveWAL: s.RemoveWAL, RemovePins: s.RemovePins})
+	if err != nil {
+		return fmt.Errorf("restart-agent: %w", err)
+	}
+	if err := ctl.AwaitReady(ctx, oldPID, base.AttachedInterfaces, s.Timeout); err != nil {
+		return fmt.Errorf("restart-agent: %w", err)
+	}
+	return nil
+}
 
-	cycle := "sudo systemctl restart " + unit
-	if s.RemoveWAL || s.RemovePins {
-		rm, err := s.removeStateCmd(ac)
-		if err != nil {
-			return fmt.Errorf("restart-agent: %w", err)
-		}
-		// Stop first so the final flush cannot re-create the WAL after
-		// the removal; the gap is the cold boot under test.
-		cycle = "sudo systemctl stop " + unit + " && " + rm + " && sudo systemctl start " + unit
+func (s ReloadAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	ctl, err := agentctl.For(env, s.Node)
+	if err != nil {
+		return fmt.Errorf("reload-agent: %w", err)
 	}
-	if out, err := env.AgentExec.Run(ctx, host, cycle); err != nil {
-		return fmt.Errorf("restart-agent: cycle %s on %s: %w (output: %s)", unit, host, err, out)
+	// Backup false, per the PRECONDITION on the type: the earlier
+	// restart's backup holds the real config and must survive.
+	dirty, _, err := ctl.ApplyConfig(ctx, agentctl.Change{Set: s.SetConfig, Backup: false})
+	if err != nil {
+		return fmt.Errorf("reload-agent: %w", err)
 	}
-	env.Log.Info("restart-agent: restart issued", "host", host, "unit", unit,
-		"old_pid", oldPID, "remove_wal", s.RemoveWAL, "remove_pins", s.RemovePins)
-
-	return s.awaitReady(ctx, env, agent, host, unit, oldPID, base.AttachedInterfaces)
+	if dirty {
+		// Idempotent with the restart that took the backup (the documented
+		// precondition), so the normal chained case records one debt, not
+		// two. Used standalone — where no backup exists — this turns a
+		// silently-modified host into a loud end-of-run failure instead
+		// (lachesis#274).
+		env.MarkConfigDirty(s.Node)
+	}
+	if err := ctl.Reload(ctx); err != nil {
+		return fmt.Errorf("reload-agent: %w", err)
+	}
+	return nil
 }
 
 // ResolvedGrewStep asserts the UnresolvedBuffer late-binding counter
@@ -1627,143 +1534,6 @@ type ReloadAgentStep struct {
 }
 
 func (ReloadAgentStep) Kind() string { return "reload-agent" }
-
-func (s ReloadAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
-	if env.AgentExec == nil {
-		return fmt.Errorf("reload-agent: no agent-host SSH transport — set agent_control in the config")
-	}
-	ac := env.Config.AgentControl
-	if ac.KeyPath == "" || ac.User == "" {
-		return fmt.Errorf("reload-agent: agent_control.user and agent_control.key_path are required")
-	}
-	agent, err := scenariotest.AgentForNode(env.Config, s.Node)
-	if err != nil {
-		return fmt.Errorf("reload-agent: %w", err)
-	}
-	unit := ac.Unit
-	if unit == "" {
-		unit = "lachesis-agent"
-	}
-	if err := scenariotest.ShellSafe("agent_control.unit", unit); err != nil {
-		return fmt.Errorf("reload-agent: %w", err)
-	}
-	// Validate before mutating the host — see the same note on
-	// [RestartAgentStep.Run].
-	if len(s.SetConfig) > 0 {
-		if ac.ConfigPath == "" {
-			return fmt.Errorf("reload-agent: SetConfig set but agent_control.config_path is empty")
-		}
-		if err := scenariotest.ShellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
-			return fmt.Errorf("reload-agent: %w", err)
-		}
-	}
-	host := agent.SSHAddr()
-	if len(s.SetConfig) > 0 {
-		// backup=false, per the PRECONDITION on the type: the earlier
-		// restart's backup holds the real config and must survive.
-		if err := applySetConfig(ctx, env.AgentExec, host, ac.ConfigPath, s.SetConfig, false); err != nil {
-			return fmt.Errorf("reload-agent: %w", err)
-		}
-		// Idempotent with the restart that took the backup (the documented
-		// precondition), so the normal chained case records one debt, not
-		// two. Used standalone — where no backup exists — this turns a
-		// silently-modified host into a loud end-of-run failure instead
-		// (lachesis#274).
-		env.MarkConfigDirty(s.Node)
-		env.Log.Info("reload-agent: config overrides applied",
-			"host", host, "path", ac.ConfigPath, "keys", len(s.SetConfig))
-	}
-
-	// SIGHUP the unit's main process (no ExecReload on the unit — send the
-	// signal directly). The agent re-reads its YAML and applies the
-	// hot-reloadable fields; the process keeps running.
-	if out, err := env.AgentExec.Run(ctx, host, "sudo systemctl kill -s HUP "+unit); err != nil {
-		return fmt.Errorf("reload-agent: SIGHUP %s on %s: %w (output: %s)", unit, host, err, out)
-	}
-	env.Log.Info("reload-agent: SIGHUP sent", "host", host, "unit", unit)
-	return nil
-}
-
-// awaitReady blocks until the restart is confirmed AND the agent is
-// serving again: the unit reports a running MainPID different from
-// oldPID (the process cycled), and /metrics answers with the required
-// families and a tap count back at the pre-restart baseline (re-attach
-// complete). Fires an error on timeout.
-func (s RestartAgentStep) awaitReady(ctx context.Context, env *scenariotest.StepEnv, agent scenariotest.AgentConfig, host, unit, oldPID string, baseTaps float64) error {
-	timeout := s.Timeout
-	if timeout <= 0 {
-		timeout = env.Config.AgentControl.ReadyTimeout
-	}
-	if timeout <= 0 {
-		timeout = scenariotest.DefaultAgentReadyTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	restarted := false
-	for {
-		// First confirm the process cycled: a running MainPID (not 0/empty)
-		// that differs from the pre-restart one.
-		if !restarted {
-			pid, err := agentMainPID(ctx, env, host, unit)
-			if err == nil && pid != "" && pid != "0" && pid != oldPID {
-				restarted = true
-				env.Log.Info("restart-agent: process cycled", "host", host, "old_pid", oldPID, "new_pid", pid)
-			}
-		}
-		if restarted {
-			res, err := env.Metrics.Scrape(ctx, agent.MetricsURL)
-			if err == nil && scenariotest.CheckRequiredMetrics(res) == nil && res.AttachedInterfaces >= baseTaps {
-				env.Log.Info("restart-agent: ready", "host", host,
-					"attached", res.AttachedInterfaces, "baseline", baseTaps)
-				return nil
-			}
-		}
-		select {
-		case <-ctx.Done():
-			if !restarted {
-				return fmt.Errorf("restart-agent: %s MainPID never changed from %q within %s — restart not confirmed: %w", unit, oldPID, timeout, ctx.Err())
-			}
-			return fmt.Errorf("restart-agent: %s not ready within %s: %w", agent.MetricsURL, timeout, ctx.Err())
-		case <-time.After(agentReadyPollInterval):
-		}
-	}
-}
-
-// agentMainPID reads the systemd MainPID of unit on host — the restart
-// evidence [RestartAgentStep] gates on. Returns the bare PID string
-// ("0" when the unit is stopped).
-func agentMainPID(ctx context.Context, env *scenariotest.StepEnv, host, unit string) (string, error) {
-	out, err := env.AgentExec.Run(ctx, host, "systemctl show -p MainPID "+unit)
-	if err != nil {
-		return "", err
-	}
-	// Output is "MainPID=<n>" (possibly with surrounding whitespace).
-	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "MainPID=")), nil
-}
-
-// awaitSSHReady polls a trivial command until the VM answers SSH — the
-// step-side twin of drive's waitReady (lachesis#253): Nova ACTIVE races
-// cloud-init by tens of seconds, so any step that execs in the guest
-// right after `up` (ConfigureNICStep, AddRouteStep) must gate on
-// readiness or fail spuriously with "Connection refused" on clusters
-// where realize outpaces the boot. Same timeout + poll cadence as
-// drive's gate.
-func awaitSSHReady(ctx context.Context, env *scenariotest.StepEnv, vmID, addr string) error {
-	ctx, cancel := context.WithTimeout(ctx, scenariotest.DefaultReadyTimeout)
-	defer cancel()
-	env.Log.Info("waiting for ssh-ready", "vm", vmID, "addr", addr, "timeout", scenariotest.DefaultReadyTimeout)
-	for {
-		if _, err := env.Exec.Run(ctx, addr, "true"); err == nil {
-			env.Log.Info("vm ssh-ready", "vm", vmID, "addr", addr)
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("vm %s (%s) not ssh-ready before deadline: %w", vmID, addr, ctx.Err())
-		case <-time.After(scenariotest.ReadyPollInterval):
-		}
-	}
-}
 
 // PortSeriesStep asserts the per-port leaf family attributes traffic to
 // the RIGHT port: the lachesis_port_bytes_total series carrying Port's
@@ -2006,7 +1776,7 @@ func (s AttachPortStep) Run(ctx context.Context, env *scenariotest.StepEnv) erro
 		return err
 	}
 	env.Log.Info("attach-port: plugged", "vm", s.VM, "nic", s.ID, "port", portID, "mac", mac, "ip", s.IP)
-	return awaitAttachRise(ctx, env, baseline, "attach-port")
+	return gate.AttachRise(ctx, env, baseline, "attach-port")
 }
 
 // ReattachPortStep plugs a previously-detached NIC (its port kept
@@ -2042,7 +1812,7 @@ func (s ReattachPortStep) Run(ctx context.Context, env *scenariotest.StepEnv) er
 		return err
 	}
 	env.Log.Info("reattach-port: plugged", "vm", s.VM, "nic", s.Port, "port", ref.ID, "mac", ref.MAC)
-	return awaitAttachRise(ctx, env, baseline, "reattach-port")
+	return gate.AttachRise(ctx, env, baseline, "reattach-port")
 }
 
 // DetachPortStep unplugs a hot-plugged NIC (Nova os-interface detach)
@@ -2164,7 +1934,7 @@ func (s ConfigureNICStep) Run(ctx context.Context, env *scenariotest.StepEnv) er
 	if err := scenariotest.ShellSafe("configure-nic.dev", s.Dev); err != nil {
 		return err
 	}
-	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
+	if err := gate.SSHReady(ctx, env, s.VM, fip); err != nil {
 		return fmt.Errorf("configure-nic: %w", err)
 	}
 	ip, ipnet, err := net.ParseCIDR(s.CIDR)
@@ -2214,7 +1984,7 @@ func (s SetNICMACStep) Run(ctx context.Context, env *scenariotest.StepEnv) error
 	if err := scenariotest.ShellSafe("set-nic-mac.mac", s.MAC); err != nil {
 		return err
 	}
-	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
+	if err := gate.SSHReady(ctx, env, s.VM, fip); err != nil {
 		return fmt.Errorf("set-nic-mac: %w", err)
 	}
 	cmd := fmt.Sprintf(
