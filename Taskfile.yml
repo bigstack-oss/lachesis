@@ -14,14 +14,24 @@ tasks:
     sources: [ Dockerfile ]
 
   headers:
-    desc: Populate .include/ with libbpf/kernel headers and generate vmlinux.h from
-      the builder image
+    desc: Populate .include/ with the libbpf and UAPI kernel headers the BPF
+      programs compile against
     deps: [ setup ]
     sources:
       - Dockerfile
     generates:
-      - .include/vmlinux.h
       - .include/bpf/bpf_helpers.h
+      - .include/linux/bpf.h
+    # .include is the single normalized include root, which is why the BPF
+    # sources carry one -I regardless of environment: Debian keeps asm/ under
+    # a multiarch path (/usr/include/x86_64-linux-gnu/asm) while el9 keeps it
+    # at /usr/include/asm, and a -target bpf compile resolves neither on its
+    # own. Flattening both layouts here keeps the go:generate directives
+    # identical in the Docker builder and in an rpmbuild tree.
+    #
+    # No vmlinux.h: the BPF programs use only UAPI types and take no CO-RE
+    # relocation, so nothing here needs BTF — which is what lets this run
+    # unprivileged.
     cmds:
       - rm -rf .include/bpf .include/asm .include/asm-generic .include/linux .include/vmlinux.h
       - mkdir -p .include
@@ -32,11 +42,6 @@ tasks:
         docker cp $cid:/usr/include/asm-generic .include/asm-generic
         docker cp $cid:/usr/include/linux .include/linux
         docker rm $cid
-      - >
-        docker run --rm --privileged --platform linux/amd64
-        -u 0 -v "$(pwd)/.include":/out
-        {{.BUILDER_IMAGE}}
-        sh -c "bpftool btf dump file /sys/kernel/btf/vmlinux format c > /out/vmlinux.h && chown {{.UID}}:{{.GID}} /out/vmlinux.h"
 
   generate:
     desc: Generate BPF Go bindings only if C code or headers changed
