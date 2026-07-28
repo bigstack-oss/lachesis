@@ -49,13 +49,32 @@ func gcPressureRelief() *scenariotest.Scenario {
 		Builder:   b,
 		Placement: scenariotest.Placement{"vm-g": "node:0"},
 		Steps: []scenariotest.Step{
-			// Lower the watermarks so real flows trip the trigger: ~6 of
-			// 65,536 entries to start a relief cycle, ~3 to end it. Derived
-			// from the node's own config, which is backed up for the final
-			// restore.
+			// Lower the watermarks so real flows trip the trigger. Both
+			// ratios are chosen to TRUNCATE TO ZERO entries against
+			// max_entries 65,536 (bpf.MapTelemetryMaxEntries): the reliever
+			// computes its bounds as int(ratio * max_entries), so
+			// 0.000002 * 65536 = 0.13 -> 0 and 0.000001 * 65536 = 0.07 -> 0.
+			// Config validation still holds (0 < low < high < 1).
+			//
+			// Zero bounds make the eviction UNCONDITIONAL: with low = 0 the
+			// per-pass victim count is `want = n - low = n`, so every entry
+			// is evicted on every pass — including the flow currently
+			// carrying the driven traffic.
+			//
+			// That determinism is the point. The reliever evicts the OLDEST
+			// entries first, so with a nonzero low watermark the active flow
+			// is only caught once ambient map population is high enough for
+			// `n - low` to reach it. On a quiet node it survives, nothing is
+			// lost, and this scenario passes while the defect it exists to
+			// catch is still present — which is exactly what happened on c36
+			// on 2026-07-26, five runs green against an unfixed agent
+			// (lachesis#287). Do not raise these back above zero entries.
+			//
+			// Derived from the node's own config, which is backed up for the
+			// final restore.
 			steps.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
-				"gc.pressure_high_watermark": "0.0001",
-				"gc.pressure_low_watermark":  "0.00005",
+				"gc.pressure_high_watermark": "0.000002",
+				"gc.pressure_low_watermark":  "0.000001",
 			}},
 			steps.CaptureStep{},
 			// Real traffic on a learned MAC: enough flows to sit above the
