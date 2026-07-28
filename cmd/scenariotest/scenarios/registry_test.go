@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 )
 
 var validZones = map[string]bool{
@@ -41,12 +42,12 @@ func TestAll_BuildAndInvariants(t *testing.T) {
 		asserts := len(expects) > 0
 		for _, st := range s.Steps {
 			switch st := st.(type) {
-			case scenariotest.DriveStep:
+			case steps.DriveStep:
 				flows = append(flows, st.Flows...)
-			case scenariotest.IngressFlowStep:
+			case steps.IngressFlowStep:
 				// Harness-side sender: a flow for coverage purposes.
 				flows = append(flows, scenariotest.Flow{Bytes: st.Bytes})
-			case scenariotest.AssertStep:
+			case steps.AssertStep:
 				expects = append(expects, st.Expect...)
 			}
 			// Any assert-* step (ZoneGrowthStep, MonotoneStep, AssertAnomalyStep,

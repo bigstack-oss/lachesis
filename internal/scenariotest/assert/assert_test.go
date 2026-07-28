@@ -1,4 +1,4 @@
-package scenariotest
+package assert
 
 import (
 	"context"
@@ -8,35 +8,38 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/fake"
 )
 
 // assertState builds the run-state drive would have left: resolved
 // project, attach record, and a captured baseline.
-func assertState() *RunState {
-	rs := NewRunState("run1", "same", "scenariotest")
-	rs.Projects = map[string]ProjectRef{"T1": {Name: "scenariotest-T1", ID: "uuid-t1", Created: true}}
-	rs.Attach = AttachRecord{Target: 7}
-	rs.Baseline = []BytesSample{
+func assertState() *scenariotest.RunState {
+	rs := scenariotest.NewRunState("run1", "same", "scenariotest")
+	rs.Projects = map[string]scenariotest.ProjectRef{"T1": {Name: "scenariotest-T1", ID: "uuid-t1", Created: true}}
+	rs.Attach = scenariotest.AttachRecord{Target: 7}
+	rs.Baseline = []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 100},
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "rx", Value: 200},
 	}
 	return rs
 }
 
-func assertScenario() *Scenario {
-	sc := sameTenantScenario()
-	sc.Expect = []Expect{
+func assertScenario() *scenariotest.Scenario {
+	sc := fake.SameTenantScenario()
+	sc.Expect = []scenariotest.Expect{
 		{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20},
 		{TenantID: "T1", Zone: "same_tenant", Direction: "rx", MinBytes: 1 << 20},
 	}
 	return sc
 }
 
-func runAssertFixture(t *testing.T, sc *Scenario, rs *RunState, m MetricsSource, timeout time.Duration) (AssertReport, string, error) {
+func runAssertFixture(t *testing.T, sc *scenariotest.Scenario, rs *scenariotest.RunState, m scenariotest.MetricsSource, timeout time.Duration) (scenariotest.AssertReport, string, error) {
 	t.Helper()
 	reportPath := t.TempDir() + "/report.json"
-	rep, err := Assert(context.Background(), AssertOptions{
-		Config:           testConfig(),
+	rep, err := Run(context.Background(), Options{
+		Config:           fake.Config(),
 		Scenario:         sc,
 		State:            rs,
 		ReportPath:       reportPath,
@@ -48,7 +51,7 @@ func runAssertFixture(t *testing.T, sc *Scenario, rs *RunState, m MetricsSource,
 }
 
 func TestAssert_Pass(t *testing.T) {
-	m := driveMetrics{attached: 7, bytes: []BytesSample{
+	m := fake.HealthyMetrics{Attached: 7, Bytes: []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 100 + 2<<20},
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "rx", Value: 200 + 2<<20},
 	}}
@@ -72,7 +75,7 @@ func TestAssert_Pass(t *testing.T) {
 }
 
 func TestAssert_FailBelowMin(t *testing.T) {
-	m := driveMetrics{attached: 7, bytes: []BytesSample{
+	m := fake.HealthyMetrics{Attached: 7, Bytes: []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 100 + 512},
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "rx", Value: 200 + 2<<20},
 	}}
@@ -95,7 +98,7 @@ func TestAssert_FailBelowMin(t *testing.T) {
 func TestAssert_NegativeDeltaFlagsBaseline(t *testing.T) {
 	// Counter dropped below baseline (ghost GC evicted a prior run's
 	// flows after the baseline was captured).
-	m := driveMetrics{attached: 7, bytes: []BytesSample{
+	m := fake.HealthyMetrics{Attached: 7, Bytes: []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10},
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "rx", Value: 200 + 2<<20},
 	}}
@@ -114,17 +117,17 @@ func TestAssert_NegativeDeltaFlagsBaseline(t *testing.T) {
 // stabilizeMetrics reports counters that cross the threshold on the
 // second scrape round, proving the poll-until-stabilize loop.
 type stabilizeMetrics struct {
-	instantMACs
-	calls *int
+	fake.InstantMACs
+	Calls *int
 }
 
-func (m stabilizeMetrics) Scrape(context.Context, string) (ScrapeResult, error) {
-	*m.calls++
+func (m stabilizeMetrics) Scrape(context.Context, string) (scenariotest.ScrapeResult, error) {
+	*m.Calls++
 	v := 100.0
-	if *m.calls > 1 {
+	if *m.Calls > 1 {
 		v = 100 + float64(2<<20)
 	}
-	return ScrapeResult{Bytes: []BytesSample{
+	return scenariotest.ScrapeResult{Bytes: []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: v},
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "rx", Value: 200 + float64(2<<20)},
 	}}, nil
@@ -132,7 +135,7 @@ func (m stabilizeMetrics) Scrape(context.Context, string) (ScrapeResult, error) 
 
 func TestAssert_StabilizesOnLaterScrape(t *testing.T) {
 	calls := 0
-	rep, _, err := runAssertFixture(t, assertScenario(), assertState(), stabilizeMetrics{calls: &calls}, 30*time.Second)
+	rep, _, err := runAssertFixture(t, assertScenario(), assertState(), stabilizeMetrics{Calls: &calls}, 30*time.Second)
 	if err != nil {
 		t.Fatalf("Assert: %v", err)
 	}
@@ -147,7 +150,7 @@ func TestAssert_StabilizesOnLaterScrape(t *testing.T) {
 func TestAssert_NoBaselineErrors(t *testing.T) {
 	rs := assertState()
 	rs.Baseline = nil
-	_, _, err := runAssertFixture(t, assertScenario(), rs, driveMetrics{}, time.Second)
+	_, _, err := runAssertFixture(t, assertScenario(), rs, fake.HealthyMetrics{}, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "drive first") {
 		t.Fatalf("want no-baseline error, got %v", err)
 	}
@@ -155,8 +158,8 @@ func TestAssert_NoBaselineErrors(t *testing.T) {
 
 func TestAssert_UnknownTenantErrors(t *testing.T) {
 	sc := assertScenario()
-	sc.Expect = []Expect{{TenantID: "T9", Zone: "same_tenant", Direction: "tx", MinBytes: 1}}
-	_, _, err := runAssertFixture(t, sc, assertState(), driveMetrics{}, time.Second)
+	sc.Expect = []scenariotest.Expect{{TenantID: "T9", Zone: "same_tenant", Direction: "tx", MinBytes: 1}}
+	_, _, err := runAssertFixture(t, sc, assertState(), fake.HealthyMetrics{}, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "no such project") {
 		t.Fatalf("want unknown-tenant error, got %v", err)
 	}
@@ -165,20 +168,20 @@ func TestAssert_UnknownTenantErrors(t *testing.T) {
 func TestAssert_MultiAgentTuplesSum(t *testing.T) {
 	// Two agents each expose half the driven bytes for the same
 	// tuple; the evaluation must sum them.
-	cfg := testConfig()
-	cfg.Cluster.Agents = append(cfg.Cluster.Agents, AgentConfig{Host: "compute-1", MetricsURL: "http://compute-1:9100/metrics"})
+	cfg := fake.Config()
+	cfg.Cluster.Agents = append(cfg.Cluster.Agents, scenariotest.AgentConfig{Host: "compute-1", MetricsURL: "http://compute-1:9100/metrics"})
 	rs := assertState()
-	rs.Baseline = []BytesSample{ // baseline also captured across both agents
+	rs.Baseline = []scenariotest.BytesSample{ // baseline also captured across both agents
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50},
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50},
 	}
 	sc := assertScenario()
-	sc.Expect = sc.Expect[:1]               // tx only
-	m := driveMetrics{bytes: []BytesSample{ // per agent scrape: half the traffic each
+	sc.Expect = sc.Expect[:1]                                   // tx only
+	m := fake.HealthyMetrics{Bytes: []scenariotest.BytesSample{ // per agent scrape: half the traffic each
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50 + 1<<19},
 	}}
 	reportPath := t.TempDir() + "/report.json"
-	rep, err := Assert(context.Background(), AssertOptions{
+	rep, err := Run(context.Background(), Options{
 		Config: cfg, Scenario: sc, State: rs, ReportPath: reportPath,
 		Metrics: m, Log: slog.New(slog.DiscardHandler), StabilizeTimeout: time.Second,
 	})
@@ -192,18 +195,18 @@ func TestAssert_MultiAgentTuplesSum(t *testing.T) {
 }
 
 func TestDefaultReportPath(t *testing.T) {
-	if got := DefaultReportPath(".scenariotest/x-abc.json"); got != ".scenariotest/x-abc-report.json" {
+	if got := scenariotest.DefaultReportPath(".scenariotest/x-abc.json"); got != ".scenariotest/x-abc-report.json" {
 		t.Errorf("DefaultReportPath = %q", got)
 	}
 }
 
-func mustLoadReport(t *testing.T, path string) AssertReport {
+func mustLoadReport(t *testing.T, path string) scenariotest.AssertReport {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read report: %v", err)
 	}
-	var r AssertReport
+	var r scenariotest.AssertReport
 	if err := json.Unmarshal(raw, &r); err != nil {
 		t.Fatalf("parse report: %v", err)
 	}
@@ -212,16 +215,16 @@ func mustLoadReport(t *testing.T, path string) AssertReport {
 
 // extAssertState is assertState plus external-labeled baseline series
 // and a per-server baseline for the created vm-a.
-func extAssertState() *RunState {
+func extAssertState() *scenariotest.RunState {
 	rs := assertState()
-	rs.Baseline = []BytesSample{
+	rs.Baseline = []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1000},
 		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "none", Direction: "tx", Value: 500},
 	}
-	rs.BaselineServers = []ServerSample{
+	rs.BaselineServers = []scenariotest.ServerSample{
 		{ServerID: "srv-a", TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 800},
 	}
-	rs.Servers = []ResourceRef{{DSLID: "vm-a", ID: "srv-a", ProjectID: "uuid-t1"}}
+	rs.Servers = []scenariotest.ResourceRef{{DSLID: "vm-a", ID: "srv-a", ProjectID: "uuid-t1"}}
 	return rs
 }
 
@@ -231,12 +234,12 @@ func extAssertState() *RunState {
 // resolves to the config's provider network name ("ext"), mirroring
 // realize's binding.
 func TestAssert_ExternalNetworkFilter(t *testing.T) {
-	sc := sameTenantScenario()
-	sc.Expect = []Expect{
+	sc := fake.SameTenantScenario()
+	sc.Expect = []scenariotest.Expect{
 		{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext"},
 	}
 	// Only the "none" bucket grew: the pinned expectation must FAIL.
-	m := driveMetrics{attached: 7, bytes: []BytesSample{
+	m := fake.HealthyMetrics{Attached: 7, Bytes: []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1000},
 		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "none", Direction: "tx", Value: 500 + 2<<20},
 	}}
@@ -252,7 +255,7 @@ func TestAssert_ExternalNetworkFilter(t *testing.T) {
 	}
 
 	// Now the pinned bucket grows: PASS.
-	m = driveMetrics{attached: 7, bytes: []BytesSample{
+	m = fake.HealthyMetrics{Attached: 7, Bytes: []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1000 + 2<<20},
 		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "none", Direction: "tx", Value: 500},
 	}}
@@ -269,15 +272,15 @@ func TestAssert_ExternalNetworkFilter(t *testing.T) {
 // lower-bounds lachesis_server_bytes_total for the run's created
 // server, resolved from the run-state.
 func TestAssert_VMTargetsServerFamily(t *testing.T) {
-	sc := sameTenantScenario()
-	sc.Expect = []Expect{
+	sc := fake.SameTenantScenario()
+	sc.Expect = []scenariotest.Expect{
 		{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext", VM: "vm-a"},
 	}
-	m := driveMetrics{attached: 7,
-		bytes: []BytesSample{
+	m := fake.HealthyMetrics{Attached: 7,
+		Bytes: []scenariotest.BytesSample{
 			{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1000 + 2<<20},
 		},
-		servers: []ServerSample{
+		Servers: []scenariotest.ServerSample{
 			{ServerID: "srv-a", TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 800 + 2<<20},
 			{ServerID: "srv-other", TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 9e9},
 		}}
@@ -295,11 +298,11 @@ func TestAssert_VMTargetsServerFamily(t *testing.T) {
 // against an agent exposing no per-server family is an evaluation
 // error — not a silent zero-delta failure.
 func TestAssert_VMExpectRefusesPreFamilyAgent(t *testing.T) {
-	sc := sameTenantScenario()
-	sc.Expect = []Expect{
+	sc := fake.SameTenantScenario()
+	sc.Expect = []scenariotest.Expect{
 		{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1, VM: "vm-a"},
 	}
-	m := driveMetrics{attached: 7, bytes: []BytesSample{
+	m := fake.HealthyMetrics{Attached: 7, Bytes: []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 1e9},
 	}}
 	_, _, err := runAssertFixture(t, sc, extAssertState(), m, 50*time.Millisecond)
@@ -315,9 +318,9 @@ func TestAssert_VMExpectRefusesPreFamilyAgent(t *testing.T) {
 // network, and everything else (empty, "none", literals) passes
 // through.
 func TestResolveExternalNetwork(t *testing.T) {
-	sc := extPathScenario() // declares net-ext (provider) + net-ext2 (created)
-	cfg := testConfig()
-	rs := NewRunState("run1", sc.Name, cfg.Naming.Prefix)
+	sc := fake.ExtPathTopology() // declares net-ext (provider) + net-ext2 (created)
+	cfg := fake.Config()
+	rs := scenariotest.NewRunState("run1", sc.Name, cfg.Naming.Prefix)
 
 	cases := []struct{ in, want string }{
 		{"", ""},
@@ -333,35 +336,24 @@ func TestResolveExternalNetwork(t *testing.T) {
 	}
 }
 
-// perNodeMetrics serves a different scrape per agent URL — the fake
-// for tests where the two taps must be distinguishable.
-type perNodeMetrics struct {
-	instantMACs
-	byURL map[string]ScrapeResult
-}
-
-func (m perNodeMetrics) Scrape(_ context.Context, url string) (ScrapeResult, error) {
-	return m.byURL[url], nil
-}
-
 // twoAgentNodeFixture: compute-0 carries the driven 1 MiB, compute-1
 // stays flat — the divergence only a node-targeted expectation can see.
-func twoAgentNodeFixture() (Config, *RunState, MetricsSource) {
-	cfg := testConfig()
-	cfg.Cluster.Agents = append(cfg.Cluster.Agents, AgentConfig{Host: "compute-1", MetricsURL: "http://compute-1:9100/metrics"})
+func twoAgentNodeFixture() (scenariotest.Config, *scenariotest.RunState, scenariotest.MetricsSource) {
+	cfg := fake.Config()
+	cfg.Cluster.Agents = append(cfg.Cluster.Agents, scenariotest.AgentConfig{Host: "compute-1", MetricsURL: "http://compute-1:9100/metrics"})
 	rs := assertState()
-	rs.Baseline = []BytesSample{
+	rs.Baseline = []scenariotest.BytesSample{
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50, Node: "compute-0"},
 		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50, Node: "compute-1"},
 	}
-	m := perNodeMetrics{byURL: map[string]ScrapeResult{
+	m := fake.PerNode{ByURL: map[string]scenariotest.ScrapeResult{
 		cfg.Cluster.Agents[0].MetricsURL: {
-			Present: map[string]bool{MetricBytesTotal: true},
-			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50 + 1<<20}},
+			Present: map[string]bool{scenariotest.MetricBytesTotal: true},
+			Bytes:   []scenariotest.BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50 + 1<<20}},
 		},
 		cfg.Cluster.Agents[1].MetricsURL: {
-			Present: map[string]bool{MetricBytesTotal: true},
-			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50}},
+			Present: map[string]bool{scenariotest.MetricBytesTotal: true},
+			Bytes:   []scenariotest.BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50}},
 		},
 	}}
 	return cfg, rs, m
@@ -370,13 +362,13 @@ func twoAgentNodeFixture() (Config, *RunState, MetricsSource) {
 func TestAssert_NodeTargetSplitsAgents(t *testing.T) {
 	cfg, rs, m := twoAgentNodeFixture()
 	sc := assertScenario()
-	sc.Expect = []Expect{
+	sc.Expect = []scenariotest.Expect{
 		// The driving node's tap carries the delta...
 		{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: "node:0", MinBytes: 1 << 20},
 		// ...the flat node's does not — a literal host target resolves too.
 		{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: "compute-1", MinBytes: 1},
 	}
-	rep, err := Assert(context.Background(), AssertOptions{
+	rep, err := Run(context.Background(), Options{
 		Config: cfg, Scenario: sc, State: rs, ReportPath: t.TempDir() + "/report.json",
 		// Short: the failing row makes the stabilize loop exhaust the
 		// timeout by design; there is nothing to wait for.
@@ -401,8 +393,8 @@ func TestAssert_CollectiveUnchangedByNodes(t *testing.T) {
 	// cluster-wide sum sees the delta exactly as before per-node capture.
 	cfg, rs, m := twoAgentNodeFixture()
 	sc := assertScenario()
-	sc.Expect = []Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20}}
-	rep, err := Assert(context.Background(), AssertOptions{
+	sc.Expect = []scenariotest.Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20}}
+	rep, err := Run(context.Background(), Options{
 		Config: cfg, Scenario: sc, State: rs, ReportPath: t.TempDir() + "/report.json",
 		Metrics: m, Log: slog.New(slog.DiscardHandler), StabilizeTimeout: time.Second,
 	})
@@ -418,7 +410,7 @@ func TestAssert_NodeTargetErrors(t *testing.T) {
 	cfg, rs, m := twoAgentNodeFixture()
 	for name, tc := range map[string]struct {
 		node    string
-		rs      *RunState
+		rs      *scenariotest.RunState
 		wantErr string
 	}{
 		"unknown literal host": {node: "compute-9", rs: rs, wantErr: "not a configured agent host"},
@@ -428,8 +420,8 @@ func TestAssert_NodeTargetErrors(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			sc := assertScenario()
-			sc.Expect = []Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: tc.node, MinBytes: 1}}
-			_, err := Assert(context.Background(), AssertOptions{
+			sc.Expect = []scenariotest.Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: tc.node, MinBytes: 1}}
+			_, err := Run(context.Background(), Options{
 				Config: cfg, Scenario: sc, State: tc.rs, ReportPath: t.TempDir() + "/report.json",
 				Metrics: m, Log: slog.New(slog.DiscardHandler), StabilizeTimeout: time.Second,
 			})
@@ -444,26 +436,26 @@ func TestAssert_NodeWithVMTarget(t *testing.T) {
 	// Node combines with the per-server family: only the target node's
 	// server series count.
 	cfg, rs, _ := twoAgentNodeFixture()
-	rs.Servers = []ResourceRef{{DSLID: "vm-a", ID: "srv-1"}}
-	rs.BaselineServers = []ServerSample{
+	rs.Servers = []scenariotest.ResourceRef{{DSLID: "vm-a", ID: "srv-1"}}
+	rs.BaselineServers = []scenariotest.ServerSample{
 		{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10, Node: "compute-0"},
 		{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10, Node: "compute-1"},
 	}
-	m := perNodeMetrics{byURL: map[string]ScrapeResult{
+	m := fake.PerNode{ByURL: map[string]scenariotest.ScrapeResult{
 		cfg.Cluster.Agents[0].MetricsURL: {
-			Present: map[string]bool{MetricBytesTotal: true, MetricServerBytesTotal: true},
-			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50 + 1<<20}},
-			Servers: []ServerSample{{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10 + 1<<20}},
+			Present: map[string]bool{scenariotest.MetricBytesTotal: true, scenariotest.MetricServerBytesTotal: true},
+			Bytes:   []scenariotest.BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50 + 1<<20}},
+			Servers: []scenariotest.ServerSample{{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10 + 1<<20}},
 		},
 		cfg.Cluster.Agents[1].MetricsURL: {
-			Present: map[string]bool{MetricBytesTotal: true, MetricServerBytesTotal: true},
-			Bytes:   []BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50}},
-			Servers: []ServerSample{{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10}},
+			Present: map[string]bool{scenariotest.MetricBytesTotal: true, scenariotest.MetricServerBytesTotal: true},
+			Bytes:   []scenariotest.BytesSample{{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 50}},
+			Servers: []scenariotest.ServerSample{{ServerID: "srv-1", TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 10}},
 		},
 	}}
 	sc := assertScenario()
-	sc.Expect = []Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", Node: "node:0", MinBytes: 1 << 20}}
-	rep, err := Assert(context.Background(), AssertOptions{
+	sc.Expect = []scenariotest.Expect{{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", Node: "node:0", MinBytes: 1 << 20}}
+	rep, err := Run(context.Background(), Options{
 		Config: cfg, Scenario: sc, State: rs, ReportPath: t.TempDir() + "/report.json",
 		Metrics: m, Log: slog.New(slog.DiscardHandler), StabilizeTimeout: time.Second,
 	})

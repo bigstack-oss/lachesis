@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -44,17 +45,17 @@ func unresolvedLatebind() *scenariotest.Scenario {
 		Steps: []scenariotest.Step{
 			// Suppress metadata on node:0: kafka off + long reconcile, so a
 			// VM booted next is not learned.
-			scenariotest.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
+			steps.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
 				"kafka.enabled":      "false",
 				"reconcile.interval": "600s",
 			}},
 			// Boot vm-x — its MAC won't enter node:0's map (no kafka kick,
 			// reconcile far off).
-			scenariotest.BootVMStep{VM: "vm-x"},
-			scenariotest.CaptureStep{},
+			steps.BootVMStep{VM: "vm-x"},
+			steps.CaptureStep{},
 			// Drive without the MAC-learn gate (the MAC is deliberately
 			// unlearned): first bytes park in the UnresolvedBuffer.
-			scenariotest.DriveStep{SkipMACLearn: true, Flows: []scenariotest.Flow{
+			steps.DriveStep{SkipMACLearn: true, Flows: []scenariotest.Flow{
 				{From: "vm-x", To: scenariotest.ExternalTarget("8.8.8.8"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
 			// Resume metadata: SIGHUP a short reconcile interval in. The
@@ -62,13 +63,13 @@ func unresolvedLatebind() *scenariotest.Scenario {
 			// intact (no restart).
 			// Only the interval changes; kafka stays off from the restart
 			// above, because SetConfig patches the config now in force.
-			scenariotest.ReloadAgentStep{Node: "node:0", SetConfig: map[string]string{
+			steps.ReloadAgentStep{Node: "node:0", SetConfig: map[string]string{
 				"reconcile.interval": "15s",
 			}},
 
 			// The buffered flow late-bound (was parked unresolved, then
 			// re-attributed) — you cannot resolve what was never buffered.
-			scenariotest.ResolvedGrewStep{Min: 1,
+			steps.ResolvedGrewStep{Min: 1,
 				Note: "buffered flow late-bound to its tenant within the TTL"},
 			// It attributed to T1 (lower bound, polled against the drive's
 			// baseline — the bytes surface only once the late-bind lands).
@@ -79,17 +80,17 @@ func unresolvedLatebind() *scenariotest.Scenario {
 			// zone stays whatever the kernel recorded. The billing property
 			// this proves is that the bytes reach the right tenant instead
 			// of being lost to "unknown".
-			scenariotest.AssertStep{Note: "parked bytes re-attributed to the tenant", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "parked bytes re-attributed to the tenant", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "miss", Direction: "tx", MinBytes: 900 << 10},
 			}},
 			// ...exactly once: the write-back kept the same bytes from being
 			// counted twice (growth since the pre-drive capture is ~one
 			// transfer, not two).
-			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "miss",
+			steps.MaxGrowthStep{Tenant: "T1", Zone: "miss",
 				Budget: 1500 << 10, Note: "re-attributed once — write-back prevented a double-count"},
 
 			// Restore node:0's normal config (kafka on) for later runs.
-			scenariotest.RestartAgentStep{Node: "node:0", RestoreConfig: true},
+			steps.RestartAgentStep{Node: "node:0", RestoreConfig: true},
 		},
 	}
 }

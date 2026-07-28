@@ -1,25 +1,28 @@
-package scenariotest
+package scenariotest_test
 
 import (
 	"context"
 	"testing"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/fake"
 )
 
 func TestSampleAcross_StampsNode(t *testing.T) {
-	agents := []AgentConfig{
+	agents := []scenariotest.AgentConfig{
 		{Host: "cc1", MetricsURL: "http://cc1:9100/metrics"},
 		{Host: "cc2", MetricsURL: "http://cc2:9100/metrics"},
 	}
-	src := perNodeMetrics{byURL: map[string]ScrapeResult{
+	src := fake.PerNode{ByURL: map[string]scenariotest.ScrapeResult{
 		agents[0].MetricsURL: {
-			Bytes:   []BytesSample{{TenantID: "t", Zone: "same_tenant", Direction: "tx", Value: 1}},
-			Servers: []ServerSample{{ServerID: "s", Zone: "same_tenant", Direction: "tx", Value: 1}},
+			Bytes:   []scenariotest.BytesSample{{TenantID: "t", Zone: "same_tenant", Direction: "tx", Value: 1}},
+			Servers: []scenariotest.ServerSample{{ServerID: "s", Zone: "same_tenant", Direction: "tx", Value: 1}},
 		},
 		agents[1].MetricsURL: {
-			Bytes: []BytesSample{{TenantID: "t", Zone: "same_tenant", Direction: "tx", Value: 2}},
+			Bytes: []scenariotest.BytesSample{{TenantID: "t", Zone: "same_tenant", Direction: "tx", Value: 2}},
 		},
 	}}
-	snap, err := SampleAcross(context.Background(), src, agents)
+	snap, err := scenariotest.SampleAcross(context.Background(), src, agents)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,18 +41,18 @@ func TestSampleAcross_StampsNode(t *testing.T) {
 // count by the cluster size and make a [1,1] bound unsatisfiable on a
 // multi-node cluster — lachesis#171).
 func TestSampleAcross_AnomaliesMaxNotSum(t *testing.T) {
-	agents := []AgentConfig{
+	agents := []scenariotest.AgentConfig{
 		{Host: "cc1", MetricsURL: "http://cc1:9100/metrics"},
 		{Host: "cc2", MetricsURL: "http://cc2:9100/metrics"},
 	}
-	src := perNodeMetrics{byURL: map[string]ScrapeResult{
+	src := fake.PerNode{ByURL: map[string]scenariotest.ScrapeResult{
 		// Both agents report the same class identically...
 		agents[0].MetricsURL: {Anomalies: map[string]float64{"dangling_route": 1, "cycle": 2}},
 		// ...except cc2 has already resynced a fresh cycle the laggard
 		// hasn't yet — max must surface the higher value.
 		agents[1].MetricsURL: {Anomalies: map[string]float64{"dangling_route": 1, "cycle": 3}},
 	}}
-	snap, err := SampleAcross(context.Background(), src, agents)
+	snap, err := scenariotest.SampleAcross(context.Background(), src, agents)
 	if err != nil {
 		t.Fatal(err)
 	}

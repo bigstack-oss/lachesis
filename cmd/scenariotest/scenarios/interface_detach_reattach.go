@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -42,50 +43,50 @@ func interfaceDetachReattach() *scenariotest.Scenario {
 		Desc:    "Detach/reattach a NIC fast (no fold — no dip) and slow (post-sweep rebirth must carry) (lachesis#227, step-scripted).",
 		Builder: b,
 		Steps: []scenariotest.Step{
-			scenariotest.AttachPortStep{VM: "vm-a", ID: "vm-a-nic2",
+			steps.AttachPortStep{VM: "vm-a", ID: "vm-a-nic2",
 				Network: "net-T1b", Subnet: "sub-T1b", IP: "10.0.26.9"},
-			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.26.9/24"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.26.9/24"},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 2 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "pre-detach drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "pre-detach drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", MinBytes: 2 << 20},
 			}},
 
 			// FAST: back before the grace elapses — resurrection, no fold.
-			scenariotest.CaptureStep{},
-			scenariotest.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
-			scenariotest.ReattachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
-			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.26.9/24"},
+			steps.CaptureStep{},
+			steps.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
+			steps.ReattachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
+			steps.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.26.9/24"},
 			// No explicit fold-gate here: within the grace an immediate
 			// settled-counter check is blind to a not-yet-registered fold
 			// (lachesis#243), and a fast detach transiently marks then
 			// un-marks a ghost — so the no-dip server-monotone below IS the
 			// proof that the resurrection folded nothing.
-			scenariotest.ServerMonotoneStep{VM: "vm-a",
+			steps.ServerMonotoneStep{VM: "vm-a",
 				Note: "fast reattach within grace — no dip"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "post-fast-reattach drive (no double-count is the tenant monotone below)", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "post-fast-reattach drive (no double-count is the tenant monotone below)", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", MinBytes: 1 << 20},
 			}},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "tenant plane intact across fast cycle"},
+			steps.MonotoneStep{Tenant: "T1", Note: "tenant plane intact across fast cycle"},
 
 			// SLOW: wait out the sweep, then bring the same port back.
-			scenariotest.CaptureStep{},
-			scenariotest.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
-			scenariotest.AwaitSweepStep{ForMACOf: "vm-a-nic2"},
-			scenariotest.ReattachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
-			scenariotest.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.26.9/24"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.CaptureStep{},
+			steps.DetachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
+			steps.AwaitSweepStep{ForMACOf: "vm-a-nic2"},
+			steps.ReattachPortStep{VM: "vm-a", Port: "vm-a-nic2"},
+			steps.ConfigureNICStep{VM: "vm-a", Dev: "eth1", CIDR: "10.0.26.9/24"},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
 			// THE reproduction row: RED on today's agent — the post-sweep
 			// reattach rebirths the tuple below its captured value.
-			scenariotest.ServerMonotoneStep{VM: "vm-a",
+			steps.ServerMonotoneStep{VM: "vm-a",
 				Note: "reattach after sweep continues from the carried value (lachesis#227)"},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "tenant plane invariant at scenario end"},
+			steps.MonotoneStep{Tenant: "T1", Note: "tenant plane invariant at scenario end"},
 		},
 	}
 }

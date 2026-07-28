@@ -1,16 +1,4 @@
-// agentconfig.go derives a modified agent config from the one already on
-// the node, for [RestartAgentStep.SetConfig].
-//
-// Deriving is the whole point. An agent config carries cluster-specific
-// values — broker list, WAL path, credentials file — so a checked-in
-// alternate config could never be dropped onto an arbitrary host. The
-// convention this replaced pointed each scenario at a file hand-staged
-// on the agent host, an undocumented manual prerequisite that made those
-// scenarios unrunnable on a fresh cluster. SetConfig instead reads what
-// the node already has, overrides only the named keys, and writes it
-// back.
-
-package scenariotest
+package steps
 
 import (
 	"context"
@@ -20,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
 // applySetConfig reads the agent config at path on host, overrides the
@@ -36,7 +26,7 @@ import (
 // a YAML round-trip through a map). That is acceptable because the file
 // is a scenario-scoped temporary and the pristine original is the backup
 // that gets restored.
-func applySetConfig(ctx context.Context, exec VMExec, host, path string, set map[string]string, backup bool) error {
+func applySetConfig(ctx context.Context, exec scenariotest.VMExec, host, path string, set map[string]string, backup bool) error {
 	raw, err := exec.Run(ctx, host, "sudo cat "+path)
 	if err != nil {
 		return fmt.Errorf("read agent config %s on %s: %w (output: %s)", path, host, err, raw)

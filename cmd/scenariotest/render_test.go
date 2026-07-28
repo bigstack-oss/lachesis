@@ -6,16 +6,17 @@ import (
 	"testing"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/preflight"
 )
 
 // Rendering runs without a TTY here, so lipgloss degrades to plain
 // text — these tests pin the piped/CI shape of the human output.
 
 func TestRenderPreflight(t *testing.T) {
-	r := scenariotest.PreflightReport{
+	r := preflight.Report{
 		Scenario: "vm-to-internet",
 		OK:       false,
-		Checks: []scenariotest.Check{
+		Checks: []preflight.Check{
 			{Name: "credentials", OK: true, Detail: "authenticated"},
 			{Name: "agent /metrics", OK: false, Detail: "connection refused"},
 		},
@@ -49,7 +50,7 @@ func TestRenderAssertNodeColumn(t *testing.T) {
 }
 
 func TestRenderPreflightSkipped(t *testing.T) {
-	r := scenariotest.PreflightReport{
+	r := preflight.Report{
 		Scenario: "cross-host-same-tenant",
 		OK:       true,
 		Skip:     "needs 2 node(s) (placement slots); config lists 1 agent(s)",

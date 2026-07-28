@@ -6,6 +6,7 @@ import (
 	"os/signal"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/assert"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +32,7 @@ func newAssertCmd(opts *rootOptions) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
 			log := opts.logger()
-			res, err := scenariotest.Assert(ctx, scenariotest.AssertOptions{
+			res, err := assert.Run(ctx, assert.Options{
 				Config:     cfg,
 				Scenario:   sc,
 				State:      rs,

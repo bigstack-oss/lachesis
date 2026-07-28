@@ -8,6 +8,7 @@ import (
 	"os/signal"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/realize"
 	"github.com/spf13/cobra"
 )
 
@@ -41,7 +42,7 @@ func newUpCmd(opts *rootOptions) *cobra.Command {
 				return fmt.Errorf("up: %w", err)
 			}
 
-			rs, err := scenariotest.Realize(ctx, scenariotest.RealizeOptions{
+			rs, err := realize.Run(ctx, realize.Options{
 				Config:    cfg,
 				Scenario:  sc,
 				RunID:     runID,

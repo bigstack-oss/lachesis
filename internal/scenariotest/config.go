@@ -64,7 +64,7 @@ type ClusterConfig struct {
 // AgentConfig pairs a hypervisor name (as it appears in the Nova
 // hypervisor list and in [Scenario.Placement]) with the URL where
 // that compute node's agent exposes /metrics. SSHHost is the address
-// [RestartAgentStep] connects to for that node's agent host; empty
+// RestartAgentStep connects to for that node's agent host; empty
 // means use Host (correct when the hypervisor name resolves and is
 // SSH-reachable, e.g. single-node dev-cmp).
 type AgentConfig struct {
@@ -73,7 +73,7 @@ type AgentConfig struct {
 	SSHHost    string `yaml:"ssh_host"`
 }
 
-// SSHAddr is the address [RestartAgentStep] SSHes to for this agent —
+// SSHAddr is the address RestartAgentStep SSHes to for this agent —
 // the explicit ssh_host, else the hypervisor Host.
 func (a AgentConfig) SSHAddr() string {
 	if a.SSHHost != "" {
@@ -82,12 +82,12 @@ func (a AgentConfig) SSHAddr() string {
 	return a.Host
 }
 
-// AgentControlConfig is how [RestartAgentStep] reaches and restarts the
+// AgentControlConfig is how RestartAgentStep reaches and restarts the
 // telemetry agent on a compute host: an SSH transport to the agent
 // hosts — deliberately separate from [SSHConfig], which is the in-VM
 // traffic driver (different user, key, and target: the agent host is
 // typically root@compute, the VMs are the image's default user) — plus
-// the systemd unit it acts on. Optional: only [RestartAgentStep] reads
+// the systemd unit it acts on. Optional: only RestartAgentStep reads
 // it, so scenarios that never restart an agent leave it unset.
 type AgentControlConfig struct {
 	User    string        `yaml:"user"`
@@ -96,7 +96,7 @@ type AgentControlConfig struct {
 	// Unit is the systemd unit to restart; defaults to "lachesis-agent".
 	Unit string `yaml:"unit"`
 	// ConfigPath is the agent config file the unit reads —
-	// [RestartAgentStep]'s SetConfig derives its overrides from this file
+	// RestartAgentStep's SetConfig derives its overrides from this file
 	// and writes them back here. Only needed by scenarios that change the
 	// agent's config.
 	ConfigPath string `yaml:"config_path"`
@@ -104,17 +104,17 @@ type AgentControlConfig struct {
 	// and the taps to re-attach; defaults to [DefaultAgentReadyTimeout].
 	ReadyTimeout time.Duration `yaml:"ready_timeout"`
 	// WALPath is the agent's on-host WAL file — only needed by
-	// cold-restart scenarios ([RestartAgentStep].RemoveWAL deletes it
+	// cold-restart scenarios (RestartAgentStep.RemoveWAL deletes it
 	// and its .bak between stop and start).
 	WALPath string `yaml:"wal_path"`
 	// PinPath is the agent's bpffs pin directory — only needed by
-	// cold-restart scenarios ([RestartAgentStep].RemovePins removes it
+	// cold-restart scenarios (RestartAgentStep.RemovePins removes it
 	// to simulate a host reboot's kernel-state loss).
 	PinPath string `yaml:"pin_path"`
 }
 
 // SSHConfig projects the agent-control block onto the shared
-// [SSHConfig] shape so the CLI can build the agent-host [SSHExec] the
+// [SSHConfig] shape so the CLI can build the agent-host remote.SSH the
 // same way it builds the VM driver's.
 func (a AgentControlConfig) SSHConfig() SSHConfig {
 	return SSHConfig{User: a.User, KeyPath: a.KeyPath, Timeout: a.Timeout}

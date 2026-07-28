@@ -5,7 +5,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/preflight"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +27,7 @@ func newPreflightCmd(opts *rootOptions) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("preflight: %w", err)
 			}
-			report := scenariotest.Preflight(ctx, cfg, sc, cloud, newMetrics(log))
+			report := preflight.Run(ctx, cfg, sc, cloud, newMetrics(log))
 			if err := emitPreflight(os.Stdout, opts.output, report); err != nil {
 				return err
 			}

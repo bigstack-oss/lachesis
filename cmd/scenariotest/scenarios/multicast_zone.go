@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -38,21 +39,21 @@ func multicastZone() *scenariotest.Scenario {
 		Desc:    "Group-MAC traffic lands in the non-billable multicast zone.",
 		Builder: b,
 		Steps: []scenariotest.Step{
-			scenariotest.CaptureStep{},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.CaptureStep{},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("224.0.0.1"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "group-MAC frames bill multicast", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "group-MAC frames bill multicast", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "multicast", Direction: "tx", MinBytes: 1 << 20},
 			}},
 			// One scrape interval so stragglers drain before the
 			// bounded-growth reads.
-			scenariotest.SleepStep{Duration: 15 * time.Second},
-			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "external",
+			steps.SleepStep{Duration: 15 * time.Second},
+			steps.MaxGrowthStep{Tenant: "T1", Zone: "external",
 				Budget: multicastNoiseBudget, Note: "multicast must not fall into the external catchall"},
-			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "same_tenant",
+			steps.MaxGrowthStep{Tenant: "T1", Zone: "same_tenant",
 				Budget: multicastNoiseBudget, Note: "multicast is not same_tenant"},
-			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "other_tenant",
+			steps.MaxGrowthStep{Tenant: "T1", Zone: "other_tenant",
 				Budget: multicastNoiseBudget, Note: "multicast is not other_tenant"},
 		},
 	}

@@ -82,7 +82,7 @@ type Scenario struct {
 
 	// Deferred lists DSL VM ids that `up` declares but does NOT boot:
 	// no port, no server, no FIP, no attach-gate slot. A later
-	// [BootVMStep] realizes them mid-run — e.g. the mac-reuse scenario
+	// BootVMStep realizes them mid-run — e.g. the mac-reuse scenario
 	// boots a VM only after another VM's MAC has been swept. Ids here
 	// must not appear in Flows that run before their BootVMStep.
 	Deferred []string

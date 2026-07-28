@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -53,44 +54,44 @@ func routerRegateway() *scenariotest.Scenario {
 		Builder:            b,
 		CreateExternalNets: []string{"net-ext2"},
 		Steps: []scenariotest.Step{
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("8.8.8.8"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "egress under the provider external net", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "egress under the provider external net", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20, ExternalNetwork: "net-ext"},
 			}},
 
-			scenariotest.CaptureStep{},
+			steps.CaptureStep{},
 			// Free the provider gateway (Neutron refuses a gateway change
 			// while a FIP on the old external net needs it), then re-gateway
 			// r-T1 to net-ext2. reconcile/routers.go folds the
 			// net-ext-labeled flows under their old label first. SSH dies
 			// with the FIP — deliberate; nothing is driven after.
-			scenariotest.DeleteFIPStep{VM: "vm-a", Provider: true},
-			scenariotest.SetRouterGatewayStep{Router: "r-T1", ExternalNet: "net-ext2"},
-			scenariotest.SleepStep{Duration: reconcileSettle},
+			steps.DeleteFIPStep{VM: "vm-a", Provider: true},
+			steps.SetRouterGatewayStep{Router: "r-T1", ExternalNet: "net-ext2"},
+			steps.SleepStep{Duration: reconcileSettle},
 
 			// The fold fired (a settled tuple was added for the old label)...
-			scenariotest.SettledTuplesGrewStep{Min: 1,
+			steps.SettledTuplesGrewStep{Min: 1,
 				Note: "A→B re-gateway folded the old-label flows"},
 			// ...and the old external-net series is frozen and monotone —
 			// the fold preserved every byte it had emitted (totals conserved).
-			scenariotest.MonotoneStep{Tenant: "T1",
+			steps.MonotoneStep{Tenant: "T1",
 				Note: "net-ext series frozen and monotone after A→B"},
 
 			// Round trip: re-gateway back to the provider net. The
 			// net-ext2-labeled rows fold again; the settled net-ext bytes
 			// from A→B must be left untouched.
-			scenariotest.SetRouterGatewayStep{Router: "r-T1", ExternalNet: "net-ext"},
-			scenariotest.SleepStep{Duration: reconcileSettle},
+			steps.SetRouterGatewayStep{Router: "r-T1", ExternalNet: "net-ext"},
+			steps.SleepStep{Duration: reconcileSettle},
 			// Still whole — the round trip neither dropped the original
 			// accumulation (monotone, no dip)...
-			scenariotest.MonotoneStep{Tenant: "T1",
+			steps.MonotoneStep{Tenant: "T1",
 				Note: "net-ext series still whole after B→A"},
 			// ...nor re-counted it (no traffic drove during the folds, so
 			// external growth since the pre-move capture must stay at noise
 			// level — a double-count on the fold-back would show ~1 MiB).
-			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "external", Budget: 256 << 10,
+			steps.MaxGrowthStep{Tenant: "T1", Zone: "external", Budget: 256 << 10,
 				Note: "round trip conserved the accumulation — no double-count on fold-back"},
 
 			// Now the end-to-end proof: with the router back on net-ext,
@@ -99,11 +100,11 @@ func routerRegateway() *scenariotest.Scenario {
 			// LastEbpfRaw watermark has to resume, not reset to zero. Keep
 			// the first drive's baseline so the assert reads the CUMULATIVE
 			// net-ext total: settled 1 MiB + live 2 MiB = 3 MiB on A.
-			scenariotest.AssociateFIPStep{VM: "vm-a", Network: "net-ext"},
-			scenariotest.DriveStep{KeepBaseline: true, Flows: []scenariotest.Flow{
+			steps.AssociateFIPStep{VM: "vm-a", Network: "net-ext"},
+			steps.DriveStep{KeepBaseline: true, Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.ExternalTarget("8.8.8.8"), Bytes: 2 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "live traffic resumes on top of the settled total (1 MiB settled + 2 MiB live = 3 MiB)", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "live traffic resumes on top of the settled total (1 MiB settled + 2 MiB live = 3 MiB)", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 3 << 20, ExternalNetwork: "net-ext"},
 			}},
 		},

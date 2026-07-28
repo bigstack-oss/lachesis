@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -38,46 +39,46 @@ func liveMigrateRoundTrip() *scenariotest.Scenario {
 		},
 		Steps: []scenariotest.Step{
 			// Baseline drive: the cross-host split attributes normally.
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "pre-migration drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "pre-migration drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", Node: "node:0", MinBytes: 1 << 20},
 				{TenantID: "T1", Zone: "same_tenant", Direction: "rx", Node: "node:1", MinBytes: 1 << 20},
 			}},
 
 			// Outbound leg: nothing folds, nothing dips, nothing re-buckets.
-			scenariotest.CaptureStep{},
-			scenariotest.MigrateStep{VM: "vm-a", Target: "node:1"},
-			scenariotest.MaxGhostsStep{Note: "outbound migration marks no ghost"},
-			scenariotest.ServerMonotoneStep{VM: "vm-a", Note: "per-server series monotone across outbound leg"},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "tenant monotone across outbound leg"},
-			scenariotest.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",
+			steps.CaptureStep{},
+			steps.MigrateStep{VM: "vm-a", Target: "node:1"},
+			steps.MaxGhostsStep{Note: "outbound migration marks no ghost"},
+			steps.ServerMonotoneStep{VM: "vm-a", Note: "per-server series monotone across outbound leg"},
+			steps.MonotoneStep{Tenant: "T1", Note: "tenant monotone across outbound leg"},
+			steps.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",
 				Budget: migrationNoiseBudget, Note: "no re-bucket to unknown (outbound)"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "drive while away", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "drive while away", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", Node: "node:1", MinBytes: 1 << 20},
 			}},
 
 			// Return leg: back onto the node whose series flat-lined —
 			// they must RESUME, not restart.
-			scenariotest.CaptureStep{},
-			scenariotest.MigrateStep{VM: "vm-a", Target: "node:0"},
-			scenariotest.MaxGhostsStep{Note: "return migration marks no ghost"},
-			scenariotest.ServerMonotoneStep{VM: "vm-a", Note: "per-server series monotone across return leg"},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "tenant monotone across return leg"},
-			scenariotest.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",
+			steps.CaptureStep{},
+			steps.MigrateStep{VM: "vm-a", Target: "node:0"},
+			steps.MaxGhostsStep{Note: "return migration marks no ghost"},
+			steps.ServerMonotoneStep{VM: "vm-a", Note: "per-server series monotone across return leg"},
+			steps.MonotoneStep{Tenant: "T1", Note: "tenant monotone across return leg"},
+			steps.MaxGrowthStep{Tenant: "unknown", Zone: "same_tenant",
 				Budget: migrationNoiseBudget, Note: "no re-bucket to unknown (return)"},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "post-return drive — home node observes new bytes", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "post-return drive — home node observes new bytes", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", VM: "vm-a", Node: "node:0", MinBytes: 1 << 20},
 				{TenantID: "T1", Zone: "same_tenant", Direction: "rx", Node: "node:1", MinBytes: 1 << 20},
 			}},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "series intact at scenario end"},
+			steps.MonotoneStep{Tenant: "T1", Note: "series intact at scenario end"},
 		},
 	}
 }

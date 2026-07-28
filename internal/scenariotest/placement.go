@@ -22,7 +22,7 @@ const slotPrefix = "node:"
 // slotIndex parses a Placement value: isSlot reports whether val uses
 // the "node:<i>" syntax at all (false = literal hypervisor name), and
 // a non-nil err means the slot's index is malformed. The one owner of
-// the parse for [resolvePlacement], [RequiredNodes], and [skipReason].
+// the parse for [resolvePlacement], [RequiredNodes], and [SkipReason].
 func slotIndex(val string) (idx int, isSlot bool, err error) {
 	if !strings.HasPrefix(val, slotPrefix) {
 		return 0, false, nil
@@ -54,14 +54,14 @@ func RequiredNodes(sc *Scenario) int {
 	return req
 }
 
-// skipReason returns why sc cannot run against cfg's cluster — a
+// SkipReason returns why sc cannot run against cfg's cluster — a
 // non-empty reason means SKIPPED, not FAILED: the scenario's slots
 // need more nodes than the config lists, which is a property of the
 // cluster, not a defect in it. Empty means runnable. A Placement
 // carrying any malformed slot never skips: that is a scenario defect
 // the placement check must FAIL on every cluster size — skipping
 // would mask it until a big-enough cluster finally ran the scenario.
-func skipReason(sc *Scenario, cfg Config) string {
+func SkipReason(sc *Scenario, cfg Config) string {
 	for _, val := range sc.Placement {
 		if _, isSlot, err := slotIndex(val); isSlot && err != nil {
 			return ""

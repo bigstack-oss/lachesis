@@ -13,7 +13,7 @@ type VMExec interface {
 }
 
 // StdinExec is the optional [VMExec] extension for commands fed from
-// the harness's own stdin — how [IngressFlowStep] streams a byte
+// the harness's own stdin — how IngressFlowStep streams a byte
 // budget INTO a VM from outside the cluster. Implemented by
 // internal/scenariotest/remote.SSH; a transport without it fails that
 // step with a clear error.

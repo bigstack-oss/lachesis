@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -52,25 +53,25 @@ func gcPressureRelief() *scenariotest.Scenario {
 			// 65,536 entries to start a relief cycle, ~3 to end it. Derived
 			// from the node's own config, which is backed up for the final
 			// restore.
-			scenariotest.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
+			steps.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
 				"gc.pressure_high_watermark": "0.0001",
 				"gc.pressure_low_watermark":  "0.00005",
 			}},
-			scenariotest.CaptureStep{},
+			steps.CaptureStep{},
 			// Real traffic on a learned MAC: enough flows to sit above the
 			// lowered high watermark, and enough bytes for the assertions
 			// below to be meaningful.
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-g", To: scenariotest.ExternalTarget("8.8.8.8"), Bytes: 4 << 20, Proto: scenariotest.TCP},
 			}},
 
 			// The GC actually ran (pressure_relief reason only).
-			scenariotest.EvictionsGrewStep{Min: 1,
+			steps.EvictionsGrewStep{Min: 1,
 				Note: "fill crossed the lowered high watermark and the oldest flows were evicted"},
 			// The bytes survived it: every evicted entry was flushed into
 			// GlobalState before the kernel delete, so the tenant's total
 			// still reflects the traffic.
-			scenariotest.AssertStep{Note: "bytes intact across eviction (flush before evict)",
+			steps.AssertStep{Note: "bytes intact across eviction (flush before evict)",
 				Expect: []scenariotest.Expect{
 					{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 3 << 20},
 				}},
@@ -80,11 +81,11 @@ func gcPressureRelief() *scenariotest.Scenario {
 			// The budget sits between one transfer and two: comfortably
 			// above the ~4 MiB driven, well below the ~8.2 MiB a full
 			// double-count would produce.
-			scenariotest.MaxGrowthStep{Tenant: "T1", Zone: "external",
+			steps.MaxGrowthStep{Tenant: "T1", Zone: "external",
 				Budget: 6 << 20, Note: "evict-then-recreate counted once, not twice"},
 
 			// Restore the node's real watermarks.
-			scenariotest.RestartAgentStep{Node: "node:0", RestoreConfig: true},
+			steps.RestartAgentStep{Node: "node:0", RestoreConfig: true},
 		},
 	}
 }

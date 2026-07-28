@@ -1,10 +1,20 @@
-package scenariotest
+// Package run composes the whole loop — preflight, up, the scenario's
+// step script, down — into the single command CI and operators invoke.
+// It is the only package that depends on every phase; each phase below
+// it knows nothing of the others.
+package run
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/down"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/preflight"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/realize"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 )
 
 // teardownTimeout bounds the deferred teardown when it has been
@@ -14,19 +24,19 @@ import (
 // hanging an unattended run forever.
 const teardownTimeout = 5 * time.Minute
 
-// RunOptions bundles everything the composed `run` needs.
-type RunOptions struct {
-	Config     Config
-	Scenario   *Scenario
+// Options bundles everything the composed `run` needs.
+type Options struct {
+	Config     scenariotest.Config
+	Scenario   *scenariotest.Scenario
 	RunID      string
 	StatePath  string
 	ReportPath string
-	Cloud      Cloud
-	Metrics    MetricsSource
-	Exec       VMExec
-	// AgentExec is the agent-host SSH transport for [RestartAgentStep];
+	Cloud      scenariotest.Cloud
+	Metrics    scenariotest.MetricsSource
+	Exec       scenariotest.VMExec
+	// AgentExec is the agent-host SSH transport for [steps.RestartAgentStep];
 	// nil is fine unless a scenario restarts an agent.
-	AgentExec VMExec
+	AgentExec scenariotest.VMExec
 	Log       *slog.Logger
 
 	// HardStop, when non-nil, aborts even the deferred teardown once
@@ -44,59 +54,59 @@ type RunOptions struct {
 	// loaded file's own path; RunID is ignored (the state's is used).
 	// Teardown semantics are unchanged (Keep still leaves the topology
 	// up).
-	State *RunState
+	State *scenariotest.RunState
 
 	// Keep skips the teardown, leaving the topology up for debugging.
 	// The run-state records everything a later `down` needs.
 	Keep bool
 
-	// SinkDelay passes through to [DriveOptions.SinkDelay]; tests set
+	// SinkDelay passes through to [drive.Options.SinkDelay]; tests set
 	// a negative value to skip the sink-bind pause.
 	SinkDelay time.Duration
-	// MACLearnTimeout passes through to [DriveOptions.MACLearnTimeout];
-	// zero uses [DefaultMACLearnTimeout], tests set a small value.
+	// MACLearnTimeout passes through to [drive.Options.MACLearnTimeout];
+	// zero uses [drive.DefaultMACLearnTimeout], tests set a small value.
 	MACLearnTimeout time.Duration
 }
 
 // Run composes the whole loop: preflight → up → the scenario's step
-// script → down. With [RunOptions.State] set it resumes instead:
+// script → down. With [Options.State] set it resumes instead:
 // realize is skipped and the script runs against the kept topology.
-// An empty [Scenario.Steps] runs the classic linear
+// An empty [scenariotest.Scenario.Steps] runs the classic linear
 // script — drive every declared flow, assert every declared
 // expectation — so plain scenarios behave as always; a scripted
 // scenario (e.g. mac-reuse) declares its own step order instead.
 // Teardown runs whenever `up` created anything — even after a
 // mid-script failure — unless Keep is set; the report and run-state
 // files always survive. The returned report carries every row the
-// steps evaluated before a failure.
+// script evaluated before a failure.
 //
 // Error semantics mirror the subcommands: a mechanical failure
 // (preflight not ready, realize or a step unable to run) is the
 // returned error; a failed assertion is a false Report.OK, not an
 // error — the script keeps going so the report shows every check.
-func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
+func Run(ctx context.Context, opts Options) (scenariotest.AssertReport, error) {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
 	if opts.State != nil && opts.State.TornDown {
 		// Checked before any network work: the answer is in the file.
-		return AssertReport{}, fmt.Errorf("run: run-state %s is already torn down — start a fresh run", opts.StatePath)
+		return scenariotest.AssertReport{}, fmt.Errorf("run: run-state %s is already torn down — start a fresh run", opts.StatePath)
 	}
 	if opts.ReportPath == "" {
-		opts.ReportPath = DefaultReportPath(opts.StatePath)
+		opts.ReportPath = scenariotest.DefaultReportPath(opts.StatePath)
 	}
-	steps := opts.Scenario.Steps
-	if len(steps) == 0 {
-		steps = defaultSteps(opts.Scenario)
+	script := opts.Scenario.Steps
+	if len(script) == 0 {
+		script = steps.Default(opts.Scenario)
 	}
 
 	if opts.State == nil {
-		pre := Preflight(ctx, opts.Config, opts.Scenario, opts.Cloud, opts.Metrics)
+		pre := preflight.Run(ctx, opts.Config, opts.Scenario, opts.Cloud, opts.Metrics)
 		if pre.Skip != "" {
 			// Nothing was created; there is nothing to tear down. The
 			// resume path never gates: a kept topology already proved
 			// the cluster fits.
-			return AssertReport{}, &SkipError{Reason: pre.Skip}
+			return scenariotest.AssertReport{}, &scenariotest.SkipError{Reason: pre.Skip}
 		}
 		if !pre.OK {
 			for _, c := range pre.Checks {
@@ -104,20 +114,20 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 					opts.Log.Error("preflight check failed", "check", c.Name, "detail", c.Detail)
 				}
 			}
-			return AssertReport{}, fmt.Errorf("run: preflight not ready")
+			return scenariotest.AssertReport{}, fmt.Errorf("run: preflight not ready")
 		}
 	} else if err := preflightResume(ctx, opts.Config, opts.Metrics); err != nil {
-		return AssertReport{}, err
+		return scenariotest.AssertReport{}, err
 	}
-	if err := checkStepMetrics(ctx, opts, steps); err != nil {
-		return AssertReport{}, err
+	if err := checkStepMetrics(ctx, opts, script); err != nil {
+		return scenariotest.AssertReport{}, err
 	}
 	opts.Log.Info("preflight ready")
 
 	rs := opts.State
 	var upErr error
 	if rs == nil {
-		rs, upErr = Realize(ctx, RealizeOptions{
+		rs, upErr = realize.Run(ctx, realize.Options{
 			Config:    opts.Config,
 			Scenario:  opts.Scenario,
 			RunID:     opts.RunID,
@@ -150,7 +160,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 				cancel()
 			}
 		}
-		if err := Down(tctx, DownOptions{
+		if err := down.Run(tctx, down.Options{
 			Config:    opts.Config,
 			State:     rs,
 			StatePath: opts.StatePath,
@@ -161,11 +171,11 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 		}
 	}()
 	if upErr != nil {
-		return AssertReport{}, fmt.Errorf("run: up: %w", upErr)
+		return scenariotest.AssertReport{}, fmt.Errorf("run: up: %w", upErr)
 	}
 
-	report := AssertReport{Scenario: rs.Scenario, RunID: rs.RunID, OK: true}
-	env := &StepEnv{
+	report := scenariotest.AssertReport{Scenario: rs.Scenario, RunID: rs.RunID, OK: true}
+	env := &scenariotest.StepEnv{
 		Config:          opts.Config,
 		Scenario:        opts.Scenario,
 		State:           rs,
@@ -180,7 +190,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 		MACLearnTimeout: opts.MACLearnTimeout,
 		Report:          &report,
 	}
-	if err := runSteps(ctx, env, steps); err != nil {
+	if err := runSteps(ctx, env, script); err != nil {
 		return report, err
 	}
 
@@ -191,7 +201,7 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 	return report, nil
 }
 
-// runSteps executes a scenario's steps in order, stopping at the first
+// runSteps executes a scenario's script in order, stopping at the first
 // step that errors (a FAILING assertion is not an error — the step
 // records its rows and returns nil, so the script continues).
 //
@@ -201,10 +211,10 @@ func Run(ctx context.Context, opts RunOptions) (AssertReport, error) {
 // (lachesis#274). That mirrors how [Run] already defers resource
 // teardown — a run that dies half-way must not leave state behind,
 // whether that state is a Neutron port or a config file.
-func runSteps(ctx context.Context, env *StepEnv, steps []Step) error {
-	defer restoreDirtyConfigs(ctx, env)
-	for i, st := range steps {
-		env.Log.Info("step", "n", i+1, "of", len(steps), "kind", st.Kind())
+func runSteps(ctx context.Context, env *scenariotest.StepEnv, script []scenariotest.Step) error {
+	defer steps.RestoreDirtyConfigs(ctx, env)
+	for i, st := range script {
+		env.Log.Info("step", "n", i+1, "of", len(script), "kind", st.Kind())
 		if err := st.Run(ctx, env); err != nil {
 			return fmt.Errorf("run: %s: %w", st.Kind(), err)
 		}
@@ -218,13 +228,13 @@ func runSteps(ctx context.Context, env *StepEnv, steps []Step) error {
 // external network) are deliberately not re-checked — the kept VMs no
 // longer depend on them, and a prerequisite deleted after `up` must
 // not block iterating against the topology it built.
-func preflightResume(ctx context.Context, cfg Config, m MetricsSource) error {
-	for _, u := range AgentURLs(cfg) {
+func preflightResume(ctx context.Context, cfg scenariotest.Config, m scenariotest.MetricsSource) error {
+	for _, u := range scenariotest.AgentURLs(cfg) {
 		res, err := m.Scrape(ctx, u)
 		if err != nil {
 			return fmt.Errorf("run: scrape %s: %w", u, err)
 		}
-		if err := CheckRequiredMetrics(res); err != nil {
+		if err := scenariotest.CheckRequiredMetrics(res); err != nil {
 			return fmt.Errorf("run: agent at %s: %w", u, err)
 		}
 	}
@@ -232,24 +242,24 @@ func preflightResume(ctx context.Context, cfg Config, m MetricsSource) error {
 }
 
 // checkStepMetrics scrapes each agent once and verifies it exposes
-// every /metrics family the script's steps declare they need (e.g.
-// [AwaitSweepStep] needs the settled-flows counter, absent on agents
+// every /metrics family the script's script declare they need (e.g.
+// [steps.AwaitSweepStep] needs the settled-flows counter, absent on agents
 // predating the settled-bytes fold). Failing here — before any
 // topology exists — beats a mid-scenario timeout with a misleading
 // cause.
-func checkStepMetrics(ctx context.Context, opts RunOptions, steps []Step) error {
-	required := requiredStepMetrics(steps)
+func checkStepMetrics(ctx context.Context, opts Options, script []scenariotest.Step) error {
+	required := steps.RequiredMetrics(script)
 	if len(required) == 0 {
 		return nil
 	}
-	for _, u := range AgentURLs(opts.Config) {
+	for _, u := range scenariotest.AgentURLs(opts.Config) {
 		r, err := opts.Metrics.Scrape(ctx, u)
 		if err != nil {
 			return fmt.Errorf("run: scrape %s: %w", u, err)
 		}
 		for _, name := range required {
 			if !r.Present[name] {
-				return fmt.Errorf("run: agent at %s does not expose %s, which this scenario's steps require — deploy a newer agent first", u, name)
+				return fmt.Errorf("run: agent at %s does not expose %s, which this scenario's script require — deploy a newer agent first", u, name)
 			}
 		}
 	}

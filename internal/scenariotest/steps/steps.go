@@ -1,17 +1,17 @@
-// steps.go is the step vocabulary behind scripted scenarios: a
-// [Scenario.Steps] list replaces `run`'s classic drive-all/assert-all
-// loop with an ordered program executed between up and down. Steps are
-// how a scenario expresses mid-run lifecycle events the linear loop
-// cannot — deleting a VM, waiting out the agent's ghost sweep,
-// rebooting a MAC under another tenant, or (future) taking an agent
-// down for a window.
+// Package steps is the step vocabulary a scripted scenario is written
+// in: an ordered program the run executes between up and down, able to
+// express the mid-run lifecycle events the classic drive-all/assert-all
+// loop cannot — deleting a VM, waiting out the agent's ghost sweep,
+// rebooting a MAC under another tenant, restarting an agent cold.
 //
-// [Step] is deliberately an open interface, not a closed enum: a new
-// operational step is one new type in this file, no executor changes.
-// The current vocabulary is the minimal set the mac-reuse scenario
-// needs plus [SleepStep]; grow it on demand rather than by
-// speculation.
-package scenariotest
+// A step is one type implementing [scenariotest.Step], grouped into
+// files by what it acts on: traffic.go drives and captures, lifecycle.go
+// boots/deletes/migrates servers, port.go hot-plugs NICs, network.go
+// mutates Neutron, agent.go drives the agent host, and the two assert_*
+// files hold the assertions — billing-facing and agent-internal.
+// Adding a step is one new type in the right file; the executor never
+// changes.
+package steps
 
 import (
 	"context"
@@ -20,6 +20,10 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/assert"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/drive"
 )
 
 const (
@@ -33,13 +37,10 @@ const (
 	// generously above one scrape interval so a drive's bytes have
 	// drained before the row is declared failing.
 	DefaultPortSeriesTimeout = 60 * time.Second
-	// DefaultAgentReadyTimeout bounds [RestartAgentStep]'s wait for the
-	// agent to answer /metrics and re-attach its taps after a restart.
-	DefaultAgentReadyTimeout = 90 * time.Second
 	// agentReadyPollInterval is the pause between readiness scrapes.
 	agentReadyPollInterval = 2 * time.Second
 	// configRestoreTimeout bounds the end-of-run sweep that puts back
-	// agent configs a run left modified ([StepEnv.restoreDirtyConfigs]).
+	// agent configs a run left modified ([scenariotest.StepEnv.restoreDirtyConfigs]).
 	// One restore is a file copy plus a unit restart, so this covers a
 	// couple of nodes without letting a wedged host hang the exit.
 	configRestoreTimeout = 3 * time.Minute
@@ -55,7 +56,7 @@ var sweepPollInterval = 5 * time.Second
 // subcommand: attach recheck, fresh baseline into run-state, then the
 // streams. A later [AssertStep] diffs against this step's baseline.
 type DriveStep struct {
-	Flows []Flow
+	Flows []scenariotest.Flow
 	// KeepBaseline drives without resetting the run-state baseline, so a
 	// following [AssertStep] measures the CUMULATIVE delta since an
 	// earlier drive — the way router-regateway proves a second drive's
@@ -75,10 +76,10 @@ type DriveStep struct {
 
 func (DriveStep) Kind() string { return "drive" }
 
-func (s DriveStep) Run(ctx context.Context, env *StepEnv) error {
+func (s DriveStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	sc := *env.Scenario
 	sc.Flows = s.Flows
-	return Drive(ctx, DriveOptions{
+	return drive.Run(ctx, drive.Options{
 		Config:            env.Config,
 		Scenario:          &sc,
 		State:             env.State,
@@ -95,7 +96,7 @@ func (s DriveStep) Run(ctx context.Context, env *StepEnv) error {
 }
 
 // IngressFlowStep streams Bytes INTO a VM from the harness itself —
-// the "sender outside the cluster" no [Flow] can express, and the
+// the "sender outside the cluster" no [scenariotest.Flow] can express, and the
 // only way to drive the external/rx tuple through the FIP DNAT path
 // (docs/architecture/edge-cases.md). It runs drive's usual gates
 // (attach recheck, MAC-learn, fresh baseline — a later [AssertStep]
@@ -113,16 +114,16 @@ type IngressFlowStep struct {
 
 func (IngressFlowStep) Kind() string { return "ingress-flow" }
 
-func (s IngressFlowStep) Run(ctx context.Context, env *StepEnv) error {
-	stdin, ok := env.Exec.(StdinExec)
+func (s IngressFlowStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	stdin, ok := env.Exec.(scenariotest.StdinExec)
 	if !ok {
-		return fmt.Errorf("ingress-flow: the exec transport cannot stream stdin (need [StdinExec])")
+		return fmt.Errorf("ingress-flow: the exec transport cannot stream stdin (need [scenariotest.StdinExec])")
 	}
 	// Zero-flow drive: the same gates and baseline capture a DriveStep
 	// gets, with the actual traffic pushed from the harness below.
 	sc := *env.Scenario
 	sc.Flows = nil
-	if err := Drive(ctx, DriveOptions{
+	if err := drive.Run(ctx, drive.Options{
 		Config:          env.Config,
 		Scenario:        &sc,
 		State:           env.State,
@@ -165,20 +166,20 @@ func (zeroReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// AssertStep evaluates Expect with the stabilize-polling `assert`
+// AssertStep evaluates scenariotest.Expect with the stabilize-polling `assert`
 // semantics against the most recent DriveStep's baseline, folding the
 // rows (tagged Note when they carry none) into the run's report.
 type AssertStep struct {
-	Expect []Expect
+	Expect []scenariotest.Expect
 	Note   string
 }
 
 func (AssertStep) Kind() string { return "assert" }
 
-func (s AssertStep) Run(ctx context.Context, env *StepEnv) error {
+func (s AssertStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	sc := *env.Scenario
 	sc.Expect = s.Expect
-	rep, err := Assert(ctx, AssertOptions{
+	rep, err := assert.Run(ctx, assert.Options{
 		Config:     env.Config,
 		Scenario:   &sc,
 		State:      env.State,
@@ -205,7 +206,7 @@ type CaptureStep struct{}
 
 func (CaptureStep) Kind() string { return "capture" }
 
-func (CaptureStep) Run(ctx context.Context, env *StepEnv) error {
+func (CaptureStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	return env.TakeCapture(ctx)
 }
 
@@ -221,7 +222,7 @@ type DeleteVMStep struct {
 
 func (DeleteVMStep) Kind() string { return "delete-vm" }
 
-func (s DeleteVMStep) Run(ctx context.Context, env *StepEnv) error {
+func (s DeleteVMStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	mac, err := env.VMMAC(ctx, s.VM)
 	if err != nil {
 		return err
@@ -252,7 +253,7 @@ func (s DeleteVMStep) Run(ctx context.Context, env *StepEnv) error {
 	// MAC may be reborn under ANOTHER tenant (mac-reuse) — a stale ref
 	// would make the gate unsatisfiable. Truthful-inventory rule, same
 	// as [DeleteFIPStep].
-	kept := make([]ResourceRef, 0, len(env.State.Ports))
+	kept := make([]scenariotest.ResourceRef, 0, len(env.State.Ports))
 	for _, p := range env.State.Ports {
 		if p.DSLID != s.VM {
 			kept = append(kept, p)
@@ -299,10 +300,10 @@ func (s AwaitSweepStep) RequiredMetrics() []string {
 	if s.ForMACOf != "" {
 		return nil // uses /debug/lookup, not a metric family
 	}
-	return []string{MetricSettledFlows}
+	return []string{scenariotest.MetricSettledFlows}
 }
 
-func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
+func (s AwaitSweepStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultSweepTimeout
@@ -335,7 +336,7 @@ func (s AwaitSweepStep) Run(ctx context.Context, env *StepEnv) error {
 // against ForMACOf and returns once it resolves on none of them — the
 // userspace metadata delete that ends the ghost sweep, which happens
 // after the fold.
-func (s AwaitSweepStep) awaitMACSwept(ctx context.Context, env *StepEnv, timeout time.Duration) error {
+func (s AwaitSweepStep) awaitMACSwept(ctx context.Context, env *scenariotest.StepEnv, timeout time.Duration) error {
 	mac, err := env.VMMAC(ctx, s.ForMACOf)
 	if err != nil {
 		return fmt.Errorf("await-sweep: no MAC known for %q (delete or detach it first): %w", s.ForMACOf, err)
@@ -345,7 +346,7 @@ func (s AwaitSweepStep) awaitMACSwept(ctx context.Context, env *StepEnv, timeout
 	var lastErr error  // most recent transient lookup failure, surfaced on timeout
 	for {
 		gone := true
-		for _, u := range AgentURLs(env.Config) {
+		for _, u := range scenariotest.AgentURLs(env.Config) {
 			res, err := env.Metrics.LookupMAC(ctx, u, mac)
 			if err != nil {
 				// A momentarily-unreachable agent can't confirm the MAC is
@@ -395,7 +396,7 @@ type MonotoneStep struct {
 
 func (MonotoneStep) Kind() string { return "assert-monotone" }
 
-func (s MonotoneStep) Run(ctx context.Context, env *StepEnv) error {
+func (s MonotoneStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	ref, err := env.Project(s.Tenant)
 	if err != nil {
 		return err
@@ -404,12 +405,12 @@ func (s MonotoneStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	cur := SumByTuple(snap.Bytes)
+	cur := scenariotest.SumByTuple(snap.Bytes)
 	for k, base := range env.Captured.Tuples {
 		if k.Tenant != ref.ID {
 			continue
 		}
-		env.AddRow(AssertRow{
+		env.AddRow(scenariotest.AssertRow{
 			Tenant: s.Tenant, TenantID: k.Tenant,
 			Zone: k.Zone, Direction: k.Direction,
 			Baseline: base, Current: cur[k], Delta: cur[k] - base,
@@ -434,16 +435,16 @@ type MaxGrowthStep struct {
 
 func (MaxGrowthStep) Kind() string { return "assert-max-growth" }
 
-func (s MaxGrowthStep) Run(ctx context.Context, env *StepEnv) error {
+func (s MaxGrowthStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	label := env.TenantLabel(s.Tenant)
 	snap, err := env.Scrape(ctx)
 	if err != nil {
 		return err
 	}
-	cur := SumByTuple(snap.Bytes)
+	cur := scenariotest.SumByTuple(snap.Bytes)
 	for _, dir := range []string{"tx", "rx"} {
-		k := Tuple{label, s.Zone, dir}
-		env.AddRow(AssertRow{
+		k := scenariotest.Tuple{Tenant: label, Zone: s.Zone, Direction: dir}
+		env.AddRow(scenariotest.AssertRow{
 			Tenant: s.Tenant, TenantID: label,
 			Zone: s.Zone, Direction: dir,
 			Baseline: env.Captured.Tuples[k], Current: cur[k], Delta: cur[k] - env.Captured.Tuples[k],
@@ -469,7 +470,7 @@ type BootVMStep struct {
 
 func (BootVMStep) Kind() string { return "boot-vm" }
 
-func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
+func (s BootVMStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	snap := env.Scenario.Builder.Build()
 	var project, network, subnet, ip string
 	for _, p := range snap.Ports {
@@ -486,8 +487,8 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	netID := LiveID(env.State.Networks, network)
-	subnetID := LiveID(env.State.Subnets, subnet)
+	netID := scenariotest.LiveID(env.State.Networks, network)
+	subnetID := scenariotest.LiveID(env.State.Subnets, subnet)
 	if netID == "" || subnetID == "" {
 		return fmt.Errorf("run-state has no live ids for %s/%s", network, subnet)
 	}
@@ -499,7 +500,7 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 		}
 	}
 	p := env.Config.Prerequisites
-	flavorID, err := env.Cloud.FindFlavor(ctx, FlavorFor(env.Config, env.Scenario))
+	flavorID, err := env.Cloud.FindFlavor(ctx, scenariotest.FlavorFor(env.Config, env.Scenario))
 	if err != nil {
 		return err
 	}
@@ -521,8 +522,8 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 		return fmt.Errorf("attach baseline scrape: %w", err)
 	}
 
-	name := Mangle(env.Config.Naming.Prefix, env.State.RunID, s.VM)
-	portID, err := env.Cloud.CreatePort(ctx, proj.ID, PortSpec{
+	name := scenariotest.Mangle(env.Config.Naming.Prefix, env.State.RunID, s.VM)
+	portID, err := env.Cloud.CreatePort(ctx, proj.ID, scenariotest.PortSpec{
 		Name:       name,
 		NetworkID:  netID,
 		SubnetID:   subnetID,
@@ -539,43 +540,43 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 			return err
 		}
 	}
-	env.State.Ports = append(env.State.Ports, ResourceRef{DSLID: s.VM, ID: portID, Name: name, ProjectID: proj.ID, MAC: portMAC})
+	env.State.Ports = append(env.State.Ports, scenariotest.ResourceRef{DSLID: s.VM, ID: portID, Name: name, ProjectID: proj.ID, MAC: portMAC})
 	if err := env.State.Save(env.StatePath); err != nil {
 		return err
 	}
 
-	// Deferred VMs honor Scenario.Placement like up-time boots do,
+	// Deferred VMs honor scenariotest.Scenario.Placement like up-time boots do,
 	// reusing realize's recorded resolution; run-states predating
 	// placement persistence resolve fresh.
 	placement := env.State.Placement
 	if placement == nil {
 		var perr error
-		if placement, perr = ResolvePlacement(env.Scenario.Placement, env.Config.Cluster.Agents); perr != nil {
+		if placement, perr = scenariotest.ResolvePlacement(env.Scenario.Placement, env.Config.Cluster.Agents); perr != nil {
 			return perr
 		}
 	}
-	serverID, err := env.Cloud.CreateServer(ctx, proj.ID, ServerSpec{
+	serverID, err := env.Cloud.CreateServer(ctx, proj.ID, scenariotest.ServerSpec{
 		Name:             name,
 		FlavorID:         flavorID,
 		ImageID:          imageID,
 		PortID:           portID,
 		KeypairName:      p.KeypairName,
-		AvailabilityZone: PlacementAZ(placement, s.VM),
+		AvailabilityZone: scenariotest.PlacementAZ(placement, s.VM),
 	})
 	if err != nil {
 		return err
 	}
-	env.State.Servers = append(env.State.Servers, ResourceRef{DSLID: s.VM, ID: serverID, Name: name, ProjectID: proj.ID})
+	env.State.Servers = append(env.State.Servers, scenariotest.ResourceRef{DSLID: s.VM, ID: serverID, Name: name, ProjectID: proj.ID})
 	if err := env.State.Save(env.StatePath); err != nil {
 		return err
 	}
-	activeCtx, cancel := context.WithTimeout(ctx, serverActiveTimeout)
+	activeCtx, cancel := context.WithTimeout(ctx, scenariotest.ServerActiveTimeout)
 	defer cancel()
 	if err := env.Cloud.WaitServerActive(activeCtx, proj.ID, serverID); err != nil {
 		return err
 	}
 
-	fipID, addr, err := env.Cloud.CreateFIP(ctx, proj.ID, FIPCreateSpec{
+	fipID, addr, err := env.Cloud.CreateFIP(ctx, proj.ID, scenariotest.FIPCreateSpec{
 		ExternalNetworkID: extNetID,
 		PortID:            portID,
 		FixedIP:           ip,
@@ -583,7 +584,7 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	env.State.FIPs = append(env.State.FIPs, FIPRef{VMID: s.VM, ID: fipID, Address: addr, ProjectID: proj.ID})
+	env.State.FIPs = append(env.State.FIPs, scenariotest.FIPRef{VMID: s.VM, ID: fipID, Address: addr, ProjectID: proj.ID})
 	if err := env.State.Save(env.StatePath); err != nil {
 		return err
 	}
@@ -595,7 +596,7 @@ func (s BootVMStep) Run(ctx context.Context, env *StepEnv) error {
 // attachGate waits for the booted VM's tap with the same summed gauge
 // + no-new-failures rule as realize, then refreshes the run-state's
 // attach record so a later DriveStep's recheck expects the new count.
-func (s BootVMStep) attachGate(ctx context.Context, env *StepEnv, baseline MetricsSnapshot) error {
+func (s BootVMStep) attachGate(ctx context.Context, env *scenariotest.StepEnv, baseline scenariotest.MetricsSnapshot) error {
 	return awaitAttachRise(ctx, env, baseline, "boot-vm")
 }
 
@@ -604,9 +605,9 @@ func (s BootVMStep) attachGate(ctx context.Context, env *StepEnv, baseline Metri
 // refreshes the run-state's attach record so a later DriveStep's
 // recheck expects the new count. Shared by every step that plugs one
 // new tap in ([BootVMStep], [AttachPortStep], [ReattachPortStep]).
-func awaitAttachRise(ctx context.Context, env *StepEnv, baseline MetricsSnapshot, kind string) error {
+func awaitAttachRise(ctx context.Context, env *scenariotest.StepEnv, baseline scenariotest.MetricsSnapshot, kind string) error {
 	target := baseline.AttachedInterfaces + 1
-	ctx, cancel := context.WithTimeout(ctx, DefaultAttachTimeout)
+	ctx, cancel := context.WithTimeout(ctx, scenariotest.DefaultAttachTimeout)
 	defer cancel()
 	for {
 		snap, err := env.Scrape(ctx)
@@ -618,14 +619,14 @@ func awaitAttachRise(ctx context.Context, env *StepEnv, baseline MetricsSnapshot
 		}
 		if snap.AttachedInterfaces >= target {
 			env.Log.Info(kind+": attach gate green", "attached", snap.AttachedInterfaces, "target", target)
-			env.State.Attach = AttachRecord{Target: target, Failures: snap.AttachFailures}
+			env.State.Attach = scenariotest.AttachRecord{Target: target, Failures: snap.AttachFailures}
 			return env.State.Save(env.StatePath)
 		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("attach gate: attached_interfaces %.0f < %.0f before timeout: %w",
 				snap.AttachedInterfaces, target, ctx.Err())
-		case <-time.After(attachPollInterval):
+		case <-time.After(scenariotest.AttachPollInterval):
 		}
 	}
 }
@@ -643,7 +644,7 @@ type AssociateFIPStep struct {
 
 func (AssociateFIPStep) Kind() string { return "associate-fip" }
 
-func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
+func (s AssociateFIPStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	snap := env.Scenario.Builder.Build()
 	var project, ip string
 	for _, p := range snap.Ports {
@@ -659,11 +660,11 @@ func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	portID := LiveID(env.State.Ports, s.VM)
+	portID := scenariotest.LiveID(env.State.Ports, s.VM)
 	if portID == "" {
 		return fmt.Errorf("run-state has no live port for %q", s.VM)
 	}
-	netID := LiveID(env.State.Networks, s.Network)
+	netID := scenariotest.LiveID(env.State.Networks, s.Network)
 	if netID == "" {
 		// Provider-bound external marker (not a CreateExternalNets net in
 		// run-state) resolves to the config's external network, the same
@@ -681,7 +682,7 @@ func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	if netID == "" {
 		return fmt.Errorf("associate-fip: no live network for %q (not a created external net nor a provider-bound marker)", s.Network)
 	}
-	fipID, addr, err := env.Cloud.CreateFIP(ctx, proj.ID, FIPCreateSpec{
+	fipID, addr, err := env.Cloud.CreateFIP(ctx, proj.ID, scenariotest.FIPCreateSpec{
 		ExternalNetworkID: netID,
 		PortID:            portID,
 		FixedIP:           ip,
@@ -689,7 +690,7 @@ func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	env.State.FIPs = append(env.State.FIPs, FIPRef{
+	env.State.FIPs = append(env.State.FIPs, scenariotest.FIPRef{
 		VMID: s.VM, ID: fipID, Address: addr, ProjectID: proj.ID, Network: s.Network,
 	})
 	if err := env.State.Save(env.StatePath); err != nil {
@@ -701,13 +702,13 @@ func (s AssociateFIPStep) Run(ctx context.Context, env *StepEnv) error {
 
 // routerRef finds a router's run-state entry (live id + project) by
 // its DSL id — shared by the Neutron-mutation steps.
-func routerRef(env *StepEnv, dsl string) (ResourceRef, error) {
+func routerRef(env *scenariotest.StepEnv, dsl string) (scenariotest.ResourceRef, error) {
 	for _, r := range env.State.Routers {
 		if r.DSLID == dsl {
 			return r, nil
 		}
 	}
-	return ResourceRef{}, fmt.Errorf("run-state has no router %q", dsl)
+	return scenariotest.ResourceRef{}, fmt.Errorf("run-state has no router %q", dsl)
 }
 
 // SetRouterRoutesStep replaces a router's static (extra) routes mid-run
@@ -718,12 +719,12 @@ func routerRef(env *StepEnv, dsl string) (ResourceRef, error) {
 // the router's route set (an empty slice clears them).
 type SetRouterRoutesStep struct {
 	Router string
-	Routes []RouteSpec
+	Routes []scenariotest.RouteSpec
 }
 
 func (SetRouterRoutesStep) Kind() string { return "set-router-routes" }
 
-func (s SetRouterRoutesStep) Run(ctx context.Context, env *StepEnv) error {
+func (s SetRouterRoutesStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	ref, err := routerRef(env, s.Router)
 	if err != nil {
 		return err
@@ -742,7 +743,7 @@ func (s SetRouterRoutesStep) Run(ctx context.Context, env *StepEnv) error {
 // first (reconcile/routers.go [state.SettleRebase]), keeping the
 // external_network series monotone across the move. ExternalNet is a
 // DSL external-network id resolved to its live network via the
-// run-state (a [Scenario.CreateExternalNets] marker).
+// run-state (a [scenariotest.Scenario.CreateExternalNets] marker).
 type SetRouterGatewayStep struct {
 	Router      string
 	ExternalNet string
@@ -750,12 +751,12 @@ type SetRouterGatewayStep struct {
 
 func (SetRouterGatewayStep) Kind() string { return "set-router-gateway" }
 
-func (s SetRouterGatewayStep) Run(ctx context.Context, env *StepEnv) error {
+func (s SetRouterGatewayStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	ref, err := routerRef(env, s.Router)
 	if err != nil {
 		return err
 	}
-	netID := LiveID(env.State.Networks, s.ExternalNet)
+	netID := scenariotest.LiveID(env.State.Networks, s.ExternalNet)
 	if netID == "" {
 		// Not a created (CreateExternalNets) network in run-state — a
 		// provider-bound external marker resolves to the config's external
@@ -798,9 +799,11 @@ type SettledTuplesGrewStep struct {
 
 func (SettledTuplesGrewStep) Kind() string { return "assert-settled-tuples-grew" }
 
-func (SettledTuplesGrewStep) RequiredMetrics() []string { return []string{MetricTenantSettledTuples} }
+func (SettledTuplesGrewStep) RequiredMetrics() []string {
+	return []string{scenariotest.MetricTenantSettledTuples}
+}
 
-func (s SettledTuplesGrewStep) Run(ctx context.Context, env *StepEnv) error {
+func (s SettledTuplesGrewStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultSweepTimeout
@@ -822,7 +825,7 @@ func (s SettledTuplesGrewStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(sweepPollInterval):
 		}
 	}
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant: "settled-tuples", Zone: "-", Direction: "-",
 		Baseline: env.Captured.SettledTuples, Current: env.Captured.SettledTuples + delta, Delta: delta,
 		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
@@ -846,7 +849,7 @@ type AddRouteStep struct {
 
 func (AddRouteStep) Kind() string { return "add-route" }
 
-func (s AddRouteStep) Run(ctx context.Context, env *StepEnv) error {
+func (s AddRouteStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	fip := ""
 	for _, f := range env.State.FIPs {
 		if f.VMID == s.VM && f.Network == "" { // the provider SSH FIP
@@ -886,13 +889,13 @@ func (s AddRouteStep) Run(ctx context.Context, env *StepEnv) error {
 //     platform never delivered the traffic".
 //
 // Together they are what makes a VM usable as an extraroute nexthop
-// (`device_owner compute:*`) — the resolver's Step B case
+// (`device_owner compute:*`) — the resolver's scenariotest.Step B case
 // (docs/architecture/trie-construction.md#the-static-route-resolver),
 // exercised live by the vm-appliance-nexthop scenario.
 //
 // The forwarded packet keeps the ORIGINAL source IP, so the port it
 // leaves by must ALSO have port security disabled
-// ([PortSpec.PortSecurityOff] / [AttachPortStep.PortSecurityOff]) or
+// ([scenariotest.PortSpec.PortSecurityOff] / [AttachPortStep.PortSecurityOff]) or
 // OVN anti-spoofing drops it on the way out. Same absolute-path +
 // SSH-FIP spelling as [AddRouteStep].
 type EnableForwardingStep struct {
@@ -901,7 +904,7 @@ type EnableForwardingStep struct {
 
 func (EnableForwardingStep) Kind() string { return "enable-forwarding" }
 
-func (s EnableForwardingStep) Run(ctx context.Context, env *StepEnv) error {
+func (s EnableForwardingStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	fip := ""
 	for _, f := range env.State.FIPs {
 		if f.VMID == s.VM && f.Network == "" { // the provider SSH FIP
@@ -957,7 +960,7 @@ type AssertFlowPeerStep struct {
 
 func (AssertFlowPeerStep) Kind() string { return "assert-flow-peer" }
 
-func (s AssertFlowPeerStep) Run(ctx context.Context, env *StepEnv) error {
+func (s AssertFlowPeerStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	// The DSL declares the interface port; the run-state ref carries
 	// the Neutron-assigned MAC realize recorded.
 	snap := env.Scenario.Builder.Build()
@@ -982,7 +985,7 @@ func (s AssertFlowPeerStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 
 	var total float64
-	for _, u := range AgentURLs(env.Config) {
+	for _, u := range scenariotest.AgentURLs(env.Config) {
 		rows, err := env.Metrics.LookupFlows(ctx, u, mac)
 		if err != nil {
 			return fmt.Errorf("assert-flow-peer: %w", err)
@@ -993,7 +996,7 @@ func (s AssertFlowPeerStep) Run(ctx context.Context, env *StepEnv) error {
 			}
 		}
 	}
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant: "flow-peer", Zone: s.Zone, Direction: "-",
 		Current: total, Delta: total, MinBytes: s.MinBytes,
 		Pass: total >= float64(s.MinBytes),
@@ -1019,9 +1022,9 @@ type DeleteFIPStep struct {
 
 func (DeleteFIPStep) Kind() string { return "delete-fip" }
 
-func (s DeleteFIPStep) Run(ctx context.Context, env *StepEnv) error {
+func (s DeleteFIPStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	deleted := 0
-	kept := make([]FIPRef, 0, len(env.State.FIPs))
+	kept := make([]scenariotest.FIPRef, 0, len(env.State.FIPs))
 	for _, f := range env.State.FIPs {
 		// Without Provider, the SSH FIP (Network "") is never a target —
 		// only Provider opts into it, so a stray empty Network can't
@@ -1076,9 +1079,11 @@ type AssertAnomalyStep struct {
 
 func (AssertAnomalyStep) Kind() string { return "assert-anomaly" }
 
-func (AssertAnomalyStep) RequiredMetrics() []string { return []string{MetricNeutronAnomalies} }
+func (AssertAnomalyStep) RequiredMetrics() []string {
+	return []string{scenariotest.MetricNeutronAnomalies}
+}
 
-func (s AssertAnomalyStep) Run(ctx context.Context, env *StepEnv) error {
+func (s AssertAnomalyStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultAnomalyTimeout
@@ -1104,7 +1109,7 @@ func (s AssertAnomalyStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(anomalyPollInterval):
 		}
 	}
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant: "anomaly", Zone: s.Class, Direction: "-",
 		Current: last, Delta: last, MinBytes: s.Min,
 		Pass: last >= float64(s.Min) && last <= float64(s.Max),
@@ -1124,7 +1129,7 @@ const (
 // MigrateStep live-migrates a realized VM and waits until Nova
 // reports it ACTIVE on a different host. Target optionally names the
 // destination — a placement slot ("node:<i>") or a literal configured
-// agent host, the [Scenario.Placement] vocabulary — empty lets the
+// agent host, the [scenariotest.Scenario.Placement] vocabulary — empty lets the
 // scheduler choose. The completed move is appended to the run-state's
 // Migrations (source and destination hosts), the evidence per-node
 // assertions across the migration are judged against. Node identity
@@ -1140,8 +1145,8 @@ type MigrateStep struct {
 
 func (MigrateStep) Kind() string { return "migrate" }
 
-func (s MigrateStep) Run(ctx context.Context, env *StepEnv) error {
-	var ref ResourceRef
+func (s MigrateStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	var ref scenariotest.ResourceRef
 	for _, r := range env.State.Servers {
 		if r.DSLID == s.VM {
 			ref = r
@@ -1153,7 +1158,7 @@ func (s MigrateStep) Run(ctx context.Context, env *StepEnv) error {
 	}
 	target := ""
 	if s.Target != "" {
-		host, err := ResolveNode(s.Target, env.Config.Cluster.Agents)
+		host, err := scenariotest.ResolveNode(s.Target, env.Config.Cluster.Agents)
 		if err != nil {
 			return fmt.Errorf("migrate: %w", err)
 		}
@@ -1185,13 +1190,13 @@ func (s MigrateStep) Run(ctx context.Context, env *StepEnv) error {
 			if err := env.Cloud.WaitServerActive(ctx, ref.ProjectID, ref.ID); err != nil {
 				return fmt.Errorf("migrate: %w", err)
 			}
-			env.State.Migrations = append(env.State.Migrations, MigrationRecord{VM: s.VM, From: from, To: host})
+			env.State.Migrations = append(env.State.Migrations, scenariotest.MigrationRecord{VM: s.VM, From: from, To: host})
 			// Re-baseline the attach record: migration legitimately
 			// re-plumbs taps, and the source agent racing its dying tap
 			// increments the failure counter (benign — the link is
 			// gone). Without a fresh baseline the next drive's recheck
 			// reads that noise as taps lost since up.
-			if snap, err := SampleAcross(ctx, env.Metrics, env.Config.Cluster.Agents); err == nil {
+			if snap, err := scenariotest.SampleAcross(ctx, env.Metrics, env.Config.Cluster.Agents); err == nil {
 				env.State.Attach.Failures = snap.AttachFailures
 			} else {
 				return fmt.Errorf("migrate: attach re-baseline scrape: %w", err)
@@ -1225,14 +1230,14 @@ func dashEmpty(s string) string {
 // the WAL (and .bak) always; the bpffs pins when RemovePins asks for a
 // full host-reboot simulation. Paths come from agent_control so
 // scenarios stay cluster-portable.
-func (s RestartAgentStep) removeStateCmd(ac AgentControlConfig) (string, error) {
+func (s RestartAgentStep) removeStateCmd(ac scenariotest.AgentControlConfig) (string, error) {
 	if !s.RemoveWAL {
 		return "", fmt.Errorf("RemovePins without RemoveWAL is not a modeled failure shape — pins cannot vanish while the WAL survives a running host")
 	}
 	if ac.WALPath == "" {
 		return "", fmt.Errorf("RemoveWAL set but agent_control.wal_path is empty")
 	}
-	if err := ShellSafe("agent_control.wal_path", ac.WALPath); err != nil {
+	if err := scenariotest.ShellSafe("agent_control.wal_path", ac.WALPath); err != nil {
 		return "", err
 	}
 	cmd := fmt.Sprintf("sudo rm -f %s %s.bak", ac.WALPath, ac.WALPath)
@@ -1240,7 +1245,7 @@ func (s RestartAgentStep) removeStateCmd(ac AgentControlConfig) (string, error) 
 		if ac.PinPath == "" {
 			return "", fmt.Errorf("RemovePins set but agent_control.pin_path is empty")
 		}
-		if err := ShellSafe("agent_control.pin_path", ac.PinPath); err != nil {
+		if err := scenariotest.ShellSafe("agent_control.pin_path", ac.PinPath); err != nil {
 			return "", err
 		}
 		cmd += fmt.Sprintf(" && sudo rm -rf %s", ac.PinPath)
@@ -1269,11 +1274,11 @@ type EpochStep struct {
 func (EpochStep) Kind() string { return "assert-epoch" }
 
 func (EpochStep) RequiredMetrics() []string {
-	return []string{MetricCountersReset}
+	return []string{scenariotest.MetricCountersReset}
 }
 
-func (s EpochStep) Run(ctx context.Context, env *StepEnv) error {
-	agent, err := AgentForNode(env.Config, s.Node)
+func (s EpochStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	agent, err := scenariotest.AgentForNode(env.Config, s.Node)
 	if err != nil {
 		return fmt.Errorf("assert-epoch: %w", err)
 	}
@@ -1290,7 +1295,7 @@ func (s EpochStep) Run(ctx context.Context, env *StepEnv) error {
 	if s.Changed {
 		pass = cur > base
 	}
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant:   agent.Host,
 		Zone:     "epoch",
 		Baseline: base, Current: cur, Delta: cur - base,
@@ -1308,7 +1313,7 @@ type SleepStep struct {
 
 func (SleepStep) Kind() string { return "sleep" }
 
-func (s SleepStep) Run(ctx context.Context, env *StepEnv) error {
+func (s SleepStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	env.Log.Info("sleep", "duration", s.Duration)
 	select {
 	case <-ctx.Done():
@@ -1362,7 +1367,7 @@ type RestartAgentStep struct {
 	// (agent_control.pin_path) — combined with RemoveWAL this simulates
 	// a host reboot: the true restart-from-zero shape.
 	RemovePins bool
-	// Timeout overrides [AgentControlConfig.ReadyTimeout] for the
+	// Timeout overrides [scenariotest.AgentControlConfig.ReadyTimeout] for the
 	// post-restart readiness wait.
 	Timeout time.Duration
 }
@@ -1371,8 +1376,8 @@ func (RestartAgentStep) Kind() string { return "restart-agent" }
 
 // HostNeeds declares the agent_control keys this step reads, so a
 // cluster that has not staged them SKIPs rather than failing mid-run.
-func (s RestartAgentStep) HostNeeds() HostNeeds {
-	return HostNeeds{AgentSSH: true, WALPath: s.RemoveWAL, PinPath: s.RemovePins}
+func (s RestartAgentStep) HostNeeds() scenariotest.HostNeeds {
+	return scenariotest.HostNeeds{AgentSSH: true, WALPath: s.RemoveWAL, PinPath: s.RemovePins}
 }
 
 // requiredMetrics declares both families the readiness gate checks
@@ -1380,10 +1385,10 @@ func (s RestartAgentStep) HostNeeds() HostNeeds {
 // front on an agent missing either — not just the one this step reads
 // for the tap baseline.
 func (RestartAgentStep) RequiredMetrics() []string {
-	return []string{MetricBytesTotal, MetricAttachedInterfaces}
+	return []string{scenariotest.MetricBytesTotal, scenariotest.MetricAttachedInterfaces}
 }
 
-func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
+func (s RestartAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	if env.AgentExec == nil {
 		return fmt.Errorf("restart-agent: no agent-host SSH transport — set agent_control in the config")
 	}
@@ -1391,7 +1396,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	if ac.KeyPath == "" || ac.User == "" {
 		return fmt.Errorf("restart-agent: agent_control.user and agent_control.key_path are required")
 	}
-	agent, err := AgentForNode(env.Config, s.Node)
+	agent, err := scenariotest.AgentForNode(env.Config, s.Node)
 	if err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
@@ -1402,7 +1407,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	// The unit and any config paths are interpolated into an SSH command
 	// line; reject shell-unsafe values (operator/scenario-controlled, but
 	// a stray metacharacter would misexecute as root).
-	if err := ShellSafe("agent_control.unit", unit); err != nil {
+	if err := scenariotest.ShellSafe("agent_control.unit", unit); err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
 	// Validate the config-source combination BEFORE touching the host: a
@@ -1415,7 +1420,7 @@ func (s RestartAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		if ac.ConfigPath == "" {
 			return fmt.Errorf("restart-agent: config changes need agent_control.config_path")
 		}
-		if err := ShellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+		if err := scenariotest.ShellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
 			return fmt.Errorf("restart-agent: %w", err)
 		}
 	}
@@ -1496,9 +1501,11 @@ type ResolvedGrewStep struct {
 
 func (ResolvedGrewStep) Kind() string { return "assert-resolved-grew" }
 
-func (ResolvedGrewStep) RequiredMetrics() []string { return []string{MetricUnresolvedResolved} }
+func (ResolvedGrewStep) RequiredMetrics() []string {
+	return []string{scenariotest.MetricUnresolvedResolved}
+}
 
-func (s ResolvedGrewStep) Run(ctx context.Context, env *StepEnv) error {
+func (s ResolvedGrewStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultSweepTimeout
@@ -1520,7 +1527,7 @@ func (s ResolvedGrewStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(sweepPollInterval):
 		}
 	}
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant: "unresolved-resolved", Zone: "-", Direction: "-",
 		Baseline: env.Captured.Resolved, Current: env.Captured.Resolved + delta, Delta: delta,
 		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
@@ -1554,9 +1561,9 @@ type EvictionsGrewStep struct {
 
 func (EvictionsGrewStep) Kind() string { return "assert-evictions-grew" }
 
-func (EvictionsGrewStep) RequiredMetrics() []string { return []string{MetricGCEvictions} }
+func (EvictionsGrewStep) RequiredMetrics() []string { return []string{scenariotest.MetricGCEvictions} }
 
-func (s EvictionsGrewStep) Run(ctx context.Context, env *StepEnv) error {
+func (s EvictionsGrewStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultSweepTimeout
@@ -1578,7 +1585,7 @@ func (s EvictionsGrewStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(sweepPollInterval):
 		}
 	}
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant: "gc-pressure-relief", Zone: "-", Direction: "-",
 		Baseline: env.Captured.Evictions, Current: env.Captured.Evictions + delta, Delta: delta,
 		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
@@ -1621,7 +1628,7 @@ type ReloadAgentStep struct {
 
 func (ReloadAgentStep) Kind() string { return "reload-agent" }
 
-func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
+func (s ReloadAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	if env.AgentExec == nil {
 		return fmt.Errorf("reload-agent: no agent-host SSH transport — set agent_control in the config")
 	}
@@ -1629,7 +1636,7 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	if ac.KeyPath == "" || ac.User == "" {
 		return fmt.Errorf("reload-agent: agent_control.user and agent_control.key_path are required")
 	}
-	agent, err := AgentForNode(env.Config, s.Node)
+	agent, err := scenariotest.AgentForNode(env.Config, s.Node)
 	if err != nil {
 		return fmt.Errorf("reload-agent: %w", err)
 	}
@@ -1637,7 +1644,7 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 	if unit == "" {
 		unit = "lachesis-agent"
 	}
-	if err := ShellSafe("agent_control.unit", unit); err != nil {
+	if err := scenariotest.ShellSafe("agent_control.unit", unit); err != nil {
 		return fmt.Errorf("reload-agent: %w", err)
 	}
 	// Validate before mutating the host — see the same note on
@@ -1646,7 +1653,7 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 		if ac.ConfigPath == "" {
 			return fmt.Errorf("reload-agent: SetConfig set but agent_control.config_path is empty")
 		}
-		if err := ShellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
+		if err := scenariotest.ShellSafe("agent_control.config_path", ac.ConfigPath); err != nil {
 			return fmt.Errorf("reload-agent: %w", err)
 		}
 	}
@@ -1682,13 +1689,13 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *StepEnv) error {
 // oldPID (the process cycled), and /metrics answers with the required
 // families and a tap count back at the pre-restart baseline (re-attach
 // complete). Fires an error on timeout.
-func (s RestartAgentStep) awaitReady(ctx context.Context, env *StepEnv, agent AgentConfig, host, unit, oldPID string, baseTaps float64) error {
+func (s RestartAgentStep) awaitReady(ctx context.Context, env *scenariotest.StepEnv, agent scenariotest.AgentConfig, host, unit, oldPID string, baseTaps float64) error {
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = env.Config.AgentControl.ReadyTimeout
 	}
 	if timeout <= 0 {
-		timeout = DefaultAgentReadyTimeout
+		timeout = scenariotest.DefaultAgentReadyTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1705,7 +1712,7 @@ func (s RestartAgentStep) awaitReady(ctx context.Context, env *StepEnv, agent Ag
 		}
 		if restarted {
 			res, err := env.Metrics.Scrape(ctx, agent.MetricsURL)
-			if err == nil && CheckRequiredMetrics(res) == nil && res.AttachedInterfaces >= baseTaps {
+			if err == nil && scenariotest.CheckRequiredMetrics(res) == nil && res.AttachedInterfaces >= baseTaps {
 				env.Log.Info("restart-agent: ready", "host", host,
 					"attached", res.AttachedInterfaces, "baseline", baseTaps)
 				return nil
@@ -1725,7 +1732,7 @@ func (s RestartAgentStep) awaitReady(ctx context.Context, env *StepEnv, agent Ag
 // agentMainPID reads the systemd MainPID of unit on host — the restart
 // evidence [RestartAgentStep] gates on. Returns the bare PID string
 // ("0" when the unit is stopped).
-func agentMainPID(ctx context.Context, env *StepEnv, host, unit string) (string, error) {
+func agentMainPID(ctx context.Context, env *scenariotest.StepEnv, host, unit string) (string, error) {
 	out, err := env.AgentExec.Run(ctx, host, "systemctl show -p MainPID "+unit)
 	if err != nil {
 		return "", err
@@ -1741,10 +1748,10 @@ func agentMainPID(ctx context.Context, env *StepEnv, host, unit string) (string,
 // readiness or fail spuriously with "Connection refused" on clusters
 // where realize outpaces the boot. Same timeout + poll cadence as
 // drive's gate.
-func awaitSSHReady(ctx context.Context, env *StepEnv, vmID, addr string) error {
-	ctx, cancel := context.WithTimeout(ctx, defaultReadyTimeout)
+func awaitSSHReady(ctx context.Context, env *scenariotest.StepEnv, vmID, addr string) error {
+	ctx, cancel := context.WithTimeout(ctx, scenariotest.DefaultReadyTimeout)
 	defer cancel()
-	env.Log.Info("waiting for ssh-ready", "vm", vmID, "addr", addr, "timeout", defaultReadyTimeout)
+	env.Log.Info("waiting for ssh-ready", "vm", vmID, "addr", addr, "timeout", scenariotest.DefaultReadyTimeout)
 	for {
 		if _, err := env.Exec.Run(ctx, addr, "true"); err == nil {
 			env.Log.Info("vm ssh-ready", "vm", vmID, "addr", addr)
@@ -1753,7 +1760,7 @@ func awaitSSHReady(ctx context.Context, env *StepEnv, vmID, addr string) error {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("vm %s (%s) not ssh-ready before deadline: %w", vmID, addr, ctx.Err())
-		case <-time.After(readyPollInterval):
+		case <-time.After(scenariotest.ReadyPollInterval):
 		}
 	}
 }
@@ -1782,8 +1789,8 @@ type PortSeriesStep struct {
 
 func (PortSeriesStep) Kind() string { return "assert-port-series" }
 
-func (s PortSeriesStep) Run(ctx context.Context, env *StepEnv) error {
-	portID := LiveID(env.State.Ports, s.Port)
+func (s PortSeriesStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	portID := scenariotest.LiveID(env.State.Ports, s.Port)
 	if portID == "" {
 		return fmt.Errorf("assert-port-series: run-state has no live port for %q", s.Port)
 	}
@@ -1812,7 +1819,7 @@ func (s PortSeriesStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-ctx.Done():
 			env.Log.Warn("assert-port-series: timeout — traffic never attributed to the port",
 				"port", s.Port, "id", portID, "sum", sum, "min", s.MinBytes)
-			env.AddRow(AssertRow{
+			env.AddRow(scenariotest.AssertRow{
 				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
 				Baseline: s.MinBytes, Current: sum, Delta: sum - s.MinBytes,
 				Pass: false, Note: s.Note,
@@ -1821,7 +1828,7 @@ func (s PortSeriesStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-time.After(sweepPollInterval):
 		}
 	}
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
 		Baseline: s.MinBytes, Current: sum, Delta: sum - s.MinBytes,
 		Pass: true, Note: s.Note,
@@ -1845,8 +1852,8 @@ type AwaitPortBindingStep struct {
 
 func (AwaitPortBindingStep) Kind() string { return "await-port-binding" }
 
-func (s AwaitPortBindingStep) Run(ctx context.Context, env *StepEnv) error {
-	var ref ResourceRef
+func (s AwaitPortBindingStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	var ref scenariotest.ResourceRef
 	for _, p := range env.State.Ports {
 		if p.DSLID == s.Port {
 			ref = p
@@ -1866,7 +1873,7 @@ func (s AwaitPortBindingStep) Run(ctx context.Context, env *StepEnv) error {
 	var last string
 	for {
 		bound := true
-		for _, u := range AgentURLs(env.Config) {
+		for _, u := range scenariotest.AgentURLs(env.Config) {
 			res, err := env.Metrics.LookupMAC(ctx, u, ref.MAC)
 			if err != nil || !res.Found || res.PortID != ref.ID {
 				bound = false
@@ -1877,7 +1884,7 @@ func (s AwaitPortBindingStep) Run(ctx context.Context, env *StepEnv) error {
 		}
 		if bound {
 			env.Log.Info("await-port-binding: rebound", "port", s.Port, "id", ref.ID)
-			env.AddRow(AssertRow{
+			env.AddRow(scenariotest.AssertRow{
 				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
 				Baseline: 1, Current: 1, Delta: 0, Pass: true, Note: s.Note,
 			})
@@ -1889,7 +1896,7 @@ func (s AwaitPortBindingStep) Run(ctx context.Context, env *StepEnv) error {
 			// stale (dead) port id — the port tier is mislabeling.
 			env.Log.Warn("await-port-binding: timeout — MAC still bound to a stale port",
 				"port", s.Port, "want", ref.ID, "stale", last)
-			env.AddRow(AssertRow{
+			env.AddRow(scenariotest.AssertRow{
 				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
 				Baseline: 1, Current: 0, Delta: -1, Pass: false, Note: s.Note,
 			})
@@ -1926,12 +1933,12 @@ type AttachPortStep struct {
 	// AllowedPairs declares allowed_address_pairs on the NIC's port —
 	// the VRRP-style grants that admit specific (IP, MAC) sources with
 	// port security still on.
-	AllowedPairs []AddressPair
+	AllowedPairs []scenariotest.AddressPair
 }
 
 func (AttachPortStep) Kind() string { return "attach-port" }
 
-func (s AttachPortStep) Run(ctx context.Context, env *StepEnv) error {
+func (s AttachPortStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	snap := env.Scenario.Builder.Build()
 	project := ""
 	for _, p := range snap.Ports {
@@ -1947,12 +1954,12 @@ func (s AttachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	serverID, ok := ServerIDFor(env.State, s.VM)
+	serverID, ok := scenariotest.ServerIDFor(env.State, s.VM)
 	if !ok {
 		return fmt.Errorf("run-state has no server for VM %q", s.VM)
 	}
-	netID := LiveID(env.State.Networks, s.Network)
-	subnetID := LiveID(env.State.Subnets, s.Subnet)
+	netID := scenariotest.LiveID(env.State.Networks, s.Network)
+	subnetID := scenariotest.LiveID(env.State.Subnets, s.Subnet)
 	if netID == "" || subnetID == "" {
 		return fmt.Errorf("run-state has no live ids for %s/%s", s.Network, s.Subnet)
 	}
@@ -1973,8 +1980,8 @@ func (s AttachPortStep) Run(ctx context.Context, env *StepEnv) error {
 			return fmt.Errorf("attach-port: no MAC recorded for %q (delete or detach it first)", s.MACFrom)
 		}
 	}
-	name := Mangle(env.Config.Naming.Prefix, env.State.RunID, s.ID)
-	portID, err := env.Cloud.CreatePort(ctx, proj.ID, PortSpec{
+	name := scenariotest.Mangle(env.Config.Naming.Prefix, env.State.RunID, s.ID)
+	portID, err := env.Cloud.CreatePort(ctx, proj.ID, scenariotest.PortSpec{
 		Name:            name,
 		NetworkID:       netID,
 		SubnetID:        subnetID,
@@ -1991,7 +1998,7 @@ func (s AttachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	env.State.Ports = append(env.State.Ports, ResourceRef{DSLID: s.ID, ID: portID, Name: name, ProjectID: proj.ID, MAC: mac})
+	env.State.Ports = append(env.State.Ports, scenariotest.ResourceRef{DSLID: s.ID, ID: portID, Name: name, ProjectID: proj.ID, MAC: mac})
 	if err := env.State.Save(env.StatePath); err != nil {
 		return err
 	}
@@ -2012,8 +2019,8 @@ type ReattachPortStep struct {
 
 func (ReattachPortStep) Kind() string { return "reattach-port" }
 
-func (s ReattachPortStep) Run(ctx context.Context, env *StepEnv) error {
-	var ref ResourceRef
+func (s ReattachPortStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	var ref scenariotest.ResourceRef
 	for _, p := range env.State.Ports {
 		if p.DSLID == s.Port {
 			ref = p
@@ -2023,7 +2030,7 @@ func (s ReattachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	if ref.ID == "" {
 		return fmt.Errorf("run-state has no port %q", s.Port)
 	}
-	serverID, ok := ServerIDFor(env.State, s.VM)
+	serverID, ok := scenariotest.ServerIDFor(env.State, s.VM)
 	if !ok {
 		return fmt.Errorf("run-state has no server for VM %q", s.VM)
 	}
@@ -2057,8 +2064,8 @@ type DetachPortStep struct {
 
 func (DetachPortStep) Kind() string { return "detach-port" }
 
-func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
-	var ref ResourceRef
+func (s DetachPortStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	var ref scenariotest.ResourceRef
 	for _, p := range env.State.Ports {
 		if p.DSLID == s.Port {
 			ref = p
@@ -2071,7 +2078,7 @@ func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	// Record the MAC so a following [AwaitSweepStep]{ForMACOf: s.Port} can
 	// wait for THIS NIC's ghost fold — even after Delete drops the ref.
 	env.RecordMAC(s.Port, ref.MAC)
-	serverID, ok := ServerIDFor(env.State, s.VM)
+	serverID, ok := scenariotest.ServerIDFor(env.State, s.VM)
 	if !ok {
 		return fmt.Errorf("run-state has no server for VM %q", s.VM)
 	}
@@ -2086,7 +2093,7 @@ func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	// Wait for the tap to actually drop, then re-baseline: the next
 	// drive's recheck must expect one tap fewer and must not read the
 	// dying-tap failure blip as taps lost since up.
-	waitCtx, cancel := context.WithTimeout(ctx, DefaultAttachTimeout)
+	waitCtx, cancel := context.WithTimeout(ctx, scenariotest.DefaultAttachTimeout)
 	defer cancel()
 	for {
 		snap, err := env.Scrape(waitCtx)
@@ -2094,7 +2101,7 @@ func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
 			return fmt.Errorf("detach gate scrape: %w", err)
 		}
 		if snap.AttachedInterfaces <= baseline.AttachedInterfaces-1 {
-			env.State.Attach = AttachRecord{Target: snap.AttachedInterfaces, Failures: snap.AttachFailures}
+			env.State.Attach = scenariotest.AttachRecord{Target: snap.AttachedInterfaces, Failures: snap.AttachFailures}
 			if err := env.State.Save(env.StatePath); err != nil {
 				return err
 			}
@@ -2105,7 +2112,7 @@ func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
 		case <-waitCtx.Done():
 			return fmt.Errorf("detach gate: attached_interfaces still %.0f (want ≤ %.0f): %w",
 				snap.AttachedInterfaces, baseline.AttachedInterfaces-1, waitCtx.Err())
-		case <-time.After(attachPollInterval):
+		case <-time.After(scenariotest.AttachPollInterval):
 		}
 	}
 
@@ -2115,7 +2122,7 @@ func (s DetachPortStep) Run(ctx context.Context, env *StepEnv) error {
 	if err := env.Cloud.DeletePort(ctx, ref.ProjectID, ref.ID); err != nil {
 		return err
 	}
-	kept := make([]ResourceRef, 0, len(env.State.Ports))
+	kept := make([]scenariotest.ResourceRef, 0, len(env.State.Ports))
 	for _, p := range env.State.Ports {
 		if p.DSLID != s.Port {
 			kept = append(kept, p)
@@ -2141,7 +2148,7 @@ type ConfigureNICStep struct {
 
 func (ConfigureNICStep) Kind() string { return "configure-nic" }
 
-func (s ConfigureNICStep) Run(ctx context.Context, env *StepEnv) error {
+func (s ConfigureNICStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	fip := ""
 	for _, f := range env.State.FIPs {
 		if f.VMID == s.VM && f.Network == "" { // the provider SSH FIP
@@ -2154,7 +2161,7 @@ func (s ConfigureNICStep) Run(ctx context.Context, env *StepEnv) error {
 	// Dev is interpolated unquoted into the SSH command; reject a
 	// stray metacharacter. CIDR needs no such guard — net.ParseCIDR
 	// below rejects anything that isn't digits/dots/slash.
-	if err := ShellSafe("configure-nic.dev", s.Dev); err != nil {
+	if err := scenariotest.ShellSafe("configure-nic.dev", s.Dev); err != nil {
 		return err
 	}
 	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
@@ -2191,7 +2198,7 @@ type SetNICMACStep struct {
 
 func (SetNICMACStep) Kind() string { return "set-nic-mac" }
 
-func (s SetNICMACStep) Run(ctx context.Context, env *StepEnv) error {
+func (s SetNICMACStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	fip := ""
 	for _, f := range env.State.FIPs {
 		if f.VMID == s.VM && f.Network == "" { // the provider SSH FIP
@@ -2201,10 +2208,10 @@ func (s SetNICMACStep) Run(ctx context.Context, env *StepEnv) error {
 	if fip == "" {
 		return fmt.Errorf("set-nic-mac: run-state has no SSH FIP for VM %q", s.VM)
 	}
-	if err := ShellSafe("set-nic-mac.dev", s.Dev); err != nil {
+	if err := scenariotest.ShellSafe("set-nic-mac.dev", s.Dev); err != nil {
 		return err
 	}
-	if err := ShellSafe("set-nic-mac.mac", s.MAC); err != nil {
+	if err := scenariotest.ShellSafe("set-nic-mac.mac", s.MAC); err != nil {
 		return err
 	}
 	if err := awaitSSHReady(ctx, env, s.VM, fip); err != nil {
@@ -2255,9 +2262,9 @@ type ZoneGrowthStep struct {
 
 func (ZoneGrowthStep) Kind() string { return "assert-zone-growth" }
 
-func (s ZoneGrowthStep) Run(ctx context.Context, env *StepEnv) error {
+func (s ZoneGrowthStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	label := env.TenantLabel(s.Tenant)
-	k := Tuple{label, s.Zone, s.Direction}
+	k := scenariotest.Tuple{Tenant: label, Zone: s.Zone, Direction: s.Direction}
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultPortSeriesTimeout
@@ -2278,7 +2285,7 @@ func (s ZoneGrowthStep) Run(ctx context.Context, env *StepEnv) error {
 		if err != nil {
 			return err
 		}
-		delta = SumByTuple(snap.Bytes)[k] - env.Captured.Tuples[k]
+		delta = scenariotest.SumByTuple(snap.Bytes)[k] - env.Captured.Tuples[k]
 		if delta >= float64(s.MinBytes) || time.Now().After(deadline) {
 			break
 		}
@@ -2289,7 +2296,7 @@ func (s ZoneGrowthStep) Run(ctx context.Context, env *StepEnv) error {
 		}
 	}
 	pass := delta >= float64(s.MinBytes) && (s.MaxBytes <= 0 || delta <= float64(s.MaxBytes))
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant: s.Tenant, TenantID: label,
 		Zone: s.Zone, Direction: s.Direction,
 		Baseline: env.Captured.Tuples[k], Current: env.Captured.Tuples[k] + delta, Delta: delta,
@@ -2322,8 +2329,8 @@ func (ServerMonotoneStep) Kind() string { return "assert-server-monotone" }
 // "no captured server tuples" error instead.
 func (ServerMonotoneStep) RequiredMetrics() []string { return nil }
 
-func (s ServerMonotoneStep) Run(ctx context.Context, env *StepEnv) error {
-	serverID, ok := ServerIDFor(env.State, s.VM)
+func (s ServerMonotoneStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	serverID, ok := scenariotest.ServerIDFor(env.State, s.VM)
 	if !ok {
 		return fmt.Errorf("run-state has no server for VM %q", s.VM)
 	}
@@ -2331,14 +2338,14 @@ func (s ServerMonotoneStep) Run(ctx context.Context, env *StepEnv) error {
 	if err != nil {
 		return err
 	}
-	cur := SumByServerTuple(snap.Servers)
+	cur := scenariotest.SumByServerTuple(snap.Servers)
 	rows := 0
 	for k, base := range env.Captured.Servers {
 		if k.Server != serverID {
 			continue
 		}
 		rows++
-		env.AddRow(AssertRow{
+		env.AddRow(scenariotest.AssertRow{
 			Tenant: s.VM, VM: s.VM, ServerID: serverID,
 			Zone: k.Zone, ExternalNetwork: k.Ext, Direction: k.Direction,
 			Baseline: base, Current: cur[k], Delta: cur[k] - base,
@@ -2366,15 +2373,15 @@ type MaxSettledStep struct {
 
 func (MaxSettledStep) Kind() string { return "assert-max-settled" }
 
-func (MaxSettledStep) RequiredMetrics() []string { return []string{MetricSettledFlows} }
+func (MaxSettledStep) RequiredMetrics() []string { return []string{scenariotest.MetricSettledFlows} }
 
-func (s MaxSettledStep) Run(ctx context.Context, env *StepEnv) error {
+func (s MaxSettledStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	snap, err := env.Scrape(ctx)
 	if err != nil {
 		return err
 	}
 	delta := snap.SettledFlows - env.Captured.SettledFlows
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant: "settled-flows", Zone: "-", Direction: "-",
 		Baseline: env.Captured.SettledFlows, Current: snap.SettledFlows, Delta: delta,
 		Pass: delta <= float64(s.Budget), Note: s.Note,
@@ -2398,15 +2405,15 @@ type MaxGhostsStep struct {
 
 func (MaxGhostsStep) Kind() string { return "assert-max-ghosts" }
 
-func (MaxGhostsStep) RequiredMetrics() []string { return []string{MetricLingeringGhosts} }
+func (MaxGhostsStep) RequiredMetrics() []string { return []string{scenariotest.MetricLingeringGhosts} }
 
-func (s MaxGhostsStep) Run(ctx context.Context, env *StepEnv) error {
+func (s MaxGhostsStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	snap, err := env.Scrape(ctx)
 	if err != nil {
 		return err
 	}
 	delta := snap.LingeringGhosts - env.Captured.Ghosts
-	env.AddRow(AssertRow{
+	env.AddRow(scenariotest.AssertRow{
 		Tenant: "lingering-ghosts", Zone: "-", Direction: "-",
 		Baseline: env.Captured.Ghosts, Current: snap.LingeringGhosts, Delta: delta,
 		Pass: delta <= float64(s.Budget), Note: s.Note,
@@ -2414,7 +2421,7 @@ func (s MaxGhostsStep) Run(ctx context.Context, env *StepEnv) error {
 	return nil
 }
 
-// restoreDirtyConfigs puts back every agent config a step modified and
+// RestoreDirtyConfigs puts back every agent config a step modified and
 // did not restore. It is the safety net for the abort paths: a step
 // error returns straight out of the executor, so a scenario's trailing
 // restore step is never reached and the host would otherwise keep
@@ -2431,7 +2438,7 @@ func (s MaxGhostsStep) Run(ctx context.Context, env *StepEnv) error {
 // The context is detached from ctx (a cancelled run — Ctrl-C — is
 // exactly when config gets stranded) but bounded, so a wedged host
 // cannot hang the run's exit.
-func restoreDirtyConfigs(ctx context.Context, env *StepEnv) {
+func RestoreDirtyConfigs(ctx context.Context, env *scenariotest.StepEnv) {
 	nodes := env.TakeConfigDirty()
 	if len(nodes) == 0 {
 		return
@@ -2448,22 +2455,25 @@ func restoreDirtyConfigs(ctx context.Context, env *StepEnv) {
 	}
 }
 
-// defaultSteps is the classic linear loop as a script: drive every
-// declared flow, assert every declared expectation.
-func defaultSteps(sc *Scenario) []Step {
-	return []Step{
+// Default is the classic linear loop as a script: drive every declared
+// flow, assert every declared expectation. A scenario that declares no
+// Steps of its own runs this.
+func Default(sc *scenariotest.Scenario) []scenariotest.Step {
+	return []scenariotest.Step{
 		DriveStep{Flows: sc.Flows},
 		AssertStep{Expect: sc.Expect},
 	}
 }
 
-// requiredStepMetrics collects the /metrics families the scenario's
-// steps declare through [MetricRequirer], deduplicated.
-func requiredStepMetrics(steps []Step) []string {
+// RequiredMetrics collects the /metrics families a script's steps
+// declare through [scenariotest.MetricRequirer], deduplicated. `run`
+// checks them against every agent before creating anything, so a
+// scenario fails on an under-featured agent before any topology exists.
+func RequiredMetrics(steps []scenariotest.Step) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, st := range steps {
-		r, ok := st.(MetricRequirer)
+		r, ok := st.(scenariotest.MetricRequirer)
 		if !ok {
 			continue
 		}

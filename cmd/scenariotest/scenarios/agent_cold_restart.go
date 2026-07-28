@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -58,19 +59,19 @@ func agentColdRestart() *scenariotest.Scenario {
 			"vm-b": "node:0",
 		},
 		Steps: []scenariotest.Step{
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "baseline drive", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "baseline drive", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20},
 			}},
 
 			// Leg 1 — WARM: WAL intact, epoch carries, series monotone.
-			scenariotest.CaptureStep{},
-			scenariotest.RestartAgentStep{},
-			scenariotest.EpochStep{Changed: false,
+			steps.CaptureStep{},
+			steps.RestartAgentStep{},
+			steps.EpochStep{Changed: false,
 				Note: "warm restart carries the stored epoch"},
-			scenariotest.MonotoneStep{Tenant: "T1", Note: "series monotone across the warm restart"},
+			steps.MonotoneStep{Tenant: "T1", Note: "series monotone across the warm restart"},
 
 			// Leg 2 — ADOPTED: WAL destroyed, pins alive. Fresh epoch,
 			// and the live kernel counters carry on — new traffic keeps
@@ -83,34 +84,34 @@ func agentColdRestart() *scenariotest.Scenario {
 			// that drop aligns with the declared epoch and is exactly
 			// what the ETL's per-segment baseline subtraction absorbs
 			// (docs/architecture/billing.md, "Declared discontinuities").
-			scenariotest.CaptureStep{},
-			scenariotest.RestartAgentStep{RemoveWAL: true},
-			scenariotest.EpochStep{Changed: true,
+			steps.CaptureStep{},
+			steps.RestartAgentStep{RemoveWAL: true},
+			steps.EpochStep{Changed: true,
 				Note: "WAL loss stamps a fresh epoch (adopted pins)"},
-			scenariotest.SleepStep{Duration: drainWait},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.SleepStep{Duration: drainWait},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
-			scenariotest.AssertStep{Note: "adopted counters keep counting after WAL loss", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "adopted counters keep counting after WAL loss", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20},
 			}},
 
 			// Leg 3 — ZERO: WAL and pins destroyed (host-reboot shape).
 			// Fresh epoch again; series legitimately restart, and new
 			// traffic accrues on the fresh counters.
-			scenariotest.CaptureStep{},
-			scenariotest.RestartAgentStep{RemoveWAL: true, RemovePins: true},
-			scenariotest.EpochStep{Changed: true,
+			steps.CaptureStep{},
+			steps.RestartAgentStep{RemoveWAL: true, RemovePins: true},
+			steps.EpochStep{Changed: true,
 				Note: "WAL+pin loss stamps a fresh epoch (zero restart)"},
-			scenariotest.SleepStep{Duration: drainWait},
-			scenariotest.DriveStep{Flows: []scenariotest.Flow{
+			steps.SleepStep{Duration: drainWait},
+			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
 			}},
 			// Tenant-level only: right after a zero restart the server
 			// family legitimately has no series until the first drain,
 			// which the assert's build-vintage guard (family absent =
 			// pre-per-server agent?) would misread as a config error.
-			scenariotest.AssertStep{Note: "fresh counters accrue after the zero restart", Expect: []scenariotest.Expect{
+			steps.AssertStep{Note: "fresh counters accrue after the zero restart", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MinBytes: 1 << 20},
 			}},
 		},

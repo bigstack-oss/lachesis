@@ -1,4 +1,4 @@
-package scenariotest
+package steps
 
 import (
 	"context"
@@ -102,8 +102,8 @@ scrape:
 	// Recover what was written and check it is the node's config plus the
 	// two overrides — cluster-specific values must survive.
 	var written string
-	for _, c := range exec.calls {
-		if m := regexp.MustCompile(`printf %s ([A-Za-z0-9+/=]+) \| base64 -d`).FindStringSubmatch(c.command); m != nil {
+	for _, c := range exec.Calls {
+		if m := regexp.MustCompile(`printf %s ([A-Za-z0-9+/=]+) \| base64 -d`).FindStringSubmatch(c.Command); m != nil {
 			b, err := base64.StdEncoding.DecodeString(m[1])
 			if err != nil {
 				t.Fatalf("decode payload: %v", err)
@@ -153,8 +153,8 @@ func TestApplySetConfig_NoBackupLeavesTheRestoreIntact(t *testing.T) {
 	}
 	// The patch still lands, on top of the in-force config.
 	var written string
-	for _, c := range exec.calls {
-		if m := regexp.MustCompile(`printf %s ([A-Za-z0-9+/=]+) \| base64 -d`).FindStringSubmatch(c.command); m != nil {
+	for _, c := range exec.Calls {
+		if m := regexp.MustCompile(`printf %s ([A-Za-z0-9+/=]+) \| base64 -d`).FindStringSubmatch(c.Command); m != nil {
 			b, _ := base64.StdEncoding.DecodeString(m[1])
 			written = string(b)
 		}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
@@ -26,27 +27,27 @@ const resolverMaxHops = 4
 // restart — the knob is hot), let one reconcile rebuild the trie at the
 // new limit, then drive and assert, and finally restore the config.
 //
-// The restart is what creates the config backup [scenariotest.ReloadAgentStep]
+// The restart is what creates the config backup [steps.ReloadAgentStep]
 // deliberately does not take, so the final RestoreConfig is the way home.
 func maxHopsSteps(dstIP, zone string) []scenariotest.Step {
 	return []scenariotest.Step{
-		scenariotest.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
+		steps.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
 			"reconcile.interval": "15s",
 		}},
 		// HOT: retune resolver depth without cycling the process. The
 		// reload also kicks the reconciler, so the re-resolve is seconds
 		// away rather than a full interval.
-		scenariotest.ReloadAgentStep{Node: "node:0", SetConfig: map[string]string{
+		steps.ReloadAgentStep{Node: "node:0", SetConfig: map[string]string{
 			"neutron.max_static_route_hops": fmt.Sprint(resolverMaxHops),
 		}},
-		scenariotest.SleepStep{Duration: reconcileSettle},
-		scenariotest.DriveStep{Flows: []scenariotest.Flow{
+		steps.SleepStep{Duration: reconcileSettle},
+		steps.DriveStep{Flows: []scenariotest.Flow{
 			{From: "vm-a", To: scenariotest.ExternalTarget(dstIP), Bytes: 1 << 20, Proto: scenariotest.TCP},
 		}},
-		scenariotest.AssertStep{Expect: []scenariotest.Expect{
+		steps.AssertStep{Expect: []scenariotest.Expect{
 			{TenantID: "T1", Zone: zone, Direction: "tx", MinBytes: 1 << 20},
 		}},
-		scenariotest.RestartAgentStep{Node: "node:0", RestoreConfig: true},
+		steps.RestartAgentStep{Node: "node:0", RestoreConfig: true},
 	}
 }
 

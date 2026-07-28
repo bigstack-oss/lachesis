@@ -5,7 +5,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/down"
 	"github.com/spf13/cobra"
 )
 
@@ -33,7 +33,7 @@ report/run-state files are never touched).`,
 			if err != nil {
 				return fmt.Errorf("down: %w", err)
 			}
-			if err := scenariotest.Down(ctx, scenariotest.DownOptions{
+			if err := down.Run(ctx, down.Options{
 				Config:    cfg,
 				State:     rs,
 				StatePath: opts.state,

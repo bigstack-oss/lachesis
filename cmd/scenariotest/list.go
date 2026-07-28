@@ -8,6 +8,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/cmd/scenariotest/scenarios"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
 	"github.com/spf13/cobra"
 )
 
@@ -55,9 +56,9 @@ func countDeclared(s *scenariotest.Scenario) (flows, expects int) {
 	flows, expects = len(s.Flows), len(s.Expect)
 	for _, st := range s.Steps {
 		switch st := st.(type) {
-		case scenariotest.DriveStep:
+		case steps.DriveStep:
 			flows += len(st.Flows)
-		case scenariotest.AssertStep:
+		case steps.AssertStep:
 			expects += len(st.Expect)
 		}
 	}
