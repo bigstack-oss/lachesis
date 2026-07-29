@@ -20,6 +20,7 @@ in an architecture chapter link there instead of carrying a record of their own.
 | OS-level guest routes | Safe-billing EXTERNAL fallback | In-VM agent | [ADR 0011](./0011-no-in-vm-agent.md) |
 | L3 discriminator in flow key | 1-byte zone code (kernel-classified) | dst_ip in key | [ADR 0012](./0012-zone-code-in-key-over-ip-in-key.md) |
 | Billing export | Pull: cumulative counters on `/metrics` | Push: usage records to Kafka / billing API / Pushgateway | [ADR 0013](./0013-pull-metrics-over-push-export.md) |
+| Kernel-counter reset detection | In-band `created_ns` entry stamp | Inferring resets from `current < lastRaw`, plus per-deleter notification | [ADR 0014](./0014-in-band-entry-identity-over-inferred-resets.md) |
 | Octavia LB attribution | Amphora MAC flag in `mac_tenant_map` | Conntrack tuple recovery as primary mechanism | [octavia.md](../architecture/octavia.md) — HAProxy creates two distinct TCP connections (verified empirically); client_ip isn't recoverable at the backend's tap; MAC-flag attribution works at every tap and matches AWS/GCP segment-by-segment billing |
 | Segment 1 zone (LB) | Optional `bpf_skb_ct_lookup` at the Amphora's tap | Always EXTERNAL | [octavia.md](../architecture/octavia.md) — conntrack refines the zone when the client is internal; EXTERNAL is the safe-billing fallback on miss |
 | Crash resilience | Read-don't-clear + WAL + counter-map pinning (zero-loss agent-crash recovery) | Clear map after each scrape | [boot-and-recovery.md](../architecture/boot-and-recovery.md) |
