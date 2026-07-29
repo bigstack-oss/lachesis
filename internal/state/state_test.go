@@ -658,95 +658,6 @@ func TestRestoreTotalSettled_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestInvalidateBaseline_RecreatedCounterCountsFully is the regression
-// for lachesis#287. A pressure-relief eviction removes a flow's kernel
-// entry; the entry is then re-created and, within one scrape interval,
-// climbs back to AT OR ABOVE the value last read. AddDelta's value-based
-// reset guard (current<lastRaw) cannot see that as a restart, so without
-// an explicit invalidation the flow's whole history is silently
-// subtracted away.
-//
-// The numbers mirror the live measurement: ~600 KB per scrape interval
-// against a ~600 KB baseline is where nearly every delta collapses.
-func TestInvalidateBaseline_RecreatedCounterCountsFully(t *testing.T) {
-	g := state.New()
-	k := bpf.FlowKey{SrcMac: [6]uint8{1}, DstMac: [6]uint8{2}, EthProto: 0x0800}
-
-	// First interval: the kernel entry reaches 600_000.
-	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 600_000, Packets: 10})
-	// Second: 1_200_000 cumulative — a clean 600_000 delta.
-	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1_200_000, Packets: 20})
-	before := snapshotBytes(t, g, k)
-	if before != 1_200_000 {
-		t.Fatalf("pre-eviction total = %d, want 1_200_000", before)
-	}
-
-	// The GC evicts this flow and says so.
-	g.InvalidateBaseline(k)
-
-	// The re-created entry climbs PAST the old baseline before the next
-	// scrape. This is the case the value guard cannot catch: current
-	// (1_300_000) >= lastRaw (1_200_000) reads as an ordinary advance of
-	// 100_000, when in truth 1_300_000 fresh bytes arrived.
-	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1_300_000, Packets: 21})
-
-	got := snapshotBytes(t, g, k)
-	// Everything the re-created entry accumulated must be added: the
-	// baseline was zeroed, so the delta is the full 1_300_000.
-	if want := uint64(2_500_000); got != want {
-		t.Errorf("total after eviction+recreation = %d, want %d\n"+
-			"a stale baseline makes this %d (1_300_000-1_200_000 added instead of 1_300_000) — "+
-			"the flow's bytes went unbilled (lachesis#287)",
-			got, want, before+100_000)
-	}
-	if got < before {
-		t.Errorf("total regressed %d -> %d; the series must stay monotone (Contract 7)", before, got)
-	}
-}
-
-// TestInvalidateBaseline_PreservesTotal pins the other half of the fix:
-// zeroing the baseline must not touch the cumulative. Dropping the row
-// instead would send the next sighting through ApplyDelta's first-sight
-// branch (Total=raw) and REGRESS the exposed series.
-func TestInvalidateBaseline_PreservesTotal(t *testing.T) {
-	g := state.New()
-	k := bpf.FlowKey{SrcMac: [6]uint8{3}, DstMac: [6]uint8{4}, EthProto: 0x0800}
-	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 900_000, Packets: 30})
-
-	g.InvalidateBaseline(k)
-
-	if got := snapshotBytes(t, g, k); got != 900_000 {
-		t.Errorf("total = %d after InvalidateBaseline, want 900_000 preserved", got)
-	}
-	// And the next reading is counted from zero, not diffed.
-	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 50_000, Packets: 1})
-	if got, want := snapshotBytes(t, g, k), uint64(950_000); got != want {
-		t.Errorf("total = %d, want %d (re-created value counted whole)", got, want)
-	}
-}
-
-// TestInvalidateBaseline_UnknownKeyIsNoop: a flow the GC evicts that was
-// never in GlobalState has no baseline to drop.
-func TestInvalidateBaseline_UnknownKeyIsNoop(t *testing.T) {
-	g := state.New()
-	g.InvalidateBaseline(bpf.FlowKey{SrcMac: [6]uint8{9}})
-	if n := g.Len(); n != 0 {
-		t.Errorf("Len = %d, want 0 — invalidating an absent key must not create a row", n)
-	}
-}
-
-// snapshotBytes reads one key's cumulative bytes out of a snapshot.
-func snapshotBytes(t *testing.T, g *state.GlobalState, k bpf.FlowKey) uint64 {
-	t.Helper()
-	for _, e := range g.Snapshot(nil) {
-		if e.Key == k {
-			return e.Total.Bytes
-		}
-	}
-	t.Fatalf("key not present in snapshot")
-	return 0
-}
-
 // The entry-identity stamp (ADR 0014) lets ApplyDelta tell "this counter
 // advanced" from "a different entry now occupies this key" without
 // inferring it from magnitudes. These pin the three-way rule.
@@ -826,4 +737,29 @@ func totalBytes(t *testing.T, g *state.GlobalState, k bpf.FlowKey) uint64 {
 	}
 	t.Fatalf("key absent from snapshot")
 	return 0
+}
+
+// TestApplyDelta_SurvivingEntryDoesNotDoubleCount pins the property the
+// removed BaselineInvalidator seam used to guard explicitly (its
+// "failed Delete must not invalidate" case, lachesis#287), now handled
+// structurally by the entry stamp.
+//
+// When pressure-relief's kernel delete FAILS the entry stays live and
+// keeps climbing from the value we last read. Its created_ns is
+// unchanged — it is the same entry — so the next scrape must difference,
+// not re-add the flow's whole history. Nothing has to remember this:
+// an unchanged stamp says it.
+func TestApplyDelta_SurvivingEntryDoesNotDoubleCount(t *testing.T) {
+	g := state.New()
+	k := keyA()
+	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 800_000, CreatedNs: 555})
+
+	// Eviction was attempted and failed; the entry lives on and advances.
+	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 900_000, CreatedNs: 555})
+
+	if got, want := totalBytes(t, g, k), uint64(900_000); got != want {
+		t.Errorf("total = %d, want %d — a surviving entry keeps its identity, so this "+
+			"is a 100_000 advance; re-counting it whole would over-bill by %d",
+			got, want, 800_000)
+	}
 }
