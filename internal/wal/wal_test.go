@@ -781,3 +781,69 @@ func TestSaveLoad_RoundTripsCountersReset(t *testing.T) {
 		t.Fatalf("CountersResetAt = %d, want 0 for a snapshot without the field", res.CountersResetAt)
 	}
 }
+
+// TestLoad_V6SnapshotHasNoEntryIdentity: a v6 file predates the
+// created_ns entry-identity stamp (schema v7,
+// docs/adr/0014-in-band-entry-identity-over-inferred-resets.md). It must
+// load clean with the field zero — which state.ApplyDelta reads as
+// "identity unknown" and resolves with the value guard.
+//
+// Zero must NOT be read as "different entry": on a pinned map that
+// survived the restart, that would re-count the whole restored
+// cumulative on the first scrape.
+func TestLoad_V6SnapshotHasNoEntryIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	v6 := `{
+  "schema_version": 6,
+  "agent_build": "pre-entry-identity",
+  "written_at_ns": "1",
+  "counters_reset_at_s": 1700000000,
+  "global_state": [
+    {
+      "key": {"src_mac": [170,0,0,0,0,1], "dst_mac": [170,0,0,0,0,2], "eth_proto": 2048, "direction": 0, "dst_zone": 2},
+      "total": {"bytes": "5000000000", "packets": "10", "last_seen_ns": "1"},
+      "last_raw": {"bytes": "5000000000", "packets": "10", "last_seen_ns": "1"}
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(v6), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.Records) != 1 {
+		t.Fatalf("Records = %+v, want one", res.Records)
+	}
+	if got := res.Records[0].Counter.LastEbpfRaw.CreatedNs; got != 0 {
+		t.Errorf("LastEbpfRaw.CreatedNs = %d, want 0 — a v6 file carries no stamp", got)
+	}
+	if got := res.Records[0].Counter.Total.Bytes; got != 5_000_000_000 {
+		t.Errorf("Total.Bytes = %d, want the restored cumulative intact", got)
+	}
+}
+
+// TestSaveLoad_EntryIdentityRoundTrips: v7 persists the stamp, so a
+// restart with a pinned map compares identity on its very first scrape
+// instead of falling back to the guard.
+func TestSaveLoad_EntryIdentityRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	recs := []state.Record{{
+		Key: bpf.FlowKey{SrcMac: [6]uint8{0xaa, 0, 0, 0, 0, 1}, DstMac: [6]uint8{0xaa, 0, 0, 0, 0, 2}, EthProto: 0x0800},
+		Counter: state.Counter{
+			Total:       bpf.FlowMetrics{Bytes: 4096, Packets: 4, LastSeenNs: 9, CreatedNs: 777},
+			LastEbpfRaw: bpf.FlowMetrics{Bytes: 4096, Packets: 4, LastSeenNs: 9, CreatedNs: 777},
+		},
+	}}
+	if err := wal.Save(path, "test", recs, nil, nil, nil, 0, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := res.Records[0].Counter.LastEbpfRaw.CreatedNs; got != 777 {
+		t.Errorf("LastEbpfRaw.CreatedNs = %d, want 777 round-tripped", got)
+	}
+}

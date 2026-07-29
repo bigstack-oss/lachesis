@@ -87,6 +87,27 @@ struct flow_metrics {
 	__u64 bytes;
 	__u64 packets;
 	__u64 last_seen_ns;
+	/*
+	 * created_ns stamps THIS entry's identity: written once, in the
+	 * creation branch below, and never updated while the entry lives.
+	 * Userspace differences the cumulative counters, which is only
+	 * meaningful if the entry that produced `current` is the same one
+	 * that produced its stored baseline — and the kernel owns that
+	 * lifetime (pressure-relief eviction, the unresolved-buffer fold,
+	 * the ghost sweep, an unpinned restart). Comparing this stamp is
+	 * how userspace tells "the counter advanced" from "a different
+	 * entry now occupies this key" without inferring it from the
+	 * magnitudes, which fails whenever a re-created entry climbs back
+	 * to its predecessor's value inside one scrape interval
+	 * (docs/adr/0014-in-band-entry-identity-over-inferred-resets.md).
+	 *
+	 * PERCPU: only the creating CPU runs the else-branch, so peer CPUs
+	 * hold 0 here. Userspace folds this field with MAX across slots
+	 * (as it already does for last_seen_ns), which yields the creating
+	 * CPU's stamp — and, after a delete zeroes every slot, the next
+	 * creator's.
+	 */
+	__u64 created_ns;
 };
 
 /*
@@ -367,6 +388,7 @@ static __always_inline int handle_packet(struct __sk_buff *skb,
 			.bytes        = pkt_len,
 			.packets      = 1,
 			.last_seen_ns = now,
+			.created_ns   = now,
 		};
 		/*
 		 * BPF_ANY: on a first-packet race between CPUs, one CPU's
