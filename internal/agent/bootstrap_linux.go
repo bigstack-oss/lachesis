@@ -260,11 +260,7 @@ func (b *bootstrapper) wireGC() error {
 	})
 	telEvictor := telemetryFlowEvictor{m: telMap}
 	reliever := gc.NewPressureReliever(gc.PressureOptions{
-		Evictor: telEvictor,
-		// Every confirmed eviction drops that flow's delta baseline, so the
-		// re-created kernel entry is counted from zero instead of diffed
-		// against a baseline that no longer exists (lachesis#287).
-		Baselines:  b.ag.state,
+		Evictor:    telEvictor,
 		MaxEntries: bpf.MapTelemetryMaxEntries,
 		Metrics:    b.ag.mx.gc,
 		Tunables:   b.ag.tun,

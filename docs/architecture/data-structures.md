@@ -293,6 +293,33 @@ The kernel `mac_tenant_map` is the load-bearing copy for billing — every packe
 | Delete kernel immediately on port deletion (skipping the 60s grace) | Dying FIN/RST packets attribute to `tenant=unknown` instead of the right tenant. The Lingering Ghost is functionally dead — under-billing on every shut-down VM |
 | GC deletes userspace first | Brief window where a kernel hit can't be enriched → `tenant=unknown` labels on the next scrape's Collect output — and the settled-bytes fold can no longer learn the tenant, so the dead VM's history re-buckets to `unknown` permanently |
 
+### telemetry_map entry lifecycle: who deletes, and what it owes userspace
+
+Three mechanisms remove `telemetry_map` entries, and a fourth event destroys them
+wholesale. Historically each had to *tell* `GlobalState` so the delta baseline did not
+outlive the entry it described — an obligation nothing enforced, and forgetting it
+under-billed silently for as long as pressure relief existed (lachesis#287).
+
+Since [ADR 0014](../adr/0014-in-band-entry-identity-over-inferred-resets.md) that
+obligation is gone: each entry carries a `created_ns` stamp written once at creation, so
+a replaced entry announces itself in-band and `ApplyDelta` counts it whole. **No deleter
+needs to notify anyone about identity, including one added in future.**
+
+What still differs per path is the disposition of the *userspace row*, and those
+differences are real rather than accidental:
+
+| Deleter | Kernel entry | GlobalState row | Why it differs |
+|---|---|---|---|
+| `gc.PressureReliever` | one key, capacity-driven | **kept**, `Total` intact | The flow is alive; only its cache entry was reclaimed. Contract 7 forbids the series regressing |
+| `unresolved.Buffer` (TTL / cap fold) | one key | buffered total folded to the synthetic `unknown` key via `Add`; `Resolve` writes an explicit baseline when the MAC later becomes known | The bytes were never attributable, so they land in `unknown` rather than a tenant series |
+| `gc.GhostSweeper` | all flows of a swept MAC | **settled and deleted** (`Settle(SettleEvict)`) | The VM is gone for good; the row would otherwise grow GlobalState and the WAL forever |
+| Agent restart without pinned maps | the whole map | rows survive via the WAL | Not a deleter — but the same identity problem, and the same stamp solves it |
+
+The recurring mistake to avoid is treating a *destroyed* entry as a *continuing* one, or
+the reverse. Both directions are silent: the first under-bills (a live counter diffed
+against a dead baseline), the second over-bills (a surviving counter re-counted whole).
+The stamp decides which case applies; nothing else should try to.
+
 ## Settled bytes
 
 The Collector late-binds `tenant_id`: every scrape resolves each GlobalState flow's VM MAC through the metadata map. Series identity is therefore a function of *current* metadata — and two lifecycle events change the answer for bytes that were already counted:

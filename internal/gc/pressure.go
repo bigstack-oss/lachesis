@@ -16,21 +16,6 @@ type FlowEvictor interface {
 	Delete(key bpf.FlowKey) error
 }
 
-// BaselineInvalidator drops the delta baseline for a flow whose kernel
-// entry has just been removed, so the next reading of that key is
-// counted from zero rather than diffed against a baseline that no longer
-// exists. Like [FlowEvictor] it is a consumer-defined seam: the agent
-// wires *state.GlobalState, tests wire a recorder.
-//
-// This must be driven by the eviction and not left to the value-based
-// reset guard in state.AddDelta: the guard only fires on
-// current<lastRaw, so a re-created entry that climbs back to the old
-// baseline within one scrape interval is read as a small normal advance
-// and the flushed bytes are lost (lachesis#287).
-type BaselineInvalidator interface {
-	InvalidateBaseline(key bpf.FlowKey)
-}
-
 // PressureReliever evicts the oldest telemetry_map entries when the map
 // approaches its capacity, so the kernel never drops a counter on its
 // own (a silent byte loss). It runs inside the scraper's drain
@@ -53,7 +38,6 @@ type BaselineInvalidator interface {
 // synchronisation.
 type PressureReliever struct {
 	evictor    FlowEvictor
-	baselines  BaselineInvalidator
 	maxEntries int
 	mx         *Metrics
 	tun        *tunables.Store
@@ -65,12 +49,7 @@ type PressureReliever struct {
 // fill-ratio denominator). The tuning values come from the shared
 // tunables snapshot, validated at load/reload by config.GCConfig.
 type PressureOptions struct {
-	Evictor FlowEvictor
-	// Baselines is told about every entry actually evicted, so the flow's
-	// delta baseline is dropped alongside its kernel entry. Required:
-	// without it a re-created entry is diffed against a dead baseline and
-	// its bytes go unbilled (lachesis#287).
-	Baselines  BaselineInvalidator
+	Evictor    FlowEvictor
 	MaxEntries int
 	Metrics    *Metrics
 	Tunables   *tunables.Store
@@ -81,7 +60,6 @@ type PressureOptions struct {
 func NewPressureReliever(opts PressureOptions) *PressureReliever {
 	return &PressureReliever{
 		evictor:    opts.Evictor,
-		baselines:  opts.Baselines,
 		maxEntries: opts.MaxEntries,
 		mx:         opts.Metrics,
 		tun:        opts.Tunables,
@@ -123,19 +101,9 @@ func (p *PressureReliever) Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics) {
 	evicted := 0
 	for _, k := range victims {
 		if err := p.evictor.Delete(k); err != nil {
-			// The entry is STILL LIVE and its kernel counter keeps climbing
-			// from the value we last read, so its baseline must stand. This
-			// `continue` is load-bearing: invalidating here would make the
-			// next reading count the flow's whole history a second time,
-			// turning an under-count into an over-count.
 			slog.Warn("pressure-relief kernel delete failed; entry stays until next pass",
 				"component", component, "err", err)
 			continue
-		}
-		// Confirmed gone: the next value read for this key starts at zero,
-		// so the delta baseline must go with it (lachesis#287).
-		if p.baselines != nil {
-			p.baselines.InvalidateBaseline(k)
 		}
 		evicted++
 	}
