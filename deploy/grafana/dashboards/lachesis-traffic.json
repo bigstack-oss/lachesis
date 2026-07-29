@@ -4,7 +4,7 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "lachesis-prometheus"
+          "uid": "${datasource}"
         },
         "enable": true,
         "expr": "changes(lachesis_agent_counters_reset_timestamp_seconds[1m]) > 0",
