@@ -40,10 +40,6 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 //     additive — a v4 file is a valid v5 file with no total-settled
 //     buckets (no project had died yet), so Load reads it without
 //     migration.
-//   - v7: adds created_ns to each flow's raw counters — the kernel
-//     entry-identity stamp (docs/adr/0014-in-band-entry-identity-over-inferred-resets.md).
-//     A v6 file loads clean: the field decodes as 0, meaning "identity
-//     unknown", and the first scrape falls back to the value guard.
 //   - v6: adds counters_reset_at_s — the epoch behind
 //     lachesis_agent_counters_reset_timestamp_seconds, carried across
 //     warm restarts so the gauge keeps declaring the last true state
@@ -52,6 +48,10 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 //     restore treats as "epoch unknown" and re-stamps once (a spurious
 //     discontinuity is billing-free under the ETL's per-segment
 //     baseline subtraction; the one-time alert at upgrade is accepted).
+//   - v7: adds created_ns to each flow's raw counters — the kernel
+//     entry-identity stamp (docs/adr/0014-in-band-entry-identity-over-inferred-resets.md).
+//     A v6 file loads clean: the field decodes as 0, meaning "identity
+//     unknown", and the first scrape falls back to the value guard.
 const SchemaVersion uint = 7
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
