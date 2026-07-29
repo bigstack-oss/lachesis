@@ -746,3 +746,84 @@ func snapshotBytes(t *testing.T, g *state.GlobalState, k bpf.FlowKey) uint64 {
 	t.Fatalf("key not present in snapshot")
 	return 0
 }
+
+// The entry-identity stamp (ADR 0014) lets ApplyDelta tell "this counter
+// advanced" from "a different entry now occupies this key" without
+// inferring it from magnitudes. These pin the three-way rule.
+
+// TestApplyDelta_NewEntryCountedWhole is the lachesis#287 case, now
+// caught in-band. The evicted entry's replacement climbs PAST the old
+// baseline before the next scrape, so the value guard (current<lastRaw)
+// cannot see the reset — only the changed stamp can.
+func TestApplyDelta_NewEntryCountedWhole(t *testing.T) {
+	g := state.New()
+	k := keyA()
+	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1_200_000, Packets: 20, CreatedNs: 111})
+
+	// Evicted and re-created (new stamp); climbs to 1_300_000 — above the
+	// old baseline, so magnitudes alone read this as a 100_000 advance.
+	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 1_300_000, Packets: 21, CreatedNs: 222})
+
+	if got, want := totalBytes(t, g, k), uint64(2_500_000); got != want {
+		t.Errorf("total = %d, want %d — a changed created_ns means a different entry, "+
+			"so its counter must be taken whole (got the %d a stale-baseline diff produces)",
+			got, want, 1_200_000+100_000)
+	}
+}
+
+// TestApplyDelta_SameEntryDiffs: an unchanged stamp is the ordinary
+// case and must still difference, not re-add.
+func TestApplyDelta_SameEntryDiffs(t *testing.T) {
+	g := state.New()
+	k := keyA()
+	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 600_000, CreatedNs: 111})
+	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 900_000, CreatedNs: 111})
+
+	if got, want := totalBytes(t, g, k), uint64(900_000); got != want {
+		t.Errorf("total = %d, want %d (600_000 first sight + 300_000 delta)", got, want)
+	}
+}
+
+// TestApplyDelta_UnknownIdentityFallsBackToValueGuard is the migration
+// guard, and the one that would hurt most if it were wrong.
+//
+// A v6 WAL has no created_ns, so a restored baseline decodes as 0. If 0
+// were treated as "different entry", the first scrape of a PINNED map
+// that survived the restart would re-count its entire cumulative. Zero
+// must mean "identity unknown" and defer to the value guard.
+func TestApplyDelta_UnknownIdentityFallsBackToValueGuard(t *testing.T) {
+	g := state.New()
+	k := keyA()
+	// A v6 restore: 5 GB already counted, baseline carries no stamp.
+	g.Restore([]state.Record{{Key: k, Counter: state.Counter{
+		Total:       bpf.FlowMetrics{Bytes: 5_000_000_000},
+		LastEbpfRaw: bpf.FlowMetrics{Bytes: 5_000_000_000}, // CreatedNs zero
+	}}})
+
+	// The pinned kernel entry survived and has advanced by 1_000. It now
+	// reports a real stamp for the first time.
+	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 5_000_001_000, CreatedNs: 333})
+
+	if got, want := totalBytes(t, g, k), uint64(5_000_001_000); got != want {
+		t.Errorf("total = %d, want %d — unknown identity must diff, not re-count; "+
+			"treating 0 as a reset would double to %d", got, want, 10_000_001_000)
+	}
+
+	// ...and the stamp is adopted, so the NEXT eviction is detected.
+	g.ApplyDelta(k, bpf.FlowMetrics{Bytes: 2_000, CreatedNs: 444})
+	if got, want := totalBytes(t, g, k), uint64(5_000_003_000); got != want {
+		t.Errorf("total = %d, want %d — the stamp must be adopted after the "+
+			"unknown-identity scrape", got, want)
+	}
+}
+
+func totalBytes(t *testing.T, g *state.GlobalState, k bpf.FlowKey) uint64 {
+	t.Helper()
+	for _, e := range g.Snapshot(nil) {
+		if e.Key == k {
+			return e.Total.Bytes
+		}
+	}
+	t.Fatalf("key absent from snapshot")
+	return 0
+}

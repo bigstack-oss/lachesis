@@ -111,12 +111,35 @@ func (g *GlobalState) ApplyDelta(key bpf.FlowKey, raw bpf.FlowMetrics) {
 		g.mu.Unlock()
 		return
 	}
-	AddDelta(&c.Total.Bytes, &c.LastEbpfRaw.Bytes, raw.Bytes)
-	AddDelta(&c.Total.Packets, &c.LastEbpfRaw.Packets, raw.Packets)
+	switch {
+	case c.LastEbpfRaw.CreatedNs == 0:
+		// Identity unknown: a v6 WAL restore (the field predates schema
+		// v7) or a first sighting seeded before the stamp existed. Fall
+		// back to the value guard for this one observation rather than
+		// assume a reset — assuming would re-count the whole cumulative
+		// of a pinned map that survived the restart. Adopt the kernel's
+		// stamp below so every later scrape compares identity.
+		AddDelta(&c.Total.Bytes, &c.LastEbpfRaw.Bytes, raw.Bytes)
+		AddDelta(&c.Total.Packets, &c.LastEbpfRaw.Packets, raw.Packets)
+	case raw.CreatedNs != c.LastEbpfRaw.CreatedNs:
+		// A DIFFERENT entry now occupies this key: the one our baseline
+		// described was destroyed (evicted, or lost with an unpinned
+		// map) and the kernel counted `raw` from zero. Take it whole —
+		// diffing against the dead baseline is what silently discarded
+		// traffic before (lachesis#287).
+		c.Total.Bytes += raw.Bytes
+		c.Total.Packets += raw.Packets
+		c.LastEbpfRaw.Bytes = raw.Bytes
+		c.LastEbpfRaw.Packets = raw.Packets
+	default:
+		AddDelta(&c.Total.Bytes, &c.LastEbpfRaw.Bytes, raw.Bytes)
+		AddDelta(&c.Total.Packets, &c.LastEbpfRaw.Packets, raw.Packets)
+	}
 	if raw.LastSeenNs > c.Total.LastSeenNs {
 		c.Total.LastSeenNs = raw.LastSeenNs
 	}
 	c.LastEbpfRaw.LastSeenNs = raw.LastSeenNs
+	c.LastEbpfRaw.CreatedNs = raw.CreatedNs
 	g.mu.Unlock()
 }
 

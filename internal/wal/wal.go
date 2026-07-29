@@ -330,7 +330,7 @@ func toWire(r state.Record) entryWire {
 }
 
 func toMetricsWire(m bpf.FlowMetrics) flowMetricsWire {
-	return flowMetricsWire{Bytes: m.Bytes, Packets: m.Packets, LastSeenNs: m.LastSeenNs}
+	return flowMetricsWire{Bytes: m.Bytes, Packets: m.Packets, LastSeenNs: m.LastSeenNs, CreatedNs: m.CreatedNs}
 }
 
 func fromSnapshot(snap snapshotWire) []state.Record {
@@ -357,7 +357,7 @@ func fromSnapshot(snap snapshotWire) []state.Record {
 }
 
 func fromMetricsWire(w flowMetricsWire) bpf.FlowMetrics {
-	return bpf.FlowMetrics{Bytes: w.Bytes, Packets: w.Packets, LastSeenNs: w.LastSeenNs}
+	return bpf.FlowMetrics{Bytes: w.Bytes, Packets: w.Packets, LastSeenNs: w.LastSeenNs, CreatedNs: w.CreatedNs}
 }
 
 func fromTenantSettled(snap snapshotWire) []state.TenantSettledRecord {
