@@ -5,7 +5,7 @@
 | [architecture/](./architecture/README.md) | The design narrative, in reading order — start here. Problem → data structures → classification → trie → scenarios → billing → contracts, plus the concept primer |
 | [adr/](./adr/README.md) | Architecture Decision Records — every considered-and-rejected alternative with its reasoning |
 | [development/](./development/) | Contributor-facing: [testing.md](./development/testing.md) (the four test tiers and CI gates) and [conventions.md](./development/conventions.md) (constructor idioms, package anatomy, hot-path rules) |
-| [operations/](./operations/) | Operator-facing: [runtime.md](./operations/runtime.md) (SIGHUP reload, hot-tunable knobs, /debug endpoints) |
+| [operations/](./operations/) | Operator-facing: [runtime.md](./operations/runtime.md) (SIGHUP reload, hot-tunable knobs, /debug endpoints) and [cubecos.md](./operations/cubecos.md) (the CubeCOS platform service: roles, requirements, health, teardown) |
 | [sprint-plan.md](./sprint-plan.md) | Historical planning record (references the pre-restructure design-doc numbering) |
 
 Code comments reference these pages as `docs/<group>/<file>.md#<heading-anchor>`;
