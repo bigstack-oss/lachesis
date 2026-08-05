@@ -37,7 +37,7 @@ re-pinned on start. `systemctl reload lachesis` sends SIGHUP — the
 | `/etc/cube/lachesis/lachesis.yaml` | active config, **rendered at commit** | `config_lachesis` |
 | `/var/lib/lachesis/network_agent_state.json` | the WAL — settled billing accumulators | agent |
 | `/var/log/lachesis/lachesis.log` | structured JSON log (`StandardOutput=append:`) | agent |
-| `/etc/logrotate.d/lachesis` | rotation: daily, `copytruncate`, 128M cap, compressed | RPM |
+| `/etc/logrotate.d/lachesis` | rotation: daily, `copytruncate`, 128M cap, compressed | `config_lachesis` |
 
 Two of these deserve care:
 
