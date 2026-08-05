@@ -33,7 +33,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.29.5
+        uses: github/codeql-action/init@a2983b8bed1923f44751c5c43237f479442827b3 # v3.29.5
         with:
           languages: go
           # CodeQL's Go analysis has no `none` build mode, and autobuild
@@ -47,6 +47,6 @@ jobs:
           go build ./internal/... ./cmd/...
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.29.5
+        uses: github/codeql-action/analyze@a2983b8bed1923f44751c5c43237f479442827b3 # v3.29.5
         with:
           category: "/language:go"
