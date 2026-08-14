@@ -208,3 +208,73 @@ func TestAmphoraOwnerByPort_MultipleLoadBalancers(t *testing.T) {
 		t.Errorf("lb2 vrrp port = %q, want T9", got["port-amp9-vrrp"])
 	}
 }
+
+func TestAmphoraBaseIPs(t *testing.T) {
+	snap := ampSnap()
+	got := AmphoraBaseIPs(&snap)
+
+	// One entry per fixed IP of each re-attributed data port: the
+	// VIP-network base address and the plugged member-network address.
+	// The VIP itself (192.168.1.47, on the separate Octavia-owned port)
+	// must NOT appear — it is what marks Segment 1.
+	want := map[string]string{
+		"192.168.1.99": "T1",
+		"10.131.2.7":   "T1",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d base IPs, want %d: %+v", len(got), len(want), got)
+	}
+	for _, e := range got {
+		owner, ok := want[e.Addr.String()]
+		if !ok {
+			t.Errorf("unexpected base IP %s (owner %s)", e.Addr, e.ProjectID)
+			continue
+		}
+		if e.ProjectID != owner {
+			t.Errorf("base IP %s owner = %q, want %q", e.Addr, e.ProjectID, owner)
+		}
+	}
+}
+
+// TestAmphoraBaseIPs_ExcludesVIPAndManagement pins the two addresses that
+// must never enter the set. The VIP is what tells Segment 1 apart from
+// Segment 2 — including it would zone an internal client's load-balancer
+// traffic as infra and stop billing it. The management address belongs to
+// a port the join already dropped.
+func TestAmphoraBaseIPs_ExcludesVIPAndManagement(t *testing.T) {
+	snap := ampSnap()
+	for _, e := range AmphoraBaseIPs(&snap) {
+		switch e.Addr.String() {
+		case "192.168.1.47":
+			t.Error("the load balancer's VIP is in the base-IP set; Segment 1 would zone as infra")
+		case "10.254.3.218":
+			t.Error("the Amphora management address is in the base-IP set")
+		}
+	}
+}
+
+func TestAmphoraBaseIPs_NoOctaviaIsEmpty(t *testing.T) {
+	snap := ampSnap()
+	snap.LoadBalancers, snap.Amphorae = nil, nil
+	if got := AmphoraBaseIPs(&snap); len(got) != 0 {
+		t.Errorf("AmphoraBaseIPs with no Octavia data = %+v, want empty", got)
+	}
+}
+
+// TestAmphoraBaseIPs_SkipsIPv6 covers the IPv4-only kernel path: a v6
+// fixed IP has no representable key, so it is dropped rather than
+// producing an unwritable row.
+func TestAmphoraBaseIPs_SkipsIPv6(t *testing.T) {
+	snap := ampSnap()
+	for i := range snap.Ports {
+		if snap.Ports[i].ID == "port-amp-vrrp" {
+			snap.Ports[i].FixedIPs = append(snap.Ports[i].FixedIPs,
+				FixedIP{SubnetID: "sub-v6", IPAddress: "fd00::99"})
+		}
+	}
+	for _, e := range AmphoraBaseIPs(&snap) {
+		if !e.Addr.Is4() {
+			t.Errorf("non-IPv4 base IP %s reached the set", e.Addr)
+		}
+	}
+}

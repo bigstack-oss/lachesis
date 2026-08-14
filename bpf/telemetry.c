@@ -195,6 +195,70 @@ struct {
 } mac_tenant_map SEC(".maps");
 
 /*
+ * amphora_key: (tenant_id, ip) identifying one address of an Amphora.
+ *
+ * Scoped by tenant because private CIDRs overlap freely across projects
+ * — two tenants can each own 10.0.0.5, and a bare-IP set would let one
+ * tenant's Amphora address silently reclassify the other's traffic.
+ */
+struct amphora_key {
+	__u32 tenant_id;
+	__u32 ip;		/* IPv4, network byte order (wire order) */
+};
+
+/*
+ * amphora_base_ip: the set of Amphora BASE addresses — every fixed IP of
+ * every Amphora data port. Presence means "this address is the Amphora
+ * originating side", i.e. Segment 2.
+ *
+ * # What it separates
+ *
+ * Both Octavia segments cross the same Amphora MAC, so the MAC flag in
+ * mac_tenant_map cannot tell them apart. The Amphora's own address can:
+ *
+ *   Segment 1  client <-> Amphora    Amphora side is the VIP
+ *   Segment 2  Amphora <-> backend   Amphora side is the base IP
+ *
+ * HAProxy accepts Segment 1 on the VIP and originates Segment 2 from the
+ * base address (verified on-wire). So a hit here means plumbing (INFRA)
+ * and a miss means Segment 1, which must keep classifying by tenant —
+ * an internal client's traffic to a load balancer is real, billable
+ * same_tenant / other_tenant traffic (docs/architecture/octavia.md).
+ *
+ * # Why base addresses rather than VIPs
+ *
+ * Fail-safe direction. A missing entry here drops Segment 2 to
+ * same_tenant, which is $0 either way; a missing VIP in the mirror-image
+ * design would mark Segment 1 INFRA and stop billing it. The base set is
+ * also directly derivable from the ports userspace already enumerates,
+ * including the member-network ports Octavia plugs after the fact.
+ *
+ * Sizing: one entry per fixed IP of an Amphora data port — 1-2 per
+ * Amphora on a normal topology, a few more when pool members span
+ * subnets. 1024 covers hundreds of load balancers with headroom, at
+ * 8 bytes of key per entry.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, struct amphora_key);
+	__type(value, __u8);
+} amphora_base_ip SEC(".maps");
+
+/*
+ * is_amphora_segment2 - does this flow's Amphora side use its base
+ * address rather than the VIP?
+ *
+ * amp_tid must already be masked; amp_ip is the Amphora side's on-wire
+ * address in network byte order.
+ */
+static __always_inline _Bool is_amphora_segment2(__u32 amp_tid, __be32 amp_ip)
+{
+	struct amphora_key k = { .tenant_id = amp_tid, .ip = amp_ip };
+	return bpf_map_lookup_elem(&amphora_base_ip, &k) != NULL;
+}
+
+/*
  * Slot indices for telemetry_stats. Mirror the Stat* constants in
  * internal/bpf/schema.go. STAT_REASON_MAX doubles as the map's
  * max_entries, so adding a reason here without updating the Go-side
@@ -258,18 +322,23 @@ static __always_inline __u64 mac_to_u64(const __u8 mac[6])
  *   1. vm_mac must be a known VM in mac_tenant_map, otherwise ZONE_MISS.
  *   2. Direct-L2 fast path: if peer_mac is also a known VM, compare
  *      tenants exactly. No trie consulted, no CIDR ambiguity.
- *   2a. Octavia: an L2-adjacent flow with an Amphora on either end is
- *      load-balancer plumbing (Segment 2, Amphora <-> backend), so it
- *      classifies ZONE_INFRA rather than by tenant. Checked on both ends
- *      so the same segment carries the same zone at the backend's tap and
- *      at the Amphora's tap — the both-sides emission pairs a tx and an rx
- *      series per transfer, and splitting that pair across two zones makes
- *      it unreconcilable (docs/architecture/billing.md).
+ *   2a. Octavia: when either end carries the Amphora flag, that end's own
+ *      address decides the segment. Base address -> Segment 2, the load
+ *      balancer's internal plumbing, ZONE_INFRA. VIP -> Segment 1, which
+ *      falls through and classifies by tenant like any other flow.
  *
- *      Segment 1 (client <-> Amphora) is deliberately NOT caught here: an
- *      external client's peer_mac is a router interface, absent from
- *      mac_tenant_map, so it falls past this branch to the trie and lands
- *      EXTERNAL — which is the billable half (docs/architecture/octavia.md).
+ *      Checking both ends matters because the same Segment 2 transfer is
+ *      seen at the Amphora's tap and the backend's tap; the both-sides
+ *      emission pairs one tx with one rx series per transfer, and
+ *      splitting that pair across two zones makes it unreconcilable
+ *      (docs/architecture/billing.md).
+ *
+ *      Segment 1 must NOT be swallowed here. An external client's
+ *      peer_mac is a router interface, absent from mac_tenant_map, so it
+ *      never reaches this branch at all and lands EXTERNAL via the trie.
+ *      An INTERNAL client does reach it — and is real billable
+ *      same_tenant / other_tenant traffic, so only the base-address test
+ *      keeps it out of INFRA (docs/architecture/octavia.md).
  *   3. Routed fallback: LPM trie keyed on (vm_tenant_id, remote_ip);
  *      hits SAME_TENANT rows and per-tenant extraroute rows.
  *   4. Sentinel fallback: if (3) misses, re-key with tenant_id=0
@@ -284,6 +353,7 @@ static __always_inline __u64 mac_to_u64(const __u8 mac[6])
  */
 static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
 					const __u8 peer_mac[6],
+					__be32 local_ip_be,
 					__be32 remote_ip_be)
 {
 	__u64 vm_key = mac_to_u64(vm_mac);
@@ -295,10 +365,18 @@ static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
 	__u64 peer_key = mac_to_u64(peer_mac);
 	__u32 *peer_val = bpf_map_lookup_elem(&mac_tenant_map, &peer_key);
 	if (peer_val) {
-		if ((*vm_val | *peer_val) & TENANT_AMPHORA_FLAG)
+		__u32 peer_tid = *peer_val & TENANT_ID_MASK;
+		/* Test each Amphora end against its OWN address. Only the
+		 * flagged side is probed: an unflagged peer's address is
+		 * ordinary tenant space and could collide with some other
+		 * project's Amphora base IP. */
+		if ((*vm_val & TENANT_AMPHORA_FLAG) &&
+		    is_amphora_segment2(vm_tid, local_ip_be))
 			return ZONE_INFRA;
-		return ((*peer_val & TENANT_ID_MASK) == vm_tid)
-			? ZONE_SAME_TENANT : ZONE_OTHER_TENANT;
+		if ((*peer_val & TENANT_AMPHORA_FLAG) &&
+		    is_amphora_segment2(peer_tid, remote_ip_be))
+			return ZONE_INFRA;
+		return (peer_tid == vm_tid) ? ZONE_SAME_TENANT : ZONE_OTHER_TENANT;
 	}
 
 	struct lpm_key lk = {
@@ -394,13 +472,19 @@ static __always_inline int handle_packet(struct __sk_buff *skb,
 		 *
 		 * Without the swap, egress traffic looks up the VM's own
 		 * address as the remote peer and produces a wrong classification.
+		 *
+		 * local_ip is the VM side's own address — the mirror of
+		 * remote_ip under the same swap. Only the Octavia branch reads
+		 * it, to tell an Amphora's VIP (Segment 1) from its base
+		 * address (Segment 2).
 		 */
 		const _Bool ingress = (direction == TC_DIR_INGRESS);
 		const __u8 *vm_mac    = ingress ? eth->h_source : eth->h_dest;
 		const __u8 *peer_mac  = ingress ? eth->h_dest   : eth->h_source;
 		__be32      remote_ip = ingress ? iph->daddr    : iph->saddr;
+		__be32      local_ip  = ingress ? iph->saddr    : iph->daddr;
 
-		key.dst_zone = lookup_zone(vm_mac, peer_mac, remote_ip);
+		key.dst_zone = lookup_zone(vm_mac, peer_mac, local_ip, remote_ip);
 	} else {
 		/* IPv6 zone resolution is not yet implemented; record as MISS. */
 		key.dst_zone = ZONE_MISS;

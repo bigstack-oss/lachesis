@@ -66,7 +66,7 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	// Seed the per-flow router map in the same before-any-packet step:
 	// the Resolver reads it from the first scrape (docs/architecture/billing.md).
 	ag.routers.Replace(neutron.RouterExtMACs(&result.Snapshot))
-	nMac, nTrie, err := pushToKernel(ag, coll, result.Entries)
+	nMac, nTrie, err := pushToKernel(ag, coll, &result)
 	if err != nil {
 		return err
 	}
@@ -179,12 +179,12 @@ func auditPorts(snap *neutron.Snapshot, desired map[uint64]metadata.TenantMeta, 
 	mx.SetTrunkSubports(trunkSubports)
 }
 
-// pushToKernel writes the userspace metadata map and the built trie
-// entries into the kernel maps. Single-shot — no retry. Map updates
-// can fail with EINVAL (bad key) or ENOSPC (map full); both indicate
-// a real bug or a sizing regression and retrying would just paper
-// over the cause.
-func pushToKernel(ag *Agent, coll *ebpf.Collection, entries []neutron.TrieEntry) (nMac, nTrie int, err error) {
+// pushToKernel writes the userspace metadata map, the built trie
+// entries, and the Octavia Amphora base-address set into the kernel
+// maps. Single-shot — no retry. Map updates can fail with EINVAL (bad
+// key) or ENOSPC (map full); both indicate a real bug or a sizing
+// regression and retrying would just paper over the cause.
+func pushToKernel(ag *Agent, coll *ebpf.Collection, result *neutron.SyncResult) (nMac, nTrie int, err error) {
 	macMap := coll.Maps[bpf.MapMacTenant]
 	if macMap == nil {
 		return 0, 0, fmt.Errorf("%s map missing from collection", bpf.MapMacTenant)
@@ -197,10 +197,20 @@ func pushToKernel(ag *Agent, coll *ebpf.Collection, entries []neutron.TrieEntry)
 	if err != nil {
 		return nMac, 0, fmt.Errorf("write mac_tenant_map (wrote %d): %w", nMac, err)
 	}
-	nTrie, err = kernelwriter.WriteSubnetZoneTrie(trieMap, entries, ag.interner)
+	nTrie, err = kernelwriter.WriteSubnetZoneTrie(trieMap, result.Entries, ag.interner)
 	if err != nil {
 		return nMac, nTrie, fmt.Errorf("write subnet_zone_trie (wrote %d): %w", nTrie, err)
 	}
+	amphoraMap := coll.Maps[bpf.MapAmphoraBaseIP]
+	if amphoraMap == nil {
+		return nMac, nTrie, fmt.Errorf("%s map missing from collection", bpf.MapAmphoraBaseIP)
+	}
+	nAmp, err := kernelwriter.WriteAmphoraBaseIPs(amphoraMap,
+		neutron.AmphoraBaseIPs(&result.Snapshot), ag.interner)
+	if err != nil {
+		return nMac, nTrie, fmt.Errorf("write amphora_base_ip (wrote %d): %w", nAmp, err)
+	}
+	ag.mx.bpf.SetCurrent(bpf.MapAmphoraBaseIP, float64(nAmp))
 	return nMac, nTrie, nil
 }
 

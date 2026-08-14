@@ -92,9 +92,9 @@ func TestLpmKeyForPrefix_IPv6Panics(t *testing.T) {
 }
 
 // makeSpec returns a minimal CollectionSpec with telemetry_map,
-// mac_tenant_map, subnet_zone_trie, and telemetry_stats. mac_tenant_map
-// and subnet_zone_trie are sized as supplied; telemetry_map and
-// telemetry_stats are always at their expected sizes so the existing
+// mac_tenant_map, subnet_zone_trie, telemetry_stats, and
+// amphora_base_ip. mac_tenant_map and subnet_zone_trie are sized as
+// supplied; the rest are always at their expected sizes so the existing
 // mac/trie drift tests stay focused on the map they name. Used by
 // ValidateMapSizes tests.
 func makeSpec(macMax, trieMax uint32) *ebpf.CollectionSpec {
@@ -104,6 +104,7 @@ func makeSpec(macMax, trieMax uint32) *ebpf.CollectionSpec {
 			MapMacTenant:      {MaxEntries: macMax},
 			MapSubnetZoneTrie: {MaxEntries: trieMax},
 			MapTelemetryStats: {MaxEntries: MapTelemetryStatsMaxEntries},
+			MapAmphoraBaseIP:  {MaxEntries: MapAmphoraBaseIPMaxEntries},
 		},
 	}
 }
