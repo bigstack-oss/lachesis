@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 // Options bundles everything `drive` needs to push a scenario's
@@ -265,6 +266,9 @@ func (d *driver) runFlow(i int, f scenariotest.Flow) error {
 		return err
 	}
 
+	if f.To.LBID != "" {
+		return d.runLBFlow(f, srcFIP)
+	}
 	if f.To.VMID != "" || f.To.FIPOf != "" {
 		return d.runVMFlow(i, f, srcFIP)
 	}
@@ -309,6 +313,96 @@ func (d *driver) runVMFlow(i int, f scenariotest.Flow, srcFIP string) error {
 	}
 	d.opts.Log.Info("flow: tcp stream", "flow", i, "from", f.From, "to", dstVM, "dst", dstAddr, "port", port, "mib", count)
 	return nil
+}
+
+// runLBFlow streams at a load balancer's VIP. Every pool member gets a
+// sink first, because the pool's algorithm — not the harness — picks
+// which backend the connection lands on; a stream into a member with no
+// listener would fail for a reason that has nothing to do with
+// attribution.
+//
+// The client dials the LISTENER port and HAProxy dials each member on
+// the MEMBER port, so the two are declared separately and must both be
+// honoured (docs/architecture/octavia.md).
+func (d *driver) runLBFlow(f scenariotest.Flow, srcFIP string) error {
+	decl, ok := d.lbDecl(f.To.LBID)
+	if !ok {
+		return fmt.Errorf("flow targets load balancer %q, which the topology does not declare", f.To.LBID)
+	}
+	vip, err := d.vip(f.To.LBID)
+	if err != nil {
+		return err
+	}
+	for _, m := range decl.Members {
+		vmID, ok := d.vmByInternalIP(m.Address)
+		if !ok {
+			return fmt.Errorf("load balancer %s: member %s matches no declared VM", f.To.LBID, m.Address)
+		}
+		memberFIP, err := d.fip(vmID)
+		if err != nil {
+			return err
+		}
+		if err := d.waitReady(vmID, memberFIP); err != nil {
+			return err
+		}
+		sink := fmt.Sprintf("nohup sh -c 'while true; do nc -l -p %d > /dev/null; done' >/dev/null 2>&1 &", m.Port)
+		if _, err := d.opts.Exec.Run(d.ctx, memberFIP, sink); err != nil {
+			return fmt.Errorf("start sink on member %s: %w", vmID, err)
+		}
+	}
+	d.sleepSinkDelay()
+
+	count := mibCount(f.Bytes)
+	stream := fmt.Sprintf("dd if=/dev/zero bs=1M count=%d 2>/dev/null | nc %s %d", count, vip, decl.Port)
+	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, stream); err != nil {
+		return fmt.Errorf("stream to vip: %w", err)
+	}
+	d.opts.Log.Info("flow: tcp stream to vip",
+		"from", f.From, "lb", f.To.LBID, "vip", vip, "port", decl.Port,
+		"members", len(decl.Members), "mib", count)
+	return nil
+}
+
+// vip resolves a load balancer's VIP from the run-state.
+func (d *driver) vip(lbID string) (string, error) {
+	for _, lb := range d.opts.State.LoadBalancers {
+		if lb.DSLID == lbID {
+			if lb.VIP == "" {
+				return "", fmt.Errorf("load balancer %s has no recorded VIP (run-state from an older `up`?)", lbID)
+			}
+			return lb.VIP, nil
+		}
+	}
+	return "", fmt.Errorf("load balancer %s not in the run-state", lbID)
+}
+
+// lbDecl finds the DSL declaration for a load balancer — the listener
+// and member ports, which live in the topology rather than the
+// run-state.
+func (d *driver) lbDecl(lbID string) (scenario.LBDecl, bool) {
+	for _, decl := range d.opts.Scenario.Builder.LoadBalancers() {
+		if decl.ID == lbID {
+			return decl, true
+		}
+	}
+	return scenario.LBDecl{}, false
+}
+
+// vmByInternalIP maps a pool member's address back to the DSL VM that
+// holds it, so the driver can reach it over its floating IP to start a
+// sink.
+func (d *driver) vmByInternalIP(ip string) (string, bool) {
+	for _, p := range d.opts.Scenario.Builder.Build().Ports {
+		if !strings.HasPrefix(p.DeviceOwner, "compute:") {
+			continue
+		}
+		for _, f := range p.FixedIPs {
+			if f.IPAddress == ip {
+				return strings.TrimSuffix(p.DeviceID, "-instance"), true
+			}
+		}
+	}
+	return "", false
 }
 
 // runExternalFlow pushes the flow's byte budget at a literal IP with

@@ -46,9 +46,19 @@ func Run(ctx context.Context, opts Options) error {
 	d := &downer{ctx: ctx, opts: opts}
 	rs := opts.State
 	opts.Log.Info("tearing down",
+		"load_balancers", len(rs.LoadBalancers),
 		"fips", len(rs.FIPs), "servers", len(rs.Servers), "ports", len(rs.Ports),
 		"routers", len(rs.Routers), "subnets", len(rs.Subnets), "networks", len(rs.Networks))
 
+	// Load balancers first: a cascade delete reclaims the Amphora VMs
+	// and every port Octavia plugged for them. Deleting those ports
+	// directly would leave Octavia's records dangling, and leaving them
+	// would block the subnet deletes further down.
+	for _, lb := range rs.LoadBalancers {
+		d.do("delete load balancer "+lb.Name, func() error {
+			return d.opts.Cloud.DeleteLoadBalancer(ctx, lb.ProjectID, lb.ID)
+		})
+	}
 	for _, f := range rs.FIPs {
 		d.do("fip "+f.Address, func() error { return opts.Cloud.DeleteFIP(ctx, f.ProjectID, f.ID) })
 	}

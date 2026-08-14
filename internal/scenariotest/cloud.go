@@ -25,6 +25,14 @@ type Cloud interface {
 	FindImage(ctx context.Context, name string) (id string, err error)
 	// FindFlavor resolves a Nova flavor name to its ID.
 	FindFlavor(ctx context.Context, name string) (id string, err error)
+	// FindLBFlavor resolves an Octavia load-balancer flavor name to its
+	// ID. Unlike the other prerequisites this one is OPTIONAL: it is
+	// resolved only for a scenario declaring an ACTIVE_STANDBY load
+	// balancer, because the Amphora count comes from the flavor's
+	// loadbalancer_topology rather than from any per-LB argument. A
+	// cluster with no such flavor staged makes those scenarios SKIPPED,
+	// never failed (scenariotest.SkipReason).
+	FindLBFlavor(ctx context.Context, name string) (id string, err error)
 	// CheckKeypair errors if the named Nova keypair does not exist.
 	CheckKeypair(ctx context.Context, name string) error
 	// FindSecGroup resolves a Neutron security-group name to its ID.
@@ -80,6 +88,38 @@ type Cloud interface {
 	// it, returning the allocation ID and the assigned address.
 	CreateFIP(ctx context.Context, projectID string, spec FIPCreateSpec) (id, addr string, err error)
 
+	// --- Octavia load balancers (docs/architecture/octavia.md) ---
+	//
+	// Every mutation is followed by a [Cloud.WaitLBActive]: Octavia
+	// serialises work per load balancer and rejects a second request
+	// while the first is PENDING_*, so realize gates each step rather
+	// than pipelining them.
+
+	// CreateLoadBalancer creates a load balancer on a VIP subnet and
+	// returns its ID plus the VIP address Octavia assigned. The returned
+	// address is what clients target — see [VIPTarget].
+	CreateLoadBalancer(ctx context.Context, projectID string, spec LBSpec) (id, vip string, err error)
+	// CreateListener adds a listener (the client-facing port) to a load
+	// balancer.
+	CreateListener(ctx context.Context, projectID string, spec ListenerSpec) (id string, err error)
+	// CreatePool adds a backend pool to a listener.
+	CreatePool(ctx context.Context, projectID string, spec PoolSpec) (id string, err error)
+	// CreateMember adds one backend to a pool. SubnetID matters
+	// operationally, not just descriptively: naming a subnet the Amphora
+	// is not attached to makes Octavia plug it in there, growing the
+	// Amphora a new data port — the shape the attribution join must
+	// cover.
+	CreateMember(ctx context.Context, projectID string, spec MemberSpec) (id string, err error)
+	// WaitLBActive blocks until the load balancer reports
+	// provisioning_status ACTIVE or the context deadline fires; ERROR
+	// fails fast.
+	WaitLBActive(ctx context.Context, projectID, lbID string) error
+	// ListAmphorae returns the Amphorae serving a load balancer. The
+	// assert phase reads it to learn which Nova instances (and so which
+	// taps) the load balancer actually runs on — an ACTIVE_STANDBY pair
+	// yields two.
+	ListAmphorae(ctx context.Context, lbID string) ([]AmphoraRef, error)
+
 	// --- live migration (MigrateStep) ---
 
 	// ServerHost returns the compute host currently running the server
@@ -113,6 +153,12 @@ type Cloud interface {
 	// torn down by policy, and leaving the verb off the interface
 	// makes that unrepresentable.
 
+	// DeleteLoadBalancer deletes a load balancer and everything under it
+	// (listeners, pools, members) in one cascade, then waits for it to
+	// disappear. Octavia owns the Amphora VMs and their ports, so this
+	// is the ONLY way to reclaim them — deleting the ports directly
+	// leaves Octavia's records dangling.
+	DeleteLoadBalancer(ctx context.Context, projectID, id string) error
 	// DeleteFIP releases a floating IP by exact allocation ID.
 	DeleteFIP(ctx context.Context, projectID, id string) error
 	// DeleteServer requests deletion; pair with WaitServerGone.
@@ -239,6 +285,59 @@ type FIPCreateSpec struct {
 	PortID            string
 	FixedIP           string
 	FloatingIP        string
+}
+
+// LBSpec describes an Octavia load balancer to create. FlavorID is
+// optional: empty takes the deployment default (a STANDALONE Amphora),
+// and a flavor whose profile sets loadbalancer_topology=ACTIVE_STANDBY
+// is what produces a MASTER/BACKUP pair. Resolved from
+// prerequisites.lb_flavor_name at preflight; never created.
+type LBSpec struct {
+	Name        string
+	VIPSubnetID string
+	FlavorID    string
+}
+
+// ListenerSpec describes a listener on a load balancer.
+type ListenerSpec struct {
+	Name           string
+	LoadBalancerID string
+	Protocol       string
+	ProtocolPort   int
+}
+
+// PoolSpec describes a backend pool on a listener. LBAlgorithm is
+// passed verbatim (e.g. "ROUND_ROBIN") so a scenario can pin the
+// distribution it asserts against.
+type PoolSpec struct {
+	Name        string
+	ListenerID  string
+	Protocol    string
+	LBAlgorithm string
+}
+
+// MemberSpec describes one pool member. SubnetID is the subnet the
+// member's address lives on; see [Cloud.CreateMember] for why it is
+// load-bearing rather than cosmetic.
+type MemberSpec struct {
+	Name         string
+	PoolID       string
+	Address      string
+	ProtocolPort int
+	SubnetID     string
+}
+
+// AmphoraRef is one Amphora serving a load balancer, as seen by
+// [Cloud.ListAmphorae]. ComputeID is the Nova instance UUID — the join
+// key every one of the Amphora's Neutron ports carries as its
+// device_id (docs/architecture/octavia.md); LBNetworkIP identifies the
+// management port that must NOT be billed to a tenant; Role is
+// STANDALONE, MASTER, or BACKUP.
+type AmphoraRef struct {
+	ID          string
+	ComputeID   string
+	LBNetworkIP string
+	Role        string
 }
 
 // RouteSpec is one static route on a router (docs/architecture/trie-construction.md#the-static-route-resolver extraroute).

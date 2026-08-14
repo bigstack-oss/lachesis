@@ -141,13 +141,14 @@ type Flow struct {
 	Proto Protocol
 }
 
-// FlowTarget is the destination of a [Flow]. Exactly one of VMID,
-// IP, or FIPOf is non-empty; construct via [VMTarget],
-// [ExternalTarget], or [FIPTarget].
+// FlowTarget is the destination of a [Flow]. Exactly one of VMID, IP,
+// FIPOf, or LBID is non-empty; construct via [VMTarget],
+// [ExternalTarget], [FIPTarget], or [VIPTarget].
 type FlowTarget struct {
 	VMID  string
 	IP    string
 	FIPOf string
+	LBID  string
 }
 
 // VMTarget returns a [FlowTarget] pointing at another DSL VM. The
@@ -166,6 +167,21 @@ func ExternalTarget(ip string) FlowTarget { return FlowTarget{IP: ip} }
 // at both taps (docs/architecture/edge-cases.md#tier-3--misclassification
 // case 14c), never same_tenant.
 func FIPTarget(vmID string) FlowTarget { return FlowTarget{FIPOf: vmID} }
+
+// VIPTarget returns a [FlowTarget] pointing at a DSL load balancer's
+// VIP, resolved from the run-state at drive time. The stream dials the
+// VIP on the listener's port; HAProxy terminates it and opens a fresh
+// connection to a pool member, so ONE declared flow produces both
+// Octavia segments on the wire (docs/architecture/octavia.md):
+//
+//   - Segment 1, client to Amphora, billed to the load balancer's owner
+//     at the Amphora's tap and to the client at its own;
+//   - Segment 2, Amphora to backend, zoned infra at both taps.
+//
+// Byte totals therefore do NOT match the flow's Bytes one-for-one the
+// way a VM-to-VM flow does — the same payload is legitimately counted on
+// two connections. Assertions use MinBytes accordingly.
+func VIPTarget(lbID string) FlowTarget { return FlowTarget{LBID: lbID} }
 
 // Protocol is the L4 protocol a [Flow] drives. The agent counts bytes
 // L4-agnostically — the kernel classifier keys on MAC / ethertype /

@@ -28,6 +28,12 @@ type RunState struct {
 	Ports    []ResourceRef         `json:"ports"`
 	Servers  []ResourceRef         `json:"servers"`
 	FIPs     []FIPRef              `json:"fips"`
+	// LoadBalancers are the Octavia load balancers realize created.
+	// Torn down FIRST and by cascade: Octavia owns the Amphora VMs and
+	// their Neutron ports, which would otherwise block subnet and
+	// network deletion with resources no run-state records
+	// (docs/architecture/octavia.md).
+	LoadBalancers []ResourceRef `json:"load_balancers,omitempty"`
 
 	// Attach records the attach gate's green state at the end of
 	// `up`, so a standalone `drive` can re-confirm the taps are still
@@ -94,6 +100,10 @@ type ResourceRef struct {
 	// because router MACs are deliberately never in mac_tenant_map.
 	// Empty on non-port refs and on run-states predating the gate.
 	MAC string `json:"mac,omitempty"`
+	// VIP is the address Octavia assigned a load balancer, recorded on
+	// load-balancer refs only so a standalone `drive` can resolve a
+	// [VIPTarget] without re-reading Octavia. Empty on every other ref.
+	VIP string `json:"vip,omitempty"`
 	// RouterInterface marks a router-interface port ref (never a VM's).
 	RouterInterface bool `json:"router_interface,omitempty"`
 }

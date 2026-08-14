@@ -13,6 +13,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/neutron"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 // Options bundles everything `up` needs to stand a scenario up.
@@ -49,6 +50,7 @@ func Run(ctx context.Context, opts Options) (*scenariotest.RunState, error) {
 		subnetGateway: map[string]string{},
 		routerLive:    map[string]string{},
 		vmPort:        map[string]string{},
+		lbVIP:         map[string]string{},
 		vmExtraPorts:  map[string][]string{},
 		vmProject:     map[string]string{},
 		vmInternalIP:  map[string]string{},
@@ -69,6 +71,9 @@ type realizer struct {
 	flavorID   string
 	imageID    string
 	secGroupID string
+	// lbFlavorID is the resolved Octavia flavor, empty unless the
+	// scenario declares a load balancer needing a non-default topology.
+	lbFlavorID string
 
 	// DSL id → live id maps
 	netLive       map[string]string // external DSL nets map to the real external net
@@ -83,6 +88,10 @@ type realizer struct {
 	vmInternalIP map[string]string
 	vmOrder      []string // VM DSL ids (one per server) in creation order
 	taps         int      // total VM ports created — one tap each, the attach-gate target
+
+	// lbVIP maps a load balancer's DSL id to the VIP Octavia assigned —
+	// the address a VIPTarget flow resolves to.
+	lbVIP map[string]string
 
 	// placement is scenariotest.Scenario.Placement with "node:<i>" slots resolved
 	// to configured agent hosts; set before any resource is created.
@@ -147,6 +156,9 @@ func (r *realizer) run() error {
 	if err := r.allocateFIPs(); err != nil {
 		return err
 	}
+	if err := r.loadBalancers(snap); err != nil {
+		return err
+	}
 	if err := r.attachGate(baseline, r.taps); err != nil {
 		return err
 	}
@@ -157,6 +169,16 @@ func (r *realizer) run() error {
 func (r *realizer) resolvePrereqs() error {
 	p := r.opts.Config.Prerequisites
 	var err error
+	// The Octavia flavor is resolved only when a declared load balancer
+	// needs a non-default topology: the Amphora count comes from the
+	// flavor's loadbalancer_topology, not from any per-LB argument. A
+	// cluster with none staged never reaches here — SkipReason turns
+	// that into a SKIPPED scenario.
+	if scenariotest.NeedsLBFlavor(r.opts.Scenario) {
+		if r.lbFlavorID, err = r.opts.Cloud.FindLBFlavor(r.ctx, p.LBFlavorName); err != nil {
+			return fmt.Errorf("resolve lb flavor %q: %w", p.LBFlavorName, err)
+		}
+	}
 	if r.extNetID, err = r.opts.Cloud.FindExternalNetwork(r.ctx, p.ExternalNetworkName); err != nil {
 		return err
 	}
@@ -360,8 +382,16 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 	for _, id := range r.opts.Scenario.Deferred {
 		deferred[id] = true
 	}
+	amphora := amphoraComputes(snap)
 	for _, p := range snap.Ports {
 		if !strings.HasPrefix(p.DeviceOwner, "compute:") {
+			continue
+		}
+		// An Amphora's ports are declared by the DSL so the unit tier
+		// sees the real shape, but live they are Octavia's to create —
+		// it boots the VM and plugs every NIC itself. Creating them here
+		// would collide with the ones Octavia makes.
+		if amphora[p.DeviceID] {
 			continue
 		}
 		vmID := strings.TrimSuffix(p.DeviceID, "-instance")
@@ -538,6 +568,138 @@ func (r *realizer) attachGate(baseline scenariotest.MetricsSnapshot, expectedTap
 		case <-ticker.C:
 		}
 	}
+}
+
+// loadBalancers creates every Octavia load balancer the topology
+// declares, with its listener, pool and members, and records each in the
+// run-state before waiting — an Amphora boot takes tens of seconds, and a
+// crash in that window must still leave `down` able to reclaim it.
+//
+// Runs after the VMs are ACTIVE so pool members address real backends,
+// and before the attach gate so the gate also waits for the Amphora taps
+// to appear. Each Amphora contributes at least two taps (its management
+// port and its VIP-subnet data port); a member on a foreign subnet adds
+// another, but the gate's target is a minimum (>=), so counting the
+// guaranteed two per Amphora never over-waits.
+func (r *realizer) loadBalancers(snap neutron.Snapshot) error {
+	if len(snap.LoadBalancers) == 0 {
+		return nil
+	}
+	decls := make(map[string]scenario.LBDecl, len(snap.LoadBalancers))
+	for _, d := range r.opts.Scenario.Builder.LoadBalancers() {
+		decls[d.ID] = d
+	}
+	for _, lb := range snap.LoadBalancers {
+		projectID, err := r.projectID(lb.ProjectID)
+		if err != nil {
+			return err
+		}
+		vipSubnet, err := r.vipSubnetFor(snap, lb.ID)
+		if err != nil {
+			return err
+		}
+		name := scenariotest.Mangle(r.prefix(), r.rs.RunID, lb.ID)
+		id, vip, err := r.opts.Cloud.CreateLoadBalancer(r.ctx, projectID, scenariotest.LBSpec{
+			Name:        name,
+			VIPSubnetID: vipSubnet,
+			FlavorID:    r.lbFlavorID,
+		})
+		if err != nil {
+			return fmt.Errorf("create load balancer %s: %w", lb.ID, err)
+		}
+		r.rs.LoadBalancers = append(r.rs.LoadBalancers, scenariotest.ResourceRef{
+			DSLID: lb.ID, ID: id, Name: name, ProjectID: projectID, VIP: vip,
+		})
+		r.lbVIP[lb.ID] = vip
+		if err := r.save(); err != nil {
+			return err
+		}
+		if err := r.opts.Cloud.WaitLBActive(r.ctx, projectID, id); err != nil {
+			return err
+		}
+		if err := r.lbBackends(projectID, id, decls[lb.ID]); err != nil {
+			return err
+		}
+		amps, err := r.opts.Cloud.ListAmphorae(r.ctx, id)
+		if err != nil {
+			return err
+		}
+		r.taps += 2 * len(amps)
+		r.opts.Log.Info("load balancer active",
+			"lb", lb.ID, "vip", vip, "amphorae", len(amps))
+	}
+	return nil
+}
+
+// lbBackends adds the listener, pool and members a load balancer needs.
+// Members are created last and each is checked afterwards, because a
+// member on a subnet the Amphora is not attached to makes Octavia
+// hot-plug a NIC — and that plug can fail (no free PCIe slot on the
+// guest) while the load balancer itself stays ACTIVE.
+func (r *realizer) lbBackends(projectID, lbID string, d scenario.LBDecl) error {
+	listenerID, err := r.opts.Cloud.CreateListener(r.ctx, projectID, scenariotest.ListenerSpec{
+		Name:           scenariotest.Mangle(r.prefix(), r.rs.RunID, d.ID+"-listener"),
+		LoadBalancerID: lbID,
+		Protocol:       d.Protocol,
+		ProtocolPort:   d.Port,
+	})
+	if err != nil {
+		return fmt.Errorf("create listener for %s: %w", d.ID, err)
+	}
+	poolID, err := r.opts.Cloud.CreatePool(r.ctx, projectID, scenariotest.PoolSpec{
+		Name:        scenariotest.Mangle(r.prefix(), r.rs.RunID, d.ID+"-pool"),
+		ListenerID:  listenerID,
+		Protocol:    d.Protocol,
+		LBAlgorithm: d.Algorithm,
+	})
+	if err != nil {
+		return fmt.Errorf("create pool for %s: %w", d.ID, err)
+	}
+	for _, m := range d.Members {
+		subnetID, ok := r.subnetLive[m.SubnetID]
+		if !ok {
+			return fmt.Errorf("load balancer %s: member subnet %s not realized", d.ID, m.SubnetID)
+		}
+		if _, err := r.opts.Cloud.CreateMember(r.ctx, projectID, scenariotest.MemberSpec{
+			Name:         scenariotest.Mangle(r.prefix(), r.rs.RunID, d.ID+"-"+m.Address),
+			PoolID:       poolID,
+			Address:      m.Address,
+			ProtocolPort: m.Port,
+			SubnetID:     subnetID,
+		}); err != nil {
+			return fmt.Errorf("create member %s for %s: %w", m.Address, d.ID, err)
+		}
+		if err := r.opts.Cloud.WaitLBActive(r.ctx, projectID, lbID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// vipSubnetFor finds the live subnet id the load balancer's VIP sits on,
+// via the VIP reservation port the DSL emits ("<lb>-vip").
+func (r *realizer) vipSubnetFor(snap neutron.Snapshot, lbID string) (string, error) {
+	for _, p := range snap.Ports {
+		if p.DeviceID != "lb-"+lbID || len(p.FixedIPs) == 0 {
+			continue
+		}
+		live, ok := r.subnetLive[p.FixedIPs[0].SubnetID]
+		if !ok {
+			return "", fmt.Errorf("load balancer %s: VIP subnet %s not realized", lbID, p.FixedIPs[0].SubnetID)
+		}
+		return live, nil
+	}
+	return "", fmt.Errorf("load balancer %s: no VIP port in the topology", lbID)
+}
+
+// amphoraComputes is the set of Nova instance ids belonging to an
+// Amphora — the ports realize must leave for Octavia to create.
+func amphoraComputes(snap neutron.Snapshot) map[string]bool {
+	out := make(map[string]bool, len(snap.Amphorae))
+	for _, a := range snap.Amphorae {
+		out[a.ComputeID] = true
+	}
+	return out
 }
 
 // --- helpers ---

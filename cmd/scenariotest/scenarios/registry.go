@@ -56,6 +56,7 @@ func All() []*scenariotest.Scenario {
 		unresolvedLatebind(),
 		vmApplianceNexthop(),
 		gcPressureRelief(),
+		octaviaLBAttribution(),
 	}
 }
 
