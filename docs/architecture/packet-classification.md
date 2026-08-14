@@ -168,13 +168,19 @@ This means the trie only needs to handle routed traffic. Direct L2 traffic is ex
                                           MISS (no catchall)
 ```
 
-**Octavia (designed, not yet in the kernel).** The [Octavia design](./octavia.md)
-adds one more branch ahead of the tenant comparison: when `peer_mac` is flagged
-as an Amphora (`IsAmphora` on its metadata), attribution switches to the LB's
-owning tenant, and zone derivation depends on which tap observed the packet.
-That subsystem has not been implemented — today Amphora traffic classifies like
-any other VM traffic and attributes to the Amphora's own (admin) tenant. The
-tree above reflects the code as shipped; octavia.md specifies the extension.
+**Octavia.** One branch sits inside the direct-L2 arm, ahead of the tenant
+comparison: when either end's `mac_tenant_map` value carries the Amphora marker
+(the value's top bit), that end's own IP is tested against the `amphora_base_ip`
+set. A hit is Octavia Segment 2 — load-balancer plumbing — and returns INFRA. A
+miss is Segment 1 and falls through to the tenant comparison unchanged, so an
+internal client's load-balancer traffic keeps billing `same_tenant` /
+`other_tenant`. An external client's Segment 1 never reaches the branch: its peer
+MAC is a router interface, so it takes the routed fallback and lands EXTERNAL.
+
+Attribution is untouched by this — it follows the VM-side MAC as always. What
+makes an Amphora's bytes bill the load balancer's owner is a userspace
+substitution in the port's metadata, not a hot-path branch. See
+[octavia.md](./octavia.md).
 
 ---
 

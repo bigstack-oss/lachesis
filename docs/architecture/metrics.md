@@ -144,8 +144,6 @@ or sum by (tenant_id) (rate(lachesis_tenant_bytes_total[1m]))
 
 ## Planned (subsystem not yet built; add with the subsystem)
 
-The Octavia LB attribution metrics land with [that subsystem](./octavia.md).
-
 A drafted generic `lachesis_internal_errors_total{subsystem}` sink was dropped:
 every billing-path error site today lands in a dedicated counter (scraper
 errors, WAL flush-failure stages, WAL load fallback, Neutron API errors, TC
