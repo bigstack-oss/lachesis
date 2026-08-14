@@ -26,6 +26,7 @@ const (
 	macRouter    uint64 = 0x02_00_00_00_FF_01 // not in mac_tenant_map
 	macUnknownVM uint64 = 0x02_00_00_00_FF_02 // not in mac_tenant_map
 	macPhysical  uint64 = 0x02_00_00_00_AA_01 // stands in for a physical DC device; not in mac_tenant_map
+	macAmphora   uint64 = 0x02_00_00_00_0A_01 // Octavia Amphora data port, tenant A (LB owner)
 
 	// Group-destination MACs (I/G bit set) → ZONE_MULTICAST.
 	macMcast uint64 = 0x01_00_5E_7F_FF_FA // IPv4 local-scope multicast (SSDP-style)
@@ -58,10 +59,15 @@ func TestHybridZoneLookup(t *testing.T) {
 	if macMap == nil {
 		t.Fatal("mac_tenant_map not loaded")
 	}
+	// The Amphora entry carries the packed flag: userspace re-attributed
+	// the port to the LB owner (tenant A) and marked it Amphora, so the
+	// kernel must mask the id off before comparing and treat L2-adjacent
+	// flows through it as Segment 2 plumbing (docs/architecture/octavia.md).
 	for mac, tid := range map[uint64]uint32{
-		macVMA: tenantA,
-		macVMB: tenantA,
-		macVMC: tenantB,
+		macVMA:     tenantA,
+		macVMB:     tenantA,
+		macVMC:     tenantB,
+		macAmphora: bpf.TenantValue(tenantA, true),
 	} {
 		k, v := mac, tid
 		if err := macMap.Update(&k, &v, ebpf.UpdateAny); err != nil {
@@ -101,6 +107,45 @@ func TestHybridZoneLookup(t *testing.T) {
 			src:  macVMB, dst: macVMA, // on the wire: B->A; we're at A's tap egress
 			srcIP: net.IPv4(10, 0, 0, 2), dstIP: net.IPv4(10, 0, 0, 1),
 			prog: bpf.ProgramEgress, wantDir: bpf.DirectionEgress, wantZone: bpf.ZoneSameTenant,
+		},
+
+		// — Octavia Segment 2: an L2-adjacent flow with an Amphora on
+		//   either end is load-balancer plumbing, zoned INFRA at BOTH
+		//   taps so the tx/rx pair of one transfer shares a zone. —
+		{
+			// At the backend VM's tap: peer is the Amphora.
+			name: "ingress backend to Amphora → INFRA",
+			src:  macVMB, dst: macAmphora,
+			srcIP: net.IPv4(10, 0, 0, 2), dstIP: net.IPv4(10, 0, 0, 10),
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneInfra,
+		},
+		{
+			// At the Amphora's own tap: the VM side carries the flag.
+			// Same transfer, same zone — without the vm-side check this
+			// would read SAME_TENANT and split the pair across two zones.
+			name: "ingress Amphora to backend → INFRA",
+			src:  macAmphora, dst: macVMB,
+			srcIP: net.IPv4(10, 0, 0, 10), dstIP: net.IPv4(10, 0, 0, 2),
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneInfra,
+		},
+		{
+			// A cross-tenant peer does not rescue the flow from INFRA:
+			// the Amphora flag wins over the tenant comparison.
+			name: "ingress Amphora to other-tenant VM → INFRA",
+			src:  macAmphora, dst: macVMC,
+			srcIP: net.IPv4(10, 0, 0, 10), dstIP: net.IPv4(10, 0, 0, 3),
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneInfra,
+		},
+		{
+			// Segment 1 must NOT be caught: an external client's peer is
+			// a router interface, absent from mac_tenant_map, so the flow
+			// falls past the Amphora branch to the trie. Empty trie here,
+			// so MISS stands in for the EXTERNAL a populated trie gives —
+			// the point is that it left the direct-L2 branch at all.
+			name: "ingress Amphora to routed peer skips the INFRA branch",
+			src:  macAmphora, dst: macRouter,
+			srcIP: net.IPv4(10, 0, 0, 10), dstIP: net.IPv4(8, 8, 8, 8),
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneMiss,
 		},
 
 		// — LPM-fallback path (peer not in map; trie empty → MISS) —

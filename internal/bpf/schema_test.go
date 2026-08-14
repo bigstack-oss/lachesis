@@ -98,3 +98,49 @@ func TestDirection_String(t *testing.T) {
 		t.Errorf("unknown direction: got %q, want \"7\"", got)
 	}
 }
+
+// TestTenantValue pins the mac_tenant_map value packing against
+// bpf/telemetry.c: the Amphora marker rides the top bit, the tenant id
+// the low 31, and the two never bleed into each other. A drift here
+// mis-zones every Octavia flow (docs/architecture/octavia.md).
+func TestTenantValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		tenantID  uint32
+		isAmphora bool
+		want      uint32
+	}{
+		{"plain tenant", 100, false, 100},
+		{"amphora tenant", 100, true, 0x8000_0064},
+		{"unset tenant stays zero", 0, false, 0}, // metadata.TenantIDUnset
+		{"amphora with unset tenant is still flagged", 0, true, TenantAmphoraFlag},
+		{"largest representable tenant", TenantIDMask, false, TenantIDMask},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TenantValue(tt.tenantID, tt.isAmphora)
+			if got != tt.want {
+				t.Fatalf("TenantValue(%d, %v) = %#x, want %#x", tt.tenantID, tt.isAmphora, got, tt.want)
+			}
+			// What the kernel does with it: mask for the tenant compare
+			// and the trie key, test the top bit for the Amphora branch.
+			if id := got & TenantIDMask; id != tt.tenantID {
+				t.Errorf("masked id = %d, want %d", id, tt.tenantID)
+			}
+			if flagged := got&TenantAmphoraFlag != 0; flagged != tt.isAmphora {
+				t.Errorf("amphora bit = %v, want %v", flagged, tt.isAmphora)
+			}
+		})
+	}
+}
+
+// TestTenantFlagAndMaskArePartition guards the invariant the C side
+// relies on: the two constants cover all 32 bits and never overlap.
+func TestTenantFlagAndMaskArePartition(t *testing.T) {
+	if TenantAmphoraFlag&TenantIDMask != 0 {
+		t.Errorf("flag %#x and mask %#x overlap", TenantAmphoraFlag, TenantIDMask)
+	}
+	if TenantAmphoraFlag|TenantIDMask != 0xFFFF_FFFF {
+		t.Errorf("flag %#x | mask %#x leaves a gap", TenantAmphoraFlag, TenantIDMask)
+	}
+}
