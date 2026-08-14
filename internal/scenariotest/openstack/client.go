@@ -44,6 +44,10 @@ type Cloud struct {
 	network  *gophercloud.ServiceClient
 	compute  *gophercloud.ServiceClient
 	image    *gophercloud.ServiceClient
+	// loadbalancer is nil when the catalog carries no Octavia endpoint.
+	// Preflight turns that into a failed lb_flavor check for the
+	// scenarios that need one; every other scenario is unaffected.
+	loadbalancer *gophercloud.ServiceClient
 
 	userID      string // authenticated admin user, for role grants
 	adminRoleID string // resolved lazily on first GrantAdminRole
@@ -52,8 +56,9 @@ type Cloud struct {
 }
 
 type scopedClients struct {
-	network *gophercloud.ServiceClient
-	compute *gophercloud.ServiceClient
+	network      *gophercloud.ServiceClient
+	compute      *gophercloud.ServiceClient
+	loadbalancer *gophercloud.ServiceClient
 }
 
 // New resolves the config's two-mode credentials, authenticates
@@ -111,6 +116,13 @@ func New(ctx context.Context, oc scenariotest.OpenStackCreds, log *slog.Logger) 
 	if o.image, err = gcopenstack.NewImageV2(provider, o.eo); err != nil {
 		return nil, fmt.Errorf("openstack: image endpoint: %w", err)
 	}
+	// Octavia is optional: a deployment without load balancing has no
+	// such endpoint, and only load-balancer scenarios need it.
+	if lb, err := gcopenstack.NewLoadBalancerV2(provider, o.eo); err == nil {
+		o.loadbalancer = lb
+	} else {
+		o.log.Warn("octavia endpoint absent; load-balancer scenarios cannot run", "err", err)
+	}
 	return o, nil
 }
 
@@ -145,6 +157,12 @@ func (o *Cloud) scopedFor(ctx context.Context, projectID string) (*scopedClients
 		return nil, fmt.Errorf("openstack: scoped compute endpoint: %w", err)
 	}
 	sc := &scopedClients{network: net, compute: comp}
+	// Octavia resources are created project-scoped so the load balancer
+	// is owned by the tenant, not by admin — that ownership IS the thing
+	// the attribution join reads (docs/architecture/octavia.md).
+	if lb, err := gcopenstack.NewLoadBalancerV2(provider, o.eo); err == nil {
+		sc.loadbalancer = lb
+	}
 	o.scoped[projectID] = sc
 	return sc, nil
 }

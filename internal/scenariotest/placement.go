@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 // slotPrefix marks a symbolic [Placement] value: "node:<i>" names the
@@ -61,6 +63,22 @@ func RequiredNodes(sc *Scenario) int {
 // carrying any malformed slot never skips: that is a scenario defect
 // the placement check must FAIL on every cluster size — skipping
 // would mask it until a big-enough cluster finally ran the scenario.
+// NeedsLBFlavor reports whether sc declares a load balancer whose
+// Amphora count depends on an Octavia flavor — i.e. an ACTIVE_STANDBY
+// topology. Standalone load balancers take the deployment default and
+// need no flavor staged.
+func NeedsLBFlavor(sc *Scenario) bool {
+	if sc.Builder == nil {
+		return false
+	}
+	for _, d := range sc.Builder.LoadBalancers() {
+		if d.Topology == scenario.ActiveStandby {
+			return true
+		}
+	}
+	return false
+}
+
 func SkipReason(sc *Scenario, cfg Config) string {
 	for _, val := range sc.Placement {
 		if _, isSlot, err := slotIndex(val); isSlot && err != nil {
@@ -84,6 +102,14 @@ func SkipReason(sc *Scenario, cfg Config) string {
 	}
 	if needs.PinPath && cfg.AgentControl.PinPath == "" {
 		return "removes the agent's map pins but agent_control.pin_path is unset"
+	}
+	// An ACTIVE_STANDBY load balancer needs an Octavia flavor whose
+	// profile sets loadbalancer_topology; the harness never creates one
+	// (same policy as images, keypairs and secgroups). A cluster without
+	// it staged cannot run the scenario — an environment gap rather than
+	// a defect, so skip, exactly as above.
+	if NeedsLBFlavor(sc) && cfg.Prerequisites.LBFlavorName == "" {
+		return "declares an ACTIVE_STANDBY load balancer but prerequisites.lb_flavor_name is unset"
 	}
 	return ""
 }

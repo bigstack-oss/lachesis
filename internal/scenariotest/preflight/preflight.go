@@ -65,6 +65,16 @@ func Run(ctx context.Context, cfg scenariotest.Config, sc *scenariotest.Scenario
 	fid, err := cloud.FindFlavor(ctx, flavor)
 	add("flavor", err, "found "+flavor+" ("+fid+")")
 
+	// The Octavia flavor is checked only when the scenario needs one: a
+	// cluster with none staged never reaches here (SkipReason short-
+	// circuits above), so a failure at this point means the name IS
+	// configured but does not resolve — a typo, exactly like a bad
+	// image_name (docs/architecture/octavia.md).
+	if scenariotest.NeedsLBFlavor(sc) {
+		lbfid, err := cloud.FindLBFlavor(ctx, cfg.Prerequisites.LBFlavorName)
+		add("lb_flavor", err, "found "+cfg.Prerequisites.LBFlavorName+" ("+lbfid+")")
+	}
+
 	add("keypair", cloud.CheckKeypair(ctx, cfg.Prerequisites.KeypairName), "found "+cfg.Prerequisites.KeypairName)
 
 	sgid, err := cloud.FindSecGroup(ctx, cfg.Prerequisites.SecGroupName)

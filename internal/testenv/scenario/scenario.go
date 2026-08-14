@@ -38,6 +38,13 @@ type Builder struct {
 
 	rifSeq int // sequence for auto-generated router_interface port IDs
 	nicSeq int // sequence for auto-generated extra-NIC port IDs
+
+	lbs      []neutron.LoadBalancer
+	amphorae []neutron.Amphora
+	lbDecls  []LBDecl
+	// lbSeq numbers auto-generated Amphora / port ids so an
+	// ACTIVE_STANDBY pair gets two distinct instances.
+	lbSeq int
 }
 
 // New returns an empty scenario builder.
@@ -75,10 +82,12 @@ func (b *Builder) Router(id, project string) *RouterRef {
 // be called multiple times.
 func (b *Builder) Build() neutron.Snapshot {
 	return neutron.Snapshot{
-		Networks: append([]neutron.Network(nil), b.networks...),
-		Subnets:  append([]neutron.Subnet(nil), b.subnets...),
-		Ports:    append([]neutron.Port(nil), b.ports...),
-		Routers:  append([]neutron.Router(nil), b.routers...),
+		Networks:      append([]neutron.Network(nil), b.networks...),
+		Subnets:       append([]neutron.Subnet(nil), b.subnets...),
+		Ports:         append([]neutron.Port(nil), b.ports...),
+		Routers:       append([]neutron.Router(nil), b.routers...),
+		LoadBalancers: append([]neutron.LoadBalancer(nil), b.lbs...),
+		Amphorae:      append([]neutron.Amphora(nil), b.amphorae...),
 	}
 }
 
@@ -155,6 +164,203 @@ func (b *Builder) NIC(vmID, subnetID, ip string) *Builder {
 // Octavia adds an Octavia management port (device_owner="Octavia").
 func (n *NetRef) Octavia(id, project, ip string) *NetRef {
 	return n.attachPort(id, project, "Octavia", id, ip)
+}
+
+// LBTopology selects how many Amphorae serve a load balancer.
+// Standalone is one; ActiveStandby is a MASTER/BACKUP pair and needs an
+// Octavia flavor carrying loadbalancer_topology=ACTIVE_STANDBY, which
+// the harness resolves at preflight and never creates.
+type LBTopology string
+
+const (
+	Standalone    LBTopology = "STANDALONE"
+	ActiveStandby LBTopology = "ACTIVE_STANDBY"
+)
+
+// LoadBalancer declares an Octavia load balancer whose VIP sits on this
+// network's most recent Subnet, owned by project. It reproduces the
+// resource shape a live amphora-provider deployment produces (verified
+// against OVN-Yoga):
+//
+//   - a VIP reservation port, device_owner "Octavia", device_id
+//     "lb-<id>", owned by the LB's project — never on the wire;
+//   - per Amphora, a data port on the VIP subnet carrying the Amphora's
+//     own base address plus the VIP as an allowed-address pair, and a
+//     management port on the Octavia management network. Both are
+//     ordinary compute:nova ports owned by the SERVICE project, joined
+//     to their Amphora only by device_id.
+//
+// That last property is the whole reason the attribution join keys on
+// the Nova instance UUID (docs/architecture/octavia.md). Members are
+// declared with [LBRef.Member]; a member on another subnet grows the
+// Amphora an extra data port there, exactly as Octavia plugs one.
+//
+// serviceProject is the project Amphorae are owned by (the Octavia
+// service project on a real cloud) — passed explicitly so a test can
+// assert the re-attribution actually moved the billing identity.
+func (n *NetRef) LoadBalancer(id, project, serviceProject, vip string, topology LBTopology) *LBRef {
+	if n.lastSubnet == "" {
+		panic(fmt.Sprintf("scenario: load balancer %q on network %q has no preceding Subnet", id, n.netID))
+	}
+	n.b.lbs = append(n.b.lbs, neutron.LoadBalancer{
+		ID: id, ProjectID: project, Provider: "amphora",
+	})
+	// The VIP reservation port: the LB owner's project, no Nova binding.
+	n.b.ports = append(n.b.ports, neutron.Port{
+		ID: id + "-vip", NetworkID: n.netID, ProjectID: project,
+		DeviceOwner: "Octavia", DeviceID: "lb-" + id,
+		FixedIPs: []neutron.FixedIP{{SubnetID: n.lastSubnet, IPAddress: vip}},
+	})
+	n.b.lbDecls = append(n.b.lbDecls, LBDecl{
+		ID: id, ProjectID: project, VIPSubnetID: n.lastSubnet, VIP: vip,
+		Topology: topology, Protocol: defaultLBProtocol,
+		Port: defaultLBPort, Algorithm: defaultLBAlgorithm,
+	})
+	ref := &LBRef{b: n.b, lbID: id, netID: n.netID, subnetID: n.lastSubnet,
+		project: project, serviceProject: serviceProject, vip: vip,
+		declIdx: len(n.b.lbDecls) - 1}
+	count := 1
+	if topology == ActiveStandby {
+		count = 2
+	}
+	for i := 0; i < count; i++ {
+		ref.addAmphora()
+	}
+	return ref
+}
+
+// LBDecl is the live tier's view of a declared load balancer: the
+// listener, pool and members Octavia needs, which a
+// [neutron.Snapshot] has no place for because the agent never reads
+// them. Retrieved with [Builder.LoadBalancers]; the Snapshot carries
+// the resulting Neutron shape instead.
+type LBDecl struct {
+	ID          string
+	ProjectID   string
+	VIPSubnetID string
+	VIP         string
+	Topology    LBTopology
+	Protocol    string
+	Port        int
+	Algorithm   string
+	Members     []LBMemberDecl
+}
+
+// LBMemberDecl is one declared pool member.
+type LBMemberDecl struct {
+	SubnetID string
+	Address  string
+	Port     int
+}
+
+// LoadBalancers returns the declared load balancers in declaration
+// order. Empty for a topology with none.
+func (b *Builder) LoadBalancers() []LBDecl {
+	return append([]LBDecl(nil), b.lbDecls...)
+}
+
+// defaultLBProtocol, defaultLBPort and defaultLBAlgorithm are what a
+// declared load balancer listens on unless a scenario overrides them
+// with [LBRef.Listener]. TCP:80 round-robin is the shape every
+// attribution scenario needs — the point is byte accounting, not L7
+// behaviour.
+const (
+	defaultLBProtocol  = "TCP"
+	defaultLBPort      = 80
+	defaultLBAlgorithm = "ROUND_ROBIN"
+)
+
+// LBRef is the cursor returned by [NetRef.LoadBalancer].
+type LBRef struct {
+	b              *Builder
+	lbID           string
+	netID          string
+	subnetID       string
+	project        string
+	serviceProject string
+	vip            string
+	computeIDs     []string
+	declIdx        int
+}
+
+// Listener overrides the declared listener protocol and port.
+func (r *LBRef) Listener(protocol string, port int) *LBRef {
+	r.b.lbDecls[r.declIdx].Protocol = protocol
+	r.b.lbDecls[r.declIdx].Port = port
+	return r
+}
+
+// addAmphora appends one Amphora with its management and VIP-subnet
+// data ports. Addresses are synthesised from the sequence counter — the
+// DSL is a topology model, not an IPAM.
+func (r *LBRef) addAmphora() {
+	r.b.lbSeq++
+	amp := fmt.Sprintf("%s-amp-%d", r.lbID, r.b.lbSeq)
+	compute := amp + "-instance"
+	mgmtIP := fmt.Sprintf("10.254.%d.%d", r.b.lbSeq, 10+r.b.lbSeq)
+	r.b.amphorae = append(r.b.amphorae, neutron.Amphora{
+		ID: amp, LoadBalancerID: r.lbID, ComputeID: compute,
+		LBNetworkIP: mgmtIP, Status: "ALLOCATED",
+	})
+	// Management port: carries health-manager heartbeats, must never be
+	// re-attributed. It has no subnet in the topology, so it is attached
+	// bare — the join excludes it by matching LBNetworkIP.
+	r.b.ports = append(r.b.ports, neutron.Port{
+		ID: amp + "-mgmt", NetworkID: "net-lb-mgmt", ProjectID: r.serviceProject,
+		DeviceOwner: "compute:nova", DeviceID: compute,
+		FixedIPs: []neutron.FixedIP{{SubnetID: "sub-lb-mgmt", IPAddress: mgmtIP}},
+	})
+	// Data port on the VIP subnet: the Amphora's base address, with the
+	// VIP as an allowed-address pair (which is how it reaches the wire).
+	r.b.ports = append(r.b.ports, neutron.Port{
+		ID: amp + "-vrrp", NetworkID: r.netID, ProjectID: r.serviceProject,
+		DeviceOwner: "compute:nova", DeviceID: compute,
+		FixedIPs: []neutron.FixedIP{{SubnetID: r.subnetID, IPAddress: r.baseIP()}},
+	})
+	r.computeIDs = append(r.computeIDs, compute)
+}
+
+// baseIP synthesises the next Amphora base address on the VIP subnet by
+// replacing the VIP's last octet.
+func (r *LBRef) baseIP() string {
+	i := strings.LastIndex(r.vip, ".")
+	return fmt.Sprintf("%s.%d", r.vip[:i], 200+r.b.lbSeq)
+}
+
+// Member declares a pool member at ip on subnetID. When the subnet is
+// not the VIP's, Octavia plugs every Amphora into that member's network
+// — a port Nova mints, indistinguishable from any other compute port and
+// carrying no Octavia marker — so the DSL grows the same extra ports.
+// The member VM itself is declared separately with [NetRef.VM]; this
+// call models only what the load balancer does in response.
+func (r *LBRef) Member(subnetID, ip string, port int) *LBRef {
+	r.b.lbDecls[r.declIdx].Members = append(r.b.lbDecls[r.declIdx].Members,
+		LBMemberDecl{SubnetID: subnetID, Address: ip, Port: port})
+	if subnetID == r.subnetID {
+		return r // same subnet: already L2-adjacent, nothing plugged
+	}
+	sub := r.b.findSubnet(subnetID)
+	for i, compute := range r.computeIDs {
+		r.b.ports = append(r.b.ports, neutron.Port{
+			ID:          fmt.Sprintf("%s-member-%s-%d", r.lbID, subnetID, i),
+			NetworkID:   sub.NetworkID,
+			ProjectID:   r.serviceProject,
+			DeviceOwner: "compute:nova",
+			DeviceID:    compute,
+			FixedIPs:    []neutron.FixedIP{{SubnetID: subnetID, IPAddress: memberPlugIP(ip, i)}},
+		})
+	}
+	return r
+}
+
+// Done returns the Builder for further top-level chaining.
+func (r *LBRef) Done() *Builder { return r.b }
+
+// memberPlugIP synthesises the Amphora's address on a member subnet,
+// offset per Amphora so an ACTIVE_STANDBY pair does not collide.
+func memberPlugIP(memberIP string, idx int) string {
+	i := strings.LastIndex(memberIP, ".")
+	return fmt.Sprintf("%s.%d", memberIP[:i], 240+idx)
 }
 
 // FIP adds a network:floatingip bookkeeping port (no L2 endpoint;

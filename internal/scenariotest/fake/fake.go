@@ -70,6 +70,24 @@ type Cloud struct {
 	Fips        []scenariotest.FIPCreateSpec
 	FipIDs      []string
 
+	// Octavia model. LBs/Listeners/Pools/Members record creates in call
+	// order; LBAmphorae is the read-back ListAmphorae serves, seeded per
+	// load balancer at create time so an ACTIVE_STANDBY flavor yields
+	// two. LBDeleted records cascade deletes, and LBFlavorID is what
+	// FindLBFlavor resolves (empty = "no such flavor", which is how a
+	// test drives the SKIPPED path).
+	LBs        []scenariotest.LBSpec
+	LBIDs      []string
+	Listeners  []scenariotest.ListenerSpec
+	Pools      []scenariotest.PoolSpec
+	Members    []scenariotest.MemberSpec
+	LBAmphorae map[string][]scenariotest.AmphoraRef
+	LBDeleted  []string
+	LBFlavorID string
+	// HAFlavorIDs marks flavor ids whose topology is ACTIVE_STANDBY, so
+	// CreateLoadBalancer knows to seed two Amphorae.
+	HAFlavorIDs map[string]bool
+
 	// reachability model (live IDs)
 	PortSubnet    map[string]string          // port id → subnet id
 	RouterExt     map[string]string          // router id → ext network id
@@ -314,6 +332,83 @@ func (c *Cloud) CreateFIP(_ context.Context, _ string, spec scenariotest.FIPCrea
 	id := c.id("fip")
 	c.FipIDs = append(c.FipIDs, id)
 	return id, fmt.Sprintf("203.0.113.%d", len(c.Fips)), nil
+}
+
+// --- Octavia fakes ---
+
+// FindLBFlavor resolves the configured load-balancer flavor. An unset
+// LBFlavorID means the cluster has none staged — the condition that
+// makes an ACTIVE_STANDBY scenario SKIPPED rather than failed.
+func (c *Cloud) FindLBFlavor(_ context.Context, name string) (string, error) {
+	if err := c.FindErrs["lb_flavor"]; err != nil {
+		return "", err
+	}
+	if c.LBFlavorID == "" {
+		return "", fmt.Errorf("fake octavia: lb flavor %q not found", name)
+	}
+	return c.LBFlavorID, nil
+}
+
+// CreateLoadBalancer records the spec and seeds the Amphorae
+// ListAmphorae will report: two for an ACTIVE_STANDBY flavor, one
+// otherwise. Each carries a distinct ComputeID, because that is the key
+// the attribution join uses to find an Amphora's ports.
+func (c *Cloud) CreateLoadBalancer(_ context.Context, _ string, spec scenariotest.LBSpec) (string, string, error) {
+	c.LBs = append(c.LBs, spec)
+	id := c.id("lb")
+	c.LBIDs = append(c.LBIDs, id)
+	count := 1
+	if c.HAFlavorIDs[spec.FlavorID] {
+		count = 2
+	}
+	if c.LBAmphorae == nil {
+		c.LBAmphorae = map[string][]scenariotest.AmphoraRef{}
+	}
+	roles := []string{"MASTER", "BACKUP"}
+	for i := 0; i < count; i++ {
+		role := "STANDALONE"
+		if count > 1 {
+			role = roles[i]
+		}
+		c.LBAmphorae[id] = append(c.LBAmphorae[id], scenariotest.AmphoraRef{
+			ID:          fmt.Sprintf("%s-amp-%d", id, i),
+			ComputeID:   fmt.Sprintf("%s-compute-%d", id, i),
+			LBNetworkIP: fmt.Sprintf("10.254.0.%d", 10+len(c.LBAmphorae)*2+i),
+			Role:        role,
+		})
+	}
+	return id, fmt.Sprintf("10.0.99.%d", len(c.LBs)), nil
+}
+
+func (c *Cloud) CreateListener(_ context.Context, _ string, spec scenariotest.ListenerSpec) (string, error) {
+	c.Listeners = append(c.Listeners, spec)
+	return c.id("listener"), nil
+}
+
+func (c *Cloud) CreatePool(_ context.Context, _ string, spec scenariotest.PoolSpec) (string, error) {
+	c.Pools = append(c.Pools, spec)
+	return c.id("pool"), nil
+}
+
+func (c *Cloud) CreateMember(_ context.Context, _ string, spec scenariotest.MemberSpec) (string, error) {
+	c.Members = append(c.Members, spec)
+	return c.id("member"), nil
+}
+
+// WaitLBActive is instant: the fake has no provisioning state machine.
+func (c *Cloud) WaitLBActive(_ context.Context, _, _ string) error { return nil }
+
+func (c *Cloud) ListAmphorae(_ context.Context, lbID string) ([]scenariotest.AmphoraRef, error) {
+	return c.LBAmphorae[lbID], nil
+}
+
+// DeleteLoadBalancer records the cascade and drops the Amphorae, so a
+// teardown test can assert the Amphora VMs were reclaimed through
+// Octavia rather than by deleting their ports.
+func (c *Cloud) DeleteLoadBalancer(_ context.Context, _, id string) error {
+	c.LBDeleted = append(c.LBDeleted, id)
+	delete(c.LBAmphorae, id)
+	return nil
 }
 
 // --- teardown fakes: record in order, idempotent like the real

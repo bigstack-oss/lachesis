@@ -6,6 +6,7 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/fake"
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 func checkByName(r Report, name string) (Check, bool) {
@@ -130,4 +131,78 @@ type halfMetrics struct{ fake.InstantMACs }
 
 func (halfMetrics) Scrape(context.Context, string) (scenariotest.ScrapeResult, error) {
 	return scenariotest.ScrapeResult{Present: map[string]bool{scenariotest.MetricBytesTotal: true, scenariotest.MetricAttachedInterfaces: false}}, nil
+}
+
+// lbScenario declares a minimal load-balancer topology at the given
+// topology, for the optional-prerequisite tests below.
+func lbScenario(topology scenario.LBTopology) *scenariotest.Scenario {
+	b := scenario.New()
+	b.Network("net-T1", "T1").
+		Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
+		VM("vm-a", "T1", "10.0.1.5").
+		LoadBalancer("lb1", "T1", "service", "10.0.1.50", topology).
+		Member("sub-T1", "10.0.1.5", 80).
+		Done()
+	return &scenariotest.Scenario{Name: "lb", Desc: "lb", Builder: b}
+}
+
+// TestPreflight_LBFlavorCheckedOnlyWhenNeeded pins the one OPTIONAL
+// prerequisite. A scenario with no ACTIVE_STANDBY load balancer must not
+// probe Octavia at all, so every existing scenario keeps working on a
+// cluster with no load balancing; one that declares it gets a real
+// check; and an unstaged flavor SKIPS rather than fails.
+func TestPreflight_LBFlavorCheckedOnlyWhenNeeded(t *testing.T) {
+	t.Run("standalone never probes octavia", func(t *testing.T) {
+		env := &fake.Env{BaseAttached: 1}
+		cloud := fake.NewCloud(env)
+		cloud.LBFlavorID = "lbflv-1"
+		cfg := fake.Config()
+		cfg.Prerequisites.LBFlavorName = "lachesis-ha"
+		r := Run(context.Background(), cfg, lbScenario(scenario.Standalone), cloud, &fake.Metrics{Env: env})
+		if _, ok := checkByName(r, "lb_flavor"); ok {
+			t.Error("lb_flavor probed for a scenario declaring no ACTIVE_STANDBY load balancer")
+		}
+	})
+
+	t.Run("active-standby resolves the flavor", func(t *testing.T) {
+		env := &fake.Env{BaseAttached: 1}
+		cloud := fake.NewCloud(env)
+		cloud.LBFlavorID = "lbflv-1"
+		cfg := fake.Config()
+		cfg.Prerequisites.LBFlavorName = "lachesis-ha"
+		r := Run(context.Background(), cfg, lbScenario(scenario.ActiveStandby), cloud, &fake.Metrics{Env: env})
+		c, ok := checkByName(r, "lb_flavor")
+		if !ok {
+			t.Fatal("lb_flavor not probed for an ACTIVE_STANDBY scenario")
+		}
+		if !c.OK {
+			t.Errorf("lb_flavor check failed: %s", c.Detail)
+		}
+	})
+
+	t.Run("configured but unresolvable flavor fails", func(t *testing.T) {
+		env := &fake.Env{BaseAttached: 1}
+		cloud := fake.NewCloud(env)
+		cloud.LBFlavorID = "" // name staged, no such flavor
+		cfg := fake.Config()
+		cfg.Prerequisites.LBFlavorName = "lachesis-ha"
+		r := Run(context.Background(), cfg, lbScenario(scenario.ActiveStandby), cloud, &fake.Metrics{Env: env})
+		if r.OK {
+			t.Error("report OK despite an unresolvable lb flavor")
+		}
+	})
+
+	t.Run("unstaged flavor skips rather than fails", func(t *testing.T) {
+		env := &fake.Env{BaseAttached: 1}
+		cloud := fake.NewCloud(env)
+		cfg := fake.Config()
+		cfg.Prerequisites.LBFlavorName = ""
+		r := Run(context.Background(), cfg, lbScenario(scenario.ActiveStandby), cloud, &fake.Metrics{Env: env})
+		if r.Skip == "" {
+			t.Error("want SKIPPED when no lb flavor is staged")
+		}
+		if !r.OK {
+			t.Error("a skip is not a failure")
+		}
+	})
 }

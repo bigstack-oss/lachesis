@@ -130,6 +130,12 @@ type Prereqs struct {
 	KeypairName         string `yaml:"keypair_name"`
 	SecGroupName        string `yaml:"secgroup_name"`
 	ExternalNetworkName string `yaml:"external_network_name"`
+	// LBFlavorName is the Octavia load-balancer flavor whose profile
+	// carries loadbalancer_topology=ACTIVE_STANDBY. OPTIONAL, unlike
+	// every other prerequisite: only multi-Amphora scenarios need it,
+	// and leaving it unset makes those SKIPPED rather than failing every
+	// run on a cluster with no load balancing (docs/architecture/octavia.md).
+	LBFlavorName string `yaml:"lb_flavor_name"`
 }
 
 // SSHConfig is the in-VM traffic driver's SSH transport.
