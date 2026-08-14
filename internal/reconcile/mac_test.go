@@ -28,7 +28,7 @@ func (f *fakeMacWriter) Update(mac uint64, tenantID uint32) error {
 }
 
 // mac parses a MAC string into the uint64 key the metadata map uses,
-// matching bpf.MACKey / desiredMACs.
+// matching bpf.MACKey / DesiredMACs.
 func mac(t *testing.T, s string) uint64 {
 	t.Helper()
 	hw, err := net.ParseMAC(s)
@@ -62,12 +62,99 @@ func TestDesiredMACs_AdmitsOnlyVMPorts(t *testing.T) {
 		{MACAddress: "aa:bb:cc:00:00:04", ProjectID: "", DeviceOwner: "compute:nova"},                   // no project
 		{MACAddress: "not-a-mac", ProjectID: "proj-e", DeviceOwner: "compute:nova"},                     // bad MAC
 	}
-	got := desiredMACs(&neutron.Snapshot{Ports: ports})
+	got := DesiredMACs(&neutron.Snapshot{Ports: ports})
 	if len(got) != 1 {
-		t.Fatalf("desiredMACs admitted %d, want 1: %v", len(got), got)
+		t.Fatalf("DesiredMACs admitted %d, want 1: %v", len(got), got)
 	}
 	if got[mac(t, "aa:bb:cc:00:00:01")].ProjectID != "proj-a" {
 		t.Errorf("admitted VM port maps to %+v, want proj-a", got[mac(t, "aa:bb:cc:00:00:01")])
+	}
+}
+
+// amphoraSnap builds a snapshot with one amphora-provider load balancer
+// owned by "lb-owner" whose Amphora (Nova instance "nova-amp") holds a
+// management port and a data port, both owned by the Octavia service
+// project. The data port must bill the LB owner; the management port
+// carries health-manager heartbeats and must not
+// (docs/architecture/octavia.md).
+func amphoraSnap() *neutron.Snapshot {
+	return &neutron.Snapshot{
+		Ports: []neutron.Port{
+			{ID: "p-mgmt", MACAddress: "aa:cc:00:00:00:01", ProjectID: "service",
+				DeviceOwner: "compute:nova", DeviceID: "nova-amp",
+				FixedIPs: []neutron.FixedIP{{IPAddress: "10.254.0.9"}}},
+			{ID: "p-data", MACAddress: "aa:cc:00:00:00:02", ProjectID: "service",
+				DeviceOwner: "compute:nova", DeviceID: "nova-amp",
+				FixedIPs: []neutron.FixedIP{{IPAddress: "192.168.1.99"}}},
+		},
+		LoadBalancers: []neutron.LoadBalancer{
+			{ID: "lb1", ProjectID: "lb-owner", Provider: "amphora"},
+		},
+		Amphorae: []neutron.Amphora{
+			{ID: "amp1", LoadBalancerID: "lb1", ComputeID: "nova-amp",
+				LBNetworkIP: "10.254.0.9", Status: "ALLOCATED"},
+		},
+	}
+}
+
+// TestDesiredMACs_AmphoraPortsBillTheLBOwner asserts the reconcile
+// populator applies the same Amphora rewrite cold-start does. The two
+// must agree: if only one rewrote, every reconcile pass would see an
+// attribution change, settle the port's flows, and flip its tenant back
+// and forth between the service project and the LB owner.
+func TestDesiredMACs_AmphoraPortsBillTheLBOwner(t *testing.T) {
+	got := DesiredMACs(amphoraSnap())
+
+	data := got[mac(t, "aa:cc:00:00:00:02")]
+	if data.ProjectID != "lb-owner" {
+		t.Errorf("Amphora data port billed %q, want lb-owner", data.ProjectID)
+	}
+	if !data.IsAmphora {
+		t.Error("Amphora data port IsAmphora = false, want true")
+	}
+
+	mgmt := got[mac(t, "aa:cc:00:00:00:01")]
+	if mgmt.ProjectID != "service" {
+		t.Errorf("Amphora management port billed %q, want service (heartbeats are not tenant traffic)", mgmt.ProjectID)
+	}
+	if mgmt.IsAmphora {
+		t.Error("Amphora management port IsAmphora = true, want false")
+	}
+}
+
+// TestDesiredMACs_AmphoraRewriteIsStable guards the flip-flop the two
+// populators exist to avoid: a second pass over an unchanged snapshot
+// must produce byte-identical attribution, so learnMACs sees no change
+// and never settles.
+func TestDesiredMACs_AmphoraRewriteIsStable(t *testing.T) {
+	first := DesiredMACs(amphoraSnap())
+	second := DesiredMACs(amphoraSnap())
+	for k, a := range first {
+		b, ok := second[k]
+		if !ok {
+			t.Fatalf("mac %012x present in first pass, absent in second", k)
+		}
+		if !a.SameAttribution(b) {
+			t.Errorf("mac %012x attribution changed across passes: %+v then %+v", k, a, b)
+		}
+	}
+}
+
+// TestDesiredMACs_NoOctaviaKeepsPortAttribution covers the degraded
+// path: an Octavia fetch failure empties both lists, and every port must
+// fall back to its own project rather than losing its attribution.
+func TestDesiredMACs_NoOctaviaKeepsPortAttribution(t *testing.T) {
+	snap := amphoraSnap()
+	snap.LoadBalancers, snap.Amphorae = nil, nil
+
+	got := DesiredMACs(snap)
+	for _, m := range []string{"aa:cc:00:00:00:01", "aa:cc:00:00:00:02"} {
+		if got[mac(t, m)].ProjectID != "service" {
+			t.Errorf("port %s billed %q with no Octavia data, want service", m, got[mac(t, m)].ProjectID)
+		}
+		if got[mac(t, m)].IsAmphora {
+			t.Errorf("port %s IsAmphora = true with no Octavia data, want false", m)
+		}
 	}
 }
 

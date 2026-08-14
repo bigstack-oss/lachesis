@@ -110,6 +110,47 @@ type Server struct {
 	ProjectID string
 }
 
+// LoadBalancer is the agent's view of an Octavia load balancer. Only
+// the attribution join needs it ([AmphoraOwnerByPort]): ProjectID is
+// the tenant the LB's traffic bills to, and Provider gates the join to
+// the amphora provider — the OVN provider has no Amphora VM and a
+// different traffic shape (docs/architecture/octavia.md).
+//
+// Fetched best-effort ([Client.ListLoadBalancers]) alongside
+// [Snapshot.Amphorae]: a deployment without Octavia leaves both lists
+// empty and every Amphora port keeps its own (service-project)
+// attribution, exactly as before the subsystem existed.
+type LoadBalancer struct {
+	ID        string
+	ProjectID string
+	Provider  string
+}
+
+// Amphora is the agent's view of one Octavia Amphora — the VM running
+// HAProxy for a load balancer. Three fields carry the whole join:
+//
+//   - LoadBalancerID resolves the owning tenant via [Snapshot.LoadBalancers].
+//   - ComputeID is the Nova instance UUID, which every one of the
+//     Amphora's Neutron ports carries as its `device_id`. Enumerating by
+//     it catches the VIP-network vrrp port AND any member-network ports
+//     Octavia plugs when a pool member lives on another subnet — those
+//     are created by Nova on interface-attach and carry no distinguishing
+//     marker of their own (verified against the Octavia amphora driver).
+//   - LBNetworkIP is the address on the Octavia management network. The
+//     port holding it carries health-manager heartbeats, not tenant
+//     traffic, and is excluded from the rewrite so no tenant is billed
+//     for control-plane chatter.
+type Amphora struct {
+	ID             string
+	LoadBalancerID string
+	ComputeID      string
+	LBNetworkIP    string
+	// Status is the Octavia lifecycle state (BOOTING, ALLOCATED,
+	// READY, PENDING_DELETE, DELETED, ERROR). [AmphoraOwnerByPort]
+	// skips DELETED rows so a torn-down LB stops claiming ports.
+	Status string
+}
+
 // Router is the trie-builder view of a Neutron router. Name is the
 // operator-assigned label; not used by trie classification but
 // surfaced in /debug pages to make sense of which router is which.

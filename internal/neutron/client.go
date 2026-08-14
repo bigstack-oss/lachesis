@@ -27,6 +27,12 @@ type Client struct {
 	// [Client.ListServers], degrades to an empty list — the info
 	// series is optional, so a compute-less deployment keeps working.
 	compute *gophercloud.ServiceClient
+	// loadbalancer is nil when the catalog carries no Octavia
+	// endpoint. Its consumers ([Client.ListLoadBalancers],
+	// [Client.ListAmphorae]) degrade to empty lists, which makes
+	// [AmphoraOwnerByPort] a no-op — an Octavia-less deployment bills
+	// exactly as it did before this subsystem existed.
+	loadbalancer *gophercloud.ServiceClient
 }
 
 // NewClient authenticates against Keystone with creds and returns a
@@ -66,7 +72,17 @@ func NewClient(ctx context.Context, creds Credentials) (*Client, error) {
 			"component", componentNeutron, "err", err)
 		compute = nil
 	}
-	return &Client{network: net, identity: id, compute: compute}, nil
+	// Octavia is best-effort for the same reason: a deployment without
+	// load balancing has no such endpoint, and Amphora re-attribution
+	// is additive — without it, Amphora ports keep the service
+	// project's attribution (docs/architecture/octavia.md).
+	lb, err := openstack.NewLoadBalancerV2(provider, eo)
+	if err != nil {
+		slog.Warn("octavia endpoint discovery failed; Amphora traffic bills the service project",
+			"component", componentNeutron, "err", err)
+		lb = nil
+	}
+	return &Client{network: net, identity: id, compute: compute, loadbalancer: lb}, nil
 }
 
 // EndpointURL returns the Neutron base URL gophercloud discovered

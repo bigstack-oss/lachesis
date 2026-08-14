@@ -24,6 +24,7 @@ import (
 //   - lachesis_neutron_builder_step_duration_seconds{step}       histogram
 //   - lachesis_neutron_anomalies{class}                          gauge (topology health)
 //   - lachesis_neutron_trunk_subports                            gauge (data-plane blind spot)
+//   - lachesis_neutron_amphora_ports                             gauge (LB re-attribution reach)
 type Metrics struct {
 	syncAge       prometheus.GaugeFunc
 	apiErrors     *prometheus.CounterVec
@@ -31,6 +32,7 @@ type Metrics struct {
 	builderStep   *prometheus.HistogramVec
 	anomalies     *prometheus.GaugeVec
 	trunkSubports prometheus.Gauge
+	amphoraPorts  prometheus.Gauge
 }
 
 // NewMetrics constructs the bundle. `lastSync` returns the most
@@ -69,6 +71,10 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 			Name: "lachesis_neutron_trunk_subports",
 			Help: "Count of trunk subport MACs admitted to mac_tenant_map at the last Neutron cold-start or resync; nonzero means 802.1Q-tagged subport traffic passes the data plane uncounted (docs/architecture/edge-cases.md).",
 		}),
+		amphoraPorts: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lachesis_neutron_amphora_ports",
+			Help: "Count of Octavia Amphora ports re-attributed from the service project to their load balancer's owning tenant at the last Neutron cold-start or resync (docs/architecture/octavia.md); drops to 0 if the Octavia lists stop resolving.",
+		}),
 	}
 	m.syncAge = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "lachesis_neutron_sync_age_seconds",
@@ -80,7 +86,9 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 		}
 		return time.Since(t).Seconds()
 	})
-	for _, ep := range []string{endpointKeystone, endpointNetworks, endpointSubnets, endpointPorts, endpointRouters, endpointProjects, endpointFloatingIPs, endpointServers} {
+	for _, ep := range []string{endpointKeystone, endpointNetworks, endpointSubnets, endpointRouters,
+		endpointPorts, endpointProjects, endpointFloatingIPs, endpointServers,
+		endpointLoadBalancers, endpointAmphorae} {
 		m.apiErrors.WithLabelValues(ep, codeNetwork).Add(0)
 	}
 	for _, c := range []string{anomalyClassCycle, anomalyClassAmbiguity, anomalyClassDanglingRoute,
@@ -93,7 +101,7 @@ func NewMetrics(lastSync func() time.Time) *Metrics {
 // Collectors returns the underlying prometheus.Collector values for
 // the agent's registry to register.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.syncAge, m.apiErrors, m.unknownOwners, m.builderStep, m.anomalies, m.trunkSubports}
+	return []prometheus.Collector{m.syncAge, m.apiErrors, m.unknownOwners, m.builderStep, m.anomalies, m.trunkSubports, m.amphoraPorts}
 }
 
 // ObserveBuilderStep records the duration of one BuildTrie step. The
@@ -140,6 +148,19 @@ func (m *Metrics) SetTrunkSubports(n int) {
 		return
 	}
 	m.trunkSubports.Set(float64(n))
+}
+
+// SetAmphoraPorts publishes how many Amphora ports the latest
+// cold-start or resync re-attributed to their load balancer's owner.
+// Gauge semantics — a drop to 0 while load balancers still exist means
+// the Octavia lists stopped resolving and that traffic has silently
+// reverted to billing the service project, so it is worth alerting on.
+// nil receivers no-op.
+func (m *Metrics) SetAmphoraPorts(n int) {
+	if m == nil {
+		return
+	}
+	m.amphoraPorts.Set(float64(n))
 }
 
 // SetAnomalies publishes the per-class counts from the latest

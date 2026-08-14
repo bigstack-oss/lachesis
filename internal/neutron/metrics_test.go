@@ -51,8 +51,10 @@ func TestMetrics_RecordAPIError_HTTPCode(t *testing.T) {
 # TYPE lachesis_neutron_api_errors_total counter
 lachesis_neutron_api_errors_total{code="401",endpoint="keystone"} 1
 lachesis_neutron_api_errors_total{code="503",endpoint="ports"} 2
+lachesis_neutron_api_errors_total{code="network",endpoint="amphorae"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="floatingips"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="keystone"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="loadbalancers"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="networks"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="ports"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="projects"} 0
@@ -73,8 +75,10 @@ func TestMetrics_RecordAPIError_NetworkLevel(t *testing.T) {
 	const want = `
 # HELP lachesis_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
 # TYPE lachesis_neutron_api_errors_total counter
+lachesis_neutron_api_errors_total{code="network",endpoint="amphorae"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="floatingips"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="keystone"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="loadbalancers"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="networks"} 1
 lachesis_neutron_api_errors_total{code="network",endpoint="ports"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="projects"} 0
@@ -98,8 +102,10 @@ func TestMetrics_RecordAPIError_NilErrorIgnored(t *testing.T) {
 	const want = `
 # HELP lachesis_neutron_api_errors_total Count of failed Neutron API calls by endpoint and HTTP status code ('network' for connection-level failures).
 # TYPE lachesis_neutron_api_errors_total counter
+lachesis_neutron_api_errors_total{code="network",endpoint="amphorae"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="floatingips"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="keystone"} 0
+lachesis_neutron_api_errors_total{code="network",endpoint="loadbalancers"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="networks"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="ports"} 0
 lachesis_neutron_api_errors_total{code="network",endpoint="projects"} 0
