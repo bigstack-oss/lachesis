@@ -25,7 +25,9 @@ import (
 // the grace window (docs/architecture/data-structures.md#lingering-ghost). The agent wires an *ebpf.Map
 // adapter; tests wire a recording mock.
 type MacWriter interface {
-	Update(mac uint64, tenantID uint32) error
+	// value is the packed (Amphora flag ++ tenant id) the kernel stores,
+	// built by [bpf.TenantValue] — not a bare tenant id.
+	Update(mac uint64, value uint32) error
 }
 
 // macDelta counts what one MAC reconcile pass changed.
@@ -190,7 +192,7 @@ func (r *Reconciler) insertMAC(mac uint64, meta metadata.TenantMeta) {
 	m := meta // fresh copy per insert; the map owns the pointer
 	m.DeleteAt = time.Time{}
 	r.meta.Insert(mac, &m)
-	if err := r.macWriter.Update(mac, r.interner.Intern(meta.ProjectID)); err != nil {
+	if err := r.macWriter.Update(mac, bpf.TenantValue(r.interner.Intern(meta.ProjectID), meta.IsAmphora)); err != nil {
 		slog.Warn("reconcile mac_tenant_map kernel write failed; retry next pass",
 			"component", component, "mac", mac, "err", err)
 	}

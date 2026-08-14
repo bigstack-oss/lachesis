@@ -270,3 +270,48 @@ func TestWriteSubnetZoneTrie_NilArgs(t *testing.T) {
 		t.Error("nil interner should error")
 	}
 }
+
+// TestWriteMacTenantMap_AmphoraFlag pins the production write path for
+// Octavia: an Amphora port's entry carries the tenant id of the load
+// balancer's owner with the Amphora marker packed into the top bit, so
+// the kernel zones its L2-adjacent flows INFRA (docs/architecture/octavia.md).
+// A plain VM in the same project must land on the bare id — if the flag
+// leaked onto ordinary ports, every same-tenant flow would misclassify
+// as load-balancer plumbing and stop being billed.
+func TestWriteMacTenantMap_AmphoraFlag(t *testing.T) {
+	snap := metadata.New()
+	interner := metadata.NewTenantInterner()
+	const (
+		vmMAC   = uint64(0x020000000001)
+		ampMAC  = uint64(0x020000000002)
+		project = "lb-owner"
+	)
+	snap.Insert(vmMAC, &metadata.TenantMeta{ProjectID: project})
+	snap.Insert(ampMAC, &metadata.TenantMeta{ProjectID: project, IsAmphora: true})
+
+	fm := &fakeMap{}
+	if _, err := WriteMacTenantMap(fm, snap, interner); err != nil {
+		t.Fatalf("WriteMacTenantMap: %v", err)
+	}
+
+	tid, _ := interner.Lookup(project)
+	got := make(map[uint64]uint32, len(fm.updates))
+	for _, u := range fm.updates {
+		got[u.key.(uint64)] = u.value.(uint32)
+	}
+	if got[vmMAC] != tid {
+		t.Errorf("plain VM value = %#x, want %#x (bare tenant id)", got[vmMAC], tid)
+	}
+	if want := bpf.TenantValue(tid, true); got[ampMAC] != want {
+		t.Errorf("Amphora value = %#x, want %#x", got[ampMAC], want)
+	}
+	// Both ports belong to one project: same id under the mask, and only
+	// the Amphora carries the flag.
+	if got[ampMAC]&bpf.TenantIDMask != got[vmMAC] {
+		t.Errorf("masked Amphora id %#x != VM id %#x; the flag corrupted the tenant",
+			got[ampMAC]&bpf.TenantIDMask, got[vmMAC])
+	}
+	if got[vmMAC]&bpf.TenantAmphoraFlag != 0 {
+		t.Error("plain VM carries the Amphora flag")
+	}
+}

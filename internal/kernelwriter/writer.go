@@ -42,8 +42,9 @@ type MapUpdater interface {
 }
 
 // WriteMacTenantMap pushes every live (MAC, ProjectID) pair in snap
-// into macMap, mapped through interner to its u32 tenant_id. Entries
-// with empty ProjectID are skipped (no kernel binding to make).
+// into macMap, mapped through interner to its u32 tenant_id and packed
+// with the entry's Amphora marker via [bpf.TenantValue]. Entries with
+// empty ProjectID are skipped (no kernel binding to make).
 //
 // Returns the count of successful writes and the first error
 // encountered. Subsequent failures within the same call are logged
@@ -82,7 +83,7 @@ func WriteMacTenantMap(
 		if meta.ProjectID == "" {
 			return true
 		}
-		pairs = append(pairs, macTenant{mac, interner.Intern(meta.ProjectID)})
+		pairs = append(pairs, macTenant{mac, bpf.TenantValue(interner.Intern(meta.ProjectID), meta.IsAmphora)})
 		return true
 	})
 

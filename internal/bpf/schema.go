@@ -227,6 +227,35 @@ const (
 	MapTelemetryStatsMaxEntries = statReasonCount
 )
 
+// TenantAmphoraFlag and TenantIDMask mirror the packing of a
+// `mac_tenant_map` value in bpf/telemetry.c: the top bit marks an Octavia
+// Amphora data port, the low 31 bits carry the interned tenant id.
+//
+// The kernel masks the id off before comparing tenants and before using it
+// as the `subnet_zone_trie` key, and returns ZONE_INFRA when either end of
+// an L2-adjacent flow carries the flag — that is Segment 2, load-balancer
+// plumbing rather than tenant traffic (docs/architecture/octavia.md).
+// Userspace sets the bit in [kernelwriter.WriteMacTenantMap] and the
+// reconciler's per-MAC writer; use [TenantValue] rather than open-coding
+// the OR, so there is one place the C and Go sides must agree.
+//
+// The mask bounds a deployment at 2^31-1 tenants. [metadata.TenantInterner]
+// assigns from 1 and a large cluster reaches thousands, so the ceiling is
+// unreachable — it is documented, not enforced.
+const (
+	TenantAmphoraFlag uint32 = 0x8000_0000
+	TenantIDMask      uint32 = 0x7fff_ffff
+)
+
+// TenantValue packs an interned tenant id and the Amphora marker into the
+// u32 a `mac_tenant_map` entry stores. See [TenantAmphoraFlag].
+func TenantValue(tenantID uint32, isAmphora bool) uint32 {
+	if isAmphora {
+		return tenantID | TenantAmphoraFlag
+	}
+	return tenantID
+}
+
 // LpmKeyTenantBits is the constant Prefixlen contribution from the
 // tenant_id field. The kernel LPM trie matches `tenant_id` exactly
 // (all 32 bits) before walking the IP portion, so every entry adds

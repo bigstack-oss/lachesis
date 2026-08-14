@@ -162,16 +162,31 @@ struct {
 } subnet_zone_trie SEC(".maps");
 
 /*
- * mac_tenant_map: MAC → tenant_id. The MAC is packed into the low 48 bits
- * of a u64 in big-endian order (see mac_to_u64). Populated by the userspace
- * agent from the platform's port metadata.
+ * mac_tenant_map: MAC → (amphora flag ++ tenant_id). The MAC is packed
+ * into the low 48 bits of a u64 in big-endian order (see mac_to_u64).
+ * Populated by the userspace agent from the platform's port metadata.
  *
  * Sizing: one entry per active Neutron port (compute:nova VMs plus
  * Amphora data ports). dev-cmp empirically observes ~17 compute:nova
  * ports today; a production OVN-Yoga deployment can reach a few
  * thousand. 8192 = 2× headroom over a 4000-port target in a
  * power-of-two.
+ *
+ * # Why the value is packed, not a second map
+ *
+ * The top bit marks an Octavia Amphora data port; the low 31 bits are the
+ * interned tenant id. A sidecar amphora_meta map would cost an extra hash
+ * lookup on every packet whose peer resolves — ~20-30ns against a measured
+ * 82-110ns per-packet budget — to produce nothing but a zone label. Packing
+ * costs one AND. Cilium packs flags into ipcache values for the same reason.
+ *
+ * 31 bits bounds the deployment at 2^31-1 tenants; the interner assigns
+ * from 1 and a cluster reaches thousands. Userspace mirror and the writer
+ * that sets the bit: internal/bpf.TenantAmphoraFlag / TenantIDMask.
  */
+#define TENANT_AMPHORA_FLAG 0x80000000u
+#define TENANT_ID_MASK      0x7fffffffu
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 8192);
@@ -243,6 +258,18 @@ static __always_inline __u64 mac_to_u64(const __u8 mac[6])
  *   1. vm_mac must be a known VM in mac_tenant_map, otherwise ZONE_MISS.
  *   2. Direct-L2 fast path: if peer_mac is also a known VM, compare
  *      tenants exactly. No trie consulted, no CIDR ambiguity.
+ *   2a. Octavia: an L2-adjacent flow with an Amphora on either end is
+ *      load-balancer plumbing (Segment 2, Amphora <-> backend), so it
+ *      classifies ZONE_INFRA rather than by tenant. Checked on both ends
+ *      so the same segment carries the same zone at the backend's tap and
+ *      at the Amphora's tap — the both-sides emission pairs a tx and an rx
+ *      series per transfer, and splitting that pair across two zones makes
+ *      it unreconcilable (docs/architecture/billing.md).
+ *
+ *      Segment 1 (client <-> Amphora) is deliberately NOT caught here: an
+ *      external client's peer_mac is a router interface, absent from
+ *      mac_tenant_map, so it falls past this branch to the trie and lands
+ *      EXTERNAL — which is the billable half (docs/architecture/octavia.md).
  *   3. Routed fallback: LPM trie keyed on (vm_tenant_id, remote_ip);
  *      hits SAME_TENANT rows and per-tenant extraroute rows.
  *   4. Sentinel fallback: if (3) misses, re-key with tenant_id=0
@@ -260,18 +287,23 @@ static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
 					__be32 remote_ip_be)
 {
 	__u64 vm_key = mac_to_u64(vm_mac);
-	__u32 *vm_tid = bpf_map_lookup_elem(&mac_tenant_map, &vm_key);
-	if (!vm_tid)
+	__u32 *vm_val = bpf_map_lookup_elem(&mac_tenant_map, &vm_key);
+	if (!vm_val)
 		return ZONE_MISS;
+	__u32 vm_tid = *vm_val & TENANT_ID_MASK;
 
 	__u64 peer_key = mac_to_u64(peer_mac);
-	__u32 *peer_tid = bpf_map_lookup_elem(&mac_tenant_map, &peer_key);
-	if (peer_tid)
-		return (*peer_tid == *vm_tid) ? ZONE_SAME_TENANT : ZONE_OTHER_TENANT;
+	__u32 *peer_val = bpf_map_lookup_elem(&mac_tenant_map, &peer_key);
+	if (peer_val) {
+		if ((*vm_val | *peer_val) & TENANT_AMPHORA_FLAG)
+			return ZONE_INFRA;
+		return ((*peer_val & TENANT_ID_MASK) == vm_tid)
+			? ZONE_SAME_TENANT : ZONE_OTHER_TENANT;
+	}
 
 	struct lpm_key lk = {
 		.prefixlen = 64,	/* request full match; trie picks the longest stored prefix */
-		.tenant_id = *vm_tid,
+		.tenant_id = vm_tid,
 		/*
 		 * Network byte order. The kernel LPM trie walks key data
 		 * byte-by-byte, MSB-first within each byte; for CIDR
