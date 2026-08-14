@@ -16,6 +16,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/kernelwriter"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/neutron"
+	"github.com/bigstack-oss/lachesis/internal/reconcile"
 )
 
 // populateStats summarises what [populateMetadataFromPorts]
@@ -25,6 +26,7 @@ type populateStats struct {
 	inserted      int // MACs written into the userspace map
 	skipped       int // device-owner-eligible ports with an unparseable MAC
 	unknownOwners int // admitted by IsVMPort but absent from IsKnownVMOwner
+	amphoraPorts  int // re-attributed from the service project to an LB owner
 }
 
 // coldStartNeutron orchestrates the cold-start sequence: run a full
@@ -83,24 +85,58 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 		"tenants_interned", ag.interner.Len(),
 		"ports_skipped", stats.skipped,
 		"unknown_owners_admitted", stats.unknownOwners,
+		"amphora_ports_reattributed", stats.amphoraPorts,
 	)
 	return nil
 }
 
-// populateMetadataFromPorts walks the snapshot's ports, applies the
-// IsVMPort blacklist, parses MACs, and inserts (mac → *TenantMeta) into
-// the userspace shard map — each entry carrying the port's full
-// attribution (project, server_id, external_network) for the metric
-// labels and per-server export (docs/architecture/billing.md). Logs every port
-// admitted with an unknown device_owner (the IsKnownVMOwner allowlist
-// miss) so operators notice when a vendor / plugin string slipped past
-// the broad blacklist, and emits one summary warning when the snapshot
-// contains trunk subports — their MACs admit here but the data plane
-// passes 802.1Q-tagged frames uncounted (docs/architecture/edge-cases.md#tier-1--hard-limits).
+// populateMetadataFromPorts publishes [reconcile.DesiredMACs] into the
+// userspace shard map — each entry carrying the port's full attribution
+// (project, server_id, external_network, and the Octavia LB-owner
+// rewrite) for the metric labels and per-server export
+// (docs/architecture/billing.md, docs/architecture/octavia.md).
+//
+// The attribution itself is deliberately NOT computed here. Cold-start
+// and the reconciler must agree exactly on what the metadata map should
+// hold, so both read the one definition; see [reconcile.DesiredMACs] for
+// what drift would cost. What belongs to cold-start alone is the audit
+// in [auditPorts]: the boot-time logging and counters an operator wants
+// once, not on every reconcile pass.
 func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, snap *neutron.Snapshot, mx *neutron.Metrics) populateStats {
+	desired := reconcile.DesiredMACs(snap)
 	var s populateStats
+	for mac, want := range desired {
+		m := want // fresh copy per insert; the map owns the pointer
+		meta.Insert(mac, &m)
+		s.inserted++
+		if m.IsAmphora {
+			s.amphoraPorts++
+		}
+	}
+	auditPorts(snap, desired, mx, &s)
+	mx.SetAmphoraPorts(s.amphoraPorts)
+	return s
+}
+
+// auditPorts walks the snapshot for the conditions an operator should
+// see once, at boot, and records them on `s` and the Neutron metrics
+// bundle:
+//
+//   - a port the admission gate accepted whose MAC will not parse (it is
+//     absent from the metadata map, so its traffic bills "unknown");
+//   - a device_owner outside the IsKnownVMOwner allowlist, so a vendor or
+//     plugin string that slipped past the broad blacklist is visible;
+//   - trunk subports, whose MACs admit but whose 802.1Q-tagged frames the
+//     data plane passes uncounted (docs/architecture/edge-cases.md#tier-1--hard-limits);
+//   - each Amphora port whose billing identity was rewritten, with both
+//     the service project it left and the LB owner it joined.
+//
+// It is diagnostics only — it produces no attribution, so a drift
+// between its gate and [reconcile.DesiredMACs] can misreport a count but
+// can never mis-bill. That is why the duplicated admission conditions
+// here are acceptable and the attribution is not.
+func auditPorts(snap *neutron.Snapshot, desired map[uint64]metadata.TenantMeta, mx *neutron.Metrics, s *populateStats) {
 	trunkSubports := 0
-	extByPort := neutron.ExternalNetworkByPort(snap)
 	for _, p := range snap.Ports {
 		if !neutron.IsVMPort(p.DeviceOwner) || p.ProjectID == "" || p.MACAddress == "" {
 			continue
@@ -127,13 +163,13 @@ func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, snap *neutron.
 		}
 		var key [6]uint8
 		copy(key[:], hw)
-		meta.Insert(bpf.MACKey(key), &metadata.TenantMeta{
-			ProjectID:       p.ProjectID,
-			ServerID:        p.DeviceID,
-			PortID:          p.ID,
-			ExternalNetwork: extByPort[p.ID],
-		})
-		s.inserted++
+		if m, ok := desired[bpf.MACKey(key)]; ok && m.IsAmphora {
+			slog.Info("Amphora port re-attributed to its load balancer's owner",
+				"component", componentNeutron,
+				"port_id", p.ID,
+				"service_project", p.ProjectID,
+				"lb_owner", m.ProjectID)
+		}
 	}
 	if trunkSubports > 0 {
 		slog.Warn("trunk subports present; 802.1Q-tagged traffic on trunk parents is not counted (docs/architecture/edge-cases.md)",
@@ -141,7 +177,6 @@ func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, snap *neutron.
 			"trunk_subports", trunkSubports)
 	}
 	mx.SetTrunkSubports(trunkSubports)
-	return s
 }
 
 // pushToKernel writes the userspace metadata map and the built trie

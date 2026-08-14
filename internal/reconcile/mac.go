@@ -45,23 +45,43 @@ func (r *Reconciler) reconcileMACs(snap *neutron.Snapshot, now time.Time) macDel
 	if r.meta == nil || r.macWriter == nil {
 		return macDelta{}
 	}
-	desired := desiredMACs(snap)
+	desired := DesiredMACs(snap)
 	inserted, changed := r.learnMACs(desired)
 	ghosted := r.ghostGoneMACs(desired, now)
 	return macDelta{Inserted: inserted, Changed: changed, Ghosted: ghosted}
 }
 
-// desiredMACs maps each admitted VM port to its full attribution — the
+// DesiredMACs maps each admitted VM port to its full attribution — the
 // target state of the metadata map (the kernel mac_tenant_map carries
-// only the tenant slice of it). It mirrors the cold-start admission gate
-// (neutron.IsVMPort plus a parseable MAC and a project); ports failing it
-// are skipped silently, because first-time admission logging is
-// cold-start's job and a persistently malformed port must not log every
-// pass. ServerID and ExternalNetwork ride along so the per-server export
-// and the external_network label stay current between cold starts
-// (docs/architecture/billing.md).
-func desiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
+// only the tenant slice of it). Admission is neutron.IsVMPort plus a
+// parseable MAC and a project; ports failing it are skipped silently,
+// because first-time admission logging is cold-start's job and a
+// persistently malformed port must not log every pass. ServerID and
+// ExternalNetwork ride along so the per-server export and the
+// external_network label stay current between cold starts
+// (docs/architecture/billing.md); Amphora ports resolve to their load
+// balancer's owning project (docs/architecture/octavia.md).
+//
+// # Why this is exported
+//
+// It is the SINGLE definition of what the metadata map should hold for
+// a snapshot, and it has two callers: the reconciler applies it every
+// pass, and the agent's cold-start populator applies it once before any
+// packet. That must not become two implementations. Were cold-start to
+// compute attribution its own way and drift — say, applying the Amphora
+// rewrite where the reconciler did not — the first reconcile pass after
+// boot would see an attribution change on every Amphora port, settle its
+// flows under the load balancer's owner, and re-attribute to the service
+// project; the next cold start would swing it back. Two copies of this
+// logic is a billing bug waiting for someone to edit one of them.
+//
+// Diagnostics deliberately stay OUT: counters, warn-logs, and the
+// unknown-device_owner metric belong to cold-start's own audit pass,
+// which produces no attribution and therefore cannot mis-bill if it
+// drifts.
+func DesiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
 	extByPort := neutron.ExternalNetworkByPort(snap)
+	ampByPort := neutron.AmphoraOwnerByPort(snap)
 	desired := make(map[uint64]metadata.TenantMeta, len(snap.Ports))
 	for _, p := range snap.Ports {
 		if !neutron.IsVMPort(p.DeviceOwner) || p.ProjectID == "" || p.MACAddress == "" {
@@ -71,13 +91,20 @@ func desiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
 		if err != nil || len(hw) != 6 {
 			continue
 		}
+		projectID := p.ProjectID
+		isAmphora := false
+		if owner, ok := ampByPort[p.ID]; ok {
+			projectID = owner
+			isAmphora = true
+		}
 		var key [6]uint8
 		copy(key[:], hw)
 		desired[bpf.MACKey(key)] = metadata.TenantMeta{
-			ProjectID:       p.ProjectID,
+			ProjectID:       projectID,
 			ServerID:        p.DeviceID,
 			PortID:          p.ID,
 			ExternalNetwork: extByPort[p.ID],
+			IsAmphora:       isAmphora,
 		}
 	}
 	return desired

@@ -127,6 +127,7 @@ or sum by (tenant_id) (rate(lachesis_tenant_bytes_total[1m]))
 | `lachesis_neutron_builder_step_duration_seconds` | histogram | `step` | BuildTrie per-step duration ([trie-construction.md](./trie-construction.md#the-five-step-algorithm)) |
 | `lachesis_neutron_anomalies` | gauge | `class="cycle\|ambiguity\|dangling_route\|zero_trie_tenant\|duplicate_router_mac\|multi_external_path"` | topology anomalies detected at the last cold-start or resync (`DetectAnomalies`; drives `/debug/anomalies`) |
 | `lachesis_neutron_trunk_subports` | gauge | — | trunk subport MACs admitted to `mac_tenant_map` at the last cold-start or resync; nonzero flags the trunk blind spot ([edge-cases.md](./edge-cases.md), Tier 1 row 3a) |
+| `lachesis_neutron_amphora_ports` | gauge | — | Octavia Amphora ports re-attributed from the service project to their load balancer's owning tenant at the last cold-start or resync ([octavia.md](./octavia.md)); a drop to 0 while load balancers exist means the Octavia lists stopped resolving and that traffic silently reverted to billing the service project |
 | `lachesis_zombie_filters_cleaned_total` | counter | — | startup Zombie Hunter |
 | `lachesis_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher |
 | `lachesis_attached_interfaces` | gauge | — | current Interface Registry size |

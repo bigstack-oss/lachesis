@@ -43,6 +43,15 @@ type Snapshot struct {
 	// unavailable — the info series is then simply absent
 	// ([Client.ListServers], [InfoCollector]).
 	Servers []Server
+	// LoadBalancers and Amphorae are the Octavia lists feeding
+	// [AmphoraOwnerByPort], which re-attributes an Amphora's ports from
+	// the Octavia service project to the load balancer's owning tenant
+	// (docs/architecture/octavia.md). Fetched best-effort like Servers:
+	// an Octavia-less deployment, or one whose credentials cannot read
+	// the admin-only amphora list, leaves both empty and every port keeps
+	// its own attribution.
+	LoadBalancers []LoadBalancer
+	Amphorae      []Amphora
 }
 
 // TrieEntry is one row destined for the kernel `subnet_zone_trie`:
@@ -183,7 +192,31 @@ const (
 	endpointProjects    = "projects"
 	endpointFloatingIPs = "floatingips"
 	endpointServers     = "servers"
+	// endpointLoadBalancers / endpointAmphorae are Octavia, not
+	// Neutron. They share the counter because the agent treats
+	// "OpenStack metadata fetch" as one subsystem — an operator
+	// debugging a stale attribution wants one place to look.
+	endpointLoadBalancers = "loadbalancers"
+	endpointAmphorae      = "amphorae"
 )
+
+// providerAmphora and providerAmphoraAlias are the Octavia provider
+// names whose traffic shape [AmphoraOwnerByPort] models: a VM running
+// HAProxy, terminating the client connection and originating a fresh
+// one to the backend (docs/architecture/octavia.md). "octavia" is the
+// deprecated alias of the same driver, still reported by Yoga's
+// provider list. The OVN provider preserves the source IP end-to-end
+// as a single segment and has no Amphora VM at all — a different shape
+// that this subsystem deliberately leaves alone.
+const (
+	providerAmphora      = "amphora"
+	providerAmphoraAlias = "octavia"
+)
+
+// amphoraStatusDeleted is the Octavia lifecycle state whose rows no
+// longer own any port. [AmphoraOwnerByPort] skips them so a torn-down
+// load balancer cannot keep claiming a recycled Nova instance UUID.
+const amphoraStatusDeleted = "DELETED"
 
 // anomalyClass* are the `class` label values for the
 // lachesis_neutron_anomalies gauge — one per [Anomalies] field.

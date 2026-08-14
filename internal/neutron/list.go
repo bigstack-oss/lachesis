@@ -6,6 +6,8 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/projects"
+	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/amphorae"
+	"github.com/gophercloud/gophercloud/v2/openstack/loadbalancer/v2/loadbalancers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/external"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/floatingips"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/layer3/routers"
@@ -203,6 +205,65 @@ func (c *Client) ListServers(ctx context.Context) ([]Server, error) {
 	out := make([]Server, len(gcs))
 	for i, s := range gcs {
 		out[i] = Server{ID: s.ID, Name: s.Name, ProjectID: s.TenantID}
+	}
+	return out, nil
+}
+
+// ListLoadBalancers returns every Octavia load balancer the agent's
+// credentials can see, carrying the owning project and the provider
+// name [AmphoraOwnerByPort] gates on.
+//
+// Tolerant like [ListServers]: with no Octavia endpoint in the catalog
+// ([NewClient] left c.loadbalancer nil) it returns an empty list and no
+// error, so Amphora re-attribution simply does not happen. See
+// [ListNetworks] for pagination semantics.
+func (c *Client) ListLoadBalancers(ctx context.Context) ([]LoadBalancer, error) {
+	if c.loadbalancer == nil {
+		return nil, nil
+	}
+	pages, err := loadbalancers.List(c.loadbalancer, loadbalancers.ListOpts{}).AllPages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("octavia: list loadbalancers: %w", err)
+	}
+	gcs, err := loadbalancers.ExtractLoadBalancers(pages)
+	if err != nil {
+		return nil, fmt.Errorf("octavia: extract loadbalancers: %w", err)
+	}
+	out := make([]LoadBalancer, len(gcs))
+	for i, lb := range gcs {
+		out[i] = LoadBalancer{ID: lb.ID, ProjectID: lb.ProjectID, Provider: lb.Provider}
+	}
+	return out, nil
+}
+
+// ListAmphorae returns every Octavia Amphora the agent's credentials
+// can see. This is an admin-only endpoint; a policy rejection surfaces
+// as an API error and leaves the list empty, which degrades to "no
+// re-attribution" rather than failing the sync ([Neutron.Sync]).
+//
+// See [ListLoadBalancers] for the endpoint-absent behaviour and
+// [ListNetworks] for pagination semantics.
+func (c *Client) ListAmphorae(ctx context.Context) ([]Amphora, error) {
+	if c.loadbalancer == nil {
+		return nil, nil
+	}
+	pages, err := amphorae.List(c.loadbalancer, amphorae.ListOpts{}).AllPages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("octavia: list amphorae: %w", err)
+	}
+	gcs, err := amphorae.ExtractAmphorae(pages)
+	if err != nil {
+		return nil, fmt.Errorf("octavia: extract amphorae: %w", err)
+	}
+	out := make([]Amphora, len(gcs))
+	for i, a := range gcs {
+		out[i] = Amphora{
+			ID:             a.ID,
+			LoadBalancerID: a.LoadbalancerID,
+			ComputeID:      a.ComputeID,
+			LBNetworkIP:    a.LBNetworkIP,
+			Status:         a.Status,
+		}
 	}
 	return out, nil
 }

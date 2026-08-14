@@ -105,8 +105,28 @@ func (n *Neutron) fetchAll(ctx context.Context) (Snapshot, error) {
 			"component", componentNeutron, "err", err)
 		s.Servers = nil
 	}
-	// Servers is non-fatal: return nil regardless of the ListServers error
-	// above, so a Nova failure never aborts the sync.
+	// The Octavia lists ride along on the same non-fatal terms: they
+	// feed Amphora re-attribution (docs/architecture/octavia.md), which
+	// is additive. A missing endpoint, an admin-only policy rejection on
+	// the amphora list, or a transient Octavia outage leaves the lists
+	// empty and every Amphora port keeps the service project's
+	// attribution — wrong, but self-correcting on the next sync, and far
+	// better than refusing to bill anything at all.
+	if s.LoadBalancers, err = n.client.ListLoadBalancers(ctx); err != nil {
+		n.metrics.RecordAPIError(endpointLoadBalancers, err)
+		slog.Warn("list loadbalancers failed; Amphora traffic bills the service project until the next sync succeeds",
+			"component", componentNeutron, "err", err)
+		s.LoadBalancers = nil
+	}
+	if s.Amphorae, err = n.client.ListAmphorae(ctx); err != nil {
+		n.metrics.RecordAPIError(endpointAmphorae, err)
+		slog.Warn("list amphorae failed; Amphora traffic bills the service project until the next sync succeeds",
+			"component", componentNeutron, "err", err)
+		s.Amphorae = nil
+	}
+	// Servers and the Octavia lists are non-fatal: return nil regardless
+	// of their errors above, so neither a Nova nor an Octavia failure
+	// aborts the sync.
 	return s, nil
 }
 
