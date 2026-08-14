@@ -117,8 +117,18 @@ Type:        BPF_MAP_TYPE_HASH
 Max entries: 8,192  (compile-time constant)
 
 KEY:   u64  (MAC packed into low 48 bits, big-endian byte order)
-VALUE: u32  (tenant_id)
+VALUE: u32  (bit 31 = Octavia Amphora marker; bits 0-30 = tenant_id)
 ```
+
+The value is packed rather than a bare id: the top bit marks an Octavia Amphora
+data port, and the classifier masks it off before the tenant comparison and
+before using the id as the `subnet_zone_trie` key. A sidecar map would have cost
+an extra hash lookup on every packet whose peer resolves, to carry one bit; the
+mask costs one AND (the same reason Cilium packs flags into `ipcache` values).
+The 31-bit id space bounds a deployment at 2³¹−1 tenants — unreachable, since
+the interner assigns from 1 and a large cluster reaches thousands. Go-side
+mirror: `bpf.TenantAmphoraFlag` / `bpf.TenantIDMask`, written through
+`bpf.TenantValue`. See [octavia.md](./octavia.md).
 
 Default sized for a 500-VM-per-host node plus ~2k infrastructure MACs across many tenants (router interfaces, gateways, distributed DHCP). On a tested multi-node OVN deployment (~30 VMs) typical fill is <500 entries.
 
@@ -132,6 +142,31 @@ NOT populated:
 - `network:floatingip` — handled via the NAT path ([octavia.md](./octavia.md) for the LB case)
 - External / internet MACs — resolve via the LPM trie
 - `network:distributed` — **verified empirically**: OVN does NOT use the Neutron `network:distributed` port MAC on the wire; it synthesizes its own DHCP `server_mac`, which misses here and classifies via the LPM fallback instead. Full story in [trie-construction.md, step 4](./trie-construction.md#the-five-step-algorithm).
+
+### `amphora_base_ip` — Octavia Segment-1 / Segment-2 split
+
+```
+Type:        BPF_MAP_TYPE_HASH
+Max entries: 1,024  (compile-time constant)
+
+KEY:   struct { u32 tenant_id; u32 ip; }   (IPv4, wire byte order)
+VALUE: u8                                   (presence only; a set)
+```
+
+The set of every Amphora **base** address — the fixed IPs of each Amphora data
+port. Both Octavia segments cross the same Amphora MAC, so the marker bit above
+cannot tell them apart; the Amphora's own address can. HAProxy accepts Segment 1
+on the load balancer's VIP and originates Segment 2 from the base address, so a
+hit here means plumbing (INFRA) and a miss means Segment 1, which keeps
+classifying by tenant. Probed only when the marker bit is set, so ordinary
+traffic never pays for the lookup.
+
+Keyed by tenant as well as address because private CIDRs overlap across
+projects: a bare-IP set would let one tenant's Amphora address reclassify
+another's traffic. Sizing is one entry per fixed IP of an Amphora data port —
+1–2 per Amphora normally, a few more when pool members span subnets — so 1,024
+covers hundreds of load balancers. Full rationale, including why the set holds
+base addresses rather than VIPs, in [octavia.md](./octavia.md).
 
 **Lifecycle.** `mac_tenant_map` is a kernel-side mirror of the userspace `ShardedMetadataMap` (below). Insertions go userspace-then-kernel; deletions are delayed by the 60s [Lingering Ghost](#lingering-ghost) and then go kernel-then-userspace. The deletion-grace property is enforced on this kernel map specifically — if the kernel entry is deleted too eagerly, dying FIN/RST packets fall through to ZONE_MISS even though userspace still ghosts the metadata. Exact ordering rules: [map lifecycle invariants](#map-lifecycle-invariants).
 

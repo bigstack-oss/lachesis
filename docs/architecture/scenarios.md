@@ -74,11 +74,7 @@ DNAT happens before the tap. At VM-A's tap: `src_ip=1.2.3.4, dst_ip=10.0.1.5` (t
 |---|---|---|---|---|---|
 | VM-A tap, egress | 1 | AA (h_dest) | 1.2.3.4 (saddr) | catchall | EXTERNAL ✓ |
 
-## Scenario F — Octavia LB (external → Amphora → backend VM)
-
-> Designed, not yet implemented — see [octavia.md](./octavia.md). The tables
-> below describe the designed behavior; today both segments attribute to the
-> Amphora's admin tenant.
+## Scenario F — Octavia LB (client → Amphora → backend VM)
 
 ```
 client 1.2.3.4 ──→ floating IP ──[DNAT]──→ Amphora (admin) ──[HAProxy NEW conn]──→ VM-B (T1 backend)
@@ -88,21 +84,35 @@ client 1.2.3.4 ──→ floating IP ──[DNAT]──→ Amphora (admin) ─�
                                             originates Seg2
 ```
 
+The Amphora's ports are re-attributed at cold-start from the Octavia service
+project to T1, the load balancer's owner. Which segment a packet belongs to is
+decided by **the Amphora's own address on the wire**: the VIP means Segment 1,
+the port's base address means Segment 2.
+
 **Segment 1: client ↔ Amphora.** At the Amphora's tap (egress, Amphora receiving):
 
-| direction | vm_mac | peer_mac | Lookup | dst_zone | Attribution |
+| direction | vm_mac | peer_mac | Amphora-side IP | dst_zone | Attribution |
 |---|---|---|---|---|---|
-| 1 | Amphora_mac (h_dest) | client_mac/FIP-gateway (h_source) | `IsAmphora == true` → LB-owner branch | EXTERNAL (optional refinement: `bpf_skb_ct_lookup` recovers pre-NAT `client_ip` → trie lookup) | **LB owner (T1)** via `LBOwnerTenant` — NOT admin |
+| 1 | Amphora_mac (h_dest) | FIP-gateway (h_source), external client | VIP → not Segment 2 | EXTERNAL (peer misses `mac_tenant_map`, trie catchall) | **LB owner (T1)** — NOT the service project |
+| 1 | Amphora_mac (h_dest) | VM-C_mac (h_source), internal client in T2 | VIP → not Segment 2 | OTHER_TENANT | **LB owner (T1)** |
 
 **Segment 2: Amphora ↔ backend.** At VM-B's tap (egress, VM-B receiving):
 
-| direction | vm_mac | peer_mac | Lookup | dst_zone | Attribution |
+| direction | vm_mac | peer_mac | Amphora-side IP | dst_zone | Attribution |
 |---|---|---|---|---|---|
-| 1 | VM-B_mac (h_dest) | Amphora_mac (h_source) | `IsAmphora == true` → LB-owner branch | **INFRA** (unconditional — Segment 2 is internal LB plumbing; do NOT call `bpf_skb_ct_lookup` here) | **LB owner (T1)** |
+| 1 | VM-B_mac (h_dest) | Amphora_mac (h_source) | base IP → Segment 2 | **INFRA** | VM-B's own project |
 
-**Critical:** the conntrack lookup is **optional and Amphora-tap-only** — at the backend's tap, the conntrack entry is Segment 2's (`Amphora_ip ↔ backend_ip`) and contains no client_ip. See [octavia.md](./octavia.md); verified empirically.
+Segment 2 also crosses the Amphora's tap in the other direction, where the
+Amphora is the VM side; it zones INFRA there too, so the transfer's `tx` and `rx`
+series share a zone ([billing.md](./billing.md) emission invariant).
 
-Total bytes billed to T1 = Segment 1 + Segment 2. Segment 2 is also visible at the Amphora's tap (other direction) — the standard both-sides emission ([billing.md](./billing.md)), harmless under the charging postures (`infra` bills $0 today).
+**Critical:** an internal client's Segment 1 must NOT collapse into INFRA. The
+Amphora's MAC is on both segments, so only the address test separates them — and
+a cross-tenant client's request is billable per side. See
+[octavia.md](./octavia.md); verified on-wire.
+
+Total billed to T1 = Segment 1 at the Amphora's taps. Segment 2 is `infra`, $0
+today, at both taps.
 
 ## Scenario G — Static route, Neutron-managed
 
@@ -194,7 +204,7 @@ At packet time (VM-A → 172.16.99.x):
 | C — cross-tenant | `cross-tenant-shared`, `cross-tenant-routed` |
 | D — external egress | `vm-to-internet`, `multi-external-path` |
 | E — external ingress via FIP | exercised implicitly (drive sinks are reached via FIP); no dedicated assert |
-| F — Octavia | — (subsystem unbuilt) |
+| F — Octavia | `octavia-lb-attribution` |
 | G/H/K/L — static routes | — (backlog; catalog audit) |
 | J — cross-host same tenant | `cross-host-same-tenant` |
 | infra zone (gateway/DHCP) | `vm-to-gateway` |

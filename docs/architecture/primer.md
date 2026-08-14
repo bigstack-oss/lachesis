@@ -105,7 +105,7 @@ Reply tuple:       src=10.0.1.5:443    dst=1.2.3.4:50000        (after DNAT to b
 
 `bpf_skb_ct_lookup` is a TC-only BPF helper that takes the current packet and queries conntrack, returning a pointer to the matching entry. From there we can read both tuples.
 
-**Why the Octavia design needs it (optional refinement).** Used at the Amphora's tap for Segment 1 zone classification — recovering the original client_ip lets us classify the zone as EXTERNAL/OTHER/SAME based on the real client. Attribution to the LB owner does NOT depend on this lookup (it comes from the Amphora MAC flag in `mac_tenant_map`). See [octavia.md](./octavia.md) for the full algorithm and why `bpf_skb_ct_lookup` is NOT called at the backend's tap.
+**Why the Octavia design considered it (deferred).** It would refine Segment 1's zone at the Amphora's tap by recovering the pre-NAT client IP. It turned out unnecessary for the common case — external client IPs survive FIP DNAT, so the trie classifies Segment 1 directly — and attribution never depended on it. See [octavia.md](./octavia.md).
 
 **Why it's TC-only.** XDP runs before conntrack (at the very earliest stage of packet ingress), so the conntrack entry might not even be matched yet. TC runs *after* `nf_conntrack` has done its lookup, which is why the helper is only available there.
 
@@ -172,7 +172,7 @@ floating IP   ←── DNAT ──→ Amphora VM (in admin project)
 Amphora ── NAT'd ──→ backend VM (in tenant project)
 ```
 
-The naive view: bytes are charged to whoever owns the Amphora (admin). The correct view: bytes are charged to the LB's owning tenant (because they configured the LB and benefit from the traffic). The [Octavia design](./octavia.md) tags Amphora MACs at cold-start with `IsAmphora=true` + `LBOwnerTenant` so traffic touching an Amphora attributes to the LB owner regardless of which tap captures it. HAProxy on the Amphora creates two distinct TCP connections (client↔Amphora, Amphora↔backend); both segments are captured and billed to the same LB owner.
+The naive view: bytes are charged to whoever owns the Amphora (the Octavia service project). The correct view: bytes are charged to the LB's owning tenant, who configured the load balancer and benefits from the traffic. At cold-start the agent joins the Octavia API to the port list and rewrites each Amphora data port's project to the load balancer's owner, so everything crossing an Amphora's taps bills that tenant. HAProxy on the Amphora creates two distinct TCP connections (client↔Amphora, Amphora↔backend); each is captured at the taps it crosses. See [octavia.md](./octavia.md).
 
 External: [Octavia architecture](https://docs.openstack.org/octavia/latest/reference/introduction.html).
 
