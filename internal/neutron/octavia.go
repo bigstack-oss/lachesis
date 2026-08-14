@@ -6,6 +6,7 @@ package neutron
 
 import (
 	"log/slog"
+	"net/netip"
 	"strings"
 )
 
@@ -158,6 +159,62 @@ func amphoraDataPorts(snap *Snapshot, amps map[string]amphoraBinding) map[string
 // [amphoraBindings] has already dropped rows missing the latter.
 func (b amphoraBinding) isManagementPort(p Port) bool {
 	return b.mgmtIP != "" && portHasIP(p, b.mgmtIP)
+}
+
+// AmphoraBaseIP is one address an Amphora originates Segment-2 traffic
+// from, scoped by the tenant it bills to. Written into the kernel
+// `amphora_base_ip` set, where a hit means "this flow is load-balancer
+// plumbing" (docs/architecture/octavia.md).
+type AmphoraBaseIP struct {
+	// ProjectID is the load balancer's owner — the same substitution
+	// [AmphoraOwnerByPort] makes for the port, so the kernel's masked
+	// tenant id and this key agree.
+	ProjectID string
+	Addr      netip.Addr
+}
+
+// AmphoraBaseIPs returns every address an Amphora sends from on its own
+// behalf: the fixed IPs of each Amphora data port, which is exactly the
+// set [AmphoraOwnerByPort] re-attributes.
+//
+// # Why this is the whole Segment-2 signal
+//
+// Both Octavia segments cross the Amphora's MAC, so the kernel's MAC
+// flag alone cannot separate them. Their addresses do: HAProxy accepts
+// Segment 1 on the load balancer's VIP and originates Segment 2 from the
+// port's own fixed IP. The VIP lives on a separate Neutron port (device
+// owner "Octavia") and appears on a data port only as an allowed-address
+// pair, never as a fixed IP — so a data port's fixed IPs are precisely
+// the base addresses, and the VIP is precisely what is missing.
+//
+// Member-network ports Octavia plugs for off-subnet pool members are
+// included for free: they are data ports of the same Nova instance, and
+// Segment 2 to those members sources from them.
+//
+// IPv6 addresses are skipped — the kernel classifier is IPv4-only, so a
+// v6 row would be unwritable (docs/architecture/contracts.md deferred
+// item 1). Output order follows the snapshot's ports; callers that need
+// determinism sort their own derived output.
+func AmphoraBaseIPs(snap *Snapshot) []AmphoraBaseIP {
+	byPort := AmphoraOwnerByPort(snap)
+	if len(byPort) == 0 {
+		return nil
+	}
+	var out []AmphoraBaseIP
+	for _, p := range snap.Ports {
+		owner, ok := byPort[p.ID]
+		if !ok {
+			continue
+		}
+		for _, f := range p.FixedIPs {
+			addr, err := netip.ParseAddr(f.IPAddress)
+			if err != nil || !addr.Is4() {
+				continue
+			}
+			out = append(out, AmphoraBaseIP{ProjectID: owner, Addr: addr})
+		}
+	}
+	return out
 }
 
 // portHasIP reports whether any of p's fixed IPs equals ip.

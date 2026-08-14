@@ -88,17 +88,18 @@ type MetadataSource interface {
 // a fresh Neutron snapshot. Construct with [New], then run
 // [Reconciler.Run] on a long-lived goroutine.
 type Reconciler struct {
-	src       MetadataSource
-	trie      kernelwriter.MapUpdateDeleter
-	meta      *metadata.ShardedMetadataMap
-	macWriter MacWriter
-	routers   *metadata.RouterMACs
-	settler   FlowSettler
-	tun       *tunables.Store
-	interner  *metadata.TenantInterner
-	seq       *boot.Sequencer
-	mx        *Metrics
-	bpfGauge  MapGauge
+	src        MetadataSource
+	trie       kernelwriter.MapUpdateDeleter
+	amphoraIPs kernelwriter.MapUpdater
+	meta       *metadata.ShardedMetadataMap
+	macWriter  MacWriter
+	routers    *metadata.RouterMACs
+	settler    FlowSettler
+	tun        *tunables.Store
+	interner   *metadata.TenantInterner
+	seq        *boot.Sequencer
+	mx         *Metrics
+	bpfGauge   MapGauge
 	// kick requests an out-of-band reconcile pass (the Kafka consumer
 	// signals it on a Neutron notification). Buffered to one so a burst
 	// of events coalesces into a single pending pass; [Reconciler.Run]
@@ -112,10 +113,14 @@ type Reconciler struct {
 // optional (nil skips the boot barrier, used by reconcileOnce unit
 // tests); Interval defaults to [defaultInterval] when zero.
 type Options struct {
-	Source    MetadataSource
-	Trie      kernelwriter.MapUpdateDeleter
-	Meta      *metadata.ShardedMetadataMap
-	MacWriter MacWriter
+	Source MetadataSource
+	Trie   kernelwriter.MapUpdateDeleter
+	// AmphoraIPs writes the Octavia base-address set
+	// (docs/architecture/octavia.md). Optional: nil skips the write, as
+	// the trie-only unit tests do.
+	AmphoraIPs kernelwriter.MapUpdater
+	Meta       *metadata.ShardedMetadataMap
+	MacWriter  MacWriter
 	// Settler folds a MAC's flow rows to its old tenant before a
 	// tenant reassignment replaces the binding. Optional (nil skips
 	// the fold — trie-only unit tests); the agent wires its
@@ -142,18 +147,19 @@ type Options struct {
 // New constructs a Reconciler from opts.
 func New(opts Options) *Reconciler {
 	return &Reconciler{
-		src:       opts.Source,
-		trie:      opts.Trie,
-		meta:      opts.Meta,
-		macWriter: opts.MacWriter,
-		routers:   opts.Routers,
-		settler:   opts.Settler,
-		tun:       opts.Tunables,
-		interner:  opts.Interner,
-		seq:       opts.Seq,
-		mx:        opts.Metrics,
-		bpfGauge:  opts.BPFGauge,
-		kick:      make(chan struct{}, 1),
+		src:        opts.Source,
+		trie:       opts.Trie,
+		amphoraIPs: opts.AmphoraIPs,
+		meta:       opts.Meta,
+		macWriter:  opts.MacWriter,
+		routers:    opts.Routers,
+		settler:    opts.Settler,
+		tun:        opts.Tunables,
+		interner:   opts.Interner,
+		seq:        opts.Seq,
+		mx:         opts.Metrics,
+		bpfGauge:   opts.BPFGauge,
+		kick:       make(chan struct{}, 1),
 	}
 }
 
@@ -229,12 +235,13 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 	}
 	mac := r.reconcileMACs(&result.Snapshot, now)
 	r.reconcileRouterMACs(&result.Snapshot)
+	nAmp := r.reconcileAmphoraIPs(&result.Snapshot)
 
 	r.src.Commit(result, now)
 	r.mx.RecordRun(resultOK)
 	r.pruneServerSettled(result.Snapshot.Servers)
 	r.pruneTenantSettled(result.Snapshot.Projects)
-	r.refreshMapGauges(len(result.Entries))
+	r.refreshMapGauges(len(result.Entries), nAmp)
 	r.logOutcome(delta, mac, len(result.Ambiguities))
 }
 
@@ -293,7 +300,7 @@ func (r *Reconciler) pruneTenantSettled(projects []neutron.Project) {
 // changes them. trieRows is the committed trie size; the mac_tenant_map
 // count tracks the userspace metadata map (kernel ⊆ userspace, and they
 // converge). No-op when no gauge is wired (trie-only unit tests).
-func (r *Reconciler) refreshMapGauges(trieRows int) {
+func (r *Reconciler) refreshMapGauges(trieRows, amphoraRows int) {
 	if r.bpfGauge == nil {
 		return
 	}
@@ -301,6 +308,32 @@ func (r *Reconciler) refreshMapGauges(trieRows int) {
 	if r.meta != nil {
 		r.bpfGauge.SetCurrent(bpf.MapMacTenant, float64(r.meta.Len()))
 	}
+	if r.amphoraIPs != nil {
+		r.bpfGauge.SetCurrent(bpf.MapAmphoraBaseIP, float64(amphoraRows))
+	}
+}
+
+// reconcileAmphoraIPs re-asserts the Octavia base-address set so a load
+// balancer created since the last cold start starts zoning its Segment-2
+// traffic as infra (docs/architecture/octavia.md). Returns the row count
+// for the fill gauge; 0 when no writer is wired.
+//
+// Insert-only, deliberately. A stale row costs a zone label on a MAC that
+// no longer resolves — the flow misses mac_tenant_map first and never
+// reaches the Amphora branch — whereas eagerly deleting risks dropping a
+// live Amphora's address on a partial snapshot and re-billing Segment 2
+// as tenant traffic. The set is small (bounded by load-balancer count)
+// and rebuilt whole on the next agent boot.
+func (r *Reconciler) reconcileAmphoraIPs(snap *neutron.Snapshot) int {
+	if r.amphoraIPs == nil {
+		return 0
+	}
+	n, err := kernelwriter.WriteAmphoraBaseIPs(r.amphoraIPs, neutron.AmphoraBaseIPs(snap), r.interner)
+	if err != nil {
+		slog.Warn("amphora_base_ip write failed; Segment-2 zoning stale until the next pass",
+			"component", component, "err", err)
+	}
+	return n
 }
 
 // fetch runs one Sync. On failure it records a sync_error and returns

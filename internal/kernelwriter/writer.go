@@ -154,3 +154,49 @@ func WriteSubnetZoneTrie(
 	}
 	return written, firstErr
 }
+
+// WriteAmphoraBaseIPs pushes the Amphora base-address set into
+// amphoraMap, keyed by (interned LB-owner tenant, IPv4) via
+// [bpf.AmphoraKeyForIP]. Presence in this map is what tells the
+// classifier a flow is Octavia Segment 2 — load-balancer plumbing — as
+// opposed to Segment 1, which must keep classifying by tenant
+// (docs/architecture/octavia.md).
+//
+// Entries with an empty ProjectID are skipped: without a tenant there is
+// no key to write, and the interner's zero sentinel would collide with
+// the trie's global rows.
+//
+// Returns the count of successful writes and the first error, with the
+// same partial-write semantics as [WriteMacTenantMap].
+func WriteAmphoraBaseIPs(
+	amphoraMap MapUpdater,
+	entries []neutron.AmphoraBaseIP,
+	interner *metadata.TenantInterner,
+) (int, error) {
+	if amphoraMap == nil {
+		return 0, errors.New("kernelwriter: amphoraMap is nil")
+	}
+	if interner == nil {
+		return 0, errors.New("kernelwriter: TenantInterner is nil")
+	}
+	var firstErr error
+	var written int
+	for _, e := range entries {
+		if e.ProjectID == "" {
+			continue
+		}
+		key := bpf.AmphoraKeyForIP(interner.Intern(e.ProjectID), e.Addr)
+		val := uint8(1) // set semantics; only presence is read
+		if err := amphoraMap.Update(&key, &val, ebpf.UpdateAny); err != nil {
+			wrapped := fmt.Errorf("amphora_base_ip update tenant=%s ip=%s: %w", e.ProjectID, e.Addr, err)
+			slog.Warn("amphora_base_ip write failed",
+				"component", componentKernelWriter, "err", wrapped)
+			if firstErr == nil {
+				firstErr = wrapped
+			}
+			continue
+		}
+		written++
+	}
+	return written, firstErr
+}

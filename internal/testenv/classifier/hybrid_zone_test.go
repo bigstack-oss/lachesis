@@ -8,6 +8,7 @@ package classifier_test
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -75,6 +76,21 @@ func TestHybridZoneLookup(t *testing.T) {
 		}
 	}
 
+	// The Amphora's BASE address — what HAProxy originates Segment 2
+	// from. Its VIP (ampVIP) is deliberately NOT in this set: Segment 1
+	// arrives on the VIP and must keep classifying by tenant.
+	ampMap := drv.Map(bpf.MapAmphoraBaseIP)
+	if ampMap == nil {
+		t.Fatalf("%s not loaded", bpf.MapAmphoraBaseIP)
+	}
+	{
+		k := bpf.AmphoraKeyForIP(tenantA, netip.MustParseAddr("10.0.0.10"))
+		v := uint8(1)
+		if err := ampMap.Update(&k, &v, ebpf.UpdateAny); err != nil {
+			t.Fatalf("populate amphora_base_ip: %v", err)
+		}
+	}
+
 	telMap := drv.Map(bpf.MapTelemetry)
 	if telMap == nil {
 		t.Fatalf("%s not loaded", bpf.MapTelemetry)
@@ -113,28 +129,50 @@ func TestHybridZoneLookup(t *testing.T) {
 		//   either end is load-balancer plumbing, zoned INFRA at BOTH
 		//   taps so the tx/rx pair of one transfer shares a zone. —
 		{
-			// At the backend VM's tap: peer is the Amphora.
-			name: "ingress backend to Amphora → INFRA",
+			// At the backend VM's tap: peer is the Amphora, sending from
+			// its base address.
+			name: "ingress backend to Amphora base IP → INFRA",
 			src:  macVMB, dst: macAmphora,
 			srcIP: net.IPv4(10, 0, 0, 2), dstIP: net.IPv4(10, 0, 0, 10),
 			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneInfra,
 		},
 		{
-			// At the Amphora's own tap: the VM side carries the flag.
-			// Same transfer, same zone — without the vm-side check this
-			// would read SAME_TENANT and split the pair across two zones.
-			name: "ingress Amphora to backend → INFRA",
+			// At the Amphora's own tap: the VM side carries the flag and
+			// the base address. Same transfer, same zone — without the
+			// vm-side check this would read SAME_TENANT and split the
+			// tx/rx pair across two zones.
+			name: "ingress Amphora base IP to backend → INFRA",
 			src:  macAmphora, dst: macVMB,
 			srcIP: net.IPv4(10, 0, 0, 10), dstIP: net.IPv4(10, 0, 0, 2),
 			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneInfra,
 		},
+
+		// — Octavia Segment 1 from an INTERNAL client. The Amphora side
+		//   is the VIP, not a base address, so these are real billable
+		//   flows and must NOT collapse into INFRA. —
 		{
-			// A cross-tenant peer does not rescue the flow from INFRA:
-			// the Amphora flag wins over the tenant comparison.
-			name: "ingress Amphora to other-tenant VM → INFRA",
+			// Same tenant reaching its own load balancer's VIP.
+			name: "ingress same-tenant client to Amphora VIP → SAME_TENANT",
+			src:  macVMB, dst: macAmphora,
+			srcIP: net.IPv4(10, 0, 0, 2), dstIP: net.IPv4(10, 0, 0, 47),
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneSameTenant,
+		},
+		{
+			// The revenue case: a client in another project reaching the
+			// VIP bills other_tenant per side. Zoning it INFRA would make
+			// both halves $0.
+			name: "ingress cross-tenant client to Amphora VIP → OTHER_TENANT",
+			src:  macVMC, dst: macAmphora,
+			srcIP: net.IPv4(10, 0, 0, 3), dstIP: net.IPv4(10, 0, 0, 47),
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneOtherTenant,
+		},
+		{
+			// The Amphora's own tap, serving Segment 1 back to a
+			// cross-tenant client: sourced from the VIP, so still billable.
+			name: "ingress Amphora VIP to cross-tenant client → OTHER_TENANT",
 			src:  macAmphora, dst: macVMC,
-			srcIP: net.IPv4(10, 0, 0, 10), dstIP: net.IPv4(10, 0, 0, 3),
-			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneInfra,
+			srcIP: net.IPv4(10, 0, 0, 47), dstIP: net.IPv4(10, 0, 0, 3),
+			prog: bpf.ProgramIngress, wantDir: bpf.DirectionIngress, wantZone: bpf.ZoneOtherTenant,
 		},
 		{
 			// Segment 1 must NOT be caught: an external client's peer is
@@ -194,6 +232,14 @@ func TestHybridZoneLookup(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// flow_key carries no IP, so two cases sharing a MAC pair and
+			// direction differ only by dst_zone — two real rows, and
+			// FindZone would match either. Drain first so each case reads
+			// its own. (The Octavia cases hit this: Segment 1 and Segment 2
+			// cross the same MAC pair and differ only by address.)
+			if err := bpfunit.DrainTelemetryByMACs(telMap, tc.src, tc.dst); err != nil {
+				t.Fatalf("drain telemetry_map: %v", err)
+			}
 			frame := bpfunit.EthIPv4TCP(
 				bpfunit.MAC(tc.src), bpfunit.MAC(tc.dst),
 				tc.srcIP, tc.dstIP, 12345, 80, nil,

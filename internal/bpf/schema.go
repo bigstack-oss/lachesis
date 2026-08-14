@@ -41,6 +41,13 @@ type FlowMetrics = telemetryFlowMetrics
 // a remote IP to a zone code relative to the source VM's tenant.
 type LpmKey = telemetryLpmKey
 
+// AmphoraKey is the Go-side mirror of the BPF amphora_key. It keys
+// `amphora_base_ip` with (tenant_id, ip) — tenant-scoped because private
+// CIDRs overlap across projects, so a bare-IP set would let one tenant's
+// Amphora address reclassify another's traffic. Build with
+// [AmphoraKeyForIP].
+type AmphoraKey = telemetryAmphoraKey
+
 // ZoneCode is the enum stored in [FlowKey.DstZone]. See [ZoneExternal] and
 // the other Zone constants for the set of valid values.
 type ZoneCode = telemetryZoneCode
@@ -196,6 +203,7 @@ const (
 	MapSubnetZoneTrie = "subnet_zone_trie"
 	MapMacTenant      = "mac_tenant_map"
 	MapTelemetryStats = "telemetry_stats"
+	MapAmphoraBaseIP  = "amphora_base_ip"
 )
 
 // MapSubnetZoneTrieMaxEntries and MapMacTenantMaxEntries mirror the
@@ -225,6 +233,7 @@ const (
 	MapSubnetZoneTrieMaxEntries = 16384
 	MapMacTenantMaxEntries      = 8192
 	MapTelemetryStatsMaxEntries = statReasonCount
+	MapAmphoraBaseIPMaxEntries  = 1024
 )
 
 // TenantAmphoraFlag and TenantIDMask mirror the packing of a

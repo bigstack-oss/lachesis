@@ -82,6 +82,26 @@ func LpmKeyForPrefix(tenantID uint32, prefix netip.Prefix) LpmKey {
 	}
 }
 
+// AmphoraKeyForIP builds the `amphora_base_ip` key for one Amphora
+// address. tenantID is the interned id of the load balancer's owner —
+// masked, i.e. WITHOUT the [TenantAmphoraFlag] the mac_tenant_map value
+// carries, because the kernel masks before probing this map.
+//
+// The IP is encoded in wire (network) byte order, matching how the
+// classifier passes iph->saddr / iph->daddr straight through. Panics on
+// an IPv6 address: the kernel path is IPv4-only, same contract as
+// [LpmKeyForPrefix].
+func AmphoraKeyForIP(tenantID uint32, addr netip.Addr) AmphoraKey {
+	if !addr.Is4() {
+		panic(fmt.Sprintf("AmphoraKeyForIP: IPv6 address unsupported: %s", addr))
+	}
+	bytes := addr.As4()
+	return AmphoraKey{
+		TenantId: tenantID,
+		Ip:       binary.NativeEndian.Uint32(bytes[:]),
+	}
+}
+
 // LoadTelemetry returns the CollectionSpec for the telemetry BPF program,
 // ready to be loaded into the kernel.
 func LoadTelemetry() (*ebpf.CollectionSpec, error) {
@@ -118,6 +138,7 @@ func ValidateMapSizes(spec *ebpf.CollectionSpec) error {
 		{MapMacTenant, MapMacTenantMaxEntries},
 		{MapSubnetZoneTrie, MapSubnetZoneTrieMaxEntries},
 		{MapTelemetryStats, MapTelemetryStatsMaxEntries},
+		{MapAmphoraBaseIP, MapAmphoraBaseIPMaxEntries},
 	} {
 		m, ok := spec.Maps[c.name]
 		if !ok {

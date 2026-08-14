@@ -63,9 +63,11 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics, neutronInfo *neutron.InfoCo
 	bpfMx.SetMax(bpf.MapMacTenant, float64(bpf.MapMacTenantMaxEntries))
 	bpfMx.SetMax(bpf.MapSubnetZoneTrie, float64(bpf.MapSubnetZoneTrieMaxEntries))
 	bpfMx.SetMax(bpf.MapTelemetry, float64(bpf.MapTelemetryMaxEntries))
+	bpfMx.SetMax(bpf.MapAmphoraBaseIP, float64(bpf.MapAmphoraBaseIPMaxEntries))
 	bpfMx.SetCurrent(bpf.MapMacTenant, 0)
 	bpfMx.SetCurrent(bpf.MapSubnetZoneTrie, 0)
 	bpfMx.SetCurrent(bpf.MapTelemetry, 0)
+	bpfMx.SetCurrent(bpf.MapAmphoraBaseIP, 0)
 
 	return subsystemMetrics{
 		wal:         wal.NewMetrics(),
