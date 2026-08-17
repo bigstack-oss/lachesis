@@ -4,7 +4,7 @@ go 1.25.3
 
 require (
 	github.com/cilium/ebpf v0.22.0
-	github.com/gopacket/gopacket v1.7.0
+	github.com/gopacket/gopacket v1.7.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/vishvananda/netlink v1.3.1
 	gopkg.in/yaml.v3 v3.0.1
