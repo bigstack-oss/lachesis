@@ -74,10 +74,10 @@ func (o *Cloud) FindLBFlavor(ctx context.Context, name string) (string, error) {
 // its ID and the VIP address Octavia assigned. It does NOT wait — the
 // caller pairs it with [Cloud.WaitLBActive], because realize wants the
 // id recorded in run-state before the multi-minute Amphora boot starts.
-func (o *Cloud) CreateLoadBalancer(ctx context.Context, projectID string, spec scenariotest.LBSpec) (string, string, error) {
+func (o *Cloud) CreateLoadBalancer(ctx context.Context, projectID string, spec scenariotest.LBSpec) (string, string, string, error) {
 	cli, err := o.lbClient(ctx, projectID)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	opts := loadbalancers.CreateOpts{
 		Name:        spec.Name,
@@ -92,9 +92,9 @@ func (o *Cloud) CreateLoadBalancer(ctx context.Context, projectID string, spec s
 	}
 	lb, err := loadbalancers.Create(ctx, cli, opts).Extract()
 	if err != nil {
-		return "", "", fmt.Errorf("openstack: create load balancer %s: %w", spec.Name, err)
+		return "", "", "", fmt.Errorf("openstack: create load balancer %s: %w", spec.Name, err)
 	}
-	return lb.ID, lb.VipAddress, nil
+	return lb.ID, lb.VipAddress, lb.VipPortID, nil
 }
 
 // CreateListener adds a listener and waits for the load balancer to

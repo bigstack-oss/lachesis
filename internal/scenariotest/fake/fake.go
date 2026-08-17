@@ -353,7 +353,7 @@ func (c *Cloud) FindLBFlavor(_ context.Context, name string) (string, error) {
 // ListAmphorae will report: two for an ACTIVE_STANDBY flavor, one
 // otherwise. Each carries a distinct ComputeID, because that is the key
 // the attribution join uses to find an Amphora's ports.
-func (c *Cloud) CreateLoadBalancer(_ context.Context, _ string, spec scenariotest.LBSpec) (string, string, error) {
+func (c *Cloud) CreateLoadBalancer(_ context.Context, _ string, spec scenariotest.LBSpec) (string, string, string, error) {
 	c.LBs = append(c.LBs, spec)
 	id := c.id("lb")
 	c.LBIDs = append(c.LBIDs, id)
@@ -377,7 +377,9 @@ func (c *Cloud) CreateLoadBalancer(_ context.Context, _ string, spec scenariotes
 			Role:        role,
 		})
 	}
-	return id, fmt.Sprintf("10.0.99.%d", len(c.LBs)), nil
+	vipPort := id + "-vip-port"
+	c.PortSubnet[vipPort] = spec.VIPSubnetID
+	return id, fmt.Sprintf("10.0.99.%d", len(c.LBs)), vipPort, nil
 }
 
 func (c *Cloud) CreateListener(_ context.Context, _ string, spec scenariotest.ListenerSpec) (string, error) {

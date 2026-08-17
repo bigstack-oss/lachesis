@@ -266,7 +266,7 @@ func (d *driver) runFlow(i int, f scenariotest.Flow) error {
 		return err
 	}
 
-	if f.To.LBID != "" {
+	if f.To.LBID != "" || f.To.LBFIPOf != "" {
 		return d.runLBFlow(f, srcFIP)
 	}
 	if f.To.VMID != "" || f.To.FIPOf != "" {
@@ -325,18 +325,23 @@ func (d *driver) runVMFlow(i int, f scenariotest.Flow, srcFIP string) error {
 // the MEMBER port, so the two are declared separately and must both be
 // honoured (docs/architecture/octavia.md).
 func (d *driver) runLBFlow(f scenariotest.Flow, srcFIP string) error {
-	decl, ok := d.lbDecl(f.To.LBID)
-	if !ok {
-		return fmt.Errorf("flow targets load balancer %q, which the topology does not declare", f.To.LBID)
+	lbID := f.To.LBID
+	external := false
+	if lbID == "" {
+		lbID, external = f.To.LBFIPOf, true
 	}
-	vip, err := d.vip(f.To.LBID)
+	decl, ok := d.lbDecl(lbID)
+	if !ok {
+		return fmt.Errorf("flow targets load balancer %q, which the topology does not declare", lbID)
+	}
+	vip, err := d.vip(lbID, external)
 	if err != nil {
 		return err
 	}
 	for _, m := range decl.Members {
 		vmID, ok := d.vmByInternalIP(m.Address)
 		if !ok {
-			return fmt.Errorf("load balancer %s: member %s matches no declared VM", f.To.LBID, m.Address)
+			return fmt.Errorf("load balancer %s: member %s matches no declared VM", lbID, m.Address)
 		}
 		memberFIP, err := d.fip(vmID)
 		if err != nil {
@@ -358,20 +363,28 @@ func (d *driver) runLBFlow(f scenariotest.Flow, srcFIP string) error {
 		return fmt.Errorf("stream to vip: %w", err)
 	}
 	d.opts.Log.Info("flow: tcp stream to vip",
-		"from", f.From, "lb", f.To.LBID, "vip", vip, "port", decl.Port,
+		"from", f.From, "lb", lbID, "external", external, "vip", vip, "port", decl.Port,
 		"members", len(decl.Members), "mib", count)
 	return nil
 }
 
-// vip resolves a load balancer's VIP from the run-state.
-func (d *driver) vip(lbID string) (string, error) {
+// vip resolves the address a flow dials: the load balancer's VIP, or —
+// for the from-outside shape — its floating address.
+func (d *driver) vip(lbID string, external bool) (string, error) {
 	for _, lb := range d.opts.State.LoadBalancers {
-		if lb.DSLID == lbID {
-			if lb.VIP == "" {
-				return "", fmt.Errorf("load balancer %s has no recorded VIP (run-state from an older `up`?)", lbID)
-			}
-			return lb.VIP, nil
+		if lb.DSLID != lbID {
+			continue
 		}
+		if external {
+			if lb.FIP == "" {
+				return "", fmt.Errorf("load balancer %s has no floating IP recorded", lbID)
+			}
+			return lb.FIP, nil
+		}
+		if lb.VIP == "" {
+			return "", fmt.Errorf("load balancer %s has no recorded VIP (run-state from an older `up`?)", lbID)
+		}
+		return lb.VIP, nil
 	}
 	return "", fmt.Errorf("load balancer %s not in the run-state", lbID)
 }

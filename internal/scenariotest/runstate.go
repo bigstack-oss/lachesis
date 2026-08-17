@@ -104,6 +104,10 @@ type ResourceRef struct {
 	// load-balancer refs only so a standalone `drive` can resolve a
 	// [VIPTarget] without re-reading Octavia. Empty on every other ref.
 	VIP string `json:"vip,omitempty"`
+	// FIP is the floating address bound to a load balancer's VIP port,
+	// recorded on load-balancer refs only so a [LBFIPTarget] flow can
+	// dial it. Empty on every other ref.
+	FIP string `json:"fip,omitempty"`
 	// RouterInterface marks a router-interface port ref (never a VM's).
 	RouterInterface bool `json:"router_interface,omitempty"`
 }

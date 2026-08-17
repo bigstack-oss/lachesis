@@ -96,9 +96,12 @@ type Cloud interface {
 	// than pipelining them.
 
 	// CreateLoadBalancer creates a load balancer on a VIP subnet and
-	// returns its ID plus the VIP address Octavia assigned. The returned
-	// address is what clients target — see [VIPTarget].
-	CreateLoadBalancer(ctx context.Context, projectID string, spec LBSpec) (id, vip string, err error)
+	// returns its ID, the VIP address Octavia assigned, and the Neutron
+	// port holding that address. The address is what internal clients
+	// target ([VIPTarget]); the port is what a floating IP binds to, so
+	// a client from outside the cloud can reach the load balancer
+	// ([LBFIPTarget]).
+	CreateLoadBalancer(ctx context.Context, projectID string, spec LBSpec) (id, vip, vipPortID string, err error)
 	// CreateListener adds a listener (the client-facing port) to a load
 	// balancer.
 	CreateListener(ctx context.Context, projectID string, spec ListenerSpec) (id string, err error)
