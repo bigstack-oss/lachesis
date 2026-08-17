@@ -183,7 +183,9 @@ func (o *Cloud) WaitLBActive(ctx context.Context, projectID, lbID string) error 
 	if err != nil {
 		return err
 	}
-	last := "unknown"
+	// Assigned on every iteration before any read; the timeout message
+	// below is the only consumer.
+	var last string
 	for {
 		lb, err := loadbalancers.Get(ctx, cli, lbID).Extract()
 		if err != nil {
