@@ -540,3 +540,53 @@ func TestReconcileMACs_PortRebirthSameAttribution(t *testing.T) {
 		t.Errorf("PortID = %q, want port-new — stale port_id would mislabel the port tier", cur.PortID)
 	}
 }
+
+// fakeAmphoraGauge records every published Amphora count.
+type fakeAmphoraGauge struct{ counts []int }
+
+func (f *fakeAmphoraGauge) SetAmphoraPorts(n int) { f.counts = append(f.counts, n) }
+
+// TestReconcileMACs_RepublishesAmphoraCount is the regression for a
+// gauge that lied. lachesis_neutron_amphora_ports was set only at
+// cold-start, so a load balancer created afterwards — the normal case —
+// never moved it, and the failure it exists to detect (the Octavia lists
+// no longer resolving) left it frozen at a healthy-looking boot value.
+// An operator reading it, or an engineer debugging with it, is misled in
+// exactly the direction that hides the bug.
+func TestReconcileMACs_RepublishesAmphoraCount(t *testing.T) {
+	meta := metadata.New()
+	mw := &fakeMacWriter{}
+	gauge := &fakeAmphoraGauge{}
+	r := New(Options{
+		Meta:         meta,
+		MacWriter:    mw,
+		Interner:     metadata.NewTenantInterner(),
+		Metrics:      NewMetrics(),
+		Tunables:     tunables.New(tunables.Values{GhostGrace: 60 * time.Second, ReconcileInterval: time.Minute}),
+		AmphoraGauge: gauge,
+	})
+	now := time.Unix(3000, 0)
+
+	// Pass 1: no load balancer yet — the state the agent boots into.
+	r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{
+		vmPort("aa:dd:00:00:00:01", "proj-a"),
+	}}, now)
+
+	// Pass 2: a load balancer appears after boot.
+	r.reconcileMACs(amphoraSnap(), now)
+
+	// Pass 3: it is torn down again.
+	r.reconcileMACs(&neutron.Snapshot{Ports: []neutron.Port{
+		vmPort("aa:dd:00:00:00:01", "proj-a"),
+	}}, now)
+
+	want := []int{0, 1, 0}
+	if len(gauge.counts) != len(want) {
+		t.Fatalf("published %v, want one count per pass %v", gauge.counts, want)
+	}
+	for i, w := range want {
+		if gauge.counts[i] != w {
+			t.Errorf("pass %d published %d, want %d (full: %v)", i+1, gauge.counts[i], w, gauge.counts)
+		}
+	}
+}
