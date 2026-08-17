@@ -50,6 +50,7 @@ func (r *Reconciler) reconcileMACs(snap *neutron.Snapshot, now time.Time) macDel
 	desired := DesiredMACs(snap)
 	inserted, changed := r.learnMACs(desired)
 	ghosted := r.ghostGoneMACs(desired, now)
+	r.publishAmphoraCount(desired)
 	return macDelta{Inserted: inserted, Changed: changed, Ghosted: ghosted}
 }
 
@@ -110,6 +111,25 @@ func DesiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
 		}
 	}
 	return desired
+}
+
+// publishAmphoraCount republishes lachesis_neutron_amphora_ports from the
+// desired set — the same quantity cold-start counts, recomputed every
+// pass so a load balancer created after boot moves the gauge and a
+// deleted one drops it. Without this the metric freezes at its
+// cold-start value and silently reports health it cannot know
+// (docs/architecture/octavia.md).
+func (r *Reconciler) publishAmphoraCount(desired map[uint64]metadata.TenantMeta) {
+	if r.amphoraGauge == nil {
+		return
+	}
+	n := 0
+	for _, m := range desired {
+		if m.IsAmphora {
+			n++
+		}
+	}
+	r.amphoraGauge.SetAmphoraPorts(n)
 }
 
 // learnMACs inserts every desired MAC that is absent, ghosted, or whose

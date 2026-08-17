@@ -48,6 +48,18 @@ type MapGauge interface {
 	SetCurrent(mapName string, value float64)
 }
 
+// AmphoraGauge publishes how many Octavia Amphora ports the latest pass
+// re-attributed to their load balancer's owner
+// (docs/architecture/octavia.md). Cold-start sets it once; without this
+// seam the gauge would freeze at that boot-time value and a load
+// balancer created later — the normal case — would never move it, while
+// the very failure it exists to catch (the Octavia lists stopping
+// resolving) would leave it reading healthy. *neutron.Metrics satisfies
+// it; nil skips publishing.
+type AmphoraGauge interface {
+	SetAmphoraPorts(n int)
+}
+
 // FlowSettler folds userspace flow rows into the settled-bytes
 // accumulator (docs/architecture/data-structures.md#settled-bytes). The MAC reconcile calls it just
 // before re-pointing a live MAC at a different attribution (tenant or
@@ -88,18 +100,19 @@ type MetadataSource interface {
 // a fresh Neutron snapshot. Construct with [New], then run
 // [Reconciler.Run] on a long-lived goroutine.
 type Reconciler struct {
-	src        MetadataSource
-	trie       kernelwriter.MapUpdateDeleter
-	amphoraIPs kernelwriter.MapUpdater
-	meta       *metadata.ShardedMetadataMap
-	macWriter  MacWriter
-	routers    *metadata.RouterMACs
-	settler    FlowSettler
-	tun        *tunables.Store
-	interner   *metadata.TenantInterner
-	seq        *boot.Sequencer
-	mx         *Metrics
-	bpfGauge   MapGauge
+	src          MetadataSource
+	trie         kernelwriter.MapUpdateDeleter
+	amphoraIPs   kernelwriter.MapUpdater
+	meta         *metadata.ShardedMetadataMap
+	macWriter    MacWriter
+	routers      *metadata.RouterMACs
+	settler      FlowSettler
+	tun          *tunables.Store
+	interner     *metadata.TenantInterner
+	seq          *boot.Sequencer
+	mx           *Metrics
+	bpfGauge     MapGauge
+	amphoraGauge AmphoraGauge
 	// kick requests an out-of-band reconcile pass (the Kafka consumer
 	// signals it on a Neutron notification). Buffered to one so a burst
 	// of events coalesces into a single pending pass; [Reconciler.Run]
@@ -137,6 +150,9 @@ type Options struct {
 	// BPFGauge refreshes the kernel map-fill gauges after each pass.
 	// Optional (nil skips); the agent wires its bpf metrics bundle.
 	BPFGauge MapGauge
+	// AmphoraGauge republishes the Amphora re-attribution count each
+	// pass. Optional; nil skips it.
+	AmphoraGauge AmphoraGauge
 	// Tunables supplies the live reconcile interval and ghost grace
 	// (hot-reload; the interval applies at the next tick). REQUIRED —
 	// operational knobs have exactly one source; unit tests construct
@@ -147,19 +163,20 @@ type Options struct {
 // New constructs a Reconciler from opts.
 func New(opts Options) *Reconciler {
 	return &Reconciler{
-		src:        opts.Source,
-		trie:       opts.Trie,
-		amphoraIPs: opts.AmphoraIPs,
-		meta:       opts.Meta,
-		macWriter:  opts.MacWriter,
-		routers:    opts.Routers,
-		settler:    opts.Settler,
-		tun:        opts.Tunables,
-		interner:   opts.Interner,
-		seq:        opts.Seq,
-		mx:         opts.Metrics,
-		bpfGauge:   opts.BPFGauge,
-		kick:       make(chan struct{}, 1),
+		src:          opts.Source,
+		trie:         opts.Trie,
+		amphoraIPs:   opts.AmphoraIPs,
+		meta:         opts.Meta,
+		macWriter:    opts.MacWriter,
+		routers:      opts.Routers,
+		settler:      opts.Settler,
+		tun:          opts.Tunables,
+		interner:     opts.Interner,
+		seq:          opts.Seq,
+		mx:           opts.Metrics,
+		bpfGauge:     opts.BPFGauge,
+		amphoraGauge: opts.AmphoraGauge,
+		kick:         make(chan struct{}, 1),
 	}
 }
 

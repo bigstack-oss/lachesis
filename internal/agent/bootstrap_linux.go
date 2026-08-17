@@ -309,18 +309,19 @@ func (b *bootstrapper) wireReconcile() error {
 		return fmt.Errorf("%s map missing from collection", bpf.MapAmphoraBaseIP)
 	}
 	b.ag.reconciler = reconcile.New(reconcile.Options{
-		Source:     b.ag.neutron,
-		Trie:       trieMap,
-		AmphoraIPs: amphoraMap,
-		Meta:       b.ag.meta,
-		MacWriter:  macTenantWriter{m: macMap},
-		Routers:    b.ag.routers,
-		Settler:    b.ag.state,
-		Tunables:   b.ag.tun,
-		Interner:   b.ag.interner,
-		Seq:        b.ag.seq,
-		Metrics:    b.ag.mx.reconcile,
-		BPFGauge:   b.ag.mx.bpf,
+		Source:       b.ag.neutron,
+		Trie:         trieMap,
+		AmphoraIPs:   amphoraMap,
+		Meta:         b.ag.meta,
+		MacWriter:    macTenantWriter{m: macMap},
+		Routers:      b.ag.routers,
+		Settler:      b.ag.state,
+		Tunables:     b.ag.tun,
+		Interner:     b.ag.interner,
+		Seq:          b.ag.seq,
+		Metrics:      b.ag.mx.reconcile,
+		BPFGauge:     b.ag.mx.bpf,
+		AmphoraGauge: b.ag.mx.neutron,
 	})
 	// A SIGHUP reload kicks the reconciler so a retuned reconcile
 	// interval (or any operator edit) is picked up within seconds rather
