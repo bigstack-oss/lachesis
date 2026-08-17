@@ -114,9 +114,26 @@ tasks:
         -v "$(pwd)":/app -w /app {{.BUILDER_IMAGE}}
         ./build/loadtest -agent ./build/agent {{.CLI_ARGS}}
 
+  lint:
+    desc: Run golangci-lint inside the builder — the same analysis the CI lint job does
+    # In the builder, not on the host, and not cross-compiled. The linters'
+    # facts depend on a natively-typechecking tree: from a darwin host,
+    # GOOS=linux loses the fact that testing.T.Fatalf never returns and
+    # staticcheck then reports SA5011 against correct code, while a plain
+    # host run cannot typecheck the linux-only packages at all. Depends on
+    # generate for the same reason CI runs it first — without the
+    # bpf2go-generated types internal/bpf does not typecheck and every
+    # dependent package is analysed with degraded facts.
+    deps: [ generate ]
+    cmd: >
+      docker run --rm --platform linux/amd64 -v "$(pwd)":/app -w /app
+      -u {{.UID}}:{{.GID}} -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOWORK=off
+      {{.BUILDER_IMAGE}} golangci-lint run --build-tags=integration
+
   ci:
-    desc: Run the CI checks devs can run locally without Docker (unit + bench-gate)
+    desc: Run the CI checks devs can run locally without Docker (lint + unit + bench-gate)
     cmds:
+      - task: lint
       - task: test
       - task: bench-gate
 
