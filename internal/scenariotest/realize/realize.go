@@ -599,7 +599,7 @@ func (r *realizer) loadBalancers(snap neutron.Snapshot) error {
 			return err
 		}
 		name := scenariotest.Mangle(r.prefix(), r.rs.RunID, lb.ID)
-		id, vip, err := r.opts.Cloud.CreateLoadBalancer(r.ctx, projectID, scenariotest.LBSpec{
+		id, vip, vipPortID, err := r.opts.Cloud.CreateLoadBalancer(r.ctx, projectID, scenariotest.LBSpec{
 			Name:        name,
 			VIPSubnetID: vipSubnet,
 			FlavorID:    r.lbFlavorID,
@@ -615,6 +615,27 @@ func (r *realizer) loadBalancers(snap neutron.Snapshot) error {
 			return err
 		}
 		if err := r.opts.Cloud.WaitLBActive(r.ctx, projectID, id); err != nil {
+			return err
+		}
+		// A floating IP on the VIP port is what lets a client reach the
+		// load balancer from outside the cloud — the EXTERNAL Segment 1
+		// path, which never touches the classifier's Amphora branch
+		// (docs/architecture/octavia.md). Allocated after ACTIVE because
+		// Octavia owns the VIP port until then.
+		fipID, fipAddr, err := r.opts.Cloud.CreateFIP(r.ctx, projectID, scenariotest.FIPCreateSpec{
+			ExternalNetworkID: r.extNetID,
+			PortID:            vipPortID,
+		})
+		if err != nil {
+			return fmt.Errorf("allocate floating ip for load balancer %s: %w", lb.ID, err)
+		}
+		// VMID names the load balancer rather than a VM: the FIP list is
+		// keyed by DSL id, and `down` releases by allocation id anyway.
+		r.rs.FIPs = append(r.rs.FIPs, scenariotest.FIPRef{
+			VMID: lb.ID, ID: fipID, ProjectID: projectID, Address: fipAddr,
+		})
+		r.rs.LoadBalancers[len(r.rs.LoadBalancers)-1].FIP = fipAddr
+		if err := r.save(); err != nil {
 			return err
 		}
 		if err := r.lbBackends(projectID, id, decls[lb.ID]); err != nil {

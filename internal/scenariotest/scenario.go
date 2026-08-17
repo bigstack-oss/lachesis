@@ -149,6 +149,9 @@ type FlowTarget struct {
 	IP    string
 	FIPOf string
 	LBID  string
+	// LBFIPOf names a load balancer whose FLOATING address the flow
+	// dials — the from-outside path ([LBFIPTarget]).
+	LBFIPOf string
 }
 
 // VMTarget returns a [FlowTarget] pointing at another DSL VM. The
@@ -167,6 +170,19 @@ func ExternalTarget(ip string) FlowTarget { return FlowTarget{IP: ip} }
 // at both taps (docs/architecture/edge-cases.md#tier-3--misclassification
 // case 14c), never same_tenant.
 func FIPTarget(vmID string) FlowTarget { return FlowTarget{FIPOf: vmID} }
+
+// LBFIPTarget returns a [FlowTarget] pointing at a load balancer's
+// FLOATING address. It is the from-the-internet shape: the client dials
+// a public address, OVN DNATs it to the VIP before the Amphora's tap,
+// and the Amphora's peer on the wire is a router interface rather than a
+// VM — so the flow never reaches the classifier's Amphora branch and
+// classifies EXTERNAL through the trie catchall instead
+// (docs/architecture/octavia.md).
+//
+// A different code path from [VIPTarget]'s L2-adjacent client, and the
+// billable one: the load balancer's owner pays external rates for
+// internet-facing Segment 1.
+func LBFIPTarget(lbID string) FlowTarget { return FlowTarget{LBFIPOf: lbID} }
 
 // VIPTarget returns a [FlowTarget] pointing at a DSL load balancer's
 // VIP, resolved from the run-state at drive time. The stream dials the
