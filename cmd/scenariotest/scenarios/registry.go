@@ -55,6 +55,7 @@ func All() []*scenariotest.Scenario {
 		ghostGraceWindow(),
 		unresolvedLatebind(),
 		vmApplianceNexthop(),
+		hostRouteNexthop(),
 		gcPressureRelief(),
 		octaviaLBAttribution(),
 	}
