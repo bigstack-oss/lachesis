@@ -33,6 +33,23 @@ Every `internal/` package is one of four shapes. A new package starts by picking
 
 Two sanctioned one-offs (not archetypes — don't replicate): the composition root (`agent`: one struct, method files by functionality, the `workers()` table, the `subsystemMetrics` registration list) and the CLI harness shape (`perfbench.Run(Config)` / `loadtest.Run(Config)`, already in the idiom table).
 
+### Layering and the BPF ABI
+
+Respect the L1–L4 boundaries: L3 never imports L1's data plane, L2 never calls L4.
+
+**One deliberate exception, which is not a violation and must not be "fixed".**
+`internal/bpf`'s pure ABI surface — the `FlowKey` / `FlowMetrics` / `LpmKey`
+types, the `Zone*` and `Direction*` constants, `MACKey` — is a dependency-free
+kernel↔userspace *data contract*, not the data plane. L2 (`metadata`,
+`neutron`), L3 (`state`) and L4 (`metrics`, `wal`) all import it by design,
+because it is the shared schema they exchange rows in. Hiding those types
+behind per-layer copies would mean hand-copying generated struct layouts, and
+silent skew between the copies corrupts metrics.
+
+Only the loader half of the package — `LoadTelemetry`, `ValidateMapSizes`, the
+`Map*` name constants, the metrics bundle — touches real L1 machinery, and only
+the agent composition root uses it.
+
 ### Cross-cutting rules (all archetypes)
 
 - `schema.go` holds the package's consts and pure-data types; behavioural types stay in their method files (`schema_linux.go` when the consts are linux-only).
@@ -99,6 +116,76 @@ sub-package that needs something from the core moves the declaration
 
 A scenario is declared against the core plus `steps`, and nothing else
 (`cmd/scenariotest/scenarios`).
+
+## Comments
+
+**The code is the explanation. A comment exists to stop a wrong edit, and to point.**
+
+Design, rationale, rejected alternatives, algorithms, and schema histories live in [../architecture/](../architecture/README.md) and [../adr/](../adr/README.md). They do not live in code. A long comment is not thorough — it is unread, and it is a second copy of a document that will drift away from the first.
+
+This repo learned that the expensive way: `bpf/telemetry.c` carried a 22-line block on `created_ns` in which every sentence was true, load-bearing, and a verbatim restatement of ADR 0014's Context and Consequences. It is now four lines and points at the ADR.
+
+### The keep test
+
+A comment earns its place only if a competent reader editing **that line** would otherwise get it wrong. Four categories qualify:
+
+| Category | What only the comment can say | Example |
+|---|---|---|
+| Kernel / platform behaviour | why the other spelling is wrong, when both compile | `bpf_skb_pull_data` before reading `skb->data` |
+| Silent-failure invariant | why the obvious simplification corrupts money | never infer a counter reset from magnitudes |
+| Cross-boundary mirror | a contract no compiler checks | `enum zone_code` ↔ `internal/bpf/abi.go` |
+| Empirical constant | the measurement behind a number | `subnet_zone_trie` at 16384 entries, from a 37-tenant host |
+
+State the hazard, then stop. "Never infer a reset from counter magnitudes" does the whole job; the paragraph explaining *why* inference fails belongs in the ADR.
+
+Outside those four, delete: restating the signature, narrating the next statement, and a bare doc pointer as the whole comment. Godoc's own conventions still win where they apply — `// Describe implements [prometheus.Collector].` stays.
+
+### Length
+
+**Target ≤7 lines per block. Past that, you are writing documentation in the wrong file.**
+
+Some entry points earn more: a package comment orients a new reader (what this package is, what it must never do, where the design lives) and may run longer. Nothing else does — a function, type, or field that needs fifteen lines of prose is describing a design that belongs in `docs/`, with the code keeping the one-sentence hazard and the link.
+
+### Moving prose out is a two-step edit
+
+Never delete the only record. Before shortening a block:
+
+1. Confirm the content already exists in `docs/` — search for it, do not assume.
+2. If it does not, add it to the right document **first**, in its own commit or at least its own hunk.
+
+Only then cut the comment down. A shortening pass that loses the sole copy of an invariant is strictly worse than the wall of text it replaced.
+
+### Placement and syntax
+
+One comment per declaration, above it. Within a declaration every member is documented the same way or not at all — a seven-member enum where two carry multi-line notes and five carry nothing tells the reader nothing about the five, and a four-field struct where one field carries a 22-line block is the same defect wearing a different shape.
+
+- **C** — a member note is a single-line trailing `/* … */`, **all-or-none across the declaration**. No member gets a comment block of its own: anything longer than one line moves into the header above the declaration, which then names the members it covers. C has no doc tool that renders a per-member block, so inside a struct body such a block is only a visual interruption.
+- **Go** — a struct field may carry a godoc block above it, because godoc renders per-field documentation and the reader sees documented-vs-bare in the rendered output. Don't mix the two forms in one struct: a field's note is either a block above it or a one-line trailing comment, not both shapes in the same declaration.
+- **Go** — `//` only, godoc form, `[Ident]` doc links. No markdown emphasis: godoc has no bold, so `**x**` reaches the reader as literal asterisks.
+- **C** — `/* */` block above the declaration; single-line `/* … */` trailing. Never a `*` continuation ladder inside a trailing comment.
+- Section dividers are `// --- label ---`, sanctioned inside the `scenariotest` tree where one file holds several verb families.
+- Wrap comments at 80 columns.
+
+### Citations
+
+The pointer is how a short comment stays honest: it names the hazard, the document carries the reasoning.
+
+Write the full repo-relative path, because `internal/docs/refs_test.go` validates it and a short form would not be checkable. Put it on its own line at the end of the block, **once per block**, never mid-sentence — an anchored path runs 50–80 characters and breaks both the sentence and the 80-column wrap:
+
+```go
+// ApplyTrieDelta upserts every changed row before deleting any stale
+// one. Deleting first opens a window where a packet falls through to
+// the catchall and is miskeyed permanently, because dst_zone is baked
+// into the kernel flow_key.
+//
+// docs/architecture/trie-construction.md#incremental-updates
+```
+
+Where a block genuinely needs several pointers, list them under a `# References` heading rather than scattering them through the prose.
+
+### Package entry points
+
+Every package has exactly one godoc package comment. A `doc.go` is warranted only when that comment is long enough to want its own file; most packages keep it on a regular file, which is fine and should not be churned. A file-scope header is a **detached** block, separated from the `package` clause by a blank line — drop that blank line and godoc silently promotes the header to package documentation.
 
 ## Performance rules (hot paths: scrape loop + packet path)
 
