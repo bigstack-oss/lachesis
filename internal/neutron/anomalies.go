@@ -2,17 +2,10 @@ package neutron
 
 import "sort"
 
-// Anomalies bundles every health issue derivable from a Neutron
-// snapshot plus the trie BuildTrie produced from it. Computed once
-// per cold-start (and per future incremental resync) so the /debug
-// pages and the lachesis_neutron_anomalies gauge can surface
-// misconfigurations before they corrupt billing.
-//
-// The classes are independent — a single misconfigured router can
-// appear in more than one slice (e.g. a dangling extraroute on a
-// router that also participates in a cycle). The per-hit record
-// types (CycleHit, AmbiguityHit, DanglingRoute, ZeroTrieTenant,
-// DuplicateRouterMAC) live in schema.go.
+// Anomalies bundles every health issue derivable from a snapshot and
+// its trie, so /debug and the anomalies gauge surface misconfiguration
+// before it corrupts billing. The classes are independent: one bad
+// router can appear in several slices.
 type Anomalies struct {
 	// Cycles aggregates static-route cycles BuildTrie's resolver
 	// encountered while tracing extraroutes. Each hit corresponds to
@@ -39,12 +32,11 @@ type Anomalies struct {
 	// (not supported), a snapshot defect, or a Neutron schema drift.
 	DuplicateRouterMACs []DuplicateRouterMAC
 	// MultiExternalPaths lists VM ports whose external-network
-	// attribution was ambiguous (several FIPs / gateway routers on
-	// different external networks). Their external_network label and
-	// per-server export dimension are the deterministic pick, not
-	// necessarily where every byte really egressed — per-network
-	// external billing for these VMs is approximate (the documented
-	// first-cut limitation of docs/architecture/billing.md attribution).
+	// attribution was ambiguous. Their label is the deterministic
+	// pick, not necessarily where the bytes egressed, so per-network
+	// external billing for them is approximate.
+	//
+	// docs/architecture/billing.md
 	MultiExternalPaths []MultiExternalPathHit
 }
 
@@ -57,15 +49,10 @@ func (a Anomalies) Total() int {
 		len(a.MultiExternalPaths)
 }
 
-// DetectAnomalies aggregates the cycle + ambiguity hits BuildTrie
-// already produced and adds four more post-pass checks: dangling
-// extraroutes, tenants with zero trie rows, duplicate
-// router_interface MACs, and VM ports with ambiguous external-network
-// attribution. Pure function over its inputs — no I/O, no goroutines.
-//
-// cycles and ambiguities may be nil (no hits during BuildTrie); the
-// returned [Anomalies] mirrors that with nil/empty slices in the
-// corresponding fields rather than synthesising entries.
+// DetectAnomalies aggregates BuildTrie's cycle and ambiguity hits and
+// adds four post-pass checks: dangling extraroutes, tenants with zero
+// trie rows, duplicate router MACs, and ambiguous external attribution.
+// Pure function; nil inputs stay nil in the result.
 func DetectAnomalies(snap Snapshot, trie []TrieEntry, cycles []CycleHit, ambiguities []AmbiguityHit) Anomalies {
 	return Anomalies{
 		Cycles:              append([]CycleHit(nil), cycles...),
@@ -77,14 +64,9 @@ func DetectAnomalies(snap Snapshot, trie []TrieEntry, cycles []CycleHit, ambigui
 	}
 }
 
-// detectDanglingRoutes walks every router's Routes and reports
-// those whose Nexthop does not match any FixedIP across the
-// snapshot's ports. Both IPv4 and IPv6 routes are checked — the
-// trie builder skips non-IPv4 nexthops, but a dangling IPv6
-// extraroute is still operator-visible misconfiguration.
-//
-// Output order: by SourceRouter, then by Destination — stable
-// across runs on identical input.
+// detectDanglingRoutes reports routes whose Nexthop matches no FixedIP
+// in the snapshot. IPv6 included: the trie skips those nexthops, but a
+// dangling one is still real misconfiguration. Output is sorted.
 func detectDanglingRoutes(snap Snapshot) []DanglingRoute {
 	if len(snap.Routers) == 0 {
 		return nil
@@ -123,17 +105,9 @@ func detectDanglingRoutes(snap Snapshot) []DanglingRoute {
 	return out
 }
 
-// detectZeroTrieTenants compares the set of tenants that own
-// resources in the snapshot against the set of TenantIDs present
-// in the trie. A tenant in the first set but missing from the
-// second is reported with its owned-resource counts.
-//
-// Tenants that own only VM ports (no networks, no routers) still
-// count: their VMs will be billed against an empty trie and
-// classify as EXTERNAL on every L3-routed flow. Tenants that own
-// nothing are not reported — they have nothing to classify.
-//
-// Output order: by TenantID ascending.
+// detectZeroTrieTenants reports tenants that own resources but have no
+// trie rows — their VMs classify EXTERNAL on every L3-routed flow.
+// Port-only tenants count; tenants owning nothing do not. Sorted.
 func detectZeroTrieTenants(snap Snapshot, trie []TrieEntry) []ZeroTrieTenant {
 	trieTenants := make(map[string]struct{}, len(trie))
 	for _, e := range trie {
@@ -176,14 +150,9 @@ func detectZeroTrieTenants(snap Snapshot, trie []TrieEntry) []ZeroTrieTenant {
 	return out
 }
 
-// detectDuplicateRouterMACs groups router_interface ports by MAC
-// and emits one entry per group with size > 1. The MAC string is
-// taken verbatim from the snapshot — Neutron normalises to
-// lowercase colon-separated form on the wire, but the check is
-// case-sensitive (a mismatched case would still be a real defect).
-//
-// Output order: by MAC ascending. PortIDs and RouterIDs within
-// each entry are sorted ascending for stable rendering.
+// detectDuplicateRouterMACs reports router_interface MACs shared by
+// more than one port. Case-sensitive on purpose: Neutron normalises on
+// the wire, so a case mismatch is itself a defect. Sorted.
 func detectDuplicateRouterMACs(snap Snapshot) []DuplicateRouterMAC {
 	groups := make(map[string][]Port)
 	for _, p := range snap.Ports {

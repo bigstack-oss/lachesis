@@ -1,23 +1,15 @@
-// Package runtime wires reload and debug controls onto the agent.
+// Package runtime wires reload and debug controls onto the agent: the
+// [Manager] holds the current config, re-reads the YAML on SIGHUP,
+// applies the hot-reloadable fields, and serves /debug.
 //
-// It exposes a [Manager] that holds the current [config.Config] snapshot,
-// re-reads the YAML on SIGHUP, applies hot-reloadable fields, and serves
-// /debug HTTP endpoints for ad-hoc runtime tuning.
+// A field is HOT if changing it rebinds no resource — the logging level
+// plus everything config.Tunables projects. Everything else is
+// LOAD-TIME: listen addresses, paths, log format, and the
+// Neutron/Kafka connection sections. A load-time change in the YAML is
+// warned about and ignored. Pinning is a one-shot boot action, so both
+// bpf knobs are load-time.
 //
-// Hot vs load-time fields:
-//
-//   - Hot: applied immediately on reload. logging.level, plus every
-//     field config.Config.Tunables projects — ghost grace/sweep,
-//     reconcile/scrape/WAL-flush intervals, the unresolved-buffer
-//     bounds, and the gc pressure thresholds. Consumers read the
-//     shared [tunables.Store] snapshot at their own use sites, so
-//     cadence changes take effect at the next tick.
-//   - Load-time: change in the YAML is logged as a warning and
-//     ignored; restart is required. Resource-binding fields only:
-//     http.listen, bpf.pin_path, bpf.unsafe_allow_unpinned_maps,
-//     wal.path, logging.format, and the neutron/kafka connection
-//     sections. Pinning is a one-shot boot action, so both bpf
-//     knobs are load-time siblings — not hot tunables.
+// docs/operations/runtime.md
 package runtime
 
 import (
@@ -208,19 +200,13 @@ func (m *Manager) InstallSIGHUP(ctx context.Context) {
 	}()
 }
 
-// DebugHandler returns the http.Handler exposing the /debug endpoints:
+// DebugHandler returns the /debug handler: GET /debug/config (secrets
+// redacted) and PUT /debug/log-level. Mount alongside /metrics.
 //
-//	GET  /debug/config     returns the active Config as JSON (secrets redacted)
-//	PUT  /debug/log-level  body: {"level":"debug|info|warn|error"} — change level at runtime
-//
-// Mount it on the agent's HTTP server alongside /metrics.
-//
-// Security posture: the endpoints are intentionally unauthenticated,
-// and the server's default listen address is all-interfaces so
-// Prometheus can scrape /metrics. Secrets never appear in responses
-// ([config.NeutronConfig.MarshalJSON] redacts them), but on untrusted
-// networks operators must still bind http.listen to localhost or
-// firewall the port — /debug also exposes pprof and runtime tuning.
+// The endpoints are intentionally UNAUTHENTICATED and the default
+// listen address is all-interfaces. Secrets never appear in responses,
+// but /debug also exposes pprof and runtime tuning — on an untrusted
+// network, bind to localhost or firewall the port.
 func (m *Manager) DebugHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /debug/config", m.handleGetConfig)
@@ -250,14 +236,11 @@ func (m *Manager) handlePutLogLevel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Hold m.mu across both the level-var update and the m.current
-	// write so they move together. Reload takes the same lock while it
-	// reads m.current.Logging.Level to detect a transition and calls
-	// SetLevel; without the lock here, a concurrent SIGHUP reload could
-	// interleave and leave the live level var disagreeing with the
-	// snapshot (and mislog the transition). SetLevel is an atomic
-	// LevelVar store, not IO, so holding the lock across it is cheap and
-	// cannot deadlock against Reload.
+	// Hold m.mu across BOTH the level-var update and the m.current
+	// write so they move together — a concurrent SIGHUP reload could
+	// otherwise interleave and leave the live level disagreeing with the
+	// snapshot. SetLevel is an atomic store, not IO, so this cannot
+	// deadlock against Reload.
 	m.mu.Lock()
 	if err := m.log.SetLevel(body.Level); err != nil {
 		m.mu.Unlock()

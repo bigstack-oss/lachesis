@@ -29,36 +29,22 @@ type Entry struct {
 	Total bpf.FlowMetrics
 }
 
-// Record is the (Key, Counter) pair emitted by [GlobalState.SnapshotForWAL]
-// and consumed by [GlobalState.Restore]. The Counter carries both
-// Total and LastEbpfRaw so a WAL-restored state can compute deltas
-// against the kernel's next reading without re-baselining.
+// Record is the (Key, Counter) pair the WAL round-trips. The Counter
+// carries both Total and LastEbpfRaw, so a restored state computes
+// deltas against the kernel's next reading without re-baselining.
 //
-// INVARIANT — no kernel-internal identifiers in the WAL.
-//
-// Record's only identifier is [bpf.FlowKey], which is intentionally
-// free of the u32 `tenant_id` that the kernel maps key on (the
-// userspace `internal/metadata.TenantInterner` re-allocates those
-// u32s on every boot — see the FlowKey doc-comment). Adding any
-// kernel-internal ID to Record would silently break WAL restore on
-// restart: the same logical flow would re-key under a stale u32 and
-// never merge with post-restart traffic. ProjectID strings are the
-// only stable cross-boot tenant identifier and they live in
-// [metadata.ShardedMetadataMap], not here.
+// INVARIANT — no kernel-internal identifiers in the WAL. FlowKey is
+// deliberately free of the u32 tenant_id, which is re-interned every
+// boot; adding any such ID re-keys the flow on restart and it never
+// merges with post-restart traffic.
 type Record struct {
 	Key     bpf.FlowKey
 	Counter Counter
 }
 
-// TenantSettledKey identifies one settled-accumulator bucket. It is exactly
-// the metric label tuple the Collector emits — the resolved tenant, the
-// zone-gated external-network label, plus the flow key's zone and
-// direction — because settling happens at the moment the finer
-// flow-level identity (the MAC pair) stops being resolvable: the bytes
-// are re-homed at the granularity that must stay monotonic. ExtNet is
-// always the already-gated label (a network name, or the
-// metadata.NoExternalNetwork sentinel) so a settled bucket lands in
-// exactly the series its live flows occupied.
+// TenantSettledKey identifies one settled bucket. It is exactly the
+// tenant tier's metric label tuple, so a fold lands in the same series
+// the live flows occupied. ExtNet must already be the gated label.
 type TenantSettledKey struct {
 	Tenant string
 	ExtNet string
@@ -76,16 +62,13 @@ type TenantSettledRecord struct {
 	Packets uint64
 }
 
-// ServerSettledKey identifies one server-settled bucket — the server
-// tier's fold absorber in the four-layer family hierarchy
-// (docs/architecture/billing.md). Unlike [TenantSettledKey] it KEEPS the
-// server dimension: it is exactly the lachesis_server_bytes_total label
-// tuple, so a fold credits the same series the live flows occupied and
-// the server series stays monotone for the server's whole lifetime — a
-// multi-port server losing one port, a detached-then-reattached NIC, a
-// port recreate. Bounded: buckets are released when their server leaves
-// the Nova server list ([GlobalState.PruneServerSettled]), so a dead
-// server's series simply ends.
+// ServerSettledKey identifies one server-settled bucket. Unlike
+// [TenantSettledKey] it KEEPS the server dimension — it is exactly the
+// lachesis_server_bytes_total tuple, which is what makes a server's
+// series monotone across a lost port or a re-created NIC. Released when
+// the server leaves the Nova list.
+//
+// docs/architecture/billing.md
 type ServerSettledKey struct {
 	ServerID string
 	Tenant   string
@@ -104,16 +87,12 @@ type ServerSettledRecord struct {
 	Packets uint64
 }
 
-// TotalSettledKey identifies one total-settled bucket — the total
-// tier's fold absorber in the four-layer family hierarchy
-// (docs/architecture/billing.md). The total family is DERIVED (Σ tenant
-// tier at Collect time), so releasing a dead project's tenant-settled
-// bucket would make the immortal lachesis_bytes_total series decrease
-// while continuing — the poison the absorbers exist to prevent.
-// [GlobalState.PruneTenantSettled] therefore settles to the parent: the
-// dying bucket's totals fold here, under the tenant dimension summed
-// away — exactly the lachesis_bytes_total label tuple. Bounded by
-// construction: zones × external networks × 2 directions.
+// TotalSettledKey identifies one total-settled bucket. The total family
+// is DERIVED from the tenant tier, so a released tenant bucket folds
+// here instead of vanishing — otherwise the immortal total series would
+// decrease. Bounded by construction: zones × external networks × 2.
+//
+// docs/architecture/billing.md
 type TotalSettledKey struct {
 	ExtNet string
 	Zone   bpf.ZoneCode

@@ -1,10 +1,8 @@
-// trie.go owns the trie builder: the 5-step algorithm of
-// docs/architecture/trie-construction.md#the-five-step-algorithm that turns a [Snapshot] into the [TrieEntry]
-// rows destined for the kernel `subnet_zone_trie`. Each step is one
-// emit* method on [trieBuilder], executed in documented order by
-// [buildTrie]. The multi-hop static-route resolver Step 5 delegates
-// to lives in resolve.go; the port-classification predicates Step 4
-// relies on live in deviceowner.go.
+// trie.go owns the trie builder. Each step is one emit* method on
+// [trieBuilder], run in documented order by [buildTrie]; the resolver
+// lives in resolve.go and the port predicates in deviceowner.go.
+//
+// docs/architecture/trie-construction.md#the-five-step-algorithm
 
 package neutron
 
@@ -17,101 +15,21 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
-// BuildTrie runs the cold-start 5-step algorithm of
-// docs/architecture/trie-construction.md#the-five-step-algorithm (Step 5 delegates to the multi-hop static-
-// route resolver of docs/architecture/trie-construction.md#the-static-route-resolver) and returns a flat slice of [TrieEntry]
-// in two shapes:
+// BuildTrie runs the cold-start algorithm over snap and returns the rows
+// destined for the kernel subnet_zone_trie, plus every ambiguity and
+// cycle the static-route resolver hit. A non-empty ambiguity slice must
+// refuse the boot under strict mode: those routes fall back to EXTERNAL
+// and silently mis-bill the cross-tenant CIDR they cover. Output is
+// sorted, so consecutive builds over identical input diff to nothing.
 //
-//   - Global rows (Steps 1, 3, 4): catchall, shared subnets,
-//     infrastructure /32s, and the Nova metadata /32 are emitted
-//     exactly once with TenantID="" (the writer resolves this to
-//     [metadata.TenantIDUnset], the kernel sentinel u32 = 0).
-//     The kernel `lookup_zone` consults these rows on first-
-//     lookup miss using `tenant_id=0` as the fallback key — see
-//     `bpf/telemetry.c` and docs/architecture/data-structures.md#kernel-side-bpf-maps.
-//   - Per-tenant rows (Steps 2, 5): owned subnets and extraroutes
-//     emit one [TrieEntry] per (owning-tenant, prefix). These are
-//     the only entries that scale with tenant count, so total
-//     trie cardinality is `O(G + Σ O_t)` rather than the
-//     pre-dedup `O(T × G + Σ O_t)`.
-//
-// Globals are skipped entirely when no tenants are present —
-// there is no kernel consumer (`mac_tenant_map` is empty) and
-// writing them would waste trie capacity.
-//
-// The second return aggregates every Step C ambiguity-after-scoping
-// incident encountered while resolving extraroutes (docs/architecture/trie-construction.md#ambiguity-after-scoping).
-// Callers running in strict mode (the default) refuse to start when
-// the slice is non-empty; callers running with
-// --unsafe-allow-ambiguous-routes log + accept the EXTERNAL
-// fallback that the resolver already emitted for each affected route.
-//
-// The third return aggregates every static-route cycle the resolver
-// encountered (a trace attempted to revisit a router on its path).
-// These do not block boot — the resolver already fell back to
-// EXTERNAL for each — but [DetectAnomalies] surfaces them via the
-// /debug pages and the lachesis_neutron_anomalies gauge so an
-// operator can fix the underlying misconfiguration.
-//
-// # Step coverage
-//
-//  1. Catchall:   `0.0.0.0/0 → EXTERNAL`, emitted once with
-//     TenantID="".
-//  2. Owned:      each tenant's non-shared, non-external subnets →
-//     SAME_TENANT. Per-tenant.
-//  3. Shared:     every non-external shared subnet → SHARED,
-//     emitted once with TenantID="". SHARED is a distinct
-//     zone (not SAME / not OTHER) because the LPM trie
-//     cannot resolve per-VM ownership inside a shared
-//     /24; the MAC-first hot path classifies L2 traffic
-//     correctly, and SHARED labels the L3-routed-fallback
-//     case honestly rather than guessing. See
-//     docs/architecture/trie-construction.md#the-five-step-algorithm Step 3.
-//  4. Infra:      router / DHCP / metadata port IPs + subnet gateway
-//     IPs + 169.254.169.254 → INFRA, emitted once with
-//     TenantID="".
-//  5. Extraroutes: for each router R owned by the tenant, walk
-//     every (destination, nexthop) entry in R.Routes through
-//     [resolveStaticRouteZone] (docs/architecture/trie-construction.md#the-static-route-resolver). The resolver
-//     iterates router-interface peers until it lands on a directly-
-//     attached subnet or a compute:nova appliance, then classifies
-//     via [zoneFor]. Misconfig (Step A miss), cycle, MAX_HOPS
-//     exceeded, and ambiguity-after-scoping all fall back to
-//     EXTERNAL with a warn-level log.
-//
-// # IPv6
-//
-// Subnets and fixed-IP entries with IPv6 addresses are skipped:
-// the kernel `subnet_zone_trie` is keyed on u32 IPv4. IPv6 zone
-// resolution is deferred (docs/architecture/contracts.md#deferred-work).
-//
-// # Error handling
-//
-// Malformed CIDRs / IPs are logged at warn-level and skipped. The
-// alternative — refusing to start because one stale subnet has a
-// bad CIDR — would block boot on otherwise-healthy data.
-//
-// The returned slice is sorted by (TenantID, prefix-string, Zone)
-// so that consecutive reconciliations against identical input
-// produce identical output, simplifying the change-detection logic
-// the kernel map writer will use. Global rows (TenantID="") sort
-// first; per-tenant runs follow in tenant-ID order.
-//
-// BuildTrie does not observe metrics and resolves static routes with
-// [defaultMaxStaticRouteHops]; [Neutron.Sync] runs the internal
-// metrics-observing variant with the operator's configured hop limit.
+// docs/architecture/trie-construction.md#the-five-step-algorithm
 func BuildTrie(snap Snapshot) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
 	return buildTrie(snap, nil, defaultMaxStaticRouteHops)
 }
 
-// buildTrie is the implementation behind [BuildTrie], with the
-// per-step durations observed on m's
-// `lachesis_neutron_builder_step_duration_seconds` histogram (m may
-// be nil — every [Metrics] helper no-ops on nil receivers) and the
-// static-route trace bounded by maxHops (below 1 falls back to
-// [defaultMaxStaticRouteHops]). The body is a literal transcription of
-// the docs/architecture/trie-construction.md#the-five-step-algorithm step order; each step's
-// logic lives on its [trieBuilder] emit* method.
+// buildTrie is [BuildTrie] with per-step timings on m (nil-safe) and
+// the trace bounded by maxHops. The body is a literal transcription of
+// the documented step order.
 func buildTrie(snap Snapshot, m *Metrics, maxHops int) ([]TrieEntry, []AmbiguityHit, []CycleHit) {
 	b := newTrieBuilder(snap, m, maxHops)
 	b.step(stepCatchall, b.emitCatchall)
@@ -240,12 +158,11 @@ func (b *trieBuilder) emitInfraPrefixes() {
 	b.entries = append(b.entries, TrieEntry{"", metadataPrefix, bpf.ZoneInfra})
 }
 
-// emitExtraRoutes is Step 5: walk every (destination, nexthop) entry
-// on each tenant's routers through [resolveStaticRouteZone]
-// (docs/architecture/trie-construction.md#the-static-route-resolver) and emit one per-tenant row per route. The
-// resolver traces router-interface peers until it lands on a
-// directly-attached subnet or a compute:nova appliance; its
-// ambiguity / cycle hits accumulate on the builder for the caller.
+// emitExtraRoutes is Step 5: resolve every (destination, nexthop) on
+// each tenant's routers and emit one per-tenant row per route. The
+// resolver's ambiguity and cycle hits accumulate on the builder.
+//
+// docs/architecture/trie-construction.md#the-static-route-resolver
 func (b *trieBuilder) emitExtraRoutes() {
 	for _, tenant := range b.tenants {
 		for _, r := range b.routers {
@@ -268,7 +185,7 @@ func (b *trieBuilder) emitExtraRoutes() {
 					continue
 				}
 				if !nh.Is4() {
-					continue // IPv6 nexthops deferred (docs/architecture/contracts.md#deferred-work).
+					continue // IPv6 nexthops are deferred work, item 1
 				}
 				zone, ambHit, cycHit := b.ri.resolveStaticRouteZone(r, destination, nh)
 				b.entries = append(b.entries, TrieEntry{tenant, destination, zone})
@@ -394,16 +311,10 @@ func buildInfraPrefixes(subnets []Subnet, ports []Port) []netip.Prefix {
 	return out
 }
 
-// parsePrefixV4 parses a CIDR string and returns the prefix if it is
-// IPv4. IPv6 prefixes return ok=false silently — they are filtered,
-// not malformed. Malformed strings emit a warn-level log.
-//
-// The result is canonicalized with Masked() so host bits are zeroed
-// before the prefix becomes an LPM key. Subnet CIDRs from Neutron are
-// usually already canonical, but operator-authored extraroute
-// destinations (Step 5) are not guaranteed to be — a key like
-// 10.0.0.5/24 with dirty host bits would land at the wrong trie node
-// and miss on the routed-fallback lookup (ZONE_MISS → misbilling).
+// parsePrefixV4 returns the prefix if it is IPv4; IPv6 returns false
+// silently (filtered, not malformed). The result is Masked() — an
+// operator-authored extraroute like 10.0.0.5/24 with dirty host bits
+// would otherwise land at the wrong trie node and miss.
 func parsePrefixV4(s string) (netip.Prefix, bool) {
 	p, err := netip.ParsePrefix(s)
 	if err != nil {

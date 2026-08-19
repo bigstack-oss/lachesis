@@ -6,22 +6,18 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// ghostGraceWindow exercises the inside-grace half of the Lingering
-// Ghost lifecycle (docs/architecture/data-structures.md#map-lifecycle-invariants,
-// Contract 6): for GhostGrace seconds after a port is deleted, its MAC
-// stays in the kernel mac_tenant_map so dying FIN/RST/retransmit
-// packets still attribute to the right tenant. mac-reuse covers the
-// AFTER-sweep side (the MAC is gone, bytes go unknown); nothing covered
-// the inside-grace side.
+// ghostGraceWindow exercises the INSIDE-grace half of the Lingering
+// Ghost lifecycle (Contract 6): for the grace window after a port is
+// deleted its MAC stays in mac_tenant_map, so dying FIN/RST packets
+// still attribute. mac-reuse covers the after-sweep side.
 //
-// Shape: vm-a and vm-b (same tenant, same subnet) exchange a stream so
-// both learn each other's MAC; capture; delete vm-b; then vm-a keeps
-// sending to vm-b's fixed IP (its ARP entry still resolves vm-b's MAC).
-// Those tx bytes hit vm-a's tap keyed on vm-b's still-lingering MAC and
-// must bill the tenant — no unknown growth — while the grace holds.
+// vm-a keeps sending to the deleted vm-b's fixed IP — its ARP entry
+// still resolves the lingering MAC — and those tx bytes must bill the
+// tenant with no unknown growth.
 //
-// Requires a GhostGrace long enough to out-live the delete + drive; the
-// c36 agents are configured with a 120s grace for this pack.
+// Needs a GhostGrace longer than the delete + drive.
+//
+// docs/architecture/data-structures.md#map-lifecycle-invariants
 func ghostGraceWindow() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").

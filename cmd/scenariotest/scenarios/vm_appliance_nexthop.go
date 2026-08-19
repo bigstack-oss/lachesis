@@ -13,70 +13,32 @@ const (
 	// did NOT land in.
 	applianceNoiseBudget = 256 << 10
 	// applianceForwardedFloor is the floor for the SECOND count, at the
-	// appliance's own tap. It is deliberately looser than the source-side
-	// floor, because the two measure different things: vm-a's tap sees the
-	// drive payload PLUS Ethernet/IP headers, so it always reads above
-	// applianceDriveBytes, while the appliance's tap sees a DERIVED
-	// quantity — whatever survived one extra hop, which can lose the
-	// leading fragments while ARP and routes warm up.
-	//
-	// Live on c36 the pass-through was 98% (1,084,710 forwarded of
-	// 1,106,460 counted at the source), so two thirds is generous slack,
-	// not a fudge. Generous is right: this row is a presence test — the
-	// double-count either happens at roughly the transfer size or not at
-	// all (0, as it read before rp_filter was handled). Byte accuracy is
-	// the byte-accuracy-bounds scenario's job, not this one's.
+	// appliance's tap. Deliberately looser than the source-side floor:
+	// that tap sees payload plus headers, this one sees whatever
+	// survived an extra hop, which can lose leading fragments while ARP
+	// warms up. Live pass-through was 98%, so two thirds is slack, not a
+	// fudge — this row is a presence test, and the double-count either
+	// happens at roughly the transfer size or not at all.
 	applianceForwardedFloor = applianceDriveBytes * 2 / 3
 )
 
-// vmApplianceNexthop exercises the static-route resolver's Step B
-// compute-nexthop case (docs/architecture/trie-construction.md#the-static-route-resolver):
-// an extraroute whose nexthop is a VM port (`device_owner compute:*`)
-// classifies by that appliance's port — the trace STOPS there, because
-// what lies beyond the appliance is opaque to Neutron — and the same
-// bytes are billed a second time at the appliance's own tap when it
-// forwards them (docs/architecture/edge-cases.md#tier-4--subtle-correctness case 21).
+// vmApplianceNexthop exercises the resolver's Step B compute-nexthop
+// case: an extraroute whose nexthop is a VM port classifies by that
+// appliance's port — the trace STOPS there — and the same bytes bill
+// again at the appliance's own tap when it forwards them.
 //
-// # The zone this asserts, and why it is not other_tenant
+// The zone is `shared`, not `other_tenant`, because zone_for tests
+// Shared above the owner comparison. `other_tenant` is unreachable on
+// this path: it needs a non-shared network whose owner differs, and a
+// cross-tenant appliance can only meet T1's router on a shared one.
 //
-// `zone_for` tests `network.Shared` ABOVE the owner comparison, so the
-// zone here is `shared`, not `other_tenant`. That is deliberate: it is
-// the canonical honest-label rule (trie-construction.md step 3 — "the
-// same ordering governs zone_for in step 5's resolver"), which exists
-// because the LPM trie cannot resolve per-VM ownership inside a shared
-// subnet and guessing SAME/OTHER would systematically mis-bill one
-// direction. `other_tenant` is in fact unreachable on this path: it
-// needs a non-shared network whose owner differs from the source
-// tenant, and a cross-tenant appliance can only meet T1's router on a
-// shared one.
+// Without Step B the peer type is unknown and the row falls to the
+// `external` catchall, so `shared` present + `external` flat proves the
+// appliance path fired. The appliance forwards back out the SAME NIC:
+// only that one has port security off, and a forwarded packet keeps the
+// original source IP.
 //
-// Worth knowing, since the rationale above does not quite fit this
-// case: ownership is NOT ambiguous at a compute nexthop — the resolver
-// holds the port's exact ProjectID. `shared` here is a consistency
-// choice (one shared segment bills one way, whoever the peer is)
-// rather than one forced by missing information.
-//
-// The assertion still discriminates: without Step B's compute branch
-// the peer device type is unknown and the row falls to the `external`
-// catchall, so `shared` present + `external` flat proves the appliance
-// path fired.
-//
-// # Shape
-//
-// vm-a (T1) sends to a CIDR only reachable through the appliance:
-//
-//	vm-a ──> r-T1 ──(extraroute 10.0.62.0/24 via .50)──> vm-appl (T2, .50 on the
-//	                                                     shared transit)
-//	                                                        │ forwards
-//	                                                        ▼
-//	                                              r-T2 (.20) ──> sub-T2
-//
-// The appliance forwards back out the SAME transit NIC it received on.
-// That is deliberate: only that NIC is hot-plugged with port security
-// off, and a forwarded packet keeps vm-a's source IP, which OVN
-// anti-spoofing would drop on any port still enforcing it. Routing it
-// out the boot NIC instead would need a port-security-off boot port,
-// which the DSL cannot express.
+// docs/architecture/edge-cases.md#tier-4--subtle-correctness
 func vmApplianceNexthop() *scenariotest.Scenario {
 	const dstCIDR = "10.0.62.0/24"
 	b := scenario.New()

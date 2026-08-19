@@ -2,8 +2,9 @@
 // metadata-update paths (the periodic Neutron reconcile and the Kafka
 // consumer). Where [WriteSubnetZoneTrie] rewrites the whole map at
 // cold-start, [ApplyTrieDelta] pushes only the rows that changed
-// between two snapshots — and pushes them in the order
-// docs/architecture/trie-construction.md#incremental-updates requires.
+// between two snapshots — and pushes them in the required order.
+//
+// Incremental updates: docs/architecture/trie-construction.md#incremental-updates
 
 package kernelwriter
 
@@ -52,33 +53,19 @@ type trieRowKey struct {
 	prefix netip.Prefix
 }
 
-// ApplyTrieDelta brings trieMap from the oldEntries state to the
-// newEntries state with the minimum set of kernel writes, in the
-// strict order docs/architecture/trie-construction.md#incremental-updates mandates: **all upserts first, then
-// all deletes.** Deleting an obsolete row before its replacement is in
-// place would briefly leave the destination CIDR unmatched, and a
-// packet that falls through to the catchall during that window is
-// permanently miskeyed because dst_zone is baked into the kernel
-// flow_key. Insert-first guarantees a valid longest-prefix match exists
-// at every instant.
+// ApplyTrieDelta moves trieMap from oldEntries to newEntries with the
+// minimum writes, in the mandated order: ALL upserts first, then all
+// deletes. Deleting first would leave the destination CIDR briefly
+// unmatched, and a packet falling through to the catchall in that
+// window is miskeyed permanently, because dst_zone is baked into the
+// kernel flow_key.
 //
-// Identity is (interned tenant_id, prefix); the value compared is the
-// zone. Added/Changed rows are upserted with ebpf.UpdateAny; rows that
-// disappeared are deleted; identical rows are skipped.
+// Row identity is (interned tenant_id, prefix); the compared value is
+// the zone. If any upsert fails the delete phase is skipped entirely —
+// a stale-but-present row is harmless under longest-match, while
+// deleting one whose replacement never landed reopens that window.
 //
-// Tenant IDs are resolved through [metadata.TenantInterner.Intern] on
-// both sides — allocating a u32 for a genuinely new tenant, returning
-// the existing one for a tenant a prior pass already wrote (idempotent),
-// and mapping the sentinel "" tenant to TenantIDUnset.
-//
-// # Failure semantics
-//
-// Each per-row failure is logged; the first is returned. If any upsert
-// fails, the delete phase is skipped entirely — deleting an old row
-// whose replacement may not have landed is exactly the miskey window
-// docs/architecture/trie-construction.md#incremental-updates warns about, and a stale-but-present row is harmless under LPM
-// longest-match. The next reconcile (or Kafka event) retries. The
-// returned [TrieDelta] reflects the writes that actually succeeded.
+// docs/architecture/trie-construction.md#incremental-updates
 func ApplyTrieDelta(
 	trieMap MapUpdateDeleter,
 	oldEntries, newEntries []neutron.TrieEntry,
@@ -138,7 +125,8 @@ func ApplyTrieDelta(
 	}
 
 	// An upsert failure means a replacement row may be missing; deleting
-	// now could open the docs/architecture/trie-construction.md#incremental-updates miskey window. Keep the stale rows (LPM
+	// now could open the miskey window [ApplyTrieDelta] documents.
+	// Keep the stale rows (LPM
 	// longest-match tolerates them) and let the next pass retry.
 	if firstErr != nil {
 		return delta, firstErr

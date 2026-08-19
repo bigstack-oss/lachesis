@@ -13,21 +13,16 @@ import (
 	"time"
 )
 
-// Sync runs one full list-and-rebuild pass: authenticate against
-// Keystone (first call only; the client is cached so a transient
-// fetch failure does not re-auth), drain the six list endpoints,
-// build the trie, and detect anomalies. Per-endpoint failures are
-// recorded on lachesis_neutron_api_errors_total before returning.
+// Sync runs one full list-and-rebuild pass, recording per-endpoint
+// failures before returning. It retains NOTHING: the result becomes
+// visible only when the caller passes it to [Neutron.Commit]. That
+// split exists so the kernel maps can acknowledge the new state in
+// between — a sync timestamp must never describe state the kernel has
+// not seen.
 //
-// Sync retains nothing — the returned [SyncResult] becomes visible
-// to the read accessors only when the caller hands it to
-// [Neutron.Commit]. The split exists because the kernel maps must
-// acknowledge the new state between the two calls
-// (docs/architecture/boot-and-recovery.md#boot-sequence step 3): a fresh sync timestamp must never describe state the
-// kernel has not seen.
+// Single-shot; retry policy belongs to the caller.
 //
-// Sync is single-shot; retry/backoff policy belongs to the caller
-// (the agent's cold-start loop, which classifies retryability).
+// docs/architecture/boot-and-recovery.md#boot-sequence
 func (n *Neutron) Sync(ctx context.Context) (SyncResult, error) {
 	if n.client == nil {
 		c, err := NewClient(ctx, n.creds)
@@ -98,7 +93,9 @@ func (n *Neutron) fetchAll(ctx context.Context) (Snapshot, error) {
 	// lachesis_server_info family. Unlike the lists above it is
 	// non-fatal: a fetch failure records the API error, leaves
 	// Servers empty (info series absent), and lets the sync complete
-	// so the billing path is unaffected (docs/architecture/metrics.md).
+	// so the billing path is unaffected.
+	//
+	// Info metrics: docs/architecture/metrics.md
 	if s.Servers, err = n.client.ListServers(ctx); err != nil {
 		n.metrics.RecordAPIError(endpointServers, err)
 		slog.Warn("list servers failed; lachesis_server_info absent until the next sync succeeds",

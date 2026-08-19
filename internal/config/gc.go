@@ -6,10 +6,12 @@ import (
 )
 
 // GCConfig groups the tunables for pressure-relief eviction of the
-// kernel telemetry_map (docs/architecture/data-structures.md#kernel-side-bpf-maps). All three are
-// hot-reloadable on SIGHUP: the GC reads them through an atomic
-// snapshot, so an operator can retune eviction without an agent restart
-// (a restart briefly stops counting and re-derives the kernel maps).
+// kernel telemetry_map. All three are hot-reloadable on SIGHUP: the GC
+// reads them through an atomic snapshot, so an operator can retune
+// eviction without an agent restart (a restart briefly stops counting
+// and re-derives the kernel maps).
+//
+// Kernel maps: docs/architecture/data-structures.md#kernel-side-bpf-maps
 //
 // They are deliberately YAML-only — no env var or CLI flag. Env and
 // flags are resolved once at boot and cannot hot-reload, so binding
@@ -33,8 +35,8 @@ type GCConfig struct {
 	// successive scrapes rather than one long pause. Raising it drains
 	// faster at the cost of a longer stall on each scrape that evicts.
 	PressureMaxPerPass int `yaml:"pressure_max_per_pass"`
-	// GhostGrace is the Lingering-Ghost TTL (docs/architecture/data-structures.md#map-lifecycle-invariants): how
-	// long a deleted port's metadata survives so dying FIN/RST packets
+	// GhostGrace is the Lingering-Ghost TTL: how long a deleted port's
+	// metadata survives so dying FIN/RST packets
 	// still attribute. Shorter = less MAC-reuse exposure; longer =
 	// better teardown-tail attribution. Hot-reloadable; applies to
 	// ghosts marked after the change.
@@ -44,10 +46,12 @@ type GCConfig struct {
 	GhostSweepInterval time.Duration `yaml:"ghost_sweep_interval"`
 }
 
-// gcDefaults returns the pressure-relief baseline from
-// docs/architecture/data-structures.md#kernel-side-bpf-maps: trigger at 80% fill, drain to the 75% floor, 1000 entries per
-// pass (≈50 ms stall). This package is the single source of truth for
-// those default values.
+// gcDefaults returns the documented pressure-relief baseline: trigger
+// at 80% fill, drain to the 75% floor, 1000 entries per pass (≈50 ms
+// stall). This package is the single source of truth for those default
+// values.
+//
+// Kernel maps: docs/architecture/data-structures.md#kernel-side-bpf-maps
 func gcDefaults() GCConfig {
 	return GCConfig{
 		PressureHighWatermark: 0.80,

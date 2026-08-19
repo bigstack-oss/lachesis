@@ -1,27 +1,17 @@
 // Package tunables holds the agent's hot-reloadable operational knobs
-// behind one atomic snapshot: the runtime Manager swaps a whole
-// [Values] on each successful SIGHUP reload, and every consumer reads
-// the current snapshot at its own use site — a tick boundary, a
-// ghost-mark, a buffer admission. Pull, not push: no consumer needs
-// reload plumbing beyond holding the store, and a cadence change simply
-// takes effect at the loop's next tick.
+// behind one atomic snapshot, swapped whole on each SIGHUP. Pull, not
+// push: consumers read the current snapshot at their own use site, so a
+// cadence change takes effect at the next tick and no consumer needs
+// reload plumbing.
 //
-// None of these values are read on the packet path or per Collect row;
-// the hottest reader is the scrape loop at one Load per pass, so the
-// snapshot costs nothing measurable.
+// What belongs here: cadences, grace windows, bounded-buffer
+// thresholds — anything whose change rebinds no resource. What never
+// does: addresses, paths, credentials, map sizes, or a required
+// contract.
 //
-// What belongs here: pure cadences, grace windows, and bounded-buffer
-// thresholds — values whose change needs no resource re-binding.
-// What never belongs here: listen addresses, file paths, credentials,
-// BPF map sizes, or anything that is a docs/architecture/contracts.md#required-contracts contract.
-//
-// The Store is a REQUIRED dependency of every consumer — never nil, no
-// per-package fallback values (the Archaius/dynamic-property rule:
-// the handle always exists). Defaults live in exactly one place
-// (config.Defaults), hotness is declared in exactly one place
-// (config.Config.Tunables), and the developer rule is one sentence:
-// wiring config arrives via constructor Options and is read once;
-// operational knobs are read from this store at the use site.
+// The Store is a REQUIRED dependency, never nil, with no per-package
+// fallback values. Defaults live in config.Defaults and hotness is
+// declared in config.Config.Tunables — both exactly once.
 package tunables
 
 import (
@@ -35,9 +25,11 @@ import (
 // (config.Config.Tunables) so validated defaults always apply.
 type Values struct {
 	// GhostGrace is the Lingering-Ghost TTL: how long a deleted port's
-	// metadata survives so dying FIN/RST packets still attribute
-	// (docs/architecture/data-structures.md#map-lifecycle-invariants). Applies to ghosts marked AFTER a change;
-	// in-flight ghosts keep the deadline they were marked with.
+	// metadata survives so dying FIN/RST packets still attribute.
+	// Applies to ghosts marked AFTER a change; in-flight ghosts keep
+	// the deadline they were marked with.
+	//
+	// Map lifecycle: docs/architecture/data-structures.md#map-lifecycle-invariants
 	GhostGrace time.Duration `knob:"gc.ghost_grace"`
 	// GhostSweepInterval is the ghost-sweep cadence.
 	GhostSweepInterval time.Duration `knob:"gc.ghost_sweep_interval"`
@@ -48,8 +40,9 @@ type Values struct {
 	// ScrapeInterval is the kernel-drain cadence. Safe to retune live:
 	// the delta math is interval-agnostic by design.
 	ScrapeInterval time.Duration `knob:"scrape.interval"`
-	// WALFlushInterval bounds the crash-loss window
-	// (docs/architecture/data-structures.md#userspace-structures).
+	// WALFlushInterval bounds the crash-loss window.
+	//
+	// Userspace structures: docs/architecture/data-structures.md#userspace-structures
 	WALFlushInterval time.Duration `knob:"wal.flush_interval"`
 	// UnresolvedTTL is the late-binding window before buffered
 	// unknown-MAC flows fold to the "unknown" tenant.
@@ -57,16 +50,18 @@ type Values struct {
 	// UnresolvedCap bounds the UnresolvedBuffer (Contract 1 —
 	// the cap's existence is a contract; only its value is tunable).
 	UnresolvedCap int `knob:"unresolved.cap"`
-	// Pressure* are the pressure-relief GC thresholds
-	// (docs/architecture/data-structures.md#kernel-side-bpf-maps).
+	// Pressure* are the pressure-relief GC thresholds.
+	//
+	// Kernel maps: docs/architecture/data-structures.md#kernel-side-bpf-maps
 	PressureHighWatermark float64 `knob:"gc.pressure_high_watermark"`
 	PressureLowWatermark  float64 `knob:"gc.pressure_low_watermark"`
 	PressureMaxPerPass    int     `knob:"gc.pressure_max_per_pass"`
 	// MaxStaticRouteHops bounds the static-route resolver's multi-hop
-	// trace (docs/architecture/trie-construction.md#the-static-route-resolver).
-	// Read where the trie is rebuilt — cold-start and each reconcile —
-	// so a change applies to the next resolve, never mid-traversal; the
-	// rebuilt trie is swapped atomically as always.
+	// trace. Read where the trie is rebuilt — cold-start and each
+	// reconcile — so a change applies to the next resolve, never
+	// mid-traversal; the rebuilt trie is swapped atomically as always.
+	//
+	// Static-route resolver: docs/architecture/trie-construction.md#the-static-route-resolver
 	MaxStaticRouteHops int `knob:"neutron.max_static_route_hops"`
 }
 

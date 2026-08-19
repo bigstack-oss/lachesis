@@ -13,18 +13,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Component values for the "component" slog attribute. Logs are
-// tagged by the **subsystem they're about**, not by the package or
-// file that emits them — so the WAL flush goroutine in agent.go
-// tags componentWAL, the Neutron cold-start orchestrator in
-// coldstart_linux.go tags componentNeutron, and so on. An operator
-// filtering `component=<subsystem>` sees the full story of that
-// subsystem regardless of code location; grep-by-message-text is
-// the recommended way to find the emission site in code.
-//
-// These values double as the subsystem labels in [subsystemMetrics.registrations];
-// keeping a single vocabulary means a /metrics registration error and a
-// log line name the same subsystem.
+// Component values for the "component" slog attribute. Tag by the
+// subsystem a log is ABOUT, not the file that emits it — so filtering
+// `component=<subsystem>` shows that subsystem's whole story wherever
+// the code lives. The same values label the metric registrations, so
+// one vocabulary covers both.
 const (
 	componentAgent      = "agent"
 	componentWAL        = "wal"
@@ -46,24 +39,12 @@ const (
 // Prometheus scrape's typical RTT but well below operator patience.
 const httpReadHeaderTimeout = 5 * time.Second
 
-// Whole-connection timeouts so a trickling client cannot hold a
-// handler (and its goroutine) open indefinitely on the
-// unauthenticated listener.
-//
-//   - httpReadTimeout covers the entire request read, body included.
-//     Every request body the server accepts is tiny (PUT
-//     /debug/log-level is capped at 1 KiB), so 30s is already
-//     generous.
-//   - httpWriteTimeout covers writing the response. It must
-//     comfortably fit the largest responses — the full /metrics
-//     exposition at production scale and the /debug HTML pages — and
-//     the /debug/pprof/profile handler, which blocks for the profile
-//     duration (default 30s) before writing a byte. 60s clears the
-//     default profile with margin; longer captures need an explicit
-//     ?seconds= under ~55s.
-//   - httpIdleTimeout reaps idle keep-alive connections. Prometheus
-//     reuses its connection between 15s-interval scrapes, so 120s
-//     keeps that reuse intact.
+// Whole-connection timeouts, so a trickling client cannot hold a
+// handler open on the unauthenticated listener. The write timeout is
+// the constrained one: it must clear /debug/pprof/profile, which blocks
+// for the profile duration (30s default) before writing a byte — a
+// longer capture needs ?seconds= under ~55s. The idle timeout is set to
+// preserve Prometheus's keep-alive reuse between scrapes.
 const (
 	httpReadTimeout  = 30 * time.Second
 	httpWriteTimeout = 60 * time.Second
@@ -78,10 +59,12 @@ const (
 const shutdownTimeout = 5 * time.Second
 
 // neutronBackoffInitial / neutronBackoffMax bound the exponential
-// backoff used while waiting for Neutron at cold-start.
-// docs/architecture/boot-and-recovery.md#boot-sequence specifies "fail-closed" — the agent must not
-// start without metadata — so the loop never times out on its own;
-// only ctx cancellation breaks it.
+// backoff used while waiting for Neutron at cold-start. The boot
+// sequence is fail-closed — the agent must not start without metadata
+// — so the loop never times out on its own; only ctx cancellation
+// breaks it.
+//
+// Boot sequence: docs/architecture/boot-and-recovery.md#boot-sequence
 const (
 	neutronBackoffInitial = 1 * time.Second
 	neutronBackoffMax     = 30 * time.Second

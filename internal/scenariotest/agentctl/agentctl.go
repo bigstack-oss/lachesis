@@ -1,18 +1,14 @@
 // Package agentctl drives the telemetry agent on a compute host: the
-// systemd lifecycle, the on-host config file, the durable state a cold
-// restart destroys, and the readiness gate that proves the process
-// actually cycled.
+// systemd lifecycle, the on-host config, the durable state a cold
+// restart destroys, and the readiness gate proving the process cycled.
 //
-// It exists so a step can say WHAT it wants of the agent — restart it
-// with these overrides, cold-boot it without its WAL — while the HOW
-// (credential checks, shell-safety, the exact `systemctl` line, the
-// base64 config round-trip, the PID-changed evidence) lives in one
-// place that can be read and tested on its own.
+// It exists so a step says WHAT it wants while the HOW — credential
+// checks, shell-safety, the exact systemctl line, the config round-trip
+// — lives in one testable place.
 //
-// Everything that could reject the request is checked by [For] and
-// [Change.validate], BEFORE the host is touched: a check that fired
-// after the config swap would abort the scenario with the node already
-// modified and its restore step never reached (lachesis#274).
+// Everything that could reject a request is checked BEFORE the host is
+// touched: a check firing after the config swap would abort with the
+// node already modified and its restore step never reached.
 package agentctl
 
 import (
@@ -237,17 +233,12 @@ func (c *Controller) Reload(ctx context.Context) error {
 }
 
 // AwaitReady blocks until the restart is confirmed AND the agent is
-// serving again: the unit reports a running MainPID different from
-// oldPID (the process cycled), and /metrics answers with the required
-// families and a tap count back at baseTaps (re-attach complete).
+// serving: a MainPID different from oldPID, and /metrics answering with
+// the tap count back at baseTaps.
 //
-// Both halves matter. Without the PID check a readiness probe can pass
-// against the process that was supposed to have been replaced; without
-// the tap check the agent answers before it has re-attached, and the
-// next step drives traffic into a tapless host.
-//
-// timeout zero falls back to agent_control.ready_timeout, then to
-// [scenariotest.DefaultAgentReadyTimeout].
+// Both halves matter. Without the PID check the probe can pass against
+// the very process meant to be replaced; without the tap check the next
+// step drives traffic into a tapless host.
 func (c *Controller) AwaitReady(ctx context.Context, oldPID string, baseTaps float64, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = c.control.ReadyTimeout

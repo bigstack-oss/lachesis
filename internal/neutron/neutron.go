@@ -1,32 +1,14 @@
-// Package neutron is the OpenStack metadata path. It owns Keystone
-// v3 authentication (via gophercloud), the Neutron v2.0 API client,
-// the trie builder that turns a resource snapshot into kernel LPM
-// rows, and the [Neutron] struct that carries one sync's outputs for
-// the rest of the agent. See docs/architecture/trie-construction.md.
+// Package neutron is the OpenStack metadata path: Keystone auth, the
+// Neutron API client, the trie builder, and the [Neutron] struct
+// carrying one sync's outputs to the rest of the agent.
 //
-// # Composition
+// The shape mirrors client-go's informer, with one deliberate
+// deviation: retention is a separate [Neutron.Commit] rather than
+// implicit in Sync, because the caller must push the new state into the
+// kernel maps between the two. A sync timestamp must never describe
+// state the kernel has not acknowledged.
 //
-// The shape mirrors client-go's informer: [Neutron.Sync] is the list
-// pass (relist on every call; the future Kafka updater is the watch
-// half), the atomic fields inside [Neutron] are the local store, and
-// the read accessors are the listers the /debug pages consume. One
-// deliberate deviation from client-go: retention is a separate
-// [Neutron.Commit] call rather than implicit in Sync, because the
-// caller must push the new state into the kernel maps between the
-// two — a fresh sync timestamp must never describe state the kernel
-// has not acknowledged.
-//
-// # File layout
-//
-// One [Neutron] struct, method files by functionality: construction
-// and accessors here, the Sync/Commit pair in sync.go. The API
-// client lives in client.go (auth) and list.go (list adapters), the
-// credential sources in credentials.go, the builder in trie.go with
-// its static-route resolver in resolve.go, port classification in
-// deviceowner.go, snapshot health checks in anomalies.go, read-side
-// lookup helpers in lookup.go, and the instrument bundle in
-// metrics.go. Pure-data holders and package vocabulary live in
-// schema.go / types.go.
+// docs/architecture/trie-construction.md
 package neutron
 
 import (
@@ -38,16 +20,12 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
-// Neutron carries the full Neutron subsystem state for one agent
-// process: the resolved credentials, the lazily-authenticated API
-// client, the subsystem's Prometheus instruments, and the retained
-// outputs of the most recent committed sync (snapshot, trie rows,
-// anomalies, sync time).
+// Neutron carries the subsystem state for one agent process:
+// credentials, the lazily-authenticated client, instruments, and the
+// outputs of the last committed sync.
 //
-// Construct with [New]. [Neutron.Sync] and [Neutron.Commit] are
-// single-goroutine — the agent serialises cold-start and the future
-// Kafka resync on one worker. The read accessors are lock-free and
-// safe to call concurrently with a running sync.
+// Sync and Commit are single-goroutine; the read accessors are
+// lock-free and safe alongside a running sync.
 type Neutron struct {
 	creds   Credentials
 	metrics *Metrics
@@ -84,14 +62,11 @@ type Neutron struct {
 	lastSync atomic.Int64
 }
 
-// New constructs the subsystem from its config and the shared
-// hot-knob store (required, never nil — the resolver reads its hop
-// limit from it on every sync). Credentials are resolved eagerly
-// (including reading a credentials_file) so a malformed openrc fails
-// construction instead of spinning inside the caller's sync retry
-// loop. When cfg.Enabled is false the credentials stay zero and
-// [Neutron.Sync] must not be called; the accessors and the metrics
-// bundle still work, reporting the never-synced state.
+// New constructs the subsystem. tun is required — the resolver reads
+// its hop limit every sync. Credentials resolve eagerly so a malformed
+// openrc fails construction instead of spinning in the caller's retry
+// loop. With cfg.Enabled false, Sync must not be called; the accessors
+// still report the never-synced state.
 func New(cfg config.NeutronConfig, tun *tunables.Store) (*Neutron, error) {
 	if tun == nil {
 		return nil, errors.New("neutron: tunables store is required")

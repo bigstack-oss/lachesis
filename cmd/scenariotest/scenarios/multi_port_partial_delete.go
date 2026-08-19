@@ -6,25 +6,18 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// multiPortPartialDelete reproduces the partial-fold regression
-// (lachesis#226): a server with two NICs feeds ONE per-server series
-// tuple {server_id, same_tenant, tx} from both ports; deleting one
-// port ghost-folds that NIC's rows into tenant settled while the other
-// NIC keeps the tuple alive — and the still-live series drops by the
-// folded amount. The tenant plane must hold throughout (the settled
-// fold absorbs it there); the defect is exclusive to the mortal
-// per-server family.
+// multiPortPartialDelete reproduces the partial-fold regression: a
+// two-NIC server feeds ONE per-server tuple from both ports, so
+// deleting one port ghost-folds that NIC's rows while the other keeps
+// the tuple alive — and the still-live series drops by the folded
+// amount. The tenant plane holds throughout; the defect is exclusive to
+// the mortal per-server family.
 //
-// Evidence-first: against today's agent the server-monotone assertion
-// is expected RED in exactly this way — that run is the live proof for
-// lachesis#226. It flips to a green regression when the per-tuple
-// carry (lachesis#227) lands.
+// Evidence-first: expected RED against today's agent, which is the live
+// proof. Flips green when the per-tuple carry lands.
 //
-// vm-a's second NIC is hot-plugged (not a DSL VM — a DSL "VM" is one
-// port with its own server; the whole point here is one server_id
-// behind two ports). Both drives land in the same tuple because zone
-// classification is per-peer, not per-NIC: vm-b and vm-c are the same
-// tenant, so eth0's and eth1's flows are both same_tenant.
+// The second NIC is hot-plugged because a DSL "VM" is one port with its
+// own server, and the point here is one server_id behind two ports.
 func multiPortPartialDelete() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").

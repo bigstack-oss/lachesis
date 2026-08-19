@@ -1,6 +1,8 @@
 // Billing assertions: the four-layer counter hierarchy the product
 // bills on — tenant, server and port series, their monotonicity, and
-// bounded growth (docs/architecture/billing.md).
+// bounded growth.
+//
+// Billing tiers: docs/architecture/billing.md
 
 package steps
 
@@ -13,8 +15,10 @@ import (
 )
 
 // MonotoneStep asserts every captured tuple of Tenant is still at or
-// above its captured value — the live form of the docs/architecture/contracts.md#required-contracts Contract 7
+// above its captured value — the live form of the Contract 7
 // series-monotonicity guarantee. One row per tuple.
+//
+// Contract 7: docs/architecture/contracts.md#required-contracts
 type MonotoneStep struct {
 	Tenant string
 	Note   string
@@ -81,16 +85,11 @@ func (s MaxGrowthStep) Run(ctx context.Context, env *scenariotest.StepEnv) error
 	return nil
 }
 
-// SettledTuplesGrewStep asserts the settled-accumulator tuple count —
-// the SUM of the four-layer per-tier gauges (state_{tenant,server,total}
-// _settled_tuples) — rose by at least Min since the most recent
-// [CaptureStep] — the live proof that a fold actually fired.
-// It polls (folds land a reconcile pass after the mutation, not
-// instantly) until the floor is met or Timeout (default
-// [DefaultSweepTimeout]) records a failing row. Unlike the GC-only
-// settled_flows counter, this gauge also moves on a reconcile-driven
-// [state.SettleRebase], so it discriminates "the attribution change
-// folded the port's flows" from "nothing happened".
+// SettledTuplesGrewStep asserts the summed settled-tuple gauges rose by
+// at least Min since the last [CaptureStep] — live proof a fold fired.
+// Polls, because folds land a reconcile pass after the mutation. Unlike
+// the GC-only settled_flows counter this also moves on a
+// reconcile-driven [state.SettleRebase].
 type SettledTuplesGrewStep struct {
 	Min     int64
 	Timeout time.Duration
@@ -133,14 +132,10 @@ func (s SettledTuplesGrewStep) Run(ctx context.Context, env *scenariotest.StepEn
 	return nil
 }
 
-// PortSeriesStep asserts the per-port leaf family attributes traffic to
-// the RIGHT port: the lachesis_port_bytes_total series carrying Port's
-// live Neutron id must sum to at least MinBytes across all agents. This
-// is the port-identity check the coarser tiers cannot express — e.g.
-// after a same-MAC port rebirth, traffic mislabeled under the dead
-// port's port_id leaves the new id's series empty (stale-attribution
-// reconcile miss). Data-dependent family, so no metric preflight — a
-// missing family simply fails the row with sum 0.
+// PortSeriesStep asserts the per-port family attributes traffic to the
+// RIGHT port_id. The coarser tiers cannot express this: after a
+// same-MAC port rebirth, traffic mislabeled under the dead port leaves
+// the new id's series empty. Data-dependent, so no preflight gate.
 type PortSeriesStep struct {
 	VM       string // DSL VM the port belongs to (for the report row)
 	Port     string // the [AttachPortStep.ID] run-state handle
@@ -212,19 +207,13 @@ func (s PortSeriesStep) Run(ctx context.Context, env *scenariotest.StepEnv) erro
 var zoneGrowthSettle = 15 * time.Second
 
 // ZoneGrowthStep asserts one (tenant, zone, DIRECTION) tuple's growth
-// since the most recent [CaptureStep] sits inside [MinBytes, MaxBytes].
-// It refines [MaxGrowthStep] two ways the forged-MAC scenarios need:
-// a single direction (a forged sender pollutes tx while the peer's
-// legitimate replies own the same zone's other tuples), and a LOWER
-// bound with stabilize polling — bytes surface only at the agents'
-// next kernel drain, so with MinBytes set the step polls until the
-// floor is met or Timeout (default [DefaultPortSeriesTimeout]) records
-// the failing row. MaxBytes 0 means unbounded above.
+// since the last [CaptureStep] falls inside [MinBytes, MaxBytes].
+// MaxBytes 0 is unbounded above.
 //
-// A pure upper-bound check (MinBytes 0) has no floor to poll toward, so
-// it waits [zoneGrowthSettle] for the drive to drain before its single
-// read — otherwise it would depend on a preceding MinBytes step having
-// polled long enough to drain the traffic first.
+// It refines [MaxGrowthStep] with a single direction and a pollable
+// lower bound. With MinBytes 0 there is no floor to poll toward, so it
+// waits [zoneGrowthSettle] before its single read rather than depending
+// on a preceding step having drained the traffic.
 type ZoneGrowthStep struct {
 	Tenant    string // DSL project name, or a literal label like "unknown"
 	Zone      string
@@ -294,14 +283,10 @@ type ServerMonotoneStep struct {
 
 func (ServerMonotoneStep) Kind() string { return "assert-server-monotone" }
 
-// requiredMetrics deliberately returns nil: the mortal per-server family
-// (lachesis_server_bytes_total) is data-dependent — a fresh, quiet agent
-// exposes it only once a server flow has bytes, which THIS scenario's own
-// DriveStep produces before the assertion runs. A preflight gate on it
-// can't tell "agent too old" from "no traffic yet" and falsely blocks the
-// run on a freshly-started agent (observed live on c36). If the family is
-// genuinely never produced, [ServerMonotoneStep.Run] fails with a clear
-// "no captured server tuples" error instead.
+// requiredMetrics deliberately returns nil: the per-server family is
+// data-dependent, so a preflight gate cannot tell "agent too old" from
+// "no traffic yet" and would falsely block a freshly-started agent.
+// A genuinely absent family fails in Run with a clear error.
 func (ServerMonotoneStep) RequiredMetrics() []string { return nil }
 
 func (s ServerMonotoneStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
@@ -333,14 +318,11 @@ func (s ServerMonotoneStep) Run(ctx context.Context, env *scenariotest.StepEnv) 
 	return nil
 }
 
-// MaxSettledStep asserts the ghost-fold counter (settled_flows) grew by
-// at most Budget rows since the most recent [CaptureStep]. CAUTION: a
-// fold only registers after the 60s ghost grace + a sweep tick, so this
-// is meaningful ONLY when the check runs after that window has elapsed
-// (e.g. following an [AwaitSweepStep]). For "did this operation mark a
-// ghost at all" — where you want an immediate answer within seconds —
-// use [MaxGhostsStep], which reads the mark-time gauge and is not blinded
-// by the grace (lachesis#243).
+// MaxSettledStep asserts the ghost-fold counter grew by at most Budget
+// since the last [CaptureStep]. CAUTION: a fold registers only after
+// the grace plus a sweep tick, so this is meaningful only after that
+// window (e.g. following an [AwaitSweepStep]). For an immediate answer
+// use [MaxGhostsStep], which is not blinded by the grace.
 type MaxSettledStep struct {
 	Budget int64
 	Note   string

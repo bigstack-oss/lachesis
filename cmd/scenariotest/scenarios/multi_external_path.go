@@ -6,31 +6,20 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// multiExternalPath is the live regression for external-network
-// attribution under the multi-path OpenStack shape: one VM port with
-// TWO external paths (a second FIP, a second gatewayed router). The
-// agent must (a) surface the topology on
-// lachesis_neutron_anomalies{class="multi_external_path"} — retained
-// as a cross-check even though per-flow attribution resolves it
-// exactly, (b) bill each flow under the network that ACTUALLY carried
-// it, resolved per flow from the peer router-interface MAC
-// (docs/architecture/billing.md) — asserted separately for the default route AND for an
-// in-guest route riding the second router — on the tenant AND
-// per-server families, and (c) clear the anomaly without disturbing
-// the series once the second path is removed.
+// multiExternalPath is the live regression for external attribution
+// under the multi-path shape: one VM port with TWO external paths. The
+// agent must surface the topology on the anomaly gauge, bill each flow
+// under the network that ACTUALLY carried it (resolved per flow from
+// the peer router-interface MAC, asserted for both the default route
+// and an in-guest route on the second router), and clear the anomaly
+// without disturbing the series when the path is removed.
 //
-// The second external network is CREATED (segmentless
-// router:external): it allocates FIPs and takes a router gateway but
-// carries no wire traffic — attribution is about Neutron topology, not
-// packets. Its router attaches to the VM subnet at a NON-gateway IP,
-// so the gateway-IP rule keeps SNAT attribution deterministic and the
-// only ambiguity is the two FIPs, exactly the case under test.
+// The second external network is CREATED and segmentless: attribution
+// is about Neutron topology, not packets. Its router attaches at a
+// NON-gateway IP so SNAT attribution stays deterministic and the two
+// FIPs are the only ambiguity — exactly the case under test.
 //
-// The second-router drive works even though the created network is
-// segmentless: the ping payloads transmit at the tap (tx bytes count
-// whether or not anything answers — the external-flow contract), and
-// the peer MAC on those frames is r-ext2's interface, which is all the
-// per-flow attribution needs.
+// docs/architecture/billing.md
 func multiExternalPath() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").

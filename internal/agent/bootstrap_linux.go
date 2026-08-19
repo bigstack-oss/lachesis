@@ -32,38 +32,15 @@ import (
 )
 
 // Bootstrap runs the agent's startup sequence and returns a ready
-// [Agent] plus an [io.Closer] that releases the BPF collection — call
-// its Close after [Agent.Run] returns.
+// [Agent] plus an [io.Closer] releasing the BPF collection. The body is
+// a flat ordered list of named steps, each advancing the
+// [boot.Sequencer] to the phase it establishes — read it for the order.
 //
-// The body is a flat, ordered list of named steps executed by
-// [bootstrapper.run]; each step does one part of the sequence and
-// advances the [boot.Sequencer] to the phase it establishes. Read the
-// list here for the order; read the individual step methods for what
-// each one guarantees.
+// The order is load-bearing: Neutron is fetched BEFORE TC attach, so the
+// first packet sees a populated trie. A flow classified against an empty
+// trie is miskeyed permanently, because dst_zone is part of FlowKey.
 //
-// Phases (see [boot.Phase] and docs/architecture/boot-and-recovery.md#boot-sequence):
-//
-//  1. [boot.PhaseBPFLoaded]      — collection loaded + map-size validated
-//  2. [boot.PhaseMetadataReady]  — Neutron cold-start populated the
-//     LPM trie and mac_tenant_map
-//  3. [boot.PhaseAttached]       — netlink subscriber wired; the TC
-//     attach itself happens dynamically once [Agent.Run] starts it
-//  4. [boot.PhaseStateRestored]  — WAL load complete; GlobalState
-//     seeded so the first scrape computes deltas correctly
-//
-// Neutron is fetched BEFORE TC attach so the very first packet sees
-// a populated trie; mis-classified flows become permanent entries
-// in telemetry_map because dst_zone is part of FlowKey.
-//
-// ctx propagates through the Neutron HTTP calls — a SIGINT during
-// cold-start aborts the boot.
-//
-// Bootstrap is Linux-only because the BPF lifecycle is. The
-// cross-platform path used by unit tests constructs [Agent] directly
-// via [New] with a synthetic [scraper.MapReader].
-//
-// Errors are wrapped with the step they failed in so the caller need
-// not understand the internals to print a useful message.
+// docs/architecture/boot-and-recovery.md#boot-sequence
 func Bootstrap(ctx context.Context, args []string) (*Agent, io.Closer, error) {
 	b := &bootstrapper{ctx: ctx, args: args, seq: boot.New()}
 	return b.run([]step{
@@ -143,9 +120,11 @@ func (b *bootstrapper) prepareProcess() error {
 }
 
 // huntZombies removes TC filters orphaned by a previous crash, before
-// any program is loaded (docs/architecture/boot-and-recovery.md#boot-sequence step 1). Hunt errors are
-// non-fatal — a partial cleanup still leaves a working agent — so the
-// count is stashed for [buildAgent] to record once the metrics exist.
+// any program is loaded (boot step 1). Hunt errors are non-fatal — a
+// partial cleanup still leaves a working agent — so the count is
+// stashed for [buildAgent] to record once the metrics exist.
+//
+// Boot sequence: docs/architecture/boot-and-recovery.md#boot-sequence
 func (b *bootstrapper) huntZombies() error {
 	cleaned, err := zombie.Hunt()
 	switch {
@@ -230,14 +209,9 @@ func (b *bootstrapper) subscribeNetlink() error {
 	return b.seq.Advance(boot.PhaseAttached)
 }
 
-// wireGC constructs the two GC mechanisms over the kernel maps and
-// hands them to the agent: the lingering-ghost sweeper (its own worker)
-// and the pressure-relief evictor (injected into the scraper, which
-// runs it inline after each drain). It establishes no boot phase — it
-// only wires goroutine work that [Agent.Run] starts later, and the
-// sweeper awaits [boot.PhaseStateRestored] itself. Both maps must be
-// present (they are cold-start write / drain targets); a missing map is
-// a build-time problem, never a runtime one.
+// wireGC hands the agent its ghost sweeper (own worker) and
+// pressure-relief evictor (run inline by the scraper). Establishes no
+// boot phase: the sweeper awaits [boot.PhaseStateRestored] itself.
 func (b *bootstrapper) wireGC() error {
 	macMap := b.coll.Maps[bpf.MapMacTenant]
 	if macMap == nil {
@@ -284,14 +258,9 @@ func (b *bootstrapper) wireGC() error {
 	return nil
 }
 
-// wireReconcile constructs the periodic Neutron reconciler over the
-// kernel subnet_zone_trie and hands it to the agent as its own worker.
-// It establishes no boot phase — the reconciler awaits
-// [boot.PhaseStateRestored] itself before its first pass. Skipped when
-// Neutron is disabled: there is no metadata to keep fresh, so the
-// workers() row stays off. *neutron.Neutron satisfies the reconciler's
-// MetadataSource seam structurally. A missing trie map is a build-time
-// problem, never a runtime one.
+// wireReconcile hands the agent the periodic Neutron reconciler as its
+// own worker, skipped when Neutron is disabled. Establishes no boot
+// phase: the reconciler awaits [boot.PhaseStateRestored] itself.
 func (b *bootstrapper) wireReconcile() error {
 	if !b.cfg.Neutron.Enabled {
 		return nil
@@ -417,14 +386,13 @@ func (e telemetryFlowEvictor) Delete(key bpf.FlowKey) error {
 	return nil
 }
 
-// telemetryMacFlowEvictor adapts the kernel telemetry_map [*ebpf.Map] to
-// the [gc.MacFlowEvictor] seam: it deletes the residual flow counters of
-// a swept VM's MAC set so they are not re-drained as "unknown" after the
-// MAC leaves mac_tenant_map (docs/architecture/data-structures.md#lingering-ghost). telemetry_map is a
-// PERCPU_HASH keyed by [bpf.FlowKey]; the VM-side MAC of each flow is
-// [metadata.VMMAC]. Keys are collected during the single Iterate pass
-// and deleted after it — deleting mid-iteration can skip or repeat
+// telemetryMacFlowEvictor adapts telemetry_map to the
+// [gc.MacFlowEvictor] seam, deleting a swept VM's residual flows before
+// they re-drain as "unknown". Keys are collected during the Iterate
+// pass and deleted after it — deleting mid-iteration can skip or repeat
 // entries.
+//
+// docs/architecture/data-structures.md#lingering-ghost
 type telemetryMacFlowEvictor struct{ m *ebpf.Map }
 
 // DeleteFlowsForMACs scans telemetry_map once and deletes every flow
@@ -471,12 +439,12 @@ func (b *bootstrapper) prepareWALDir() error {
 	return wal.EnsureDir(b.cfg.WAL.Path)
 }
 
-// restoreWAL seeds GlobalState from the on-disk snapshot and advances
-// to [boot.PhaseStateRestored]. Most restore failures are handled
-// inside restoreFromWAL (warn, quarantine the unreadable primary,
-// start empty); the one fatal class — a snapshot written by a newer
-// build — propagates here and aborts the boot (docs/architecture/data-structures.md#userspace-structures
-// migration policy).
+// restoreWAL seeds GlobalState from disk and advances to
+// [boot.PhaseStateRestored]. Only one failure is fatal: a snapshot from
+// a newer build, which aborts the boot rather than let flush rotation
+// destroy it.
+//
+// docs/architecture/data-structures.md#userspace-structures
 func (b *bootstrapper) restoreWAL() error {
 	if err := restoreFromWAL(b.ag); err != nil {
 		return err
@@ -492,55 +460,28 @@ func (b *bootstrapper) closeCollection() {
 	}
 }
 
-// pinnedMaps are the counter-bearing maps pinned under bpf.pin_path so
-// they survive an agent crash (kernel intact) and the restarted agent
-// reuses them for zero-loss recovery (docs/architecture/boot-and-recovery.md#agent-crash-process-killed-kernel-intact,
-// deferred item 7). Both carry cumulative counters emitted straight
-// from the kernel, so losing them on restart would break the
-// custom-Collector "no CounterVec reset" contract.
+// pinnedMaps are the counter-bearing maps pinned under bpf.pin_path, so
+// a restarted agent reuses the kernel's cumulative counters instead of
+// resetting them. The metadata maps are deliberately not pinned — cold
+// start rebuilds them every boot, so a pin would buy nothing and force
+// reconciling stale state against a fresh snapshot.
 //
-// The two metadata maps (mac_tenant_map, subnet_zone_trie) are
-// deliberately NOT pinned: the Neutron cold-start rebuilds both before
-// attach on every boot, so pinning would buy no billing continuity and
-// would force reconciling a stale pin against a fresh snapshot. During
-// the crash gap the old (still-attached) program keeps classifying
-// against its own metadata maps, and those classified counts land in
-// the reused telemetry_map.
+// docs/architecture/boot-and-recovery.md#agent-crash-process-killed-kernel-intact
 var pinnedMaps = []string{bpf.MapTelemetry, bpf.MapTelemetryStats}
 
-// loadCollection compiles the embedded BPF spec into a kernel-loaded
-// [*ebpf.Collection], pinning [pinnedMaps] under bpfCfg.PinPath and
-// reusing any compatible existing pins. It returns whether the maps
-// were pinned — false means the agent booted with unpinned maps and
-// degraded (≤60s) crash recovery. The caller owns Close on the
-// returned value.
+// loadCollection loads the embedded BPF spec, pinning [pinnedMaps]
+// under bpfCfg.PinPath and reusing compatible existing pins. Returns
+// whether pinning succeeded — false means degraded (≤60s) crash
+// recovery. The caller owns Close.
 //
-// Before loading, the spec is checked against [bpf.ValidateMapSizes]
-// — a drift between the compiled `.o` and the Go-side `MaxEntries`
-// constants is treated as boot-fatal so an operator who forgot to
-// run `task generate` after a size bump sees an explicit error
-// instead of silently shipping with stale capacity.
+// [bpf.ValidateMapSizes] runs first and is boot-fatal on drift, so a
+// forgotten `task generate` fails loudly instead of shipping stale
+// capacity. An incompatible pin is never adopted: it is removed and
+// recreated, self-healing across a map-ABI bump at the cost of that
+// boot's crash recovery. When pinning is unavailable entirely, strict
+// mode refuses to boot unless the operator opts into unpinned running.
 //
-// Pinning outcomes:
-//
-//   - Reuse: a compatible pin exists (the agent-crash path) — its
-//     counters are read on the first scrape and merged, zero loss.
-//   - Fresh: no pin exists (first boot / hard reboot) — created + pinned.
-//   - Incompatible pin (wrong sizing/type, e.g. after a map-ABI bump):
-//     never silently adopted (docs/architecture/contracts.md#deferred-work
-//     item 7). The stale pins are removed and recreated fresh,
-//     self-healing across the bump; that boot's crash recovery is
-//     skipped but classification is correct.
-//   - Pinning unavailable (no bpffs, pin syscall failed, or the
-//     self-heal retry still failed): strict mode (the default) refuses
-//     to boot; bpf.unsafe_allow_unpinned_maps lets the operator opt
-//     into unpinned operation with degraded recovery.
-//
-// Note on boot ordering (docs/architecture/boot-and-recovery.md#boot-sequence): the Zombie
-// Hunter (step 1) deletes orphaned TC *filters*, never maps. A pinned
-// map's lifetime is held by its bpffs pin, decoupled from any
-// filter/program refcount — so hunt-then-reuse cannot destroy it, and
-// the two steps need no ordering constraint between them.
+// docs/architecture/boot-and-recovery.md#boot-sequence
 func loadCollection(bpfCfg config.BPFConfig) (*ebpf.Collection, bool, error) {
 	spec, err := bpf.LoadTelemetry()
 	if err != nil {

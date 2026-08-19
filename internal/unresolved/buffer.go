@@ -1,42 +1,19 @@
 // Package unresolved implements the UnresolvedBuffer: the late-binding
-// holding area for flows whose VM-side MAC is not (yet) in the metadata
-// map (docs/architecture/data-structures.md#userspace-structures). A single owner — the scrape goroutine, via
-// the [Classifier] — sequences its Capture/Sweep verbs; it runs no
-// goroutine of its own and is never touched concurrently, so it needs
-// no internal locking. It does reset a flow's kernel telemetry_map
-// entry on eviction, but only through the injected [FlowEvictor] seam.
-// That makes it a Driven subsystem in the package-anatomy sense
-// (docs/development/conventions.md#package-anatomy) — not a Store, which is IO-free.
+// holding area for flows whose VM-side MAC is not yet in the metadata
+// map. Without it, every unknown-MAC flow would take its own GlobalState
+// key and grow that map without bound under a Neutron outage or a flood
+// of uncatalogued MACs.
 //
-// # Why divert at all
+// The accounting rule that makes it safe: on eviction the accumulated
+// total is folded to a synthetic "unknown" key AND the flow's kernel
+// telemetry_map entry is deleted. Deleting is what makes counting the
+// whole cumulative safe — a flow that reappears starts from a fresh
+// kernel value, so folded bytes are never folded twice.
 //
-// Without a buffer, every unknown-MAC flow would land in GlobalState
-// under its own FlowKey and resolve to "unknown" at scrape time. A
-// deployment with no Neutron data, or a flood of spoofed/uncatalogued
-// MACs, would then grow GlobalState without bound. The buffer caps that
-// growth: unknown flows are held here (at most [defaultCap]) and their
-// bytes are folded into a handful of synthetic "unknown" GlobalState
-// keys rather than one key per flow.
+// The scrape goroutine is the single owner, so there is no internal
+// locking.
 //
-// # Bytes accounting (no double-count, full attribution)
-//
-// A buffered entry tracks a flow's cumulative since first sight: first
-// sight seeds total=lastRaw=current (counting the bytes already on the
-// kernel entry), and each later sighting adds (current − lastRaw) with
-// the same wraparound guard GlobalState uses ([state.AddDelta]). On
-// eviction (TTL or cap) the accumulated total is folded into the
-// synthetic key via [state.GlobalState.Add] and — crucially — the
-// flow's kernel telemetry_map entry is deleted. Resetting the kernel
-// counter is what makes counting the full cumulative safe: a flow that
-// reappears after eviction starts from a fresh (low) kernel value, so
-// its already-folded bytes are never folded again. The synthetic key is
-// only ever Added to, so its series is monotonic: rate() can't go
-// negative.
-//
-// Because eviction deletes a kernel entry, the buffer is wired only
-// where that handle exists (the agent's Linux Bootstrap), alongside the
-// pressure-relief evictor that also deletes from telemetry_map. Both
-// run in the single scrape goroutine, so their deletes never race.
+// docs/architecture/data-structures.md#userspace-structures
 package unresolved
 
 import (
@@ -166,16 +143,11 @@ func (b *Buffer) Sweep(force bool) {
 	b.mx.SetDepth(len(b.entries))
 }
 
-// Resolve hands a buffered flow off to the right tenant once its MAC has
-// become known. If an entry exists for key, its accumulated total and
-// kernel baseline (lastRaw) are seeded into GlobalState via
-// [state.GlobalState.Resolve] — so the next per-scrape delta continues
-// from the buffer's last reading without re-counting — and the entry is
-// dropped. Unlike a TTL/LRU eviction it does NOT fold to "unknown" (the
-// bytes go to the real tenant) and does NOT reset the kernel entry (the
-// flow lives on and the scraper keeps integrating it). Returns whether
-// an entry was resolved. Driven by the scraper goroutine via the
-// [Classifier], so it shares the buffer's single-writer discipline.
+// Resolve hands a buffered flow to its real tenant once the MAC becomes
+// known, seeding both the accumulated total and the kernel baseline so
+// the next delta continues without re-counting. Unlike an eviction it
+// does not fold to "unknown" and does not reset the kernel entry — the
+// flow lives on and the scraper keeps integrating it.
 func (b *Buffer) Resolve(key bpf.FlowKey) bool {
 	e, ok := b.entries[key]
 	if !ok {
@@ -208,13 +180,10 @@ func (b *Buffer) evictOverCap() {
 	}
 }
 
-// foldToUnknown adds total to the synthetic "unknown"-tenant key that
-// preserves the flow's eth_proto, direction, and zone but zeroes both
-// MACs. An all-zero source MAC never occurs in legitimate traffic, so
-// the key cannot collide with a real flow, and it resolves to
-// [metadata.UnknownTenantID] at scrape time — collapsing all unknown
-// traffic into at most a handful of monotonic (unknown, zone,
-// direction) series (docs/architecture/data-structures.md#userspace-structures).
+// foldToUnknown adds total to a synthetic key that keeps the flow's
+// eth_proto, direction and zone but zeroes both MACs. An all-zero source
+// MAC never occurs in real traffic, so the key cannot collide, and all
+// unknown traffic collapses into a handful of monotone series.
 func (b *Buffer) foldToUnknown(key bpf.FlowKey, total bpf.FlowMetrics) {
 	b.state.Add(bpf.FlowKey{
 		EthProto:  key.EthProto,

@@ -6,35 +6,20 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// routerRegateway exercises the router-external-network SettleRebase
-// (docs/architecture/billing.md, reconcile/routers.go): re-gatewaying a
-// router to a different external network folds every flow riding that
-// router's interface MAC under the OLD external_network label before
-// the map swaps, so the exposed per-external-network series stay
-// monotone across the move.
+// routerRegateway exercises the router-external SettleRebase:
+// re-gatewaying folds every flow on that router's interface MAC under
+// the OLD external_network label before the map swaps, so the exposed
+// per-network series stay monotone across the move.
 //
-// vm-a egresses via r-T1; the per-flow external label is r-T1's gateway
-// net (the peer MAC on the flow key is r-T1's interface, not the FIP).
-// The move sequence dodges Neutron's FIP↔gateway coupling
-// (RouterExternalGatewayInUseByFloatingIp: a gateway can't change while
-// a FIP on the old external net needs it): the VM's FIP is first
-// reassociated to net-ext2, then r-T1 is re-gatewayed to net-ext2.
+// The move order dodges Neutron's FIP↔gateway coupling — the FIP moves
+// to net-ext2 first, then the router. Driving AFTER the move is out of
+// scope here: net-ext2 is segmentless, so a FIP on it is unreachable.
 //
-// Asserted (A→B): the old-label (net-ext) series is frozen and monotone
-// through the fold, and the fold actually fired (a settled tuple was
-// added). The post-move "new bytes under net-ext2" drive is out of
-// scope at this tier — net-ext2 is a created segmentless external net
-// with no uplink, so a FIP on it is unreachable and the VM can't be
-// driven after the move; the per-flow router-MAC labeling that would
-// carry the new label is already live-proven by the multi-external-path
-// scenario.
+// The ROUND TRIP is the real assertion: a second rebase, on rows
+// already rebased once, must leave the original accumulation whole —
+// neither dropped (series dips) nor re-folded onto itself (inflates).
 //
-// Then the ROUND TRIP (B→A): re-gateway back to net-ext. This fires a
-// SECOND SettleRebase — on rows already rebased once — and the point is
-// that it must leave the original net-ext accumulation whole: the ~1 MiB
-// folded at A→B lives in the settled accumulator and must be neither
-// dropped (series dips) nor re-folded on top of itself (series inflates)
-// when the label swaps back. Monotone + a tight max-growth box it.
+// docs/architecture/billing.md
 func routerRegateway() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").

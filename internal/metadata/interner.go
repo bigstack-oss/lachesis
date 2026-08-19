@@ -2,32 +2,16 @@ package metadata
 
 import "sync"
 
-// TenantInterner assigns and remembers stable u32 identifiers for
-// Keystone project UUIDs. The kernel `mac_tenant_map` and
-// `subnet_zone_trie` are both keyed on `__u32 tenant_id`; the
-// interner is the bridge from the userspace ProjectID UUID (the
-// Neutron-authoritative identity that ends up as the `tenant_id`
-// Prometheus label) to the compact integer the kernel stores.
+// TenantInterner bridges the userspace project UUID to the compact u32
+// the kernel maps key on.
 //
-// # Restart safety
+// The mapping is in-memory and rebuilt every boot, which is safe only
+// because no u32 leaks outside the kernel maps — [bpf.FlowKey] and
+// [state.Record] are u32-free by invariant, so WAL-restored state
+// merges cleanly whatever this boot assigns.
 //
-// The mapping is in-memory only and rebuilt on every agent boot.
-// docs/architecture/boot-and-recovery.md#boot-sequence specifies that the kernel maps are freshly
-// loaded at every boot, so any prior u32 assignment would be
-// replaced anyway. This is correctness-safe because no u32 leaks
-// outside the kernel maps — [bpf.FlowKey] and [state.Record] are
-// both u32-free by invariant (see those types' doc comments), so
-// WAL-restored GlobalState merges cleanly with post-restart flows
-// regardless of what u32 the interner happens to assign this boot.
-//
-// # Concurrency
-//
-// All operations take a single mutex. Insertion volume is bounded
-// by the tenant count (hundreds to low thousands), so a sharded
-// approach is not warranted. The hot-path Prometheus scrape does
-// not consult the interner — it reads ProjectID strings directly
-// from [ShardedMetadataMap] — so contention only matters during
-// cold start and Kafka catch-up.
+// One mutex: volume is bounded by tenant count, and the scrape path
+// reads ProjectID strings directly rather than consulting it.
 type TenantInterner struct {
 	mu      sync.Mutex
 	nextID  uint32

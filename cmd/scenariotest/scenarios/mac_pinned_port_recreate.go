@@ -9,31 +9,20 @@ import (
 )
 
 // macPinnedPortRecreate reproduces the stale-port_id reconcile miss: a
-// port is deleted and a NEW port with the SAME MAC and identical
-// attribution (tenant, server, external network) replaces it while the
-// agent is not receiving Kafka events — so the next reconcile diff sees
-// old-live vs new-desired directly. The change detection must treat the
-// port_id change as an attribution change and rebind; an agent that
-// compares only tenant/server/ext keeps the DEAD port's metadata and
-// the port tier mislabels all subsequent traffic under it.
+// port is replaced by a NEW one with the SAME MAC and identical
+// attribution while Kafka is off, so the next reconcile diff sees
+// old-live vs new-desired directly. Change detection must treat the
+// port_id change as an attribution change; an agent comparing only
+// tenant/server/ext keeps the DEAD port's metadata and mislabels
+// everything after.
 //
-// The Kafka outage is modeled honestly: with events flowing, a delete
-// is ghost-marked and the recreate takes the resurrection path, which
-// refreshes the binding — the miss is only reachable in the
-// reconcile-diff path, i.e. when events were lost (a first-class
-// degraded mode: "metadata staleness bounded by the periodic
-// reconcile"). RestartAgentStep derives a kafka-off config for the
-// scenario and restores the original at the end, so it SKIPs cleanly on
-// clusters without agent_control configured.
+// The Kafka outage is modelled honestly — with events flowing the
+// delete ghost-marks and the recreate resurrects, refreshing the
+// binding, so the miss is reachable only via the reconcile-diff path.
 //
-// Timing caveat: if a reconcile pass lands in the ~2s between the
-// delete and the recreate, the MAC is ghost-marked and the recreate
-// resurrects with a refreshed binding — the run then passes without
-// exercising the miss. With the test configs' 30s reconcile interval
-// that window is small; re-run on a suspiciously green first row.
-//
-// Expected RED on an agent without the port_id change detection (both
-// the binding row and the port-series row), GREEN with it.
+// Timing caveat: a reconcile landing in the ~2s between delete and
+// recreate makes the run pass without exercising the miss. Re-run on a
+// suspiciously green first row.
 func macPinnedPortRecreate() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").

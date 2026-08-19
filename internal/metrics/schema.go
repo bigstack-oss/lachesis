@@ -7,9 +7,11 @@ package metrics
 
 import "github.com/bigstack-oss/lachesis/internal/bpf"
 
-// The four-layer billing family names (docs/architecture/billing.md):
-// total → tenant → server → port, each immortal within its owner's
-// lifetime, each absorbing the deaths of the tier below.
+// The four-layer billing family names: total → tenant → server → port,
+// each immortal within its owner's lifetime, each absorbing the deaths
+// of the tier below.
+//
+// Full rationale: docs/architecture/billing.md
 
 // MetricBytesTotal is the TOTAL tier — everything the node observed,
 // summed over tenants (including "unknown"): live rows + all settled.

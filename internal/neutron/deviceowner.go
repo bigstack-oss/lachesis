@@ -1,56 +1,21 @@
 // deviceowner.go classifies Neutron ports by their `device_owner`
-// string. [IsInfraPort] and [IsVMPort] partition the owner space —
-// infra ports contribute /32 INFRA trie rows, VM-like ports admit
-// their MAC into the kernel mac_tenant_map — [IsComputePort] matches
-// Nova's `compute:<az>` namespace for the static-route resolver's
-// VM-appliance branch, [IsTrunkSubport] matches the trunk-extension
-// subport namespace for the cold-start trunk warning, and
-// [IsKnownVMOwner] is the stricter empirical allowlist used to
-// warn-log drift. The trie builder that consumes the partition lives
-// in trie.go.
+// string. [IsInfraPort] and [IsVMPort] partition the owner space;
+// [IsComputePort], [IsTrunkSubport] and [IsKnownVMOwner] are narrower
+// predicates over the same vocabulary.
+//
+// docs/architecture/trie-construction.md#port-classification-device_owner
 
 package neutron
 
 import "strings"
 
-// IsInfraPort classifies a Neutron port as infrastructure when its
-// `device_owner` lives in Neutron's reserved `network:` namespace,
-// with one explicit exception: `network:floatingip`.
+// IsInfraPort reports whether deviceOwner is in Neutron's reserved
+// `network:` namespace, with one carve-out: `network:floatingip` is
+// neither infra nor VM-like. Prefix-matched rather than allow-listed so
+// deployment-specific and future owners classify without a code change.
+// Misclassifying a VM port as INFRA corrupts SAME_TENANT billing.
 //
-// This predicate and [IsVMPort] together partition the
-// `device_owner` space: a port is either infra (its IPs go into the
-// trie as /32 INFRA rows) or VM-like (its MAC goes into the kernel
-// `mac_tenant_map`). The exception `network:floatingip` is in
-// neither — FIP ports are pure bookkeeping with no L2 endpoint, so
-// kernel state for them is wasted capacity. See the comment on
-// [IsVMPort] for the partition table.
-//
-// # Why prefix-match, not an allow-list
-//
-// docs/architecture/trie-construction.md#the-five-step-algorithm Step 4 lists five infra owners by name. The
-// prefix rule captures those plus future and deployment-specific
-// values without code change:
-//
-//   - network:router_interface, network:router_gateway
-//   - network:dhcp, network:metadata, network:distributed
-//   - network:floatingip_agent_gateway     (DVR FIP gateway)
-//   - network:ha_router_replicated_interface (L3-HA VRRP)
-//   - network:routed                       (segmented network access)
-//
-// Non-network device_owners — `compute:*`, `Octavia`, `manila:*`,
-// `baremetal:*`, `trunk:*`, "" — never match. Misclassifying a VM
-// port as INFRA would corrupt SAME_TENANT billing; the prefix rule
-// keeps that boundary clean.
-//
-// # The floatingip exception
-//
-// A `network:floatingip` port carries the FIP itself as its
-// fixed_ip — i.e. an address on the external network used to NAT
-// into a tenant VM. Marking the /32 as INFRA would label any
-// VM-to-FIP traffic as infrastructure; letting the catchall handle
-// it (EXTERNAL) is more honest. In practice dst=FIP rarely reaches
-// the trie at the VM tap (NAT translation usually intervenes
-// upstream), but the distinction matters when it does.
+// docs/architecture/trie-construction.md#port-classification-device_owner
 func IsInfraPort(deviceOwner string) bool {
 	if !strings.HasPrefix(deviceOwner, deviceOwnerNetworkPrefix) {
 		return false
@@ -61,30 +26,12 @@ func IsInfraPort(deviceOwner string) bool {
 	return true
 }
 
-// IsVMPort classifies a Neutron port as VM-like — i.e. its MAC
-// belongs in the kernel `mac_tenant_map` because tenant-VM traffic
-// terminates at this port.
+// IsVMPort reports whether a port's MAC belongs in the kernel
+// mac_tenant_map — i.e. tenant-VM traffic terminates here. Deliberately
+// permissive: an unrecognised non-`network:` owner admits, because
+// under-billing a real VM is worse than admitting a stray MAC.
 //
-// Partition table over observed `device_owner` values (dev-cmp,
-// OVN-Yoga):
-//
-//	device_owner                    IsInfraPort  IsVMPort
-//	network:router_interface        true         false
-//	network:router_gateway          true         false
-//	network:distributed             true         false
-//	network:dhcp                    true         false
-//	network:metadata                true         false
-//	network:floatingip              false        false   ← bookkeeping
-//	compute:nova                    false        true
-//	Octavia / Octavia:health-mgr    false        true
-//	manila:share                    false        true
-//	baremetal:nova                  false        true
-//	cube:mgr                        false        true    ← CubeCOS
-//	(empty)                         false        false   ← unbound
-//
-// `cube:mgr` (observed on dev-cmp with project_id set) is treated
-// as VM-like by default; revisit if CubeCOS management traffic
-// should be billed differently.
+// docs/architecture/trie-construction.md#port-classification-device_owner
 func IsVMPort(deviceOwner string) bool {
 	if deviceOwner == "" {
 		return false
@@ -105,39 +52,22 @@ func IsComputePort(deviceOwner string) bool {
 	return strings.HasPrefix(deviceOwner, deviceOwnerComputePrefix)
 }
 
-// IsTrunkSubport classifies a Neutron port as a trunk subport — the
-// `trunk:` namespace Neutron's trunk extension writes on subports of
-// a VLAN-aware VM. Subports admit as VM-like ([IsVMPort] and
-// [IsKnownVMOwner] both accept them), but the data plane cannot count
-// their traffic: 802.1Q-tagged frames on the trunk parent fail the
-// ethertype gate and pass uncounted (docs/architecture/edge-cases.md#tier-1--hard-limits). The
-// cold-start path uses this predicate to warn when a snapshot
-// contains trunk subports.
+// IsTrunkSubport reports whether deviceOwner is a trunk subport.
+// Subports admit as VM-like, but their 802.1Q-tagged traffic fails the
+// data plane's ethertype gate and passes uncounted — cold start warns
+// when a snapshot contains any.
+//
+// docs/architecture/edge-cases.md#tier-1--hard-limits
 func IsTrunkSubport(deviceOwner string) bool {
 	return strings.HasPrefix(deviceOwner, deviceOwnerTrunkPrefix)
 }
 
-// IsKnownVMOwner returns true for `device_owner` values empirically
-// confirmed VM-like in OpenStack OVN-Yoga (the deployment target).
-// Stricter than [IsVMPort]: an unknown vendor / third-party plugin
-// owner passes [IsVMPort] (the conservative billing-safety default)
-// but fails [IsKnownVMOwner].
+// IsKnownVMOwner reports whether deviceOwner is in the empirically
+// confirmed VM-like set for OVN-Yoga. Stricter than [IsVMPort]: an
+// unknown vendor or plugin owner admits there but fails here, which is
+// what cold start warn-logs as drift. Classification never changes.
 //
-// Bootstrap uses this to warn-log at cold-start whenever an admitted
-// MAC came from an owner outside the known set, so operators can
-// spot drift without classification semantics changing. The
-// catalogue here is the verified ground truth on the deployment
-// target (OpenStack OVN-Yoga):
-//
-//   - compute:* (Nova VMs, including AZ-specific suffixes)
-//   - Octavia / Octavia:* (Octavia management + health-mgr ports)
-//   - manila:* (Manila shares)
-//   - baremetal:* (Ironic instances)
-//   - trunk:* (VM trunk subports)
-//   - cube:mgr (CubeCOS internal management VMs, dev-cmp empirical)
-//
-// Anything else — `vendor:foo`, `oslo:*`, future-Neutron strings —
-// admits via [IsVMPort] but lights up a warn-log here.
+// docs/architecture/trie-construction.md#port-classification-device_owner
 func IsKnownVMOwner(deviceOwner string) bool {
 	switch {
 	case IsComputePort(deviceOwner):

@@ -59,8 +59,8 @@ func (s DriveStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 
 // IngressFlowStep streams Bytes INTO a VM from the harness itself —
 // the "sender outside the cluster" no [scenariotest.Flow] can express, and the
-// only way to drive the external/rx tuple through the FIP DNAT path
-// (docs/architecture/edge-cases.md). It runs drive's usual gates
+// only way to drive the external/rx tuple through the FIP DNAT path.
+// It runs drive's usual gates
 // (attach recheck, MAC-learn, fresh baseline — a later [AssertStep]
 // diffs against it), then feeds the byte budget over SSH stdin into a
 // `cat > /dev/null` on the VM: SSH because its port is the one
@@ -68,6 +68,8 @@ func (s DriveStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 // harness already reaches every VM through it). The stream framing
 // only adds bytes on the wire, so MinBytes = Bytes stays a safe lower
 // bound.
+//
+// Edge cases: docs/architecture/edge-cases.md
 type IngressFlowStep struct {
 	// To is the DSL VM id receiving the stream, dialed at its FIP.
 	To    string

@@ -1,35 +1,21 @@
-// schema.go gathers package bpf's package-level constants and exported
-// type vocabulary in one place: the Go mirrors of the kernel types, the
-// zone, direction, and stat-reason enums, the program and map name
-// strings, the compiled-in map sizes — all of which mirror
-// bpf/telemetry.c and must stay in lockstep with it — plus the
-// Prometheus label keys. The helpers and loader that consume this
-// vocabulary (MACKey, LpmKeyForPrefix, LoadTelemetry, ValidateMapSizes)
-// and the package overview live in abi.go; the telemetry_stats reader
-// lives in stats.go.
+// schema.go gathers package bpf's constants and type vocabulary: the Go
+// mirrors of the kernel types, the enums, the map and program names, and
+// the compiled-in map sizes. Every value here mirrors bpf/telemetry.c
+// and must stay in lockstep with it.
 
 package bpf
 
 import "strconv"
 
-// FlowKey is the Go-side mirror of the BPF flow_key map key. It is
-// the 16-byte composite key written by the classifier into
-// telemetry_map.
+// FlowKey is the Go-side mirror of the BPF flow_key, the 16-byte key
+// the classifier writes into telemetry_map.
 //
-// INVARIANT — no u32 tenant_id in the key.
+// INVARIANT — never add the u32 tenant_id to this key. It is interned
+// fresh each boot, so a WAL-restored row would key under a stale value
+// and never merge with new traffic. The zone code already carries the
+// classification without naming a tenant.
 //
-// FlowKey carries only MAC pairs, EtherType, direction, and the
-// resolved zone code. It does NOT and MUST NOT carry the u32
-// `tenant_id` that the kernel `mac_tenant_map` / `subnet_zone_trie`
-// use internally. That u32 is interned fresh on every agent boot
-// (see internal/metadata.TenantInterner), so embedding it here
-// would invalidate every WAL-restored
-// GlobalState entry on restart: the same logical flow would be
-// keyed under a stale u32 and never merge with new traffic.
-// The zone code already encodes the *classification* (SAME / OTHER
-// / INFRA / EXTERNAL / SHARED) without referencing the specific
-// tenant identifier, which is what makes restart-merge work. See
-// docs/architecture/data-structures.md#kernel-side-bpf-maps for the broader rationale.
+// docs/architecture/data-structures.md#kernel-side-bpf-maps
 type FlowKey = telemetryFlowKey
 
 // FlowMetrics is the Go-side mirror of the BPF flow_metrics map value.
@@ -57,21 +43,10 @@ type ZoneCode = telemetryZoneCode
 type Direction = telemetryTcDirection
 
 // ZoneExternal through ZoneMulticast are the zone codes stored in
-// [FlowKey.DstZone]. The values are stable across releases: they are
+// [FlowKey.DstZone]. Values are stable across releases — they are
 // persisted to the WAL and read back on restart.
 //
-// ZoneShared exists because the LPM trie cannot disambiguate per-VM
-// ownership inside a shared-network /24. Rather than guess SAME vs
-// OTHER for the trie-fallback path on shared networks, the
-// cold-start builder emits a distinct ZoneShared row; the billing
-// engine treats it as its own category. See docs/architecture/trie-construction.md#the-five-step-algorithm
-// Step 3.
-//
-// ZoneMulticast is assigned by the kernel classifier to any frame
-// whose destination MAC has the multicast/broadcast bit set (platform-
-// L2 chatter: mDNS, SSDP, DHCP broadcast). It is counted for
-// transparency but never billed, and is excluded from the revenue-leak
-// SLO — see docs/architecture/billing.md.
+// docs/architecture/trie-construction.md#the-five-step-algorithm
 const (
 	ZoneExternal    = telemetryZoneCodeZONE_EXTERNAL
 	ZoneSameTenant  = telemetryZoneCodeZONE_SAME_TENANT
@@ -82,14 +57,11 @@ const (
 	ZoneMulticast   = telemetryZoneCodeZONE_MULTICAST
 )
 
-// String returns the canonical name of the zone code — "external",
-// "same_tenant", etc. This is the single vocabulary for every
-// rendering of the enum: the `zone` label on lachesis_bytes_total /
-// lachesis_packets_total (pinned by dashboards), /debug pages, and
-// log enrichment. Unknown codes fall back to the numeric encoding
-// so a future kernel-side addition is still visible rather than
-// silently misclassified. Returns constant strings for all known
-// codes — safe inside the zero-allocation Collect() hot path.
+// String returns the canonical zone name. This is the single
+// vocabulary behind the `zone` metric label (pinned by dashboards),
+// /debug and logs. Unknown codes render numerically rather than
+// silently misclassifying. Constant strings only — safe in the
+// zero-allocation Collect() path.
 func (z ZoneCode) String() string {
 	switch z {
 	case ZoneExternal:
@@ -120,19 +92,13 @@ const (
 	DirectionEgress  = telemetryTcDirectionTC_DIR_EGRESS
 )
 
-// String returns the canonical name of the direction — "tx" for
-// [DirectionIngress] (VM sending) and "rx" for [DirectionEgress]
-// (VM receiving). These strings are the metric-label contract: the
-// `direction` label on lachesis_bytes_total / lachesis_packets_total
-// (pinned by dashboards), /debug pages, and log enrichment all render
-// through here — the same single-vocabulary contract as
-// [ZoneCode.String]. The vocabulary is deliberately VM-frame and
-// NIC-conventional, not the raw hook names: the tap hooks are
-// host-side, so exporting "ingress"/"egress" would invert the
-// cloud-billing convention where egress means data leaving the VM
-// (see docs/architecture/metrics.md). Unknown values fall back to the numeric
-// encoding. Returns constant strings for all known values — safe
-// inside the zero-allocation Collect() hot path.
+// String returns the canonical direction name: "tx" for
+// [DirectionIngress] (VM sending), "rx" for [DirectionEgress] (VM
+// receiving). Deliberately VM-frame, not the host-side hook names —
+// exporting "ingress"/"egress" would invert the cloud-billing
+// convention. Constant strings only, for the hot path.
+//
+// docs/architecture/metrics.md
 func (d Direction) String() string {
 	switch d {
 	case DirectionIngress:
@@ -206,28 +172,12 @@ const (
 	MapAmphoraBaseIP  = "amphora_base_ip"
 )
 
-// MapSubnetZoneTrieMaxEntries and MapMacTenantMaxEntries mirror the
-// `max_entries` values compiled into bpf/telemetry.c. They are
-// exposed for two reasons:
+// These mirror the `max_entries` compiled into bpf/telemetry.c, which
+// is where the sizing rationale lives. [ValidateMapSizes] fails the
+// boot on drift, so a stale `.o` cannot silently undersize a map or
+// skew the pressure-relief fill ratio.
 //
-//  1. Load-time assertions can check the kernel spec matches what
-//     userspace expects, catching a stale `.o` build before the
-//     agent silently writes into an undersized map.
-//  2. The lachesis_bpf_map_max_entries gauge needs the denominator
-//     so dashboards can compute "% of map occupied" against
-//     lachesis_bpf_map_current_entries.
-//
-// Sizing rationale lives in bpf/telemetry.c above each map decl.
-//
-// MapTelemetryMaxEntries mirrors telemetry_map's max_entries. It is
-// the denominator for the pressure-relief GC fill-ratio
-// (docs/architecture/data-structures.md#kernel-side-bpf-maps), so a stale `.o` that changed it would skew the >80% eviction
-// trigger — hence it is drift-checked alongside the other two.
-//
-// MapTelemetryStatsMaxEntries mirrors STAT_REASON_MAX: one slot per
-// [StatReason], fixed regardless of deployment scale. Drift-checking
-// it makes [ValidateMapSizes] double as the stat-reason enum lockstep
-// guard (see [statReasonCount]).
+// docs/architecture/data-structures.md#kernel-side-bpf-maps
 const (
 	MapTelemetryMaxEntries      = 65536
 	MapSubnetZoneTrieMaxEntries = 16384

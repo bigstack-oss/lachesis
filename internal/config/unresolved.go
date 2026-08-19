@@ -6,20 +6,26 @@ import (
 )
 
 // UnresolvedConfig bounds the late-binding buffer for flows whose VM
-// MAC the metadata layer hasn't learned yet (docs/architecture/data-structures.md#lingering-ghost).
-// Both fields are hot-reloadable on SIGHUP; a cap shrink simply
-// triggers the buffer's normal LRU eviction on the next admission.
+// MAC the metadata layer hasn't learned yet. Both fields are
+// hot-reloadable on SIGHUP; a cap shrink simply triggers the buffer's
+// normal LRU eviction on the next admission.
+//
+// Lingering Ghost: docs/architecture/data-structures.md#lingering-ghost
 type UnresolvedConfig struct {
-	// Cap is the buffer's entry bound. Its EXISTENCE is Contract 1
-	// (docs/architecture/contracts.md#required-contracts — an unbounded
-	// buffer OOMs under a Kafka outage); only the value is tunable.
+	// Cap is the buffer's entry bound. Its EXISTENCE is Contract 1 —
+	// an unbounded buffer OOMs under a Kafka outage; only the value
+	// is tunable.
+	//
+	// Contract 1: docs/architecture/contracts.md#required-contracts
 	Cap int `yaml:"cap"`
 	// TTL is the late-binding window: how long a buffered flow waits
 	// for its MAC to resolve before folding to the "unknown" tenant.
 	TTL time.Duration `yaml:"ttl"`
 }
 
-// unresolvedDefaults returns the docs/architecture/data-structures.md#lingering-ghost baseline: 10k entries, 60s.
+// unresolvedDefaults returns the documented baseline: 10k entries, 60s.
+//
+// Lingering Ghost: docs/architecture/data-structures.md#lingering-ghost
 func unresolvedDefaults() UnresolvedConfig {
 	return UnresolvedConfig{Cap: 10_000, TTL: 60 * time.Second}
 }

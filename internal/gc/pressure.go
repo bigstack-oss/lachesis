@@ -16,26 +16,17 @@ type FlowEvictor interface {
 	Delete(key bpf.FlowKey) error
 }
 
-// PressureReliever evicts the oldest telemetry_map entries when the map
-// approaches its capacity, so the kernel never drops a counter on its
-// own (a silent byte loss). It runs inside the scraper's drain
-// goroutine, once per tick, after the drained readings have been
-// applied to GlobalState — every evicted entry's bytes are therefore
-// already accounted before the kernel entry is removed
-// (docs/architecture/data-structures.md#kernel-side-bpf-maps, "flush before evict").
+// PressureReliever evicts the oldest telemetry_map entries before the
+// map fills, so the kernel never drops a counter on its own. It runs in
+// the scraper's drain goroutine AFTER the readings are applied, so
+// every evicted entry's bytes are already accounted ("flush before
+// evict").
 //
-// Eviction uses a high/low watermark hysteresis: a relief cycle begins
-// when fill crosses the high watermark and continues every tick,
-// evicting up to the per-pass cap of the oldest flows, until fill falls
-// below the low watermark. Bounding each pass means the map drains to
-// the low watermark over a few scrapes rather than in one long stall.
+// High/low watermark hysteresis with a per-pass cap: the map drains
+// over a few scrapes rather than one long stall. All three bounds are
+// hot-reloadable.
 //
-// The three bounds (high watermark, low watermark, per-pass cap) are
-// operator-tunable and hot-reloadable: the scrape goroutine reads the
-// shared [tunables.Store] snapshot each pass, and the SIGHUP reload
-// swaps it (runtime.Manager.Reload). The relieving flag, by contrast,
-// is touched only from the scrape goroutine, so it needs no
-// synchronisation.
+// docs/architecture/data-structures.md#kernel-side-bpf-maps
 type PressureReliever struct {
 	evictor    FlowEvictor
 	maxEntries int
@@ -66,14 +57,10 @@ func NewPressureReliever(opts PressureOptions) *PressureReliever {
 	}
 }
 
-// Relieve runs one pressure-relief pass over the just-drained readings
-// (already applied to GlobalState). drained is the scraper's reused
-// buffer — its key count is the current kernel population (read-don't-
-// clear; only this GC evicts), and each value's LastSeenNs is the
-// eviction key. Relieve only reads drained; it deletes from the kernel
-// map via the evictor. It is a no-op while fill stays below the high
-// watermark (outside a relief cycle) or once it drops below the low
-// watermark.
+// Relieve runs one pass over the just-drained readings, which are
+// already in GlobalState. drained is read-only here: its key count IS
+// the kernel population (read-don't-clear) and LastSeenNs is the
+// eviction key. No-op outside a relief cycle.
 func (p *PressureReliever) Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics) {
 	if p == nil || p.maxEntries <= 0 {
 		return
@@ -115,9 +102,11 @@ func (p *PressureReliever) Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics) {
 
 // selectOldest returns the k flow keys with the smallest LastSeenNs,
 // found in a single O(N log k) pass using a size-k heap — never a full
-// O(N log N) sort of the whole map (docs/architecture/data-structures.md#kernel-side-bpf-maps). The heap is
-// ordered max-by-LastSeenNs at its root so the newest of the k
-// candidates kept so far can be replaced when an older flow is seen.
+// O(N log N) sort of the whole map. The heap is ordered
+// max-by-LastSeenNs at its root so the newest of the k candidates kept
+// so far can be replaced when an older flow is seen.
+//
+// Kernel maps: docs/architecture/data-structures.md#kernel-side-bpf-maps
 func selectOldest(drained map[bpf.FlowKey]bpf.FlowMetrics, k int) []bpf.FlowKey {
 	if k <= 0 {
 		return nil

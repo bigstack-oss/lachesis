@@ -1,28 +1,25 @@
 // info.go implements the identity info-metric families that let
 // dashboards render human names next to UUIDs — the kube-state-metrics
 // kube_pod_info pattern (an additive `<entity>_info{id, name} 1` series
-// joined onto the billing families with group_left). See docs/architecture/metrics.md.
+// joined onto the billing families with group_left).
 //
+// Full rationale: docs/architecture/metrics.md
 
 package neutron
 
 import "github.com/prometheus/client_golang/prometheus"
 
-// InfoCollector emits two additive info-metric families from the most
-// recently committed [Snapshot], read lock-free at scrape time:
+// InfoCollector emits the additive lachesis_tenant_info and
+// lachesis_server_info families from the last committed snapshot, read
+// lock-free at scrape time.
 //
-//   - lachesis_tenant_info{tenant_id, name} 1 — one series per Keystone
-//     project (docs/architecture/metrics.md). Free: the project list is already
-//     fetched for the /debug pages.
-//   - lachesis_server_info{server_id, name, tenant_id} 1 — one series per
-//     Nova server, from the best-effort server list.
-//
-// Both are separate from the billing Collector by design: the billing
+// Kept separate from the billing Collector by design: the billing
 // families must stay byte-identical, and names live only as info series
-// so historical joins show the name an entity held at that time. Because
-// each Collect re-emits from the current snapshot, a series disappears
-// the sync after its entity leaves the snapshot — the mortal lifecycle a
-// GaugeVec could not give without leaking deleted-entity series.
+// so a historical join shows the name an entity held then. Re-emitting
+// from the current snapshot each Collect gives them a mortal lifecycle
+// a GaugeVec could not, which would leak deleted-entity series.
+//
+// docs/architecture/metrics.md
 type InfoCollector struct {
 	// snapshot returns the most recently committed snapshot, or nil
 	// before the first commit (Neutron disabled or not yet synced).

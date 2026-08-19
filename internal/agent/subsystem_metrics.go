@@ -87,18 +87,12 @@ func newSubsystemMetrics(neutronMx *neutron.Metrics, neutronInfo *neutron.InfoCo
 }
 
 // telemetryFillReader decorates the scraper's [scraper.MapReader] so
-// every successful drain records the kernel telemetry_map entry count
-// into the lachesis_bpf_map_current_entries{map="telemetry_map"} gauge.
-// The drained key set IS the kernel map's current population
-// (read-don't-clear; only GC evicts), so len(dst) after a full
-// BatchLookup is the fill numerator the pressure-relief threshold
-// (docs/architecture/data-structures.md#kernel-side-bpf-maps, >80%) is defined against. Errors skip the
-// gauge update — a partial drain would understate fill.
-//
-// The same successful drain also reads the kernel telemetry_stats
-// counters (when stats is wired) into
-// lachesis_bpf_update_failures_total{reason}, keeping the loss counters
-// on the same cadence as the fill gauge they explain.
+// each successful drain records the telemetry_map fill gauge. The
+// drained key set IS the kernel population (read-don't-clear), so
+// len(dst) is the numerator the >80% relief threshold is defined
+// against; a failed drain skips the update rather than understating it.
+// The same pass reads the kernel stat counters, keeping the loss
+// numbers on the cadence of the gauge they explain.
 type telemetryFillReader struct {
 	inner scraper.MapReader
 	// stats is nil when the telemetry_stats map isn't wired (darwin,

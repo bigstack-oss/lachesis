@@ -2,18 +2,13 @@ package config
 
 import "errors"
 
-// KafkaConfig groups settings for the Kafka consumer that delivers live
-// OpenStack notifications (Neutron port/subnet/router events) so the
-// agent refreshes metadata within one reconcile pass instead of waiting
-// for the periodic safety net (docs/architecture/trie-construction.md#incremental-updates, docs/architecture/boot-and-recovery.md#boot-sequence). CubeCOS
-// publishes oslo.messaging notifications to Kafka (driver messagingv2);
-// the agent consumes the committed events and kicks a reconcile.
+// KafkaConfig groups the settings for the consumer that turns
+// OpenStack notifications into reconcile kicks, so metadata refreshes
+// within a pass instead of waiting for the 5-minute safety net.
 //
-// Enabled defaults to false so the agent runs without a broker
-// (developer machines, or operators who rely on the 5-minute reconcile
-// alone). Enabled and Brokers also bind env vars and flags for container
-// deployments; Topic and GroupID are YAML-only — they have working
-// defaults and rarely change.
+// Enabled defaults to false so the agent runs without a broker.
+//
+// docs/architecture/trie-construction.md#incremental-updates
 type KafkaConfig struct {
 	// Enabled gates the consumer. When false the agent relies solely on
 	// the periodic Neutron reconcile for metadata freshness.
@@ -25,27 +20,19 @@ type KafkaConfig struct {
 	// "notifications.info" (the INFO-priority topic oslo's Kafka driver
 	// writes); override only for a non-standard notification_topics.
 	Topic string `yaml:"topic"`
-	// GroupID is the consumer-group PREFIX; the effective group id is
-	// per-agent-unique (see [KafkaConfig.EffectiveGroupID]). The
-	// notification stream is a fanout — every agent maintains its own
-	// mac_tenant_map for the taps on its node and so must receive every
-	// event — but Kafka delivers each message to only one member of a
-	// group. A shared group therefore starves all but one agent of the
-	// reconcile kick, leaving them on the periodic (5-minute) reconcile.
-	// Suffixing the host keeps per-restart offset tracking while giving
-	// each agent the full stream. Delivery is at-least-once, which is
-	// fine: each event only triggers an (idempotent) reconcile.
+	// GroupID is the consumer-group PREFIX — the effective id is
+	// per-agent (see [KafkaConfig.EffectiveGroupID]). The stream must
+	// fan out: every agent needs every event, but Kafka delivers a
+	// message to only ONE group member, so a shared group starves all
+	// but one agent of reconcile kicks.
 	GroupID string `yaml:"group_id"`
 }
 
-// EffectiveGroupID is the consumer group the agent actually joins:
-// GroupID suffixed with a per-agent token so each agent reads the whole
-// notification stream instead of load-balancing it away from its peers.
-// The token is the agent's hostname (preferred: stable across restarts
-// so offset tracking survives, and readable on the broker). When the
-// hostname is unavailable it falls back to randomFallback — never to the
-// bare GroupID, since a shared group would starve peers of reconcile
-// kicks and reintroduce the fanout bug.
+// EffectiveGroupID suffixes GroupID with a per-agent token so each
+// agent reads the whole stream rather than load-balancing it away from
+// its peers. Prefers the hostname (stable across restarts, so offsets
+// survive); never falls back to the bare GroupID, which would
+// reintroduce the fanout bug.
 func (c KafkaConfig) EffectiveGroupID(host, randomFallback string) string {
 	suffix := host
 	if suffix == "" {

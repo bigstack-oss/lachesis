@@ -25,14 +25,10 @@ type resolveIndex struct {
 	maxHops int
 }
 
-// newResolveIndex builds the lookup tables from the raw Neutron
-// snapshot. IPv6 fixed-IPs and subnets are admitted to the maps
-// without filtering — anchorSubnet checks IPVersion at lookup time
-// so resolveStaticRouteZone safely operates only on IPv4 chains.
-//
-// maxHops bounds the multi-hop trace; values below 1 fall back to
-// [defaultMaxStaticRouteHops], so a zero-valued caller can never
-// silently resolve every static route as EXTERNAL.
+// newResolveIndex builds the resolver's lookup tables. IPv6 entries
+// are admitted unfiltered — anchorSubnet checks IPVersion at lookup
+// time. maxHops below 1 falls back to [defaultMaxStaticRouteHops], so a
+// zero-valued caller cannot silently resolve every route as EXTERNAL.
 func newResolveIndex(snap Snapshot, maxHops int) *resolveIndex {
 	if maxHops < 1 {
 		maxHops = defaultMaxStaticRouteHops
@@ -79,25 +75,14 @@ func newResolveIndex(snap Snapshot, maxHops int) *resolveIndex {
 	return ri
 }
 
-// resolveStaticRouteZone implements the multi-hop trace of
-// docs/architecture/trie-construction.md#the-static-route-resolver for one (destination, nexthop) pair on
-// router r. Returns the zone code to record in the trie, plus
-// up to two structured incident reports:
+// resolveStaticRouteZone traces one (destination, nexthop) pair on
+// router r and returns the zone to record, plus at most one incident:
+// an [AmbiguityHit] (several candidate owners) or a [CycleHit]
+// (revisited router). Every other unresolvable case — misconfig, hop
+// limit, unknown peer type — returns EXTERNAL with no incident.
+// Strict-mode policy lives in BuildTrie's caller, not here.
 //
-//   - *AmbiguityHit is non-nil when the trace bottomed out on a
-//     Step C ambiguity (multiple candidate networks with distinct
-//     owners covering the destination CIDR).
-//   - *CycleHit is non-nil when the trace attempted to revisit a
-//     router already on the path — the source router's chain forms
-//     a loop and cannot reach a directly-attached subnet.
-//
-// At most one of the two is non-nil for a given call (the resolver
-// returns at the first hit). For every other unresolvable case
-// (misconfig, MAX_HOPS exceeded, unknown peer device type) both
-// returns are nil and the zone is ZoneExternal.
-//
-// Strict-mode policy (refuse to start vs continue with EXTERNAL)
-// lives in BuildTrie's caller, not here.
+// docs/architecture/trie-construction.md#the-static-route-resolver
 func (ri *resolveIndex) resolveStaticRouteZone(
 	r Router,
 	destination netip.Prefix,
@@ -164,13 +149,12 @@ func (ri *resolveIndex) resolveStaticRouteZone(
 			return bpf.ZoneExternal, nil, nil
 
 		case IsComputePort(port.DeviceOwner):
-			// VM-appliance nexthop — Nova writes compute:<az-name>, so
-			// the dispatch is on the prefix, not the default-AZ literal
-			// "compute:nova". Classify by the appliance's tenant
-			// relative to the source tenant on the iface network. The
-			// destination beyond the appliance is opaque to Neutron, so
-			// the trace stops here. Double-billing at the appliance's own
-			// tap is documented in docs/architecture/edge-cases.md#tier-4--subtle-correctness and Scenario L.
+			// VM-appliance nexthop. Dispatch on the `compute:` prefix,
+			// never the `compute:nova` literal — that is just the
+			// default AZ's name. What lies beyond the appliance is
+			// opaque to Neutron, so the trace stops here.
+			//
+			// docs/architecture/edge-cases.md#tier-4--subtle-correctness
 			ifaceNetwork, ok := ri.networks[ifaceSubnet.NetworkID]
 			if !ok {
 				return bpf.ZoneExternal, nil, nil
@@ -219,19 +203,13 @@ func (ri *resolveIndex) portAt(subnetID, ip string) (Port, bool) {
 	return p, ok
 }
 
-// resolveAtNextRouter implements Step C: search nextRouter's
-// interface subnets for one whose CIDR supersets the destination,
-// excluding the network we entered through. If exactly one
-// candidate (or several all with the same project_id) matches,
-// return that zone. If candidates have multiple distinct owners,
-// log the ambiguity, build an [AmbiguityHit] for the caller, and
-// return EXTERNAL.
+// resolveAtNextRouter searches nextRouter's interface subnets for one
+// superseting the destination, excluding the network we entered
+// through. Returns (zone, resolved, hit):
 //
-// Returns are (zone, resolved, hit):
-//
-//   - (0, false, nil):       no candidate, caller proceeds to Step D
+//   - (0, false, nil):       no candidate; caller proceeds
 //   - (zone, true, nil):     single-owner resolution
-//   - (EXTERNAL, true, hit): ambiguity; hit carries the candidate owners
+//   - (EXTERNAL, true, hit): several distinct owners
 func (ri *resolveIndex) resolveAtNextRouter(
 	nextRouter Router,
 	enteredThrough Subnet,
@@ -328,19 +306,14 @@ func containsString(s []string, v string) bool {
 }
 
 // zoneFor classifies a destination network from the source tenant's
-// perspective. Per docs/architecture/trie-construction.md#the-static-route-resolver.
+// perspective. The check order is load-bearing: external, then shared,
+// then owner. External beats shared because a public FIP pool is often
+// marked both, and that traffic is leaving the cloud. Shared beats
+// owner because the trie cannot resolve per-VM ownership inside a
+// shared CIDR — calling it SAME would under-bill the owner's traffic to
+// non-owner VMs on that network.
 //
-// The check order is significant: external first, then shared, then
-// the owner comparison. External wins over shared because some
-// deployments mark a public FIP pool with both flags — traffic to
-// those CIDRs is leaving the cloud and must classify as EXTERNAL.
-// Shared wins over the owner comparison so that a shared network
-// owned by the source tenant still emits SHARED; the trie cannot
-// resolve per-VM ownership inside a shared CIDR, so labelling those
-// flows SAME would systematically under-bill the owner's traffic to
-// non-owner VMs attached to the same shared network. The MAC-first
-// hot path classifies intra-tenant L2 traffic on shared networks as
-// SAME_TENANT exactly; SHARED labels the L3-routed-fallback case.
+// docs/architecture/trie-construction.md#the-static-route-resolver
 func zoneFor(ownerTenant, sourceTenant string, network Network) bpf.ZoneCode {
 	switch {
 	case network.IsExternal:

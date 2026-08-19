@@ -2,21 +2,13 @@ package netlink
 
 import "strings"
 
-// ShouldAttach reports whether an interface named iface qualifies
-// for telemetry attach under the given allowlist. The match is:
+// ShouldAttach reports whether iface qualifies for telemetry attach:
+// an exact match in explicit, or a prefix match in prefixes. Both may
+// be empty, in which case nothing attaches.
 //
-//   - true if iface equals any entry in explicit (exact match), or
-//   - true if iface starts with any entry in prefixes.
-//
-// Both inputs may be empty: explicit-only deployments leave
-// prefixes nil; prefix-only deployments leave explicit nil. With
-// both nil, the function returns false for any input, so the
-// subscriber attaches to nothing.
-//
-// The function does not skip loopback, bridge, or other "obviously
-// uninteresting" links — every match decision goes through the
-// caller's configured allowlist. Skipping those by convention would
-// be one more place to silently disagree with the operator.
+// It deliberately does NOT skip loopback, bridges or other "obviously
+// uninteresting" links — every decision goes through the operator's
+// allowlist, so there is no second place to disagree with them.
 func ShouldAttach(iface string, prefixes, explicit []string) bool {
 	for _, name := range explicit {
 		if iface == name {

@@ -233,7 +233,9 @@ type lookupMACEntry struct {
 	TenantName string `json:"tenant_name,omitempty"`
 	// PortID is the Neutron port the MAC currently binds to — the
 	// port-tier identity, surfaced so a stale binding after a same-MAC
-	// port rebirth is observable (docs/architecture/billing.md).
+	// port rebirth is observable.
+	//
+	// Billing tiers: docs/architecture/billing.md
 	PortID    string `json:"port_id,omitempty"`
 	IsAmphora bool   `json:"is_amphora,omitempty"`
 }

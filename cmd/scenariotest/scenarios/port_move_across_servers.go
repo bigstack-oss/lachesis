@@ -6,28 +6,19 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// portMoveAcrossServers closes the last hole in the {MAC × port ×
-// server} lifecycle matrix (lachesis#254): the SAME Neutron port — same
-// MAC, same port_id — detached from server X and reattached to server Y
-// (a Nova os-interface move; only device_id changes). The four-layer
-// billing behavior under test:
+// portMoveAcrossServers covers the {MAC × port × server} case where
+// the SAME port moves from server X to server Y — only device_id
+// changes. Three billing properties:
 //
-//   - X's server series never dips and holds its pre-move value: the
-//     device_id change settles the port's rows into X's server-settled
-//     bucket, so X flat-lines (until X itself dies) instead of losing
-//     its history.
-//   - Y's series carries the post-move traffic: the stabilizing
-//     AssertStep on vm-b is the discriminating row — if the reconcile
-//     failed to re-bind the server attribution, Y's series never shows
-//     the driven bytes and the assert times out red. (Y inheriting X's
-//     HISTORY — re-labeling without the settle — is pinned at the state
-//     layer by the settleAttributionChange unit tests; no cheap live
-//     upper-bound exists in the vocabulary yet.)
-//   - The port-tier series re-homes with the port: post-move traffic
-//     appears under the same port_id, now in Y's tuple.
+//   - X's series never dips and holds its pre-move value: the
+//     device_id change settles the rows into X's absorber, so X
+//     flat-lines instead of losing its history.
+//   - Y's series carries the post-move traffic. The stabilizing assert
+//     on vm-b is the discriminating row — a failed re-bind never shows
+//     the bytes and times out red.
+//   - The port tier re-homes with the port, under Y's tuple.
 //
-// Expected GREEN on the four-layer agent — this is a regression lock,
-// not a reproduction.
+// A regression lock, not a reproduction: expected GREEN.
 func portMoveAcrossServers() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").
@@ -88,14 +79,10 @@ func portMoveAcrossServers() *scenariotest.Scenario {
 				Note: "port series re-homes with the port (post-move bytes under Y)"},
 			steps.MonotoneStep{Tenant: "T1", Note: "tenant plane invariant across the outbound move"},
 
-			// RETURN LEG: the port comes home to vm-a and traffic must
-			// grow correctly on top of the parked history. Three 1 MiB
-			// drives ride ONE tenant tuple (a→c, b→c, a→c are all
-			// same_tenant tx), so the three per-leg ≥1 MiB deltas below,
-			// stitched by the monotone rows, compose to the 3 MiB end
-			// total — a leg swallowed by the rebase/reset arithmetic
-			// (double-fold, lost watermark, missed re-bind) breaks its
-			// delta and fails its row.
+			// RETURN LEG. Three 1 MiB drives ride ONE tenant tuple, so
+			// the three per-leg deltas stitched by the monotone rows must
+			// compose to 3 MiB — a leg swallowed by the rebase
+			// arithmetic breaks its own delta and fails its row.
 			steps.CaptureStep{},
 			steps.DetachPortStep{VM: "vm-b", Port: "vm-a-nic2"},
 			steps.ReattachPortStep{VM: "vm-a", Port: "vm-a-nic2"},

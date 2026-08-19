@@ -6,23 +6,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Metrics holds Prometheus instruments for the kernel BPF maps
-// the agent populates. The `current_entries` value is updated by the
-// userspace writer (kernelwriter) after each successful map push —
-// or, for telemetry_map, by the scraper drain, which counts the keys
-// each BatchLookup returns; it's a userspace-tracked count, not a
-// kernel-side ground truth, so a sudden drift would suggest a writer
-// bug rather than kernel state. `max_entries` is static — set once
-// at boot from the
-// `MapXxxMaxEntries` constants — and serves as the denominator the
-// Grafana fill-ratio panel divides into.
+// Metrics holds the instruments for the kernel BPF maps: static
+// capacity, last-written entry count, kernel-side update failures, and
+// the crash-recovery pinning mode.
 //
-// The three instruments are:
-//
-//   - lachesis_bpf_map_max_entries{map}        gauge (static capacity)
-//   - lachesis_bpf_map_current_entries{map}    gauge (last-written count)
-//   - lachesis_bpf_update_failures_total{reason} counter (kernel telemetry_stats)
-//   - lachesis_bpf_maps_pinned                 gauge (crash-recovery mode)
+// current_entries is a USERSPACE-tracked count — written by the map
+// writer after a push, or by the scraper drain for telemetry_map — not
+// kernel ground truth. Drift between it and reality points at a writer
+// bug rather than kernel state.
 type Metrics struct {
 	maxEntries     *prometheus.GaugeVec
 	currentEntries *prometheus.GaugeVec
@@ -103,13 +94,10 @@ func (m *Metrics) SetUpdateFailures(c StatCounts) {
 	}
 }
 
-// statsCollector emits lachesis_bpf_update_failures_total{reason} from
-// the last-drained kernel telemetry_stats values. It is a small custom
-// Collector rather than a CounterVec because the kernel value is the
-// cumulative truth and counters cannot be set to an absolute value —
-// the same emit-from-source rationale as the billing Collector
-// (docs/architecture/metrics.md). Collect always emits every [StatReason]
-// series, so both reason labels are zero-seeded from the first scrape.
+// statsCollector emits the kernel telemetry_stats failures. A custom
+// Collector, not a CounterVec: the kernel value is the cumulative
+// truth and a counter cannot be set to an absolute. Every [StatReason]
+// is emitted, so both labels are zero-seeded from the first scrape.
 type statsCollector struct {
 	desc *prometheus.Desc
 	last [statReasonCount]atomic.Uint64

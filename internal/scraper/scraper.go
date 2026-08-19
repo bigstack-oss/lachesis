@@ -1,12 +1,7 @@
-// Package scraper drives BPF telemetry-map collection. A single
-// goroutine periodically calls [MapReader.BatchLookup] to drain the
-// kernel hash map, then folds each raw reading into the
-// [state.GlobalState] via ApplyDelta.
-//
-// The [MapReader] interface lets unit tests and benchmarks substitute
-// a synthetic reader without loading eBPF. The production
-// implementation — a thin wrapper over cilium/ebpf BatchLookup —
-// lives in the agent package alongside cmd/agent.
+// Package scraper drives BPF telemetry-map collection: one goroutine
+// drains the kernel map on a tick and folds each reading into
+// [state.GlobalState]. The [MapReader] seam lets tests substitute a
+// synthetic reader without eBPF.
 package scraper
 
 import (
@@ -20,39 +15,30 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
-// MapReader is the kernel-side data source drained on every tick.
-// The dst map is caller-owned and reused across ticks; implementations
-// must clear it before populating to avoid stale entries leaking from
-// the previous tick.
-//
-// PERCPU_HASH values must be aggregated across CPUs before they are
-// stored in dst — the scraper expects one [bpf.FlowMetrics] per
-// [bpf.FlowKey].
+// MapReader is the kernel-side data source drained each tick. dst is
+// caller-owned and reused, so implementations must clear it first or
+// stale entries leak. PERCPU values must already be aggregated across
+// CPUs — the scraper expects one [bpf.FlowMetrics] per key.
 type MapReader interface {
 	BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) error
 }
 
-// Evictor relieves kernel telemetry_map pressure. [Scraper.Tick] calls
-// Relieve once per tick, after the drained readings have been applied
-// to GlobalState — so every byte is accounted before any kernel entry
-// is removed (docs/architecture/data-structures.md#kernel-side-bpf-maps). The argument is the scraper's
-// just-drained buffer: its key count is the current kernel population
-// and each value's LastSeenNs is the eviction key. Implementations must
-// only read it. nil (the default) disables pressure relief, which is
-// the case off-Linux and in unit tests that don't wire one.
+// Evictor relieves kernel telemetry_map pressure once per tick, AFTER
+// the drain is applied to GlobalState — so every byte is accounted
+// before its kernel entry can be removed. It receives the just-drained
+// buffer read-only. nil disables relief.
+//
+// docs/architecture/data-structures.md#kernel-side-bpf-maps
 type Evictor interface {
 	Relieve(drained map[bpf.FlowKey]bpf.FlowMetrics)
 }
 
 // FlowSink classifies each drained reading: known VM-MAC flows go to
-// GlobalState, unknown ones to the UnresolvedBuffer
-// (docs/architecture/data-structures.md#userspace-structures). When set, it replaces the scraper's default straight-to-
-// GlobalState [state.GlobalState.ApplyDelta] for every entry. [Sweep]
-// runs once per tick to age out buffered entries; force=true on the
-// shutdown final tick folds the whole buffer so no unknown bytes are
-// lost to the final WAL flush. nil (the default) keeps the legacy
-// direct-to-GlobalState path — off-Linux and in unit tests that don't
-// wire one.
+// GlobalState, unknown ones to the UnresolvedBuffer. Sweep ages out
+// buffered entries each tick; force=true on the shutdown tick folds the
+// whole buffer so no unknown bytes are lost to the final WAL flush.
+//
+// docs/architecture/data-structures.md#userspace-structures
 type FlowSink interface {
 	Absorb(key bpf.FlowKey, raw bpf.FlowMetrics)
 	Sweep(force bool)
@@ -121,16 +107,13 @@ func (s *Scraper) SetMetrics(m *Metrics) { s.mx = m }
 // whether its MAC is known).
 func (s *Scraper) SetSink(sink FlowSink) { s.sink = sink }
 
-// Run drives the scrape loop until ctx is cancelled. The first tick
-// fires immediately so /metrics has data within one interval of
-// startup; subsequent ticks fire on the configured cadence.
+// Run drives the scrape loop until ctx is cancelled, ticking
+// immediately so /metrics has data within one interval of startup.
 //
-// On cancellation Run performs one final Tick before returning, so
-// deltas the kernel accumulated since the last periodic tick are
-// drained into state. Without it a graceful shutdown loses up to one
-// scrape interval of billing data — the maps die with the TC filters
-// on the next boot. Callers must keep the BPF collection open until
-// Run returns.
+// On cancellation it performs one FINAL tick. Without it a graceful
+// shutdown loses up to a scrape interval of billing data, because the
+// maps die with the TC filters on the next boot. Callers must keep the
+// BPF collection open until Run returns.
 func (s *Scraper) Run(ctx context.Context) {
 	if err := s.Tick(); err != nil {
 		slog.Warn("initial tick failed", "component", componentScraper, "err", err)
@@ -188,8 +171,10 @@ func (s *Scraper) Tick() error {
 	}
 	s.lastOK.Store(time.Now().Unix())
 	// Relieve telemetry_map pressure after the flush: every byte in buf
-	// is now in GlobalState, so evicting the oldest kernel entries loses
-	// nothing (docs/architecture/data-structures.md#kernel-side-bpf-maps).
+	// is now in GlobalState, so evicting the oldest kernel entries
+	// loses nothing.
+	//
+	// Kernel maps: docs/architecture/data-structures.md#kernel-side-bpf-maps
 	if s.evictor != nil {
 		s.evictor.Relieve(s.buf)
 	}

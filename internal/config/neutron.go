@@ -8,24 +8,14 @@ import (
 	"time"
 )
 
-// NeutronConfig groups settings for the OpenStack Neutron cold-start
-// path: Keystone v3 authentication plus the Neutron API client that
-// populates the userspace [metadata.ShardedMetadataMap] and kernel
-// LPM trie at boot.
+// NeutronConfig groups the Keystone/Neutron settings behind cold start.
 //
-// Two credential modes — exactly one must be set when [Enabled]:
+// Exactly one credential mode must be set when Enabled: CredentialsFile
+// (an admin-openrc-style file, the system of record for secrets) or the
+// inline fields (convenient for tests, not for production).
 //
-//  1. CredentialsFile: absolute path to an admin-openrc-style shell
-//     file (one `export OS_KEY=value` per line). The agent parses
-//     the file at boot; the file is the system of record for
-//     secrets.
-//  2. Inline (AuthURL, Username, Password, ProjectName, …): values
-//     are read straight from the YAML. Convenient for tests; not
-//     recommended for production deployments.
-//
-// Enabled defaults to false so the agent still starts on developer
-// machines and in the loadtest harness without Keystone reachable.
-// Production deployments set Enabled=true and supply credentials.
+// Enabled defaults to false so the agent still starts without Keystone
+// reachable.
 type NeutronConfig struct {
 	// Enabled gates the entire Neutron subsystem. When false, the
 	// agent boots without metadata; the metrics Collector emits
@@ -76,25 +66,20 @@ type NeutronConfig struct {
 	// issues shorter-lived tokens.
 	RefreshLead time.Duration `yaml:"refresh_lead"`
 
-	// UnsafeAllowAmbiguousRoutes, when true, lets the agent boot
-	// even if BuildTrie surfaced one or more static-route Step C
-	// ambiguities (docs/architecture/trie-construction.md#ambiguity-after-scoping). Each such route classifies as
-	// EXTERNAL with a warn-level log. The default (false) is strict
-	// mode: any ambiguity refuses to start. Set true only with an
-	// operator's informed consent — ambiguous routes systematically
-	// mis-bill the cross-tenant CIDR they cover.
+	// UnsafeAllowAmbiguousRoutes lets the agent boot despite
+	// static-route ambiguities, which then classify EXTERNAL. Default
+	// false is strict. Set true only with informed consent: ambiguous
+	// routes systematically mis-bill the CIDR they cover.
+	//
+	// docs/architecture/trie-construction.md#ambiguity-after-scoping
 	UnsafeAllowAmbiguousRoutes bool `yaml:"unsafe_allow_ambiguous_routes"`
 
-	// MaxStaticRouteHops bounds the static-route resolver's multi-hop
-	// trace (docs/architecture/trie-construction.md#the-static-route-resolver):
-	// at most this many router-interface nexthops are followed per route
-	// before the resolver gives up and classifies EXTERNAL. Real
-	// deployments rarely exceed 3–4 hops, so the default 16 is generous
-	// and an exceedance almost certainly indicates a routing misconfig.
+	// MaxStaticRouteHops bounds the resolver's trace before it gives up
+	// and classifies EXTERNAL. Real deployments rarely exceed 3–4 hops.
+	// Hot-reloadable: read only when the trie rebuilds, never on the
+	// packet path.
 	//
-	// Hot-reloadable: the resolver reads it when it rebuilds the trie
-	// (cold-start and each reconcile), never on the packet path, so a
-	// SIGHUP retunes resolver depth without a restart.
+	// docs/architecture/trie-construction.md#the-static-route-resolver
 	MaxStaticRouteHops int `yaml:"max_static_route_hops"`
 }
 

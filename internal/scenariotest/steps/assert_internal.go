@@ -18,21 +18,14 @@ import (
 var sweepPollInterval = 5 * time.Second
 
 // AwaitSweepStep blocks until the ghost sweep has processed a deleted
-// VM/NIC. Prefer ForMACOf: it polls every agent's /debug/lookup for that
-// entity's MAC and returns once the MAC no longer resolves in the
-// userspace metadata map — which the sweep deletes LAST, after it has
-// folded the MAC's GlobalState rows into settled (docs/architecture/data-structures.md#settled-bytes;
-// sweep order: kernel delete → residual-flow evict → settle FOLD →
-// userspace delete). So "MAC gone from /debug/lookup" is a precise,
-// per-MAC signal that the fold (and therefore the per-server-series
-// drop) has happened.
+// VM/NIC. Always set ForMACOf: it polls /debug/lookup for that MAC and
+// returns once it stops resolving, which the sweep does LAST — after
+// the fold — so it is a precise per-entity signal.
 //
-// With ForMACOf empty it falls back to waiting for the global
-// lachesis_gc_settled_flows_total to rise — which is only trustworthy on
-// a quiet single-tenant agent: on a shared agent other tenants' folds
-// move that counter constantly, so the wait returns before THIS entity's
-// grace elapses and any following assertion reads pre-fold state
-// (lachesis#240). New scenarios should always set ForMACOf.
+// The ForMACOf-empty fallback waits on the global settled_flows
+// counter, which is only trustworthy on a quiet single-tenant agent;
+// elsewhere other tenants' folds move it and the wait returns before
+// THIS entity's grace elapses.
 type AwaitSweepStep struct {
 	// ForMACOf is the DSL id of the VM or NIC whose deleted MAC's fold to
 	// wait for — recorded by the preceding [DeleteVMStep] / [DetachPortStep].
@@ -132,15 +125,12 @@ func (s AwaitSweepStep) awaitMACSwept(ctx context.Context, env *scenariotest.Ste
 	}
 }
 
-// AssertFlowPeerStep proves WHICH interface carried driven bytes: it
-// resolves the named router's interface port on the given attach IP
-// (declared by the DSL, MAC recorded in the run-state), queries every
-// agent's /debug/flows for rows carrying that MAC, and asserts the
-// summed bytes in Zone meet MinBytes. This is the flow-granular gate
-// that a label assertion alone cannot provide — the external_network
-// label of a fallback-tier flow equals the default route's label, so
-// only the peer MAC on the flow key distinguishes "rode the intended
-// router" from "accidentally rode the default route".
+// AssertFlowPeerStep proves WHICH interface carried the bytes, by
+// summing /debug/flows rows that carry the router interface's MAC. A
+// label assertion cannot do this: a fallback-tier flow's
+// external_network label equals the default route's, so only the peer
+// MAC distinguishes "rode the intended router" from "rode the default
+// route".
 type AssertFlowPeerStep struct {
 	Router   string // DSL router id
 	Via      string // the Attach IP naming which interface of the router
@@ -352,24 +342,16 @@ func (s ResolvedGrewStep) Run(ctx context.Context, env *scenariotest.StepEnv) er
 	return nil
 }
 
-// EvictionsGrewStep asserts the pressure-relief eviction counter
-// (lachesis_gc_evictions_total{reason="pressure_relief"}) rose by at
-// least Min since the most recent [CaptureStep] — the proof that the
-// telemetry_map fill crossed the high watermark and the GC evicted the
-// oldest flows, rather than the map quietly staying under the trigger
-// (docs/architecture/data-structures.md#kernel-side-bpf-maps).
+// EvictionsGrewStep asserts the pressure-relief eviction counter rose
+// by at least Min since the last [CaptureStep]. Reads the
+// pressure_relief reason ALONE — the family also carries ttl and
+// ghost_residual_flow, and conflating them lets a ghost expiry pass as
+// pressure relief.
 //
-// It reads the pressure_relief reason ALONE, never the whole family: the
-// same family carries the ghost sweep's ttl and ghost_residual_flow
-// reasons, and conflating them would let an unrelated ghost expiry pass
-// as pressure relief.
-//
-// The step only shows that eviction happened. Its value comes from
-// pairing with the byte assertions around it: bytes evicted from the
-// kernel map must already have been flushed into GlobalState, so the
-// tenant's exposed total keeps growing across the eviction ("flush
-// before evict"). Polls until the floor is met or Timeout (default
-// [DefaultSweepTimeout]), because relief runs on the scrape tick.
+// Its value is in pairing with the byte assertions around it: evicted
+// bytes must already be in GlobalState, so the tenant's total keeps
+// growing across the eviction. Polls, because relief runs on the scrape
+// tick.
 type EvictionsGrewStep struct {
 	Min     int64
 	Timeout time.Duration
@@ -410,15 +392,12 @@ func (s EvictionsGrewStep) Run(ctx context.Context, env *scenariotest.StepEnv) e
 	return nil
 }
 
-// MaxGhostsStep asserts the live lingering-ghost gauge grew by at most
-// Budget since the most recent [CaptureStep] — the immediate,
-// discriminating "nothing was marked for deletion" check. Unlike
-// [MaxSettledStep], the gauge rises the instant a MAC is MarkDelete'd
-// (before any grace), so Budget 0 across a live migration genuinely
-// proves the migration ghosted nothing — a migration keeps the port in
-// the Neutron snapshot, so a mark is a defect, not a timing artifact
-// (lachesis#235/#243). Delta from capture, so a pre-existing ghost on a
-// shared agent doesn't false-fail it.
+// MaxGhostsStep asserts the lingering-ghost gauge grew by at most
+// Budget since the last [CaptureStep]. Unlike [MaxSettledStep] the
+// gauge rises the instant a MAC is marked, before any grace, so
+// Budget 0 across a live migration genuinely proves nothing was
+// ghosted. Delta from capture, so a pre-existing ghost cannot
+// false-fail it.
 type MaxGhostsStep struct {
 	Budget int64
 	Note   string

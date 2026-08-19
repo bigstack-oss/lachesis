@@ -1,28 +1,12 @@
 // Package reconcile owns the periodic Neutron reconcile: a 5-minute
-// safety net that re-fetches the full OpenStack snapshot, diffs it
-// against the kernel trie, and applies only the rows that changed. It
-// is a Service in the package-anatomy sense (docs/development/conventions.md#package-anatomy) —
-// the [Reconciler] owns a long-running loop started by the agent's
-// worker table.
+// safety net that re-fetches the full snapshot and applies only the
+// rows that changed, so metadata staleness stays bounded by one
+// interval even through a Kafka outage.
 //
-// # Why it exists
+// It shares [kernelwriter.ApplyTrieDelta] with the Kafka path, so the
+// insert-then-delete ordering holds for both.
 //
-// The Kafka consumer (a later sprint) keeps metadata fresh in real
-// time, but a Kafka outage would otherwise let the trie drift
-// unboundedly. This periodic reconcile bounds that drift: every
-// interval it does a full [MetadataSource.Sync] and applies the
-// difference as if Kafka had delivered it, so metadata staleness never
-// exceeds one interval regardless of Kafka availability
-// (docs/architecture/boot-and-recovery.md#boot-sequence). It shares the incremental write path — [kernelwriter.ApplyTrieDelta],
-// with its docs/architecture/trie-construction.md#incremental-updates insert-then-delete ordering — that the
-// Kafka consumer will also use.
-//
-// # Scope
-//
-// This reconcile covers the LPM subnet_zone_trie (subnet / router /
-// route changes). The mac_tenant_map reconcile (port add → insert,
-// port remove → lingering-ghost MarkDelete) lands alongside the
-// late-binding resolve path in a sibling change.
+// docs/architecture/trie-construction.md#incremental-updates
 package reconcile
 
 import (
@@ -48,38 +32,38 @@ type MapGauge interface {
 	SetCurrent(mapName string, value float64)
 }
 
-// AmphoraGauge publishes how many Octavia Amphora ports the latest pass
-// re-attributed to their load balancer's owner
-// (docs/architecture/octavia.md). Cold-start sets it once; without this
-// seam the gauge would freeze at that boot-time value and a load
-// balancer created later — the normal case — would never move it, while
-// the very failure it exists to catch (the Octavia lists stopping
-// resolving) would leave it reading healthy. *neutron.Metrics satisfies
-// it; nil skips publishing.
+// AmphoraGauge publishes how many Amphora ports the latest pass
+// re-attributed to their load balancer's owner. Cold start sets it once,
+// so without this seam the gauge would freeze at the boot value — a load
+// balancer created later would never move it, and the very failure it
+// exists to catch would read healthy. nil skips publishing.
+//
+// docs/architecture/octavia.md
 type AmphoraGauge interface {
 	SetAmphoraPorts(n int)
 }
 
-// FlowSettler folds userspace flow rows into the settled-bytes
-// accumulator (docs/architecture/data-structures.md#settled-bytes). The MAC reconcile calls it just
-// before re-pointing a live MAC at a different attribution (tenant or
-// external network), so the bytes accumulated under the old attribution
-// settle there instead of re-binding wholesale to the new one at the
-// next scrape. Consumer-defined seam; the agent wires its
-// *state.GlobalState.
+// FlowSettler folds flow rows into the settled-bytes accumulator. The
+// MAC reconcile calls it just before re-pointing a live MAC, so bytes
+// earned under the old attribution settle there instead of re-binding
+// wholesale at the next scrape.
+//
+// docs/architecture/data-structures.md#settled-bytes
 type FlowSettler interface {
 	Settle(mode state.SettleMode, resolve func(bpf.FlowKey) (tenant, extNet, server string, ok bool)) int
 	// PruneServerSettled releases server-settled buckets whose server is
 	// no longer in the Nova server list — the server tier's lifecycle
-	// rule (docs/architecture/data-structures.md#settled-bytes). The
-	// reconciler owns the call: it is the one place a fresh, successful
-	// Nova fetch is in hand.
+	// rule. The reconciler owns the call: it is the one place a fresh,
+	// successful Nova fetch is in hand.
+	//
+	// Settled bytes: docs/architecture/data-structures.md#settled-bytes
 	PruneServerSettled(alive map[string]struct{}) int
 	// PruneTenantSettled releases tenant-settled buckets whose project is
 	// no longer in the Keystone project list, folding each into the
-	// total-settled absorber — the tenant tier's lifecycle rule
-	// (docs/architecture/data-structures.md#settled-bytes). Same ownership
-	// rationale as PruneServerSettled.
+	// total-settled absorber — the tenant tier's lifecycle rule. Same
+	// ownership rationale as PruneServerSettled.
+	//
+	// Settled bytes: docs/architecture/data-structures.md#settled-bytes
 	PruneTenantSettled(alive map[string]struct{}) int
 }
 
@@ -143,9 +127,11 @@ type Options struct {
 	Seq      *boot.Sequencer
 	Metrics  *Metrics
 	// Routers is the router-interface-MAC → external-network map the
-	// pass rebuilds and swaps (per-flow external attribution,
-	// docs/architecture/billing.md). Optional (nil skips — trie-only unit
-	// tests); the agent wires the store its Resolver reads.
+	// pass rebuilds and swaps (per-flow external attribution).
+	// Optional (nil skips — trie-only unit tests); the agent wires the
+	// store its Resolver reads.
+	//
+	// Billing tiers: docs/architecture/billing.md
 	Routers *metadata.RouterMACs
 	// BPFGauge refreshes the kernel map-fill gauges after each pass.
 	// Optional (nil skips); the agent wires its bpf metrics bundle.
@@ -193,16 +179,11 @@ func (r *Reconciler) Kick() {
 	}
 }
 
-// Run reconciles on every interval tick and on every [Reconciler.Kick]
-// until ctx is cancelled — one applier goroutine for both the periodic
-// safety net and the Kafka-driven kicks, so passes never overlap. It
-// first blocks on [boot.PhaseStateRestored] so no kernel write races the
-// boot sequence — the cold-start push must have committed the initial
-// trie before any delta is computed against it. If the boot aborts (or
-// ctx is cancelled) before that phase, Run returns without reconciling.
-// There is no immediate first pass: cold-start already populated the
-// trie, so the first periodic reconcile fires one interval in (a kick
-// can run one sooner).
+// Run reconciles on each tick and on each [Reconciler.Kick] until ctx
+// is cancelled — one applier goroutine for both, so passes never
+// overlap. Blocks on [boot.PhaseStateRestored] first: a delta computed
+// before cold-start committed the initial trie would be wrong. No
+// immediate first pass; cold start already populated the trie.
 func (r *Reconciler) Run(ctx context.Context) {
 	if r.seq != nil {
 		if err := r.seq.Await(ctx, boot.PhaseStateRestored); err != nil {
@@ -262,15 +243,10 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 	r.logOutcome(delta, mac, len(result.Ambiguities))
 }
 
-// pruneServerSettled releases server-settled buckets for servers no
-// longer in the Nova list — a server's exposed series ends when (and
-// only when) the server is gone (docs/architecture/data-structures.md#settled-bytes).
-// Skipped entirely when servers is empty: a nil list means the
-// best-effort Nova fetch failed, and an empty one is indistinguishable
-// from it — pruning on missing data would end live servers' series, so
-// buckets are held until a populated list arrives (the safe direction;
-// worst case, a fully-emptied cloud retains its last servers' few
-// buckets until a server exists again). No-op without a settler.
+// pruneServerSettled releases buckets for servers gone from the Nova
+// list. Skipped when the list is empty: a failed best-effort fetch is
+// indistinguishable from a genuinely empty cloud, and pruning on
+// missing data would end live servers' series.
 func (r *Reconciler) pruneServerSettled(servers []neutron.Server) {
 	if r.settler == nil || len(servers) == 0 {
 		return
@@ -285,17 +261,10 @@ func (r *Reconciler) pruneServerSettled(servers []neutron.Server) {
 	}
 }
 
-// pruneTenantSettled releases tenant-settled buckets for projects no
-// longer in the Keystone list — a project's exposed series ends when
-// (and only when) the project is gone; each released bucket folds into
-// the total-settled absorber so the derived total tier never dips
-// (docs/architecture/data-structures.md#settled-bytes). The Keystone
-// fetch is sync-fatal (unlike the best-effort Nova list), so a failed
-// fetch never reaches this call; the empty-list skip guards the same
-// hold-on-missing-data direction anyway — a healthy Keystone always has
-// at least the service projects. metadata.UnknownTenantID joins the
-// alive set explicitly: the unknown pseudo-tenant is not a Keystone
-// project and has no project to die with. No-op without a settler.
+// pruneTenantSettled releases buckets for projects gone from Keystone,
+// folding each into the total-settled absorber so the derived total
+// never dips. metadata.UnknownTenantID joins alive explicitly — it is
+// not a Keystone project and has none to die with.
 func (r *Reconciler) pruneTenantSettled(projects []neutron.Project) {
 	if r.settler == nil || len(projects) == 0 {
 		return

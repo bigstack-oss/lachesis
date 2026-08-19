@@ -1,34 +1,16 @@
-// Package metrics implements the Prometheus custom Collector for the
-// agent. Collect() holds the [state.GlobalState] RLock for the full
-// iteration — without it the Prometheus scrape would race the
-// scraper writer and the Go runtime would fatal on concurrent map
-// iteration. See docs/architecture/contracts.md#required-contracts.
+// Package metrics implements the Prometheus custom Collector that
+// exposes the billing families from [state.GlobalState].
 //
-// # Why a custom Collector, not CounterVec
+// Two rules a change here must not break:
 //
-// CounterVec resets to zero on process restart. The agent restores
-// [state.GlobalState] from its WAL on boot; emitting from
-// GlobalState directly preserves cumulative continuity across
-// restarts so `rate()` does not go negative. See docs/adr/0007-custom-collector-over-countervec.md.
+//   - Never a CounterVec. It resets to zero on restart, and the agent
+//     restores cumulative state from its WAL — a reset makes rate() go
+//     negative and corrupts billing.
+//   - Snapshot live rows and settled buckets under one lock, and
+//     aggregate per label tuple before emitting; Prometheus rejects
+//     duplicate label sets in one scrape.
 //
-// # Per-flow vs per-label aggregation
-//
-// [state.GlobalState] is keyed by [bpf.FlowKey] (MAC, EthProto,
-// Direction, DstZone) — finer than the metric label set. Multiple
-// flow keys can map to the same (tenant_id, zone, direction) tuple.
-// The Collector aggregates per tuple before emission; Prometheus
-// rejects duplicate label sets in a single scrape, so this is not
-// optional. Per-flow granularity remains available to the GC + WAL,
-// which need it.
-//
-// # Allocation behaviour
-//
-// The Snapshot walk is zero-alloc thanks to the reused buffer. The
-// per-tuple aggregation map and [prometheus.MustNewConstMetric] do
-// allocate; those costs are per-scrape (10s cadence), not per-flow
-// per-packet, so they are left as-is. A custom [prometheus.Metric]
-// implementation backed by a sync.Pool would close that gap if
-// profiling later shows the emission to be a hotspot.
+// docs/adr/0007-custom-collector-over-countervec.md
 package metrics
 
 import (
@@ -62,7 +44,9 @@ type ScraperStats interface {
 
 // Collector emits the four-layer billing hierarchy — total → tenant →
 // server → port byte/packet counters — from a [state.GlobalState],
-// plus a handful of internal-health gauges (docs/architecture/billing.md).
+// plus a handful of internal-health gauges.
+//
+// Full rationale: docs/architecture/billing.md
 type Collector struct {
 	state    *state.GlobalState
 	scraper  ScraperStats
@@ -83,13 +67,11 @@ type Collector struct {
 	scrapeErrorsDesc  *prometheus.Desc
 	scrapeLastOKDesc  *prometheus.Desc
 
-	// collectDuration times each Collect pass (snapshot + aggregate +
-	// emit). docs/architecture/performance.md sizes the per-scrape cost by N_CPU and flow
-	// count (~5 ms at 32-core/10k flows up to 100+ ms at 128-core/50k);
-	// this histogram surfaces the actual cost per node so an
-	// outgrown scrape budget is visible before it stalls the
-	// exporter. Observed before its own emission, so the in-flight
-	// pass is included in the scrape that reports it.
+	// collectDuration times each Collect pass. Observed before its own
+	// emission, so the in-flight pass is included in the scrape that
+	// reports it.
+	//
+	// docs/architecture/performance.md
 	collectDuration prometheus.Histogram
 
 	// collectMu serialises concurrent Collect callers. The default
@@ -102,14 +84,10 @@ type Collector struct {
 	tenantSettledBuf []state.TenantSettledRecord
 	serverSettledBuf []state.ServerSettledRecord
 	totalSettledBuf  []state.TotalSettledRecord
-	// The four per-tier aggregation buffers (docs/architecture/billing.md):
-	// totalAggBuf sums the tenant tier's buckets with the tenant
-	// dimension removed; aggBuf groups per-flow entries + tenant-settled
-	// by (tenant, external_network, zone, direction); serverAggBuf
-	// groups live rows + server-settled by the server tuple; portAggBuf
-	// groups live rows by the port tuple (the mortal leaf). All reused
-	// across Collect calls; clear() resets without releasing the bucket
-	// allocations.
+	// The four per-tier aggregation buffers, reused across Collect
+	// calls; clear() resets without releasing the bucket allocations.
+	//
+	// docs/architecture/billing.md
 	totalAggBuf  map[totalAggKey]aggValue
 	aggBuf       map[aggKey]aggValue
 	serverAggBuf map[serverAggKey]aggValue
@@ -229,20 +207,16 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	c.collectDuration.Describe(ch)
 }
 
-// Collect implements [prometheus.Collector]. It copies GlobalState —
-// live flows and settled buckets together, in one RLock via
-// SnapshotWithSettled so a concurrent settle fold cannot tear the
-// exposure — into reusable buffers, and then does the allocating
-// emission lock-free over those copies. Collect itself never locks
-// GlobalState, so it cannot deadlock against the scraper writer or
-// race a concurrent map iteration.
+// Collect implements [prometheus.Collector]. It copies live flows and
+// settled buckets in one RLock via SnapshotWithSettled — a torn read
+// would double-count or drop a concurrent fold — then emits lock-free
+// over the copies, so it cannot deadlock against the scraper writer.
 //
-// The emitted value per tier (docs/architecture/billing.md,
-// docs/architecture/data-structures.md#settled-bytes, docs/architecture/contracts.md#required-contracts Contract 7):
-// tenant = live + tenant-settled; total = the tenant tier with the
-// tenant dimension summed away; server = live + server-settled
-// (settled-only tuples emitted — a portless-but-alive server
-// flat-lines); port = live rows only, the mortal leaf.
+// Emitted value per tier: tenant = live + tenant-settled; total = the
+// tenant tier summed over tenants; server = live + server-settled;
+// port = live rows only, the mortal leaf.
+//
+// docs/architecture/billing.md
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectMu.Lock()
 	defer c.collectMu.Unlock()
@@ -276,8 +250,9 @@ func (c *Collector) aggregate() {
 
 // foldTenantSettled credits the tenant tier with the settled buckets —
 // the bytes of flows whose attribution is gone (deleted VMs, reassigned
-// ports), which keep the tenant series monotone across churn
-// (docs/architecture/data-structures.md#settled-bytes).
+// ports), which keep the tenant series monotone across churn.
+//
+// Full rationale: docs/architecture/data-structures.md#settled-bytes
 func (c *Collector) foldTenantSettled() {
 	for i := range c.tenantSettledBuf {
 		s := &c.tenantSettledBuf[i]
@@ -325,12 +300,11 @@ func (c *Collector) aggregateLiveRows() {
 	}
 }
 
-// foldServerSettled credits the server tier with its absorber, CREATING
-// entries for tuples with no live rows: a server that momentarily has
-// no ports (detached NIC, port recreate in flight) keeps emitting its
-// cumulative as a flat line — the series is monotone for the server's
-// whole lifetime, and it ends only when the reconciler releases the
-// bucket on Nova-list absence (docs/architecture/data-structures.md#settled-bytes).
+// foldServerSettled credits the server tier with its absorber,
+// CREATING entries for tuples with no live rows so a momentarily
+// portless server flat-lines instead of disappearing.
+//
+// docs/architecture/data-structures.md#settled-bytes
 func (c *Collector) foldServerSettled() {
 	for i := range c.serverSettledBuf {
 		s := &c.serverSettledBuf[i]
@@ -356,13 +330,11 @@ func (c *Collector) deriveTotals() {
 	}
 }
 
-// foldTotalSettled credits the total tier with its absorber — the
-// history of projects whose tenant-settled buckets were released on
-// Keystone-list absence. Runs AFTER deriveTotals: the derived sum
-// covers only living tenants, and this fold adds the dead ones' bytes
-// back so the immortal total series never dips across a project
-// deletion, CREATING the bucket's tuple if no living tenant occupies it
-// (docs/architecture/data-structures.md#settled-bytes).
+// foldTotalSettled credits the total tier with its absorber. Must run
+// AFTER deriveTotals: the derived sum covers living tenants only, and
+// this adds the dead ones back so the immortal total never dips.
+//
+// docs/architecture/data-structures.md#settled-bytes
 func (c *Collector) foldTotalSettled() {
 	for i := range c.totalSettledBuf {
 		s := &c.totalSettledBuf[i]
@@ -375,9 +347,11 @@ func (c *Collector) foldTotalSettled() {
 }
 
 // emitBilling emits the four billing tiers from the aggregated maps —
-// bytes and packets per tier, labels per docs/architecture/metrics.md.
-// ZoneCode.String / Direction.String return constant strings for all
-// known codes — no allocation in these loops.
+// bytes and packets per tier. ZoneCode.String / Direction.String
+// return constant strings for all known codes — no allocation in these
+// loops.
+//
+// Label sets: docs/architecture/metrics.md
 func (c *Collector) emitBilling(ch chan<- prometheus.Metric) {
 	for k, v := range c.totalAggBuf {
 		zone, dir := k.zone.String(), k.dir.String()

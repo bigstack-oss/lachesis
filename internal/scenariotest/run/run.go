@@ -45,15 +45,10 @@ type Options struct {
 	// but teardown still runs to completion under [teardownTimeout].
 	HardStop context.Context
 
-	// State, when non-nil, resumes against an already-realized
-	// topology (a prior `run --keep` or `up`): realize is skipped, the
-	// full preflight narrows to the agent checks (the realize-only
-	// prerequisites no longer matter to kept VMs), and the step script
-	// runs directly — the drive step's attach recheck re-verifies the
-	// gate against the state's attach record. StatePath must be the
-	// loaded file's own path; RunID is ignored (the state's is used).
-	// Teardown semantics are unchanged (Keep still leaves the topology
-	// up).
+	// State resumes against an already-realized topology: realize is
+	// skipped, preflight narrows to the agent checks, and the script
+	// runs directly. StatePath must be the loaded file's own path;
+	// RunID is ignored in favour of the state's.
 	State *scenariotest.RunState
 
 	// Keep skips the teardown, leaving the topology up for debugging.
@@ -68,22 +63,14 @@ type Options struct {
 	MACLearnTimeout time.Duration
 }
 
-// Run composes the whole loop: preflight → up → the scenario's step
-// script → down. With [Options.State] set it resumes instead:
-// realize is skipped and the script runs against the kept topology.
-// An empty [scenariotest.Scenario.Steps] runs the classic linear
-// script — drive every declared flow, assert every declared
-// expectation — so plain scenarios behave as always; a scripted
-// scenario (e.g. mac-reuse) declares its own step order instead.
-// Teardown runs whenever `up` created anything — even after a
-// mid-script failure — unless Keep is set; the report and run-state
-// files always survive. The returned report carries every row the
-// script evaluated before a failure.
+// Run composes the loop: preflight → up → step script → down. An empty
+// Steps runs the classic linear script (drive every flow, assert every
+// expectation). Teardown runs whenever `up` created anything, even
+// after a mid-script failure, unless Keep is set.
 //
-// Error semantics mirror the subcommands: a mechanical failure
-// (preflight not ready, realize or a step unable to run) is the
-// returned error; a failed assertion is a false Report.OK, not an
-// error — the script keeps going so the report shows every check.
+// Error semantics: a MECHANICAL failure is the returned error; a failed
+// ASSERTION is a false Report.OK, not an error, so the script keeps
+// going and the report shows every check.
 func Run(ctx context.Context, opts Options) (scenariotest.AssertReport, error) {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
@@ -201,16 +188,12 @@ func Run(ctx context.Context, opts Options) (scenariotest.AssertReport, error) {
 	return report, nil
 }
 
-// runSteps executes a scenario's script in order, stopping at the first
-// step that errors (a FAILING assertion is not an error — the step
-// records its rows and returns nil, so the script continues).
+// runSteps executes the script in order, stopping at the first step
+// that ERRORS — a failing assertion records its rows and returns nil.
 //
-// It owns the guarantee that an aborted run does not leave an agent
-// host on the scenario's temporary config: the deferred sweep restores
-// whatever a step modified and did not put back, on every exit path
-// (lachesis#274). That mirrors how [Run] already defers resource
-// teardown — a run that dies half-way must not leave state behind,
-// whether that state is a Neutron port or a config file.
+// The deferred sweep is the guarantee that an aborted run never leaves
+// an agent host on the scenario's temporary config, on every exit path
+// — the config-file counterpart to [Run]'s deferred resource teardown.
 func runSteps(ctx context.Context, env *scenariotest.StepEnv, script []scenariotest.Step) error {
 	defer steps.RestoreDirtyConfigs(ctx, env)
 	for i, st := range script {

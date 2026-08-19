@@ -1,20 +1,12 @@
-// Package zombie removes orphan TC telemetry filters left over by a
-// previous agent run that exited without unloading them.
+// Package zombie removes orphan TC telemetry filters left by a previous
+// agent run that exited without unloading them.
 //
-// When the agent crashes mid-flight, its clsact filters stay
-// attached to kernel interfaces and keep the previous BPF program
-// alive via reference. If the new agent then attaches its own
-// filters without first cleaning up, two outcomes are possible:
+// The dangerous case is an orphan on a DIFFERENT interface than the new
+// agent attaches to: nothing ever replaces that filter, so the old
+// program keeps running and double-counts the same traffic. (On the
+// same interface the kernel happens to re-use the slot and free the old
+// program, but that is not guaranteed.)
 //
-//   - On the same interface as before, the kernel re-uses the
-//     filter slot and the old program is freed — harmless but not
-//     guaranteed across implementations.
-//   - On a different interface (config change, host re-plumbing),
-//     the old filter never gets a replacement and the previous
-//     program keeps running, double-counting bytes for the same
-//     traffic and producing billing corruption.
-//
-// [Hunt] is called early in [agent.Bootstrap], before any new BPF
-// program is loaded, so that the orphan's program reference is
-// dropped before we install our own collection.
+// [Hunt] therefore runs early in Bootstrap, before any new program is
+// loaded, so the orphan's reference is dropped first.
 package zombie

@@ -1,19 +1,13 @@
-// Package debug serves the agent's operator-facing /debug surface:
-// an HTML index with sync health and anomaly counts, detail pages
-// for attribution state, and the stdlib pprof handlers. Every HTML
-// page returns its exact view model as JSON under `?format=json`,
-// so the same data is one curl away from a script.
+// Package debug serves the agent's operator-facing /debug surface: an
+// HTML index with sync health and anomaly counts, detail pages for
+// attribution state, and the stdlib pprof handlers. Every page returns
+// its exact view model as JSON under `?format=json`.
 //
-// The package owns no state: [New] takes read-only accessor funcs
-// over the snapshot/trie/anomalies the agent retains via atomic
-// pointer swap, plus a fallback handler for the /debug routes other
-// subsystems own (runtime.Manager's /debug/config and
-// /debug/log-level). The agent mounts [Server.Handler] under /debug
-// in its route table.
+// The package owns no state — [New] takes read-only accessors over what
+// the agent retains by atomic swap.
 //
-// The endpoints are intentionally not authenticated; bind the HTTP
-// server to localhost or behind a reverse proxy if the host is
-// untrusted.
+// The endpoints are intentionally UNAUTHENTICATED: bind to localhost or
+// sit behind a proxy if the host is untrusted.
 package debug
 
 import (
