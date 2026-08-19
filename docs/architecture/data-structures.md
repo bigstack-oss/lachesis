@@ -238,18 +238,16 @@ WAL                                 /var/lib/lachesis/network_agent_state.json (
   .bak for recovery from a bad write. Read on boot before any other
   operation.
 
-  Snapshot envelope (schema v3):
+  Snapshot envelope (current schema — see the history table below):
     {
-      "schema_version": 3,               // v1: flow records only.
-                                         // v2: + settled section.
-                                         // v3: + external_network on
-                                         //     settled buckets.
-                                         // Each bump is additive — older
-                                         // files load without migration.
+      "schema_version": 7,
       "agent_build":    "8c2f4d1a9b3e",  // short VCS revision; ops correlation
       "written_at_ns":  "1746...",       // u64-as-string (see below)
+      "counters_reset_at_s": 1746...,    // state-restart epoch (v6+)
       "global_state":   { ... },         // live flow rows
-      "settled":        { ... }          // settled accumulator buckets
+      "tenant_settled": { ... },         // tenant tier absorber
+      "server_settled": { ... },         // server tier absorber (v4+)
+      "total_settled":  { ... }          // total tier absorber (v5+)
     }
 
   u64 fields (byte counters, last_seen_ns, written_at_ns) are encoded as
@@ -299,6 +297,27 @@ WAL                                 /var/lib/lachesis/network_agent_state.json (
     (Bolt, SQLite) are overkill for "one writer, once per minute" with the
     ≤60s recovery target (boot-and-recovery.md).
 ```
+
+### WAL schema history
+
+`wal.SchemaVersion` is the on-disk envelope version, bumped only when the
+wire types change. **Every bump so far has been purely additive**: an older
+file decodes with the new fields absent and their zero values are meaningful,
+so `Load` reads it without a migration step. A file whose version is *newer*
+than the running build is refused outright — starting anyway would let the
+flush rotation destroy the only forward snapshot within two flushes.
+
+| Version | Adds | Why the older file still loads |
+|---|---|---|
+| v1 | flow records only | — |
+| v2 | the settled section | a v1 file is a v2 file with no settled buckets |
+| v3 | `external_network` on settled buckets | the absent field maps to the `NoExternalNetwork` sentinel; a pre-label bucket *is* a "none" bucket |
+| v4 | `server_settled` (server tier absorber); renames `settled` → `tenant_settled` | no server-settled buckets in a v3 file; `Load` accepts both key names, `Save` writes only the new one |
+| v5 | `total_settled` (total tier absorber) | a v4 file predates any project dying, so the section is legitimately empty |
+| v6 | `counters_reset_at_s`, the state-restart epoch | decodes as 0 = "epoch unknown"; the boot restore stamps a fresh one. The one spurious discontinuity at upgrade is billing-free under the ETL's per-segment baseline subtraction |
+| v7 | `created_ns` on each flow's raw counters — the kernel entry-identity stamp ([ADR 0014](../adr/0014-in-band-entry-identity-over-inferred-resets.md)) | decodes as 0 = "identity unknown"; the first scrape falls back to the value guard, then adopts the kernel's stamp |
+
+Adding a version means adding a row here, not just bumping the constant.
 
 ## Lingering Ghost
 
