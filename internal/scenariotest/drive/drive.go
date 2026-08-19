@@ -64,14 +64,11 @@ const (
 	// flowBasePort is the sink port for flow 0; flow i listens on
 	// flowBasePort+i so concurrent-run leftovers never collide.
 	flowBasePort = 15000
-	// pingPayloadBytes is the ICMP payload size for external-target
-	// flows. The byte math treats headers as free margin, so MinBytes
-	// stays a safe lower bound. Sized so a MiB-scale budget fits the
-	// SSH exec timeout: busybox ping has no sub-second interval flag,
-	// so the packet count is the duration in seconds — 60 KB payloads
-	// (kernel-fragmented on the wire; every fragment's bytes still
-	// count at the tap) push 1 MiB in ~18 packets instead of the 1024
-	// one-per-second packets that killed the exec budget.
+	// pingPayloadBytes is the ICMP payload for external-target flows.
+	// Large because busybox ping has no sub-second interval flag, so
+	// packet count IS the duration in seconds — 60 KB pushes a MiB in
+	// ~18 packets instead of 1024, which blew the SSH exec budget.
+	// Fragments still count at the tap.
 	pingPayloadBytes = 60000
 
 	// DefaultMACLearnTimeout bounds the pre-drive MAC-learn gate. The
@@ -84,19 +81,14 @@ const (
 	macLearnPollInterval = 3 * time.Second
 )
 
-// Run pushes every declared flow across the realized topology: it
-// re-confirms the attach gate recorded by `up`, snapshots the
-// pre-traffic lachesis_tenant_bytes_total baseline into the run-state (assert
-// diffs against it), then executes the flows in declaration order.
+// Run pushes every declared flow: re-confirm the attach gate, snapshot
+// the pre-traffic baseline into the run-state, then drive in
+// declaration order. Two strategies, both busybox-safe:
 //
-// scenariotest.Flow strategies (both busybox/Cirros-safe, both validated live):
-//   - VM target: a `nc -l` sink starts on the target (reached via its
-//     FIP), then the source streams `dd | nc` at the target's internal
-//     IP — so the asserted bytes flow tenant-network paths, not FIPs.
-//   - External target: the source pings the literal IP with a sized
-//     payload. Transmitted bytes count at the tap whether or not
-//     anything answers, which is exactly the tx lower bound the
-//     external/infra scenarios assert.
+//   - VM target: `nc -l` sink on the target, source streams at its
+//     INTERNAL IP — so bytes take tenant-network paths, not FIPs.
+//   - External target: sized ping. Transmitted bytes count at the tap
+//     whether or not anything answers.
 func Run(ctx context.Context, opts Options) error {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
@@ -209,16 +201,12 @@ func (d *driver) waitMACsLearned() error {
 	}
 }
 
-// unresolvedMACs returns a description of every (port, agent) pair the
-// gate is still waiting on: the agent has not learned the MAC, a stale
-// ghost from MAC reuse still resolves it to a different tenant, or the
-// lookup itself failed. Lookup errors count as unresolved rather than
-// aborting — the gate is a minutes-long poll against live HTTP
-// endpoints, and one refused connection during an agent's busy moment
-// must not kill the run; a persistent error surfaces verbatim in the
-// timeout message. A Found hit with an empty TenantID passes the
-// tenant check — a real agent always carries the tenant on a hit, so
-// the leniency only lets tenant-agnostic test stubs through.
+// unresolvedMACs describes every (port, agent) pair the gate still
+// waits on. Lookup ERRORS count as unresolved rather than aborting: the
+// gate polls live endpoints for minutes, so one refused connection must
+// not kill the run — a persistent error surfaces in the timeout
+// message. An empty TenantID on a hit passes, which only admits
+// tenant-agnostic test stubs.
 func (d *driver) unresolvedMACs(urls []string, want []scenariotest.ResourceRef) []string {
 	var missing []string
 	for _, p := range want {

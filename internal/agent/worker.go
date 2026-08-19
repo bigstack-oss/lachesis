@@ -21,24 +21,13 @@ type worker struct {
 	run     func(context.Context)
 }
 
-// workers returns the agent's long-lived goroutines in DRAIN order:
-// netlink first (stop attaching while tearing down), then the ghost
-// sweeper, then the kafka consumer before the reconciler (so it stops
-// kicking before its target drains), then the reconciler (metadata
-// maintenance, no ordering constraint with the billing drain — cancelling
-// it also aborts any in-flight Neutron fetch via its ctx), then scraper
-// before wal so the scraper's final tick lands its deltas in GlobalState
-// before the WAL final flush snapshots them.
-// The order is enforced structurally: [Agent.drainWorkers] cancels each
-// row's own context and awaits its exit before moving to the next row,
-// so the WAL flusher's final flush cannot start until the scraper has
-// returned.
+// workers returns the agent's long-lived goroutines in DRAIN order.
+// Two orderings are load-bearing: kafka before reconcile, so it stops
+// kicking before its target drains; and scraper before wal, so the
+// final tick lands its deltas before the final flush snapshots them.
 //
-// This list is the single source of truth for Run's goroutines:
-// [startWorkers] spawns every enabled row and both shutdown paths
-// drain exactly this list. Adding a goroutine to Run means adding a
-// row here — the goleak checks in the package tests fail on
-// stragglers spawned outside the list.
+// This list is the single source of truth for Run's goroutines — the
+// goleak checks fail on any spawned outside it.
 func (a *Agent) workers() []worker {
 	return []worker{
 		{"netlink subscriber", a.netlinkSubscriber != nil, a.runNetlink},
@@ -60,15 +49,12 @@ func (a *Agent) runNetlink(ctx context.Context) {
 	}
 }
 
-// startWorkers spawns every enabled worker on its own context and
-// returns one cancel func and one done channel per row, index-aligned
-// with ws. The contexts deliberately do not derive from the caller's:
-// a worker stops only when [Agent.drainWorkers] cancels its row, so
-// the list's drain order is also the cancellation order — that is
-// what guarantees the scraper's final tick completes before the WAL
-// flusher sees its own cancellation. Disabled rows get a no-op cancel
-// and an already-closed channel so drainWorkers can range the same
-// list without special cases.
+// startWorkers spawns every enabled worker on its OWN context, index-
+// aligned with ws. The contexts deliberately do not derive from the
+// caller's: a worker stops only when its row is cancelled, which is what
+// makes the list's order the cancellation order. Disabled rows get a
+// no-op cancel and a closed channel so drainWorkers needs no special
+// case.
 func startWorkers(ws []worker) ([]context.CancelFunc, []chan struct{}) {
 	cancels := make([]context.CancelFunc, len(ws))
 	done := make([]chan struct{}, len(ws))
@@ -90,14 +76,10 @@ func startWorkers(ws []worker) ([]context.CancelFunc, []chan struct{}) {
 	return cancels, done
 }
 
-// drainWorkers stops every [Agent.workers] goroutine in the list's
-// order — the drain ordering lives on the list, not here. Each row is
-// cancelled and then awaited before the next row is cancelled, so a
-// later worker's shutdown work (the WAL final flush, say) cannot
-// start until every earlier worker (the scraper's final tick) has
-// exited. Used by both shutdown paths (caller-ctx cancel and HTTP
-// server failure), so the goroutine teardown and final flush are
-// identical regardless of why the agent is stopping.
+// drainWorkers stops every worker in the list's order — the ordering
+// lives on the list, not here. Each row is cancelled AND awaited before
+// the next, so the WAL's final flush cannot start until the scraper's
+// final tick has exited. Both shutdown paths use it.
 func (a *Agent) drainWorkers(ws []worker, cancels []context.CancelFunc, done []chan struct{}) {
 	for i, w := range ws {
 		cancels[i]()
@@ -106,15 +88,11 @@ func (a *Agent) drainWorkers(ws []worker, cancels []context.CancelFunc, done []c
 	slog.Info("shutdown complete", "component", componentAgent)
 }
 
-// await blocks until done is closed or shutdownTimeout elapses,
-// logging which goroutine stopped or timed out. drainWorkers calls it
-// once per workers() row so a slow HTTP drain never leaves a goroutine
-// holding a BPF map read while the caller closes the collection. A
-// timeout also forfeits the drain ordering for the rows after the
-// stuck one — a scraper stuck past the budget means the WAL final
-// flush runs without the final tick's deltas. A WAL-flush timeout is
-// the design's stated worst case: the last ≤flush_interval of
-// in-memory deltas are lost.
+// await blocks until done closes or shutdownTimeout elapses. A timeout
+// forfeits the drain ordering for every row after the stuck one — a
+// stuck scraper means the WAL flush runs without the final tick's
+// deltas, losing up to one flush interval. That is the design's stated
+// worst case.
 func (a *Agent) await(name string, done <-chan struct{}) {
 	select {
 	case <-done:

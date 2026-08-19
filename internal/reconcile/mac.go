@@ -1,9 +1,9 @@
-// mac.go reconciles the kernel mac_tenant_map and the userspace metadata
-// map against a fresh Neutron snapshot — the MAC-side counterpart of the
-// subnet_zone_trie reconcile in reconcile.go. Where the trie diff is a
-// pure kernel write, the MAC reconcile drives the lingering-ghost
-// lifecycle (docs/architecture/data-structures.md#lingering-ghost/docs/architecture/data-structures.md#map-lifecycle-invariants): insertions go userspace→kernel,
-// removals are delayed via MarkDelete rather than deleted outright.
+// mac.go reconciles the kernel mac_tenant_map and the userspace
+// metadata map against a fresh Neutron snapshot — the MAC-side
+// counterpart of the trie reconcile in reconcile.go. Insertions go
+// userspace→kernel; removals are delayed via MarkDelete.
+//
+// docs/architecture/data-structures.md#map-lifecycle-invariants
 
 package reconcile
 
@@ -19,11 +19,11 @@ import (
 )
 
 // MacWriter writes one (mac → tenant id) binding into the kernel
-// mac_tenant_map. The reconcile worker inserts learned MACs through it;
-// removals are deliberately NOT its job — a gone MAC becomes a lingering
-// ghost (userspace MarkDelete) and the GC sweeps the kernel entry after
-// the grace window (docs/architecture/data-structures.md#lingering-ghost). The agent wires an *ebpf.Map
-// adapter; tests wire a recording mock.
+// mac_tenant_map. Removals are deliberately not its job: a gone MAC
+// becomes a lingering ghost and the GC sweeps the kernel entry after
+// the grace window.
+//
+// docs/architecture/data-structures.md#lingering-ghost
 type MacWriter interface {
 	// value is the packed (Amphora flag ++ tenant id) the kernel stores,
 	// built by [bpf.TenantValue] — not a bare tenant id.
@@ -55,33 +55,22 @@ func (r *Reconciler) reconcileMACs(snap *neutron.Snapshot, now time.Time) macDel
 }
 
 // DesiredMACs maps each admitted VM port to its full attribution — the
-// target state of the metadata map (the kernel mac_tenant_map carries
-// only the tenant slice of it). Admission is neutron.IsVMPort plus a
-// parseable MAC and a project; ports failing it are skipped silently,
-// because first-time admission logging is cold-start's job and a
-// persistently malformed port must not log every pass. ServerID and
-// ExternalNetwork ride along so the per-server export and the
-// external_network label stay current between cold starts
-// (docs/architecture/billing.md); Amphora ports resolve to their load
-// balancer's owning project (docs/architecture/octavia.md).
+// target state of the metadata map. Amphora ports resolve to their load
+// balancer's owning project. Ports failing admission are skipped
+// silently: a persistently malformed port must not log every pass.
 //
-// # Why this is exported
+// Exported because it is the SINGLE definition of what the map should
+// hold, and it has two callers — the reconciler every pass, cold start
+// once before any packet. Two implementations would be a billing bug: if
+// cold start applied the Amphora rewrite and the reconciler did not, the
+// first pass after boot would settle every Amphora port's flows under
+// the LB owner and re-attribute to the service project, and the next
+// cold start would swing it back.
 //
-// It is the SINGLE definition of what the metadata map should hold for
-// a snapshot, and it has two callers: the reconciler applies it every
-// pass, and the agent's cold-start populator applies it once before any
-// packet. That must not become two implementations. Were cold-start to
-// compute attribution its own way and drift — say, applying the Amphora
-// rewrite where the reconciler did not — the first reconcile pass after
-// boot would see an attribution change on every Amphora port, settle its
-// flows under the load balancer's owner, and re-attribute to the service
-// project; the next cold start would swing it back. Two copies of this
-// logic is a billing bug waiting for someone to edit one of them.
+// Diagnostics stay OUT — they belong to cold start's audit pass, which
+// produces no attribution and so cannot mis-bill if it drifts.
 //
-// Diagnostics deliberately stay OUT: counters, warn-logs, and the
-// unknown-device_owner metric belong to cold-start's own audit pass,
-// which produces no attribution and therefore cannot mis-bill if it
-// drifts.
+// docs/architecture/octavia.md
 func DesiredMACs(snap *neutron.Snapshot) map[uint64]metadata.TenantMeta {
 	extByPort := neutron.ExternalNetworkByPort(snap)
 	ampByPort := neutron.AmphoraOwnerByPort(snap)
@@ -133,22 +122,15 @@ func (r *Reconciler) publishAmphoraCount(desired map[uint64]metadata.TenantMeta)
 }
 
 // learnMACs inserts every desired MAC that is absent, ghosted, or whose
-// attribution changed — userspace first, then kernel
-// (docs/architecture/data-structures.md#map-lifecycle-invariants). Learning a previously-unknown MAC is what lets the next scrape
-// resolve its buffered flows. Returns (inserted, changed); an entry
-// already live with the same attribution is left untouched.
+// attribution changed — userspace first, then kernel. Returns
+// (inserted, changed).
 //
-// Any attribution change — tenant, external network, or server binding —
-// settles the MAC's accumulated flows under the OLD attribution before
-// the binding is replaced: the Collector late-binds all three labels per
-// scrape, so without the fold the MAC's whole history would re-attribute
-// at the next scrape — the tenant case re-bills another project
-// (docs/architecture/data-structures.md#settled-bytes), the external-network case teleports bytes
-// between external_network series (breaking their monotonicity), and the
-// server case re-mints the old server's cumulative under the new
-// server_id (over-billing it in the per-server export's born-series
-// rule, docs/architecture/billing.md). A ghost resurrected with identical attribution does not
-// fold — its history still belongs where it is.
+// Any attribution change settles the MAC's flows under the OLD
+// attribution first. The Collector late-binds every label per scrape, so
+// skipping the fold re-attributes the MAC's whole history at the next
+// one. A ghost resurrected unchanged does not fold.
+//
+// docs/architecture/data-structures.md#settled-bytes
 func (r *Reconciler) learnMACs(desired map[uint64]metadata.TenantMeta) (inserted, changed int) {
 	for mac, want := range desired {
 		cur, ok := r.meta.Lookup(mac)
@@ -171,17 +153,11 @@ func (r *Reconciler) learnMACs(desired map[uint64]metadata.TenantMeta) (inserted
 	return inserted, changed
 }
 
-// settleAttributionChange folds mac's GlobalState flow rows into the
-// settled accumulator under old's attribution — tenant plus the
-// zone-gated external_network label, so each row's bytes land in exactly
-// the series they were being emitted on. The fold uses
-// [state.SettleRebase] — the port is alive and its kernel telemetry_map
-// counters keep running, so the rows must survive with their LastEbpfRaw
-// watermarks intact: the next drain then credits only bytes that arrived
-// after the fold, and those late-bind to the new attribution. Evicting
-// the rows instead would make the next drain re-count the full kernel
-// cumulative as first sight — double-billing the new attribution with
-// the old one's bytes.
+// settleAttributionChange folds mac's flow rows into settled under
+// old's attribution. Uses [state.SettleRebase], not evict: the port is
+// alive and its kernel counters keep running, so the rows must survive
+// with LastEbpfRaw intact. Evicting would make the next drain re-count
+// the whole kernel cumulative as first sight.
 func (r *Reconciler) settleAttributionChange(mac uint64, old *metadata.TenantMeta, want *metadata.TenantMeta) {
 	if r.settler == nil {
 		return
@@ -204,10 +180,13 @@ func (r *Reconciler) settleAttributionChange(mac uint64, old *metadata.TenantMet
 	}
 }
 
-// insertMAC writes one binding userspace-first then kernel
-// (docs/architecture/data-structures.md#map-lifecycle-invariants). The TenantMeta is replaced whole, never mutated (the immutable
+// insertMAC writes one binding userspace-first then kernel. The
+// TenantMeta is replaced whole, never mutated (the immutable
 // invariant). A kernel write failure is logged, not fatal — userspace
-// already reflects the binding and the next pass retries the kernel side.
+// already reflects the binding and the next pass retries the kernel
+// side.
+//
+// Map lifecycle: docs/architecture/data-structures.md#map-lifecycle-invariants
 func (r *Reconciler) insertMAC(mac uint64, meta metadata.TenantMeta) {
 	m := meta // fresh copy per insert; the map owns the pointer
 	m.DeleteAt = time.Time{}
@@ -218,12 +197,12 @@ func (r *Reconciler) insertMAC(mac uint64, meta metadata.TenantMeta) {
 	}
 }
 
-// ghostGoneMACs MarkDeletes every live metadata entry whose MAC is no
-// longer in desired, starting its lingering-ghost grace
-// (docs/architecture/data-structures.md#lingering-ghost) — the agent's first production MarkDelete caller. It collects
-// under Range and marks afterwards: MarkDelete takes a shard write lock
-// that Range holds as a read lock. Already-ghosted entries are left alone
-// so their original grace keeps running.
+// ghostGoneMACs MarkDeletes every live entry whose MAC left desired,
+// starting its grace window. Collects under Range and marks afterwards:
+// MarkDelete takes a shard write lock that Range holds as a read lock.
+// Already-ghosted entries keep their original deadline.
+//
+// docs/architecture/data-structures.md#lingering-ghost
 func (r *Reconciler) ghostGoneMACs(desired map[uint64]metadata.TenantMeta, now time.Time) int {
 	var gone []uint64
 	r.meta.Range(func(mac uint64, m *metadata.TenantMeta) bool {

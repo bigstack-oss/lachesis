@@ -1,20 +1,15 @@
-// Package kafka consumes OpenStack oslo.messaging notifications and kicks
-// a Neutron reconcile on every committed metadata change, so the trie and
-// mac_tenant_map refresh within one pass instead of waiting for the
-// periodic safety net (docs/architecture/trie-construction.md#incremental-updates, docs/architecture/boot-and-recovery.md#boot-sequence). It is a Service in the
-// package-anatomy sense (docs/development/conventions.md#package-anatomy): the [Consumer] owns a
-// long-running loop started by the agent's worker table.
+// Package kafka consumes oslo.messaging notifications and kicks a
+// Neutron reconcile on each committed metadata change, so metadata
+// refreshes within a pass instead of waiting for the periodic net.
 //
-// # Why kick instead of apply
+// It deliberately does NOT parse payloads or touch kernel maps. An
+// event means only "metadata changed"; the reconciler re-reads
+// authoritative state and applies the delta. Routing everything through
+// that one goroutine keeps a single applier for both timer and Kafka —
+// no lock, no parallel apply path — and makes the post-event trie
+// identical to a cold start at the same instant.
 //
-// The consumer deliberately does NOT parse event payloads or touch the
-// kernel maps. A committed Neutron event means "metadata changed"; the
-// reconciler then re-reads authoritative state from Neutron and applies
-// the delta. Routing every update through the single reconciler goroutine
-// keeps one applier for both the timer and Kafka — no lock, no parallel
-// apply path — and guarantees the post-event trie matches a cold-start at
-// the same point in time. The cost is one Neutron Sync per debounced
-// burst, the same operation the 5-minute reconcile already runs.
+// docs/architecture/trie-construction.md#incremental-updates
 package kafka
 
 import (

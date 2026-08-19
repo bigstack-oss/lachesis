@@ -10,48 +10,13 @@ package wal
 
 import "github.com/bigstack-oss/lachesis/internal/state"
 
-// SchemaVersion is the on-disk envelope version. Bumped only on a
-// change to the wire types below; each bump needs a migration step (or
-// an explicit additive-compatibility note) in Load. Newer-than-this on
-// disk causes Load to refuse to start (we can't safely interpret a
-// future schema).
+// SchemaVersion is the on-disk envelope version. Every bump so far has
+// been purely additive, so an older file loads without migration; a
+// NEWER file is refused, because starting anyway lets flush rotation
+// destroy the only forward snapshot. Bumping this means adding a row to
+// the history table, not just changing the number.
 //
-// History:
-//   - v1: global_state flow records only.
-//   - v2: adds the settled section (docs/architecture/data-structures.md#settled-bytes). Purely
-//     additive — a v1 file is a valid v2 file with no settled buckets,
-//     so Load reads both without migration.
-//   - v3: adds external_network to settled buckets
-//     (docs/architecture/billing.md). Purely additive — a v2 settled entry decodes with the
-//     field absent, which Load maps to the metadata.NoExternalNetwork
-//     sentinel; a pre-external-network bucket IS a "none" bucket, so no
-//     migration is needed.
-//   - v4: adds the server_settled section — the server tier's fold
-//     absorber in the four-layer family hierarchy
-//     (docs/architecture/data-structures.md#settled-bytes). Purely
-//     additive — a v3 file is a valid v4 file with no server-settled
-//     buckets, so Load reads it without migration. v4 also renames the
-//     tenant accumulator's key settled → tenant_settled; Load accepts
-//     both (LegacySettled), Save writes only the new key.
-//   - v5: adds the total_settled section — the total tier's fold
-//     absorber, credited when a dead project's tenant-settled bucket is
-//     released ([state.GlobalState.PruneTenantSettled],
-//     docs/architecture/data-structures.md#settled-bytes). Purely
-//     additive — a v4 file is a valid v5 file with no total-settled
-//     buckets (no project had died yet), so Load reads it without
-//     migration.
-//   - v6: adds counters_reset_at_s — the epoch behind
-//     lachesis_agent_counters_reset_timestamp_seconds, carried across
-//     warm restarts so the gauge keeps declaring the last true state
-//     restart (docs/architecture/boot-and-recovery.md). Purely
-//     additive — the field decodes as 0 from a v5 file, which the boot
-//     restore treats as "epoch unknown" and re-stamps once (a spurious
-//     discontinuity is billing-free under the ETL's per-segment
-//     baseline subtraction; the one-time alert at upgrade is accepted).
-//   - v7: adds created_ns to each flow's raw counters — the kernel
-//     entry-identity stamp (docs/adr/0014-in-band-entry-identity-over-inferred-resets.md).
-//     A v6 file loads clean: the field decodes as 0, meaning "identity
-//     unknown", and the first scrape falls back to the value guard.
+// docs/architecture/data-structures.md#wal-schema-history
 const SchemaVersion uint = 7
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
@@ -98,14 +63,11 @@ const (
 	LoadEmpty
 )
 
-// LoadResult bundles a successful Load. Records is nil when Source
-// is LoadEmpty; TenantSettled is nil for LoadEmpty and for v1 snapshots,
-// which predate the settled section; ServerSettled is nil for LoadEmpty
-// and for v1–v3 snapshots, which predate the server-settled section;
-// TotalSettled is nil for LoadEmpty and for v1–v4 snapshots, which
-// predate the total-settled section. CountersResetAt is 0 for
-// LoadEmpty and for v1–v5 snapshots, which predate the epoch field —
-// the restore treats 0 as "unknown" and stamps a fresh epoch.
+// LoadResult bundles a successful Load. Every section is nil (or 0) on
+// LoadEmpty and on snapshots older than the version that introduced it
+// — the zero value is meaningful in each case.
+//
+// docs/architecture/data-structures.md#wal-schema-history
 type LoadResult struct {
 	Records         []state.Record
 	TenantSettled   []state.TenantSettledRecord

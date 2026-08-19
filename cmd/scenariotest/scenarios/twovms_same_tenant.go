@@ -5,23 +5,17 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// twoVMsSameTenant is the baseline that closes the scenariotest loop
-// end to end: realize → drive → scrape → assert. Two VMs in one
-// project on one subnet; a single TCP stream from A to B. The bytes
-// must increment for {T1, same_tenant, tx} (A sending) and
-// {T1, same_tenant, rx} (B receiving) — both VMs are T1, so the
-// per-tenant totals carry A's send and B's receive.
+// twoVMsSameTenant is the baseline closing the loop end to end:
+// realize → drive → scrape → assert. Two VMs, one project, one subnet,
+// one TCP stream. Both are T1, so the tenant totals must carry A's send
+// and B's receive.
 //
-// Placement is left empty so the scheduler decides — on single-node
-// dev-cmp that is the only host; on multi-node clusters this is only
-// meaningful when both VMs land on the same hypervisor (a Placement
-// pin, added once the baseline passes).
+// Placement is left to the scheduler; on a multi-node cluster this row
+// only means something when both VMs land on one hypervisor.
 //
-// The router + external gateway exist purely for floating-IP
-// reachability: Neutron only associates a FIP when a router with a
-// gateway on the external network also has an interface on the VM's
-// subnet. The asserted traffic is L2-adjacent (MAC-classified), so
-// the router does not change the same_tenant classification.
+// The router and gateway exist purely for FIP reachability — Neutron
+// requires them to associate one. The asserted traffic is L2-adjacent,
+// so they do not affect the classification.
 func twoVMsSameTenant() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").

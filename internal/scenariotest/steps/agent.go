@@ -13,35 +13,23 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/agentctl"
 )
 
-// RestartAgentStep restarts the telemetry agent on one compute host
-// over SSH and waits for it to come back on /metrics with its taps
-// re-attached — the prerequisite behind WAL-restart continuity,
-// zombie-hunter verification, pressure-GC, and fault-injection
-// scenarios. It restarts the agent; the billing-continuity assertions
-// (monotone, no reset) are the scenario's own steps after it.
+// RestartAgentStep restarts the agent on one compute host and waits
+// for it to return on /metrics with its taps re-attached. It only
+// restarts; the billing-continuity assertions are the scenario's own
+// steps after it.
 //
-// With SetConfig the step derives a modified config from the one the
-// node already runs before restarting, bringing the agent back under
-// different tunables; the original is backed up to
-// <config>.scenariotest.bak on the host. Restoring it is the scenario's
-// concern (a later RestartAgentStep with RestoreConfig) — deliberately
-// not automatic, since a step has no post-hook.
+// SetConfig derives a modified config from the node's own before
+// restarting, backing the original up on the host. Restoring is the
+// scenario's job — a step has no post-hook.
 type RestartAgentStep struct {
 	// Node selects the agent: a placement slot ("node:0") or a literal
 	// agent host. Empty means the sole agent (errors if more than one).
 	Node string
-	// SetConfig overrides individual keys in the node's OWN agent config
-	// before the restart — dotted YAML path to value, e.g.
-	// {"gc.pressure_high_watermark": "0.0001"}. Values are decoded as
-	// YAML scalars, so they land with their natural type (float, bool,
-	// duration string). Everything not named is preserved, and the
-	// original is backed up to <config_path>.scenariotest.bak, so a later
-	// RestoreConfig undoes it.
-	//
-	// This is the cluster-portable way to run an agent under different
-	// tunables: nothing has to be pre-staged, and the derived config
-	// keeps the node's own broker list, WAL path and credentials.
-	// Mutually exclusive with RestoreConfig.
+	// SetConfig overrides individual keys in the node's OWN config —
+	// dotted YAML path to value, decoded as YAML scalars so each lands
+	// with its natural type. Unnamed keys are preserved and the original
+	// is backed up, which keeps the node's own brokers, WAL path and
+	// credentials. Mutually exclusive with RestoreConfig.
 	SetConfig map[string]string
 	// RestoreConfig restores the config an earlier SetConfig backed up
 	// (<config_path>.scenariotest.bak) before the restart — how a
@@ -49,9 +37,11 @@ type RestartAgentStep struct {
 	RestoreConfig bool
 	// RemoveWAL deletes the agent's WAL and its .bak (agent_control.wal_path)
 	// between stop and start — the WAL-destroyed cold boot of the
-	// counters-reset-epoch design (docs/architecture/boot-and-recovery.md#counters-reset-epoch).
-	// With pinned maps still in place the restart is the ADOPTED shape:
-	// the kernel counters carry on and only the WAL-held state is lost.
+	// counters-reset-epoch design. With pinned maps still in place the
+	// restart is the ADOPTED shape: the kernel counters carry on and
+	// only the WAL-held state is lost.
+	//
+	// Counters-reset epoch: docs/architecture/boot-and-recovery.md#counters-reset-epoch
 	RemoveWAL bool
 	// RemovePins additionally removes the agent's bpffs pin directory
 	// (agent_control.pin_path) — combined with RemoveWAL this simulates
@@ -139,58 +129,39 @@ func (s ReloadAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) err
 	return nil
 }
 
-// ReloadAgentStep installs an alternate config on an agent host and
-// sends SIGHUP — a HOT reload, not a restart: the process does not
-// cycle, so in-memory state (crucially the UnresolvedBuffer) survives.
-// It is how the unresolved-latebind scenario "resumes the metadata
-// feed" — swap in a config with a short reconcile interval and SIGHUP,
-// and the running agent's next periodic reconcile learns the newly
-// booted VM and late-binds its buffered bytes. Only hot-reloadable
-// fields take effect (docs/operations/runtime.md); a restart would
-// discard the buffer this scenario depends on.
+// ReloadAgentStep installs an alternate config and sends SIGHUP — a
+// HOT reload, so in-memory state (crucially the UnresolvedBuffer)
+// survives where a restart would discard it. Only hot-reloadable fields
+// take effect.
 //
-// PRECONDITION when SetConfig is set: unlike [RestartAgentStep], this
-// deliberately does NOT back up the current config (a reload chains
-// after a restart's config change, and a second backup would clobber
-// that restart's original-config backup). So it is only safe after a
-// RestartAgentStep has already backed up the real config, and the
-// scenario must restore it explicitly (its final RestartAgentStep with
-// RestoreConfig). Used standalone, it would modify the config with no
-// way back.
+// PRECONDITION with SetConfig: this deliberately takes NO backup, since
+// a reload chains after a restart's config change and a second backup
+// would clobber that restart's. Safe only after a RestartAgentStep has
+// backed up the real config; used standalone there is no way home.
+//
+// docs/operations/runtime.md
 type ReloadAgentStep struct {
 	// Node selects the agent (a placement slot or literal host); empty
 	// means the sole agent.
 	Node string
-	// SetConfig overrides individual keys in the config the node is
-	// currently running, before the SIGHUP — dotted YAML path to value,
-	// like [RestartAgentStep.SetConfig]. Because it patches the CURRENT
-	// config, overrides an earlier restart applied stay in force and this
-	// step only names what changes.
-	//
-	// NO backup is taken (see the PRECONDITION on the type): the earlier
-	// restart's backup is the scenario's way home.
+	// SetConfig patches the CURRENT config before the SIGHUP, so an
+	// earlier restart's overrides stay in force and this step names only
+	// what changes. No backup — see the PRECONDITION on the type.
 	SetConfig map[string]string
 }
 
 func (ReloadAgentStep) Kind() string { return "reload-agent" }
 
 // RestoreDirtyConfigs puts back every agent config a step modified and
-// did not restore. It is the safety net for the abort paths: a step
-// error returns straight out of the executor, so a scenario's trailing
-// restore step is never reached and the host would otherwise keep
-// serving the scenario's temporary config — silently, into whatever
-// runs next (lachesis#274).
+// did not restore — the safety net for abort paths, where a step error
+// returns straight out of the executor and the trailing restore step
+// never runs.
 //
-// Deliberately best-effort and loud: a failure here is logged at error
-// level naming the host, never returned, because it must not mask the
-// original step error that caused the abort. Restores run newest-first
-// and through the ordinary [RestartAgentStep] path, so the running
-// agent ends up on the restored file rather than merely the file being
-// right on disk.
-//
-// The context is detached from ctx (a cancelled run — Ctrl-C — is
-// exactly when config gets stranded) but bounded, so a wedged host
-// cannot hang the run's exit.
+// Best-effort and loud: failures log at error level and are never
+// returned, so they cannot mask the original error. Restores run
+// newest-first through the ordinary restart path, so the agent ends up
+// running the restored file. The context is detached (a Ctrl-C is
+// exactly when config gets stranded) but bounded.
 func RestoreDirtyConfigs(ctx context.Context, env *scenariotest.StepEnv) {
 	nodes := env.TakeConfigDirty()
 	if len(nodes) == 0 {

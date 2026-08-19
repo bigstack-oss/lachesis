@@ -6,24 +6,17 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// interfaceDetachReattach pins both halves of the detach lifecycle
-// (lachesis#227's attribution edge — same Neutron port throughout, so
-// this is the one recreate shape with NO new identity anywhere):
+// interfaceDetachReattach pins both halves of the detach lifecycle —
+// the same Neutron port throughout, so it is the one recreate shape
+// with NO new identity anywhere. Which path fires is decided purely by
+// whether the reattach beats the grace window:
 //
-//   - FAST: detach and reattach within the lingering-ghost grace. The
-//     ghost resurrects with identical attribution — no fold, so the
-//     per-server series must not dip. Expected GREEN on today's agent;
-//     running it live VALIDATES the resurrection semantics rather than
-//     assuming them.
-//   - SLOW: detach, wait out the sweep (the tuple's rows fold), then
-//     reattach the SAME port and drive again. Same-tuple rebirth:
-//     expected RED on today's agent (the reborn series restarts below
-//     its history), green once the per-tuple carry (lachesis#227)
-//     lands.
-//
-// A detached port loses its device binding, so the agent's reconcile
-// treats the MAC as gone — which of the two paths fires is decided
-// purely by whether the reattach beats the grace window.
+//   - FAST (inside grace): the ghost resurrects with identical
+//     attribution, no fold, so the series must not dip. Expected GREEN
+//     — running it live validates the resurrection semantics rather
+//     than assuming them.
+//   - SLOW (after the sweep): same-tuple rebirth. Expected RED today,
+//     green once the per-tuple carry lands.
 func interfaceDetachReattach() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").

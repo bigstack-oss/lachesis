@@ -31,7 +31,9 @@ func SumByExtTuple(samples []BytesSample) map[ExtTuple]float64 {
 
 // SumByServerTuple aggregates the per-server family. A live-migrated
 // server appears on several agents; summing per server is the
-// consumption rule (docs/architecture/billing.md).
+// consumption rule.
+//
+// Billing tiers: docs/architecture/billing.md
 func SumByServerTuple(samples []ServerSample) map[ServerTuple]float64 {
 	m := make(map[ServerTuple]float64, len(samples))
 	for _, s := range samples {

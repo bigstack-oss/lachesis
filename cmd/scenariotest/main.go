@@ -1,16 +1,10 @@
-// Command scenariotest realizes a declared topology + traffic +
-// expectations on a live OpenStack cluster and asserts whether the
-// agent's /metrics deltas match the description.
+// Command scenariotest realizes a declared topology, drives traffic
+// across it, and asserts the agent's /metrics deltas match. Tier 4 of
+// the test pyramid.
 //
-// Usage:
+// Run `scenariotest help` for the command reference.
 //
-//	scenariotest <subcommand> [flags]
-//
-// Run `scenariotest help` for the command reference; per-subcommand
-// detail is under `scenariotest help <subcommand>`.
-//
-// See docs/development/testing.md (Tier 4) for where scenariotest sits
-// relative to the unit and integration tiers.
+// docs/development/testing.md
 package main
 
 import (

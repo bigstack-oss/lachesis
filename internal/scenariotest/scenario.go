@@ -1,14 +1,11 @@
-// Package scenariotest declares the types that scenariotest consumes:
-// a [Scenario] bundles a topology (built via the existing
-// [scenario.Builder] DSL), a placement map, a per-project policy,
-// declared [Flow] entries describing traffic to drive, and [Expect]
-// entries asserting which /metrics deltas must follow.
+// scenario.go declares the types a scenario is written in: a
+// [Scenario] bundles a topology, a placement map, a per-project
+// policy, the [Flow] traffic to drive, and the [Expect] deltas that
+// must follow.
 //
-// In-memory [neutron.BuildTrie] tests continue to consume the
-// underlying [scenario.Builder] directly and ignore the live-only
-// fields. The scenariotest CLI consumes [Scenario] in full: `up`
-// realizes Builder.Build() as live OpenStack resources, `drive`
-// pushes the [Flow] traffic, and `assert` checks the [Expect] deltas.
+// In-memory BuildTrie tests consume the underlying builder directly
+// and ignore the live-only fields; the CLI consumes [Scenario] whole.
+
 package scenariotest
 
 import (
@@ -70,14 +67,11 @@ type Scenario struct {
 	// hostile to background tenant traffic.
 	Expect []Expect
 
-	// CreateExternalNets lists external-network DSL ids realize must
-	// CREATE (with `router:external=true`, no provider segment)
-	// instead of binding to the config's provider network — the
-	// default for every other external marker. A created external
-	// network allocates FIPs and takes router gateways but carries no
-	// wire traffic; the multi-external-path scenario uses one as the
-	// VM's second external path. Its subnets ARE created (unlike
-	// provider-bound markers, whose subnets belong to the platform).
+	// CreateExternalNets lists external ids realize must CREATE rather
+	// than bind to the provider network. A created one allocates FIPs
+	// and takes gateways but carries no wire traffic, and its subnets
+	// ARE created — unlike provider-bound markers, whose subnets belong
+	// to the platform.
 	CreateExternalNets []string
 
 	// Deferred lists DSL VM ids that `up` declares but does NOT boot:
@@ -167,8 +161,9 @@ func ExternalTarget(ip string) FlowTarget { return FlowTarget{IP: ip} }
 // FLOATING address (resolved from the run-state at drive time): the
 // stream sinks on that VM but dials the FIP instead of the fixed IP,
 // so the bytes take the hairpin DNAT/SNAT path and must bill external
-// at both taps (docs/architecture/edge-cases.md#tier-3--misclassification
-// case 14c), never same_tenant.
+// at both taps (case 14c), never same_tenant.
+//
+// Misclassification cases: docs/architecture/edge-cases.md#tier-3--misclassification
 func FIPTarget(vmID string) FlowTarget { return FlowTarget{FIPOf: vmID} }
 
 // LBFIPTarget returns a [FlowTarget] pointing at a load balancer's
@@ -249,17 +244,11 @@ type Expect struct {
 	// tenant family. Combines with ExternalNetwork.
 	VM string
 
-	// Node optionally narrows the assertion to the series one agent's
-	// tap exposed, instead of the cluster-wide sum: a placement slot
-	// ("node:<i>", the same vocabulary as [Scenario.Placement]) or a
-	// literal configured agent host. This is what makes a cross-host
-	// assertion mean something — "tx at the sender's node AND rx at
-	// the receiver's node" — where the collective sum could not tell
-	// the taps apart. Combines with ExternalNetwork and VM. Node means
-	// "the agent that OBSERVED the bytes", not "where the VM was
-	// booted": after a live migration a server's new bytes surface on
-	// the destination node's agent, which is exactly what a migration
-	// scenario asserts.
+	// Node narrows the assertion to one agent's tap instead of the
+	// cluster sum — what makes a cross-host assertion mean anything.
+	// It names the agent that OBSERVED the bytes, not where the VM
+	// booted: after a live migration the new bytes surface on the
+	// DESTINATION node, which is what a migration scenario asserts.
 	Node string
 
 	// MinBytes is the lower bound on the delta of

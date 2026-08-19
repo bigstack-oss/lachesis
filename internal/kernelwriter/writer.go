@@ -1,25 +1,14 @@
-// Package kernelwriter pushes userspace metadata and trie entries
-// into the kernel BPF maps loaded from internal/bpf. It is shared
-// between the cold-start path (agent Bootstrap) and the
-// incremental-update path (Kafka consumer), so it lives outside
-// both.
+// Package kernelwriter pushes userspace metadata and trie entries into
+// the kernel BPF maps. Shared by the cold-start path and the
+// incremental-update path, so it lives outside both.
 //
-// # Failure semantics
+// BPF maps have no transactions, so a partial write cannot be rolled
+// back. The contract is: log every per-entry failure, return the FIRST
+// error, and let the caller treat it as boot-fatal — the next boot
+// rebuilds the maps, so a half-written map does no harm. Both writers
+// use ebpf.UpdateAny, which is what makes a re-asserted event idempotent.
 //
-// The kernel maps do not support transactions; partial writes
-// cannot be rolled back atomically. The package's contract is:
-// log every per-entry failure (so an operator can see which row
-// went wrong) and return the FIRST error encountered. The caller
-// is expected to treat any non-nil error as a boot-fatal condition
-// — the next agent boot rebuilds the maps from scratch
-// (docs/architecture/boot-and-recovery.md#boot-sequence), so a partially-written map from a failed boot does no harm.
-//
-// # Update mode
-//
-// Both writers use `ebpf.UpdateAny` (insert-or-overwrite). At cold
-// start the maps are empty so the choice is moot; for incremental
-// updates UpdateAny is correct — a Kafka event re-asserts the
-// current state and a stale entry should be overwritten in place.
+// docs/architecture/boot-and-recovery.md#boot-sequence
 package kernelwriter
 
 import (
@@ -41,15 +30,11 @@ type MapUpdater interface {
 	Update(key, value any, flags ebpf.MapUpdateFlags) error
 }
 
-// WriteMacTenantMap pushes every live (MAC, ProjectID) pair in snap
-// into macMap, mapped through interner to its u32 tenant_id and packed
-// with the entry's Amphora marker via [bpf.TenantValue]. Entries with
-// empty ProjectID are skipped (no kernel binding to make).
-//
-// Returns the count of successful writes and the first error
-// encountered. Subsequent failures within the same call are logged
-// at warn-level but do not interrupt the walk — the caller wants
-// to know how many succeeded.
+// WriteMacTenantMap pushes every live (MAC, ProjectID) pair into
+// macMap, interned to its u32 and packed with the entry's Amphora
+// marker via [bpf.TenantValue]. Returns successful writes and the first
+// error; later failures log but do not interrupt the walk, so the count
+// stays meaningful.
 func WriteMacTenantMap(
 	macMap MapUpdater,
 	snap *metadata.ShardedMetadataMap,
@@ -65,15 +50,9 @@ func WriteMacTenantMap(
 		return 0, errors.New("kernelwriter: TenantInterner is nil")
 	}
 
-	// Snapshot the (mac, tenant_id) pairs under the shard locks first,
-	// then issue the kernel Updates outside any lock. A BPF map Update
-	// is a syscall (IO), and the locking guideline forbids holding a
-	// mutex across IO: doing the Update inside snap.Range would hold the
-	// shard RLock for the whole syscall and block a concurrent
-	// Kafka-driven Insert/MarkDelete on that shard for the duration of a
-	// bulk push. Interning is a cheap userspace map op, so it stays in
-	// the snapshot pass. This runs at cold-start / on Kafka updates, not
-	// on the scrape or packet hot path, so the snapshot slice is fine.
+	// Snapshot under the shard locks, then Update outside them: a BPF
+	// map Update is a syscall, and holding a shard RLock across it would
+	// block concurrent Inserts for a whole bulk push.
 	type macTenant struct {
 		mac uint64
 		tid uint32
@@ -105,24 +84,13 @@ func WriteMacTenantMap(
 	return written, firstErr
 }
 
-// WriteSubnetZoneTrie pushes every entry in entries into trieMap.
-// Each entry's TenantID (a Keystone project UUID) is interned to
-// its u32 via interner; the resulting LpmKey is written with the
-// entry's zone code as the value.
+// WriteSubnetZoneTrie pushes entries into trieMap, interning each
+// TenantID to its u32. Returns successful writes and the first error;
+// later failures log but do not interrupt the walk.
 //
-// Returns the count of successful writes and the first error
-// encountered. As with WriteMacTenantMap, subsequent failures log
-// but do not interrupt the walk.
-//
-// # Sentinel rows
-//
-// Entries with TenantID="" are valid: they represent the global
-// catchall / SHARED / INFRA rows that [neutron.BuildTrie] emits
-// once per snapshot under the trie-dedup model. [TenantInterner.Intern]
-// already maps the empty string to [metadata.TenantIDUnset] (the
-// reserved u32 0), so the writer needs no special case — the LPM
-// key lands at `tenant_id=0`, which the C-side `lookup_zone` uses
-// as the sentinel-fallback key after a per-tenant lookup miss.
+// TenantID="" is valid — it is the global catchall / SHARED / INFRA
+// rows, which intern to the reserved u32 0 that the C-side lookup_zone
+// uses as its sentinel-fallback key.
 func WriteSubnetZoneTrie(
 	trieMap MapUpdater,
 	entries []neutron.TrieEntry,

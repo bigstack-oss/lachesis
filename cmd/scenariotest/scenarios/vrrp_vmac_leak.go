@@ -6,21 +6,16 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// vrrpVMACLeak pins TODAY'S allowed-address-pairs behavior — the
-// documented revenue leak of docs/architecture/contracts.md#deferred-work
-// item 9: a guest sourcing traffic from a VRRP virtual MAC declared in
-// allowed_address_pairs (port security ON — the pairs are what admit
-// it) is invisible to mac_tenant_map, so its bytes park in
-// unknown/miss instead of billing the owning tenant.
+// vrrpVMACLeak pins TODAY'S allowed-address-pairs behaviour, a
+// documented revenue leak: a guest sourcing traffic from a VRRP virtual
+// MAC declared in allowed_address_pairs is invisible to
+// mac_tenant_map, so its bytes park in unknown/miss instead of billing
+// the owning tenant.
 //
-// THIS IS THE PRE-FIX BASELINE. When AAP MACs are mapped (deferred
-// item 9 ships), the MinBytes row below must FLIP — move the 1 MiB
-// floor from unknown/miss/tx to T1's tuple and drop the leak framing.
+// THIS IS THE PRE-FIX BASELINE. When AAP MACs are mapped, the MinBytes
+// row below must FLIP to T1's tuple and the leak framing goes.
 //
-// Shape: vm-a (T1) hot-plugs a NIC on the tenant's second subnet with
-// AAP entries for the vMAC (against both the VIP and the NIC's fixed
-// IP, so plain pings pass the (IP, MAC) anti-spoof check), assumes the
-// vMAC in-guest like a VRRP master, and pings vm-b (T1).
+// docs/architecture/contracts.md#deferred-work
 func vrrpVMACLeak() *scenariotest.Scenario {
 	const vmac = "00:00:5e:00:01:2a" // VRRP vMAC, VRID 42
 	b := scenario.New()

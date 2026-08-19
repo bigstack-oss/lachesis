@@ -73,8 +73,9 @@ func (r *BPFMapReader) BatchLookup(dst map[bpf.FlowKey]bpf.FlowMetrics) error {
 				// peer slots hold 0. MAX therefore yields the creating
 				// CPU's stamp, and — because a delete zeroes every slot —
 				// the next creator's after a re-creation. That is the
-				// entry-identity signal ApplyDelta compares
-				// (docs/adr/0014-in-band-entry-identity-over-inferred-resets.md).
+				// entry-identity signal ApplyDelta compares.
+				//
+				// ADR 0014: docs/adr/0014-in-band-entry-identity-over-inferred-resets.md
 				if v.CreatedNs > sum.CreatedNs {
 					sum.CreatedNs = v.CreatedNs
 				}

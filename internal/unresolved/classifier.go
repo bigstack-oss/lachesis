@@ -12,10 +12,12 @@ import (
 // never lands in the buffer) go straight to GlobalState; unknown flows
 // divert into the [Buffer]. It satisfies the scraper's FlowSink seam.
 //
-// Ghost precedence over the UnresolvedBuffer (docs/architecture/data-structures.md#lingering-ghost) is
-// exactly this Lookup-first ordering: a ghosted MAC is a hit, so Absorb
-// takes the GlobalState branch and never the buffer. The ordering is
-// pinned by a test that fails if the branches are inverted.
+// Ghost precedence over the UnresolvedBuffer is exactly this
+// Lookup-first ordering: a ghosted MAC is a hit, so Absorb takes the
+// GlobalState branch and never the buffer. The ordering is pinned by a
+// test that fails if the branches are inverted.
+//
+// Lingering Ghost: docs/architecture/data-structures.md#lingering-ghost
 type Classifier struct {
 	state  *state.GlobalState
 	meta   *metadata.ShardedMetadataMap

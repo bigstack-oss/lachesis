@@ -2,22 +2,16 @@ package scenariotest
 
 import "context"
 
-// Cloud is the live OpenStack surface that scenariotest's preflight
-// and realize steps consume. The gophercloud-backed implementation is
-// the openstack package; unit tests substitute a recording fake. Read-only
-// lookups back preflight; the per-project creation methods back `up`.
+// Cloud is the live OpenStack surface preflight and realize consume,
+// implemented by the openstack package and faked in tests.
 //
-// Methods that create project-owned resources take a projectID; the
-// implementation issues those calls through a token scoped to that
-// project, because gophercloud fixes project scope at client
-// construction and a resource is born in the token's project. Booting
-// a Nova server in another project has no API parameter for it — only
-// the token scope — so per-project scoping is unavoidable.
+// Creation methods take a projectID because gophercloud fixes project
+// scope at client construction and a resource is born in its token's
+// project — booting a server elsewhere has no API parameter, only the
+// token. Hence per-project scoping.
 //
-// The interface is intentionally a thin pass-through: all of the
-// topology decisions (ordering, external-network resolution, which
-// ports become router interfaces) live in [realize], not here, so
-// they can be unit-tested against the fake without a cluster.
+// Deliberately a thin pass-through: every topology decision lives in
+// realize, so it can be tested against the fake without a cluster.
 type Cloud interface {
 	// --- prerequisite + placement lookups (read-only, admin) ---
 
@@ -290,11 +284,10 @@ type FIPCreateSpec struct {
 	FloatingIP        string
 }
 
-// LBSpec describes an Octavia load balancer to create. FlavorID is
-// optional: empty takes the deployment default (a STANDALONE Amphora),
-// and a flavor whose profile sets loadbalancer_topology=ACTIVE_STANDBY
-// is what produces a MASTER/BACKUP pair. Resolved from
-// prerequisites.lb_flavor_name at preflight; never created.
+// LBSpec describes an Octavia load balancer to create. Empty FlavorID
+// takes the deployment default (a STANDALONE Amphora); a flavor whose
+// profile sets loadbalancer_topology=ACTIVE_STANDBY produces a
+// MASTER/BACKUP pair. Resolved at preflight; never created.
 type LBSpec struct {
 	Name        string
 	VIPSubnetID string
@@ -309,9 +302,8 @@ type ListenerSpec struct {
 	ProtocolPort   int
 }
 
-// PoolSpec describes a backend pool on a listener. LBAlgorithm is
-// passed verbatim (e.g. "ROUND_ROBIN") so a scenario can pin the
-// distribution it asserts against.
+// PoolSpec describes a backend pool on a listener. LBAlgorithm is passed
+// verbatim so a scenario can pin the distribution it asserts against.
 type PoolSpec struct {
 	Name        string
 	ListenerID  string
@@ -319,9 +311,8 @@ type PoolSpec struct {
 	LBAlgorithm string
 }
 
-// MemberSpec describes one pool member. SubnetID is the subnet the
-// member's address lives on; see [Cloud.CreateMember] for why it is
-// load-bearing rather than cosmetic.
+// MemberSpec describes one pool member. SubnetID is load-bearing, not
+// cosmetic — see [Cloud.CreateMember].
 type MemberSpec struct {
 	Name         string
 	PoolID       string
@@ -330,12 +321,12 @@ type MemberSpec struct {
 	SubnetID     string
 }
 
-// AmphoraRef is one Amphora serving a load balancer, as seen by
-// [Cloud.ListAmphorae]. ComputeID is the Nova instance UUID — the join
-// key every one of the Amphora's Neutron ports carries as its
-// device_id (docs/architecture/octavia.md); LBNetworkIP identifies the
-// management port that must NOT be billed to a tenant; Role is
-// STANDALONE, MASTER, or BACKUP.
+// AmphoraRef is one Amphora serving a load balancer. ComputeID is the
+// Nova instance UUID, the join key every one of its Neutron ports
+// carries as device_id; LBNetworkIP identifies the management port that
+// must NOT be billed to a tenant; Role is STANDALONE, MASTER or BACKUP.
+//
+// docs/architecture/octavia.md
 type AmphoraRef struct {
 	ID          string
 	ComputeID   string
@@ -343,7 +334,9 @@ type AmphoraRef struct {
 	Role        string
 }
 
-// RouteSpec is one static route on a router (docs/architecture/trie-construction.md#the-static-route-resolver extraroute).
+// RouteSpec is one static route on a router (a Neutron extraroute).
+//
+// Static-route resolver: docs/architecture/trie-construction.md#the-static-route-resolver
 type RouteSpec struct {
 	Destination string
 	Nexthop     string

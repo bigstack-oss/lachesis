@@ -3,6 +3,7 @@
 // output or NO_COLOR degrades to plain text automatically. The JSON
 // side stays in internal/scenariotest (EmitJSON) and is byte-stable;
 // only this human path is free to evolve.
+
 package main
 
 import (

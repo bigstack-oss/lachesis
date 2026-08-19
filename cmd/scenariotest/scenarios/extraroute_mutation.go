@@ -15,20 +15,17 @@ import (
 const reconcileSettle = 60 * time.Second
 
 // extrarouteMutation exercises the trie's insert-then-delete route
-// update (docs/architecture/trie-construction.md): a live extraroute
-// change must reclassify NEW traffic to the routed zone. vm-a (T1) and
-// vm-b (T2) meet over a transit subnet with NO cross-tenant route
-// initially, so vm-a→vm-b's CIDR falls to the external catchall.
-// Mid-run the harness adds the transit routes via the Neutron API;
-// after the agents reconcile, the same flow must classify
-// other_tenant, and the post-route drive must not spill into MISS.
+// update: vm-a and vm-b start with no cross-tenant route, so the flow
+// falls to the external catchall; the harness then adds the transit
+// routes and the same flow must classify other_tenant.
 //
-// Scope note: traffic is driven BEFORE and AFTER the reconcile, not
-// concurrently with the trie rebuild, so this proves the post-rebuild
-// steady state (routed, not miss) rather than the atomicity of the
-// insert-then-delete swap itself — a sub-second transient window is
-// out of reach at the live-cluster tier. The miss max-growth check is
-// the steady-state proxy for "the swap left no lasting MISS".
+// Scope: traffic is driven before and after the reconcile, never
+// concurrently with the rebuild, so this proves the post-rebuild steady
+// state rather than the atomicity of the swap — a sub-second transient
+// is out of reach at this tier. The miss max-growth check is the proxy
+// for "the swap left no lasting MISS".
+//
+// docs/architecture/trie-construction.md
 func extrarouteMutation() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").

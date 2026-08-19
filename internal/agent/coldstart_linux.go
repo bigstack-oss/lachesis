@@ -29,20 +29,15 @@ type populateStats struct {
 	amphoraPorts  int // re-attributed from the service project to an LB owner
 }
 
-// coldStartNeutron orchestrates the cold-start sequence: run a full
-// [neutron.Neutron.Sync] (with retry), populate userspace metadata,
-// push into the kernel maps, then commit the sync outputs so the
-// /debug pages and sync-age gauge see them. Must run BEFORE TC
-// attach so the very first packet sees a populated trie
-// (docs/architecture/boot-and-recovery.md#boot-sequence step 3 → 4).
+// coldStartNeutron syncs Neutron, populates userspace metadata, pushes
+// the kernel maps, then commits. Must run BEFORE TC attach so the first
+// packet sees a populated trie. A no-op when Neutron is disabled: every
+// flow then labels "unknown".
 //
-// When `cfg.Enabled == false` it is a no-op — every flow's
-// `tenant_id` label resolves to "unknown" until an operator enables
-// Neutron and restarts.
+// Non-retryable auth errors surface immediately, so a typo'd URL fails
+// loudly instead of spinning forever.
 //
-// Non-retryable Sync errors (401/403/404/400) surface immediately so
-// an operator notices a typo'd auth URL or bad credentials instead
-// of the agent spinning forever; see [isRetryableNeutronErr].
+// docs/architecture/boot-and-recovery.md#boot-sequence
 func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, coll *ebpf.Collection) error {
 	if !cfg.Enabled {
 		slog.Info("neutron disabled; agent boots without metadata",
@@ -64,7 +59,9 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 	}
 	stats := populateMetadataFromPorts(ag.meta, &result.Snapshot, ag.mx.neutron)
 	// Seed the per-flow router map in the same before-any-packet step:
-	// the Resolver reads it from the first scrape (docs/architecture/billing.md).
+	// the Resolver reads it from the first scrape.
+	//
+	// Billing tiers: docs/architecture/billing.md
 	ag.routers.Replace(neutron.RouterExtMACs(&result.Snapshot))
 	nMac, nTrie, err := pushToKernel(ag, coll, &result)
 	if err != nil {
@@ -91,17 +88,10 @@ func coldStartNeutron(ctx context.Context, cfg config.NeutronConfig, ag *Agent, 
 }
 
 // populateMetadataFromPorts publishes [reconcile.DesiredMACs] into the
-// userspace shard map — each entry carrying the port's full attribution
-// (project, server_id, external_network, and the Octavia LB-owner
-// rewrite) for the metric labels and per-server export
-// (docs/architecture/billing.md, docs/architecture/octavia.md).
-//
-// The attribution itself is deliberately NOT computed here. Cold-start
-// and the reconciler must agree exactly on what the metadata map should
-// hold, so both read the one definition; see [reconcile.DesiredMACs] for
-// what drift would cost. What belongs to cold-start alone is the audit
-// in [auditPorts]: the boot-time logging and counters an operator wants
-// once, not on every reconcile pass.
+// userspace map. The attribution is deliberately NOT computed here —
+// cold start and the reconciler must agree exactly, so both read the one
+// definition. What belongs to cold start alone is [auditPorts]: the
+// boot-time logging an operator wants once, not every pass.
 func populateMetadataFromPorts(meta *metadata.ShardedMetadataMap, snap *neutron.Snapshot, mx *neutron.Metrics) populateStats {
 	desired := reconcile.DesiredMACs(snap)
 	var s populateStats

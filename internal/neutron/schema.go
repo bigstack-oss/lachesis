@@ -13,15 +13,10 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
-// Snapshot is the four Neutron resource lists the agent consumes
-// together at cold-start and at every full-resync triggered by the
-// Kafka updater, plus the Keystone project list. Bundled into one
-// type so callers can pass it around as a single value instead of
-// parallel slices.
-//
-// The fields are slices in API-iteration order — no sorting
-// guarantee. Downstream consumers that need stable ordering
-// (e.g. the trie builder) sort their own derived outputs.
+// Snapshot is one consistent read of the Neutron resource lists plus
+// the Keystone project list. Fields are in API-iteration order with no
+// sorting guarantee — consumers needing stability sort their own
+// derived output.
 type Snapshot struct {
 	Networks []Network
 	Subnets  []Subnet
@@ -79,17 +74,13 @@ type SyncResult struct {
 	Anomalies   Anomalies
 }
 
-// AmbiguityHit records a Step C ambiguity-after-scoping incident
-// (docs/architecture/trie-construction.md#ambiguity-after-scoping): the resolver reached a router where
-// multiple candidate networks with distinct owners cover the same
-// destination CIDR, so no single zone can be picked honestly. The
-// resolver returns ZoneExternal and surfaces this struct to its
-// caller; BuildTrie collects every hit across all routes so the
-// boot path can refuse to start under strict-mode policy.
+// AmbiguityHit records a resolver stop where several candidate networks
+// with distinct owners cover the same destination CIDR, so no zone can
+// be picked honestly. The resolver falls back to EXTERNAL; strict mode
+// refuses the boot on any hit. [CycleHit] is the sibling for a revisited
+// router.
 //
-// CycleHit is the sibling type for "trace revisited a router on
-// the path"; both are aggregated into [Anomalies] by
-// [DetectAnomalies].
+// docs/architecture/trie-construction.md#ambiguity-after-scoping
 type AmbiguityHit struct {
 	SourceTenant string
 	RouterID     string
@@ -97,15 +88,9 @@ type AmbiguityHit struct {
 	Owners       []string
 }
 
-// CycleHit records a static-route cycle the resolver encountered
-// while tracing one (router, destination) pair. The destination is
-// reachable only via a router-interface chain that revisits an
-// already-seen router; the resolver fell back to EXTERNAL.
-//
-// SourceRouter is the router whose Routes entry triggered the
-// trace; LoopRouter is the router we attempted to revisit (the
-// already-seen one). On a two-router A↔B cycle both fields name A
-// or B depending on which router's extraroute initiated the trace.
+// CycleHit records a static-route chain that revisits an already-seen
+// router; the resolver fell back to EXTERNAL. SourceRouter started the
+// trace, LoopRouter is the one it tried to revisit.
 type CycleHit struct {
 	SourceTenant string
 	SourceRouter string
@@ -147,15 +132,11 @@ type DuplicateRouterMAC struct {
 	RouterIDs []string
 }
 
-// MultiExternalPathHit records a VM port with more than one external
-// path within one attribution tier: several FIPs on different external
-// networks, or (FIP-less) several gateway routers on different external
-// networks. A FIP whose network differs from the router gateway is NOT
-// a hit — the FIP tier wins outright (OVN NATs external traffic through
-// the FIP), so that shape is unambiguous. [ExternalNetworkByPort]
-// attributes a hit to ONE deterministically-picked network (its egress
-// could really use any of them), so per-network external billing for
-// this VM is approximate until the known limitation is lifted.
+// MultiExternalPathHit records a VM port with several external paths
+// within one attribution tier. A FIP on a different network than the
+// router gateway is NOT a hit — the FIP tier wins outright. Attribution
+// picks one network deterministically, so per-network external billing
+// for this VM is approximate.
 type MultiExternalPathHit struct {
 	PortID     string
 	ServerID   string
@@ -245,29 +226,16 @@ const codeNetwork = "network"
 // only meaningful for off-cluster clients.
 const defaultInterface = "internal"
 
-// defaultMaxStaticRouteHops bounds the multi-hop trace when no
-// operator value is supplied — the value the argument-free
-// [BuildTrie] resolves with. Real OpenStack deployments rarely exceed
-// 3–4 hops; 16 is generous and an exceedance almost certainly
-// indicates a routing misconfig (per
-// docs/architecture/trie-construction.md#the-static-route-resolver).
-//
-// The production path does NOT read this: [Neutron.Sync] passes the
-// hot tunable `neutron.max_static_route_hops` (which defaults to the
-// same 16 in config.Defaults), so an operator can retune resolver
-// depth with a SIGHUP.
+// defaultMaxStaticRouteHops bounds the trace for the argument-free
+// [BuildTrie]. Real deployments rarely exceed 3–4 hops. The production
+// path does not read this — [Neutron.Sync] passes the hot tunable.
 const defaultMaxStaticRouteHops = 16
 
-// Neutron device_owner vocabulary. deviceOwnerNetworkPrefix is the
-// reserved `network:` namespace that [IsInfraPort] / [IsVMPort] use to
-// partition infra ports from VM-like ports; deviceOwnerComputePrefix
-// is Nova's namespace — Nova writes `compute:<az-name>` ("nova" is
-// only the default AZ's name), so [IsComputePort] matches the prefix;
-// deviceOwnerTrunkPrefix is the namespace Neutron's trunk extension
-// writes on subports, matched by [IsTrunkSubport];
-// DeviceOwnerRouterInterface is the specific owner the static-route
-// resolver follows hop-to-hop (exported: the /debug topology builders
-// classify attachments with it too).
+// Neutron device_owner vocabulary. All three prefixes are matched as
+// prefixes, never literals — Nova writes `compute:<az-name>`, so
+// `compute:nova` is just the default AZ.
+//
+// docs/architecture/trie-construction.md#port-classification-device_owner
 const (
 	deviceOwnerNetworkPrefix   = "network:"
 	deviceOwnerComputePrefix   = "compute:"
@@ -289,7 +257,9 @@ const (
 )
 
 // metadataPrefix is the cloud-init / Nova metadata service IP. Always
-// INFRA from every tenant's perspective (docs/architecture/trie-construction.md#the-five-step-algorithm Step 4).
+// INFRA from every tenant's perspective (trie Step 4).
+//
+// Full rationale: docs/architecture/trie-construction.md#the-five-step-algorithm
 var metadataPrefix = netip.MustParsePrefix("169.254.169.254/32")
 
 // catchall is the 0.0.0.0/0 → EXTERNAL Step-1 entry. Every uncovered

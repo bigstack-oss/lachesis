@@ -29,8 +29,10 @@ const (
 	PhaseMetadataReady
 
 	// PhaseAttached marks the TC clsact qdisc and ingress/egress
-	// programs as installed. Packets begin classifying after
-	// this phase, never before — see docs/architecture/boot-and-recovery.md#boot-sequence.
+	// programs as installed. Packets begin classifying after this
+	// phase, never before.
+	//
+	// Boot sequence: docs/architecture/boot-and-recovery.md#boot-sequence
 	PhaseAttached
 
 	// PhaseStateRestored marks the WAL load as complete:

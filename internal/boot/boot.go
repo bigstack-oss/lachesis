@@ -1,22 +1,14 @@
-// Package boot tracks the agent's startup phases as a single
-// monotonically advancing sequence. The phases formalise
-// docs/architecture/boot-and-recovery.md#boot-sequence: BPF loaded, Neutron metadata pushed to the
-// kernel maps, TC clsact attached, WAL restored. Each phase records
-// that an externally observable guarantee now holds — once
-// [Sequencer.Advance] returns, the previous phase's invariant is
-// established and code paths that depend on it may proceed.
+// Package boot tracks the agent's startup phases as one monotonically
+// advancing sequence. Each phase records that an externally observable
+// guarantee now holds: once [Sequencer.Advance] returns, the previous
+// phase's invariant is established.
 //
-// The sequencer both records phase transitions and acts as a
-// cross-goroutine barrier. Today the straight-line Bootstrap still
-// advances every phase inline before Run spawns any worker, so the
-// ordering would hold structurally even without the barrier; the
-// barrier makes the dependency explicit instead of latent. A consumer
-// goroutine calls [Sequencer.Await] to block until a named phase is
-// reached — the GC's ghost sweep, for instance, awaits
-// [PhaseStateRestored] so it never evicts before the WAL deltas have
-// merged. If Bootstrap aborts, [Sequencer.Fail] releases every blocked
-// awaiter with the failing phase's error rather than leaving them
-// parked forever.
+// It is also a cross-goroutine barrier — [Sequencer.Await] blocks until
+// a named phase is reached, which is how the ghost sweep avoids
+// evicting before the WAL merged. If boot aborts, [Sequencer.Fail]
+// releases every awaiter rather than leaving them parked.
+//
+// docs/architecture/boot-and-recovery.md#boot-sequence
 package boot
 
 import (
@@ -53,14 +45,9 @@ func New() *Sequencer {
 	return s
 }
 
-// Advance moves the sequencer from its current phase to next. next
-// must be exactly one greater than the current phase; any other
-// value (including the current phase itself) is rejected as a
-// programmer error. The strict step-by-one rule keeps the phase
-// list honest — if an additional phase is needed, add it to the
-// enum rather than letting callers skip ahead. Advancing to next
-// closes its reached channel, releasing any [Sequencer.Await] callers
-// waiting on it.
+// Advance moves to next, which must be EXACTLY one greater — skipping
+// is a programmer error, so a new phase goes in the enum rather than
+// being jumped over. Closes next's channel, releasing its awaiters.
 func (s *Sequencer) Advance(next Phase) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -66,24 +66,15 @@ func (a *Agent) flushWAL() error {
 	return wal.Save(a.cfg.WAL.Path, a.buildID, a.walRecBuf, a.walTenantSettledBuf, a.walServerSettledBuf, a.walTotalSettledBuf, a.countersResetAt, a.mx.wal)
 }
 
-// restoreFromWAL reads the on-disk snapshot (if enabled) and seeds
-// the agent's GlobalState. Runs BEFORE the scraper goroutine starts,
-// so the first ApplyDelta computes deltas against restored
-// LastEbpfRaw values rather than re-baselining.
+// restoreFromWAL seeds GlobalState from disk BEFORE the scraper
+// starts, so the first ApplyDelta computes against restored baselines
+// instead of re-baselining.
 //
-// Load failures split into two classes (docs/architecture/data-structures.md#userspace-structures):
-//
-//   - A snapshot from a newer build ([wal.ErrSchemaNewer]) is
-//     returned so boot refuses to start. Starting anyway would let
-//     the flush rotation destroy the only forward snapshot within
-//     two flushes.
-//   - Anything else means both files are unreadable: the agent
-//     starts empty, but the primary is quarantined first so the
-//     flush rotation cannot destroy the evidence.
-//
-// Load fallbacks (bak or empty) are recorded on the agent's WAL
-// metrics so an operator can grep lachesis_wal_load_fallback_total
-// to spot a corrupt primary or a first-boot.
+// Only one failure is fatal: a snapshot from a newer build, which is
+// returned so boot refuses — starting anyway lets flush rotation
+// destroy the only forward snapshot within two flushes. Anything else
+// starts empty, quarantining the primary first so the evidence
+// survives. Fallbacks are counted for grep-ability.
 func restoreFromWAL(ag *Agent) error {
 	cfg := ag.cfg.WAL
 	if !cfg.Enabled {
@@ -130,14 +121,12 @@ func restoreFromWAL(ag *Agent) error {
 	if len(res.TotalSettled) > 0 {
 		ag.SeedTotalSettled(res.TotalSettled)
 	}
-	// The counters-reset epoch is decided here, once, from the load
-	// outcome (docs/architecture/boot-and-recovery.md#counters-reset-epoch): a
-	// warm boot carries the snapshot's stored epoch — the gauge keeps
-	// declaring the last TRUE state restart — while an empty start (and
-	// a pre-v6 snapshot whose field decodes 0: epoch unknown) stamps
-	// now. A spurious stamp is billing-free under the ETL's per-segment
-	// baseline subtraction, so no adopted-vs-fresh pin detection is
-	// needed.
+	// The epoch is decided here ONCE: a warm boot carries the stored
+	// one, so the gauge keeps naming the last TRUE restart; an empty
+	// start (or a pre-v6 zero) stamps now. A spurious stamp is
+	// billing-free under per-segment baseline subtraction.
+	//
+	// docs/architecture/boot-and-recovery.md#counters-reset-epoch
 	if res.Source != wal.LoadEmpty && res.CountersResetAt != 0 {
 		ag.setCountersReset(res.CountersResetAt)
 		return nil

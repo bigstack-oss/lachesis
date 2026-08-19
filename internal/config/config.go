@@ -1,29 +1,15 @@
-// Package config holds the runtime configuration for the agent.
+// Package config holds the agent's runtime configuration as nested
+// sections — one Go file per section, each owning its type, defaults
+// and Validate; this file aggregates them.
 //
-// The configuration is structured as nested sections — one Go file per
-// section (http.go, bpf.go, scrape.go, logging.go, wal.go, neutron.go) —
-// plus a top-level version envelope. Each section owns its type,
-// defaults, and Validate method; this file aggregates them.
+// Sources override in order: built-in defaults → YAML file → env vars
+// → CLI flags. The YAML file is the only source that moves at runtime,
+// re-read on SIGHUP.
 //
-// Sources, in order of priority (later overrides earlier):
-//
-//   - built-in defaults
-//   - YAML file (path from -config flag or <prefix>_CONFIG env var)
-//   - environment variables (<prefix>_* — see load.go)
-//   - CLI flags
-//
-// The default env prefix is "LACHESIS"; callers can override via
-// [Options].EnvPrefix for forks or tests. The YAML file is the
-// only "moving"
-// source at runtime: SIGHUP triggers a re-read via [LoadYAML].
-//
-// Adding a new section (e.g. Neutron client, Kafka consumer):
-//
-//  1. Create a new file (e.g. neutron.go) with the section's type, its
-//     defaults helper, and its Validate method.
-//  2. Add the field to [Config] and to [Defaults].
-//  3. Register the section's env vars and flags in load.go.
-//  4. Add the section's Validate call to [Config.Validate].
+// A new section needs four things: its own file with type + defaults +
+// Validate, a field on [Config] and [Defaults], its env vars and flags
+// registered in load.go, and its Validate call added to
+// [Config.Validate].
 package config
 
 import (

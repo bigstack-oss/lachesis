@@ -21,21 +21,13 @@ func (s Snapshot) ProjectName(id string) string {
 	return ""
 }
 
-// LookupZone returns the trie row the kernel's `lookup_zone` would
-// match for (tenant, ip): longest-prefix match against per-tenant
-// rules first, then a fallback against the global sentinel rules
-// (TenantID == ""). The second return reports which pass produced
-// the match — "tenant" or "global" — so /debug can show whether
-// the row came from the tenant's own scope or the catchall.
+// LookupZone mirrors the kernel's lookup_zone for (tenant, ip):
+// longest-prefix over per-tenant rows, then the global sentinel rows.
+// The second return names which pass matched, for /debug.
 //
-// Returns (nil, "") only when the IP doesn't match any row at all,
-// which is impossible against a healthy trie (Step-1 catchall
-// covers 0.0.0.0/0). Treat (nil, _) as a corrupt-trie signal.
-//
-// The implementation is a linear scan — the trie is O(hundreds)
-// of rows at production scale and this function is only invoked
-// on demand from /debug/lookup. The kernel-side LPM is a real
-// trie; this userspace mirror trades structure for simplicity.
+// (nil, "") means no row matched at all, which a healthy trie makes
+// impossible — treat it as a corrupt-trie signal. Linear scan: this is
+// /debug-only, and the trie is hundreds of rows.
 func LookupZone(entries []TrieEntry, ip netip.Addr, tenant string) (*TrieEntry, string) {
 	if tenant != "" {
 		if hit := longestPrefixForTenant(entries, ip, tenant); hit != nil {
@@ -71,22 +63,14 @@ func longestPrefixForTenant(entries []TrieEntry, ip netip.Addr, tenant string) *
 	return best
 }
 
-// LookupResource resolves an IP against the Neutron snapshot:
-// the most-specific subnet whose CIDR contains it, that subnet's
-// network, and any port that carries the IP as a fixed_ip.
+// LookupResource resolves an IP to its most-specific subnet, that
+// subnet's network, and any port holding it as a fixed_ip. Each field
+// is independently optional.
 //
-// When tenant != "", the search runs first against subnets and
-// ports whose ProjectID matches that tenant — this disambiguates
-// shared private CIDRs (192.168.0.0/24 is the default for almost
-// every Neutron tenant). On no per-tenant match the search falls
-// back to the full snapshot so an IP outside the tenant's scope
-// still surfaces *something* the operator can investigate.
-//
-// Returned ResourceMatch fields are independently optional — a
-// known subnet's unallocated address resolves Subnet+Network with
-// Port == nil; an IP outside every subnet returns the zero value.
-//
-// Linear-scan, suitable for /debug at production scale.
+// A non-empty tenant scopes the search first, which is what
+// disambiguates the shared private CIDRs almost every tenant defaults
+// to; it falls back to the whole snapshot so an out-of-scope IP still
+// surfaces something to investigate.
 func LookupResource(snap *Snapshot, ip netip.Addr, tenant string) ResourceMatch {
 	if snap == nil {
 		return ResourceMatch{}
@@ -151,16 +135,10 @@ func lookupResourceScoped(snap *Snapshot, ip netip.Addr, tenant string) Resource
 	return m
 }
 
-// LookupPortByMAC returns the first port whose MACAddress equals
-// mac (case-insensitive compare, since Neutron sometimes emits
-// uppercase and sometimes lowercase forms). Returns the matched
-// port + its network, or a zero ResourceMatch if no port carries
-// that MAC. Subnet is not populated — a port may have multiple
-// fixed_ips across multiple subnets, and there is no single
-// answer.
-//
-// mac must already be in canonical colon-separated form; the
-// caller is responsible for parse + format.
+// LookupPortByMAC returns the first port with that MAC, plus its
+// network. Case-insensitive, because Neutron emits both cases. Subnet
+// is never populated — a port may span several. mac must already be
+// canonical colon-separated form.
 func LookupPortByMAC(snap *Snapshot, mac string) ResourceMatch {
 	if snap == nil || mac == "" {
 		return ResourceMatch{}

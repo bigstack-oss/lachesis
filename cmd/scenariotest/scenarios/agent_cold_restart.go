@@ -8,29 +8,20 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// agentColdRestart is the live regression for the counters-reset epoch
-// (lachesis#230/#234, docs/architecture/boot-and-recovery.md#counters-reset-epoch):
-// lachesis_agent_counters_reset_timestamp_seconds must carry across a
-// warm restart and stamp a fresh value on any empty-WAL boot. It walks
-// all three restart shapes on one agent:
+// agentColdRestart is the live regression for the counters-reset
+// epoch: the gauge must carry across a warm restart and stamp fresh on
+// any empty-WAL boot. It walks all three restart shapes on one agent:
 //
-//  1. WARM (WAL intact) — the epoch carries unchanged and the series
-//     stay monotone: the gauge names the last TRUE restart, however
-//     many clean restarts happen after it.
-//  2. ADOPTED (WAL destroyed, pinned maps alive — agent reinstall /
-//     WAL-volume loss) — a fresh epoch stamps, and the series stay
-//     monotone anyway: the kernel counters carry the history, the
-//     rebuilt state re-seeds from them, nothing is lost. The stamped
-//     epoch is the "spurious split is billing-free" half of the ETL
-//     contract's baseline-subtraction design.
-//  3. ZERO (WAL and pins destroyed — the host-reboot shape) — a fresh
-//     epoch stamps again, the series legitimately restart from zero,
-//     and new traffic accrues on the fresh counters. The declared
-//     epoch is what lets the ETL split the day instead of clamping it.
+//  1. WARM (WAL intact) — epoch carries, series stay monotone.
+//  2. ADOPTED (WAL gone, pins alive) — fresh epoch, series still
+//     monotone: the kernel counters carry the history.
+//  3. ZERO (WAL and pins gone) — fresh epoch, series legitimately
+//     restart, and the declared epoch is what lets the ETL split the
+//     day instead of clamping it.
 //
-// Sibling of wal-restart-continuity (#185), which pins the warm path's
-// billing continuity in detail. SKIPs when agent_control (or its
-// wal_path/pin_path) is unconfigured — environment, not defect.
+// SKIPs when agent_control is unconfigured — environment, not defect.
+//
+// docs/architecture/boot-and-recovery.md#counters-reset-epoch
 func agentColdRestart() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").
@@ -73,17 +64,11 @@ func agentColdRestart() *scenariotest.Scenario {
 				Note: "warm restart carries the stored epoch"},
 			steps.MonotoneStep{Tenant: "T1", Note: "series monotone across the warm restart"},
 
-			// Leg 2 — ADOPTED: WAL destroyed, pins alive. Fresh epoch,
-			// and the live kernel counters carry on — new traffic keeps
-			// accruing on the surviving cumulative (the shape where the
-			// old zero-based ETL math would have double-billed, and the
-			// reason the epoch means "baselines not comparable", not
-			// "at zero"). Deliberately NOT a monotone assertion: the
-			// settled accumulators live only in the WAL, so any prior
-			// churn's folded bytes drop out of the exposed series here —
-			// that drop aligns with the declared epoch and is exactly
-			// what the ETL's per-segment baseline subtraction absorbs
-			// (docs/architecture/billing.md, "Declared discontinuities").
+			// Leg 2 — ADOPTED: fresh epoch, live kernel counters carry
+			// on. Deliberately NOT a monotone assertion: the settled
+			// accumulators live only in the WAL, so prior churn's folded
+			// bytes drop out here. That drop aligns with the declared
+			// epoch and is what per-segment baseline subtraction absorbs.
 			steps.CaptureStep{},
 			steps.RestartAgentStep{RemoveWAL: true},
 			steps.EpochStep{Changed: true,

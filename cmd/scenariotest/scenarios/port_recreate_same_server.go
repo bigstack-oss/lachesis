@@ -6,22 +6,15 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// portRecreateSameServer reproduces same-tuple rebirth (lachesis#227):
-// a server's same_tenant series tuple is fed solely by a hot-plugged
-// NIC; deleting that NIC's port ends the tuple (ghost fold), and a NEW
-// port — auto-generated MAC, deliberately NOT MAC reuse: the label
-// tuple, not the MAC, is the series identity — on the same server
-// rebirths the tuple. Without the per-tuple carry the reborn series
-// restarts below its own history, which the billing ETL's day-window
-// clamp reads as zero usage.
+// portRecreateSameServer reproduces same-tuple rebirth: a server's
+// series tuple fed solely by a hot-plugged NIC ends when that port is
+// deleted, and a NEW port on the same server rebirths it. Deliberately
+// NOT MAC reuse — the label tuple, not the MAC, is the series identity.
+// Without the per-tuple carry the reborn series restarts below its own
+// history, which the ETL's day-window clamp reads as zero usage.
 //
-// Evidence-first: against today's agent the final server-monotone
-// assertion is expected RED (reborn 1 MiB < captured 2 MiB) — the live
-// proof of the rebirth-lower hazard. Green once lachesis#227 lands.
-//
-// The 2 MiB first drive vs 1 MiB rebirth drive keeps the red case far
-// from the noise margin: the reborn tuple cannot accidentally reach
-// its captured value.
+// Evidence-first: expected RED today (reborn 1 MiB < captured 2 MiB).
+// The 2:1 drive ratio keeps that case clear of the noise margin.
 func portRecreateSameServer() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").

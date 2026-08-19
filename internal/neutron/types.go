@@ -1,16 +1,10 @@
 package neutron
 
-// The types below mirror the subset of Neutron v2.0 API responses
-// the trie builder consumes. They are intentionally narrower than
-// gophercloud's full structs: fields the agent never touches
-// (Tags, RevisionNumber, AdminStateUp, Description, …) are
-// omitted. Keeping the agent's view of Neutron minimal makes the
-// schema dependencies explicit in this one file.
+// The types below mirror only the subset of Neutron v2.0 responses the
+// agent consumes, so the schema dependency is explicit in one file.
 //
-// Neutron v2.0 transitionally emits both `project_id` (modern,
-// canonical) and `tenant_id` (legacy) for owner attribution.
-// The list-call adapters in list.go prefer ProjectID and fall back
-// to TenantID when only the legacy field is populated.
+// Neutron emits both `project_id` (canonical) and `tenant_id`
+// (legacy); the list adapters prefer the former and fall back.
 
 // Network is the trie-builder view of a Neutron network. Name is
 // the operator-assigned label; unused by trie classification but
@@ -20,18 +14,16 @@ type Network struct {
 	ProjectID string
 	Name      string
 	// Shared indicates the network can be attached to by any
-	// project. Used by docs/architecture/trie-construction.md#the-five-step-algorithm Step 3 of the trie builder (shared
-	// networks contribute OTHER_TENANT entries rather than per-tenant
+	// project. Used by Step 3 of the trie builder (shared networks
+	// contribute OTHER_TENANT entries rather than per-tenant
 	// entries) — except when also flagged IsExternal, in which case
 	// the catchall handles them as EXTERNAL.
+	//
+	// Full rationale: docs/architecture/trie-construction.md#the-five-step-algorithm
 	Shared bool
-	// IsExternal mirrors Neutron's `router:external` attribute. True
-	// for the operator-managed networks that routers use as upstream
-	// gateways (floating-IP pools, transit-to-internet networks).
-	// Subnets on external networks are intentionally omitted from
-	// the trie's Step 2 / Step 3 — they should classify as EXTERNAL,
-	// which is what the Step-1 catchall returns by default. See
-	// docs/architecture/trie-construction.md#the-static-route-resolver `zone_for`.
+	// IsExternal mirrors `router:external`. Subnets on such networks
+	// are deliberately omitted from trie Steps 2/3 — they must
+	// classify EXTERNAL, which the Step-1 catchall already does.
 	IsExternal bool
 }
 
@@ -56,9 +48,11 @@ type Port struct {
 	MACAddress string
 	// DeviceOwner classifies the port's role: "compute:nova" for
 	// VMs, "network:router_interface" / "network:router_gateway" /
-	// "network:distributed" for OVN router ports, etc. docs/architecture/trie-construction.md#the-five-step-algorithm Step 4
-	// inspects this to decide whether a port belongs to a VM or to
-	// infrastructure.
+	// "network:distributed" for OVN router ports, etc. Step 4 of the
+	// trie builder inspects this to decide whether a port belongs to
+	// a VM or to infrastructure.
+	//
+	// Full rationale: docs/architecture/trie-construction.md#the-five-step-algorithm
 	DeviceOwner string
 	// DeviceID identifies the bound resource (Nova instance UUID
 	// for VMs, router UUID for router ports). Used by the trie
@@ -96,14 +90,10 @@ type Project struct {
 	Name string
 }
 
-// Server is the agent's view of a Nova server (VM). Carried in
-// [Snapshot.Servers] so the info-metric collector can emit
-// lachesis_server_info{server_id, name, tenant_id} for dashboard
-// name(id) joins. ProjectID comes from Nova's tenant_id field.
-//
-// Fetched best-effort ([Client.ListServers]): a Nova failure leaves
-// the list empty and the info series absent, never failing the sync —
-// unlike the Neutron resource lists the trie is built from.
+// Server is the agent's view of a Nova server, carried so the info
+// collector can emit lachesis_server_info for dashboard name joins.
+// Fetched BEST-EFFORT: a Nova failure leaves the list empty and the
+// series absent, never failing the sync.
 type Server struct {
 	ID        string
 	Name      string
@@ -168,8 +158,10 @@ type Router struct {
 	ExternalNetworkID string
 	// Routes are operator-configured static routes. Empty on most
 	// routers. BuildTrie walks these through the multi-hop
-	// static-route resolver (docs/architecture/trie-construction.md#the-static-route-resolver), emitting one trie row per
-	// route (EXTERNAL when the next hop cannot be resolved).
+	// static-route resolver, emitting one trie row per route
+	// (EXTERNAL when the next hop cannot be resolved).
+	//
+	// Full rationale: docs/architecture/trie-construction.md#the-static-route-resolver
 	Routes []Route
 }
 

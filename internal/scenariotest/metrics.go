@@ -13,68 +13,82 @@ import (
 const (
 	// MetricBytesTotal is the TENANT tier of the four-layer billing
 	// hierarchy — the family carrying tenant_id, which every tenant
-	// expectation and monotonicity assertion reads
-	// (docs/architecture/billing.md).
+	// expectation and monotonicity assertion reads.
+	//
+	// Billing tiers: docs/architecture/billing.md
 	MetricBytesTotal         = "lachesis_tenant_bytes_total"
 	MetricAttachedInterfaces = "lachesis_attached_interfaces"
 	MetricAttachFailures     = "lachesis_tc_attach_failures_total"
 	// MetricSettledFlows counts GlobalState rows the agent's ghost sweep
-	// folded into the settled-bytes accumulator (docs/architecture/data-structures.md#settled-bytes). The
-	// mac-reuse scenario polls it to know the sweep has processed a
-	// deleted VM. Absent on pre-fold agents — the scenario checks
-	// presence and refuses to run rather than hanging on the poll.
+	// folded into the settled-bytes accumulator. The mac-reuse scenario
+	// polls it to know the sweep has processed a deleted VM. Absent on
+	// pre-fold agents — the scenario checks presence and refuses to run
+	// rather than hanging on the poll.
+	//
+	// Settled bytes: docs/architecture/data-structures.md#settled-bytes
 	MetricSettledFlows = "lachesis_gc_settled_flows_total"
 	// MetricLingeringGhosts is the live count of MACs marked for deletion
 	// but not yet swept (the lingering-ghost grace window). Unlike
 	// MetricSettledFlows (which only moves when the sweep folds, after the
-	// 60s grace), this gauge rises the instant a MAC is MarkDelete'd — the
-	// immediate signal that something was marked gone (docs/architecture/data-structures.md#lingering-ghost).
+	// 60s grace), this gauge rises the instant a MAC is MarkDelete'd —
+	// the immediate signal that something was marked gone.
+	//
+	// Lingering Ghost: docs/architecture/data-structures.md#lingering-ghost
 	MetricLingeringGhosts = "lachesis_lingering_ghosts_active"
 	// MetricCountersReset is the agent's state-restart epoch — the
-	// discontinuity marker behind the cold-restart scenario
-	// (docs/architecture/boot-and-recovery.md#counters-reset-epoch). Constant per
-	// process; a changed value across an agent restart means the agent
-	// declared its counter baselines incomparable with what preceded them.
+	// discontinuity marker behind the cold-restart scenario. Constant
+	// per process; a changed value across an agent restart means the
+	// agent declared its counter baselines incomparable with what
+	// preceded them.
+	//
+	// Counters-reset epoch: docs/architecture/boot-and-recovery.md#counters-reset-epoch
 	MetricCountersReset = "lachesis_agent_counters_reset_timestamp_seconds"
-	// MetricServerBytesTotal is the per-server billing family
-	// (docs/architecture/billing.md). Absent on agents predating the per-server export;
-	// only expectations with a VM target need it, and assert refuses
-	// those against agents that don't expose it.
+	// MetricServerBytesTotal is the per-server billing family. Absent on
+	// agents predating the per-server export; only expectations with a
+	// VM target need it, and assert refuses those against agents that
+	// don't expose it.
+	//
+	// Billing tiers: docs/architecture/billing.md
 	MetricServerBytesTotal = "lachesis_server_bytes_total"
 	// MetricPortBytesTotal is the per-port drill-down family — the
-	// mortal leaf of the four-layer hierarchy (docs/architecture/billing.md).
-	// Data-dependent like the server family (a series exists only once
-	// its port carries attributed traffic), so no step preflight-gates
-	// on it; PortSeriesStep fails with a clear row instead.
+	// mortal leaf of the four-layer hierarchy. Data-dependent like the
+	// server family (a series exists only once its port carries
+	// attributed traffic), so no step preflight-gates on it;
+	// PortSeriesStep fails with a clear row instead.
+	//
+	// Billing tiers: docs/architecture/billing.md
 	MetricPortBytesTotal = "lachesis_port_bytes_total"
 	// MetricNeutronAnomalies is the per-class topology-anomaly gauge.
 	// AssertAnomalyStep polls it; the class vocabulary is the agent's
 	// (cycle, ambiguity, …, multi_external_path).
 	MetricNeutronAnomalies = "lachesis_neutron_anomalies"
-	// The three settled-accumulator tuple gauges of the four-layer model
-	// (docs/architecture/data-structures.md#settled-bytes). Unlike
-	// MetricSettledFlows (which only the GC sweep moves), these rise
-	// whenever ANY fold adds a tuple — including a reconcile-driven
-	// [state.SettleRebase] from an attribution change on a LIVE port. The
-	// port-reassignment / router-regateway scenarios read their SUM to
-	// prove the reconcile fold fired.
+	// The three settled-accumulator tuple gauges of the four-layer
+	// model. Unlike MetricSettledFlows (which only the GC sweep moves),
+	// these rise whenever ANY fold adds a tuple — including a
+	// reconcile-driven [state.SettleRebase] from an attribution change
+	// on a LIVE port. The port-reassignment / router-regateway
+	// scenarios read their SUM to prove the reconcile fold fired.
+	//
+	// Settled bytes: docs/architecture/data-structures.md#settled-bytes
 	MetricTenantSettledTuples = "lachesis_state_tenant_settled_tuples"
 	MetricServerSettledTuples = "lachesis_state_server_settled_tuples"
 	MetricTotalSettledTuples  = "lachesis_state_total_settled_tuples"
 	// MetricUnresolvedResolved counts UnresolvedBuffer late-binding
 	// successes: a flow whose MAC was unknown when its first bytes
 	// arrived, then became known within the TTL and was re-attributed to
-	// the right tenant (docs/architecture/data-structures.md#userspace-structures).
-	// The unresolved-latebind scenario reads it to prove the buffer
-	// resolved rather than expired to unknown.
+	// the right tenant. The unresolved-latebind scenario reads it to
+	// prove the buffer resolved rather than expired to unknown.
+	//
+	// Userspace structures: docs/architecture/data-structures.md#userspace-structures
 	MetricUnresolvedResolved = "lachesis_unresolved_resolved_total"
 	// MetricGCEvictions counts map entries the GC evicted, split by a
 	// `reason` label. Only reason="pressure_relief" is the telemetry_map
 	// fill-watermark eviction EvictionsGrewStep asserts on; the family
 	// also carries ttl (mac_tenant_map ghost expiry) and
 	// ghost_residual_flow, so it must be read per-reason rather than
-	// summed whole
-	// (docs/architecture/data-structures.md#kernel-side-bpf-maps).
+	// summed whole.
+	//
+	// Kernel maps: docs/architecture/data-structures.md#kernel-side-bpf-maps
 	MetricGCEvictions = "lachesis_gc_evictions_total"
 	// ReasonPressureRelief is the [MetricGCEvictions] `reason` value for a
 	// telemetry_map fill-watermark eviction.
@@ -101,9 +115,10 @@ type BytesSample struct {
 }
 
 // ServerSample is one lachesis_server_bytes_total series — the mortal
-// per-server billing family (docs/architecture/billing.md). Captured alongside
-// BytesSample so Expect entries with a VM target can lower-bound a
-// specific server's delta.
+// per-server billing family. Captured alongside BytesSample so Expect
+// entries with a VM target can lower-bound a specific server's delta.
+//
+// Billing tiers: docs/architecture/billing.md
 type ServerSample struct {
 	ServerID        string  `json:"server_id"`
 	TenantID        string  `json:"tenant_id"`
@@ -116,8 +131,10 @@ type ServerSample struct {
 }
 
 // PortSample is one lachesis_port_bytes_total series — the mortal
-// per-port leaf (docs/architecture/billing.md). PortSeriesStep uses it
-// to assert which port_id actually carried driven traffic.
+// per-port leaf. PortSeriesStep uses it to assert which port_id
+// actually carried driven traffic.
+//
+// Billing tiers: docs/architecture/billing.md
 type PortSample struct {
 	PortID    string  `json:"port_id"`
 	ServerID  string  `json:"server_id"`

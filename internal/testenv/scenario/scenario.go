@@ -1,24 +1,17 @@
-// Package scenario is a small declarative builder for the Neutron
-// snapshots that exercise [neutron.BuildTrie] in tests. It hides
-// the boilerplate of struct literals (per-port MACs, manual
-// DeviceID wiring on router-interface ports, IPVersion=4 on every
-// subnet) while still producing the same [neutron.Snapshot] the
-// production builder consumes.
+// Package scenario is a declarative builder for the Neutron snapshots
+// that exercise [neutron.BuildTrie] in tests, hiding the struct-literal
+// boilerplate while producing the same [neutron.Snapshot] production
+// consumes.
 //
-// The package is intentionally minimal — just enough to express
-// scenarios A through L from docs/architecture/primer.md. Callers that need
-// fields the DSL doesn't expose (MAC addresses, OVN-specific
-// device_owner strings, IPv6 ports) should build the Snapshot
-// struct directly rather than grow the DSL.
-//
-// Typical use:
+// Intentionally minimal — just enough for the primer's scenarios. Tests
+// needing fields the DSL omits should build the Snapshot directly
+// rather than grow it.
 //
 //	snap := scenario.New().
 //	    Network("net-T1", "T1").
 //	        Subnet("sub-T1", "10.0.1.0/24", "10.0.1.1").
 //	        VM("vm-a", "T1", "10.0.1.5").
 //	    Build()
-//	got := neutron.BuildTrie(snap)
 package scenario
 
 import (
@@ -126,17 +119,13 @@ func (n *NetRef) VMInAZ(id, project, az, ip string) *NetRef {
 	return n.attachPort(id, project, "compute:"+az, id+"-instance", ip)
 }
 
-// NIC adds an additional compute:nova port to an already-declared VM
-// on subnetID, sharing the VM's server identity (the same DeviceID) so
-// realize boots ONE Nova server carrying every NIC. This is the
-// static, boot-time form of a multi-homed VM; the runtime form (plug a
-// NIC into a live VM) is the attach/detach step family. The VM must be
-// declared first — its primary port supplies the owning project and
-// device_owner. Returns the Builder for further top-level chaining.
+// NIC adds another compute:nova port to a declared VM, sharing its
+// DeviceID so realize boots ONE server carrying every NIC — the
+// boot-time form of a multi-homed VM. Declare the VM first; its primary
+// port supplies the project and device_owner.
 //
-// Cursorless by design: a NIC usually lands on a different network
-// than the VM's, so it references the target subnet by id (like
-// [RouterRef.Attach]) rather than riding a network cursor.
+// Cursorless by design: a NIC usually lands on another network, so it
+// names the subnet by id rather than riding the network cursor.
 func (b *Builder) NIC(vmID, subnetID, ip string) *Builder {
 	sub := b.findSubnet(subnetID)
 	var owner, project string
@@ -413,7 +402,9 @@ func (r *RouterRef) ExternalGateway(externalNetworkID string) *RouterRef {
 }
 
 // ExtraRoute appends a static route to this router. The resolver
-// walks (destinationCIDR, nexthopIP) at cold-start (docs/architecture/trie-construction.md#the-static-route-resolver).
+// walks (destinationCIDR, nexthopIP) at cold-start.
+//
+// Static-route resolver: docs/architecture/trie-construction.md#the-static-route-resolver
 func (r *RouterRef) ExtraRoute(destinationCIDR, nexthopIP string) *RouterRef {
 	rp := r.b.findRouterPtr(r.routerID)
 	rp.Routes = append(rp.Routes, neutron.Route{Destination: destinationCIDR, Nexthop: nexthopIP})

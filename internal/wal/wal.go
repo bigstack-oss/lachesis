@@ -1,39 +1,16 @@
-// Package wal is the agent's write-ahead log: a single JSON snapshot
-// of [state.GlobalState] flushed to disk every 60 s, retained as a
-// .bak copy on rotation, and read back on boot to seed the state
-// before the scraper starts.
+// Package wal is the agent's write-ahead log: an atomic JSON snapshot of
+// [state.GlobalState], flushed every 60s and read back on boot to seed
+// state before the scraper starts.
 //
-// The on-disk format is JSON rather than an append-only log; the
-// trade-off (≤60 s data loss on hard reboot for a 1–2 MB single-
-// file write) is the design choice in docs/architecture/primer.md#write-ahead-log. JSON
-// numbers can't represent uint64 above 2^53 without precision loss,
-// so byte counters and timestamps cross the wire as decimal strings
-// via the encoding/json `,string` tag.
+// Two things a change here must preserve:
 //
-// # Atomic write protocol
+//   - u64 fields cross the wire as decimal strings. JSON numbers are
+//     doubles and lose precision above 2^53, which is real byte counts.
+//   - The write is tmp → fsync → rename → fsync the parent directory.
+//     Skipping the directory fsync leaves the renames unjournaled, so a
+//     power loss can roll back to the previous snapshot.
 //
-//  1. Write payload to path+".tmp"; fsync the file.
-//  2. Rename path → path+".bak" (best-effort; ENOENT on first run is fine).
-//  3. Rename path+".tmp" → path.
-//  4. Open the parent directory; fsync; close. Without this the
-//     renames are not journaled — a power loss after Save returns
-//     could roll the directory back to the previous snapshot.
-//
-// Readers therefore see either the previous snapshot (if a crash
-// happens between steps 2 and 3) or the new one (after step 3) —
-// never a partial write.
-//
-// # Boot read protocol
-//
-//  1. Try path. On parse failure, fall back to path+".bak" and
-//     return LoadResult.Source = LoadFromBackup. A schema version
-//     newer than this build never falls back: Load returns
-//     [ErrSchemaNewer] immediately so boot can refuse to start
-//     before the flush rotation destroys the forward snapshot.
-//  2. If both fail with ENOENT, return LoadResult with Source =
-//     LoadEmpty and no records — first boot.
-//  3. Otherwise return the underlying error wrapped with both
-//     read attempts' context.
+// docs/architecture/primer.md#write-ahead-log
 package wal
 
 import (
@@ -70,15 +47,10 @@ type stageErr struct {
 func (e *stageErr) Error() string { return fmt.Sprintf("wal %s: %v", e.Stage, e.Err) }
 func (e *stageErr) Unwrap() error { return e.Err }
 
-// Save writes records, the three settled accumulators, and the
-// counters-reset epoch to path via the atomic tmp+fsync+rename
-// rotation described in the package doc.
-// The slices must come from one [state.GlobalState.SnapshotForWAL]
-// call — slices snapshotted separately can tear across a concurrent
-// settle fold and persist the folded bytes twice or not at all.
-// agentBuild is informational (correlation with build logs); empty is
-// acceptable. m may be nil when phase timings and failure stages are
-// not needed.
+// Save writes one snapshot via the atomic rotation in the package doc.
+// The slices MUST come from a single SnapshotForWAL call — separately
+// taken ones tear across a concurrent fold and persist the folded bytes
+// twice or not at all. agentBuild is informational; m may be nil.
 func Save(path, agentBuild string, records []state.Record, settled []state.TenantSettledRecord, serverSettled []state.ServerSettledRecord, totalSettled []state.TotalSettledRecord, countersResetAt int64, m *Metrics) error {
 	snap := snapshotWire{
 		SchemaVersion:    SchemaVersion,
@@ -269,15 +241,10 @@ func Load(path string) (LoadResult, error) {
 	)
 }
 
-// Quarantine moves an unreadable snapshot at path aside to
-// path+QuarantineSuffix, out of the Save rotation's reach — without
-// the rename, the next flush rotates the unreadable file to .bak and
-// the one after deletes it, destroying the forensic evidence. There
-// is a single quarantine slot: a later quarantine overwrites the
-// earlier one, which keeps disk usage bounded across crash loops
-// while always preserving the most recent failure. Returns
-// moved=false with no error when path does not exist (nothing to
-// preserve).
+// Quarantine moves an unreadable snapshot out of the Save rotation's
+// reach — without it the next two flushes destroy the evidence. One
+// slot only: a later quarantine overwrites the earlier, bounding disk
+// use across a crash loop while keeping the most recent failure.
 func Quarantine(path string) (moved bool, err error) {
 	if err := os.Rename(path, path+QuarantineSuffix); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

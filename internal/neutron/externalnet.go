@@ -1,7 +1,9 @@
 // externalnet.go resolves each VM port's external-network attribution —
 // the source of the `external_network` metric label and the per-server
-// export dimension (docs/architecture/billing.md). Pure functions over a
-// Snapshot, mirroring the trie builder's style: no I/O, no retention.
+// export dimension. Pure functions over a Snapshot, mirroring the trie
+// builder's style: no I/O, no retention.
+//
+// Full rationale: docs/architecture/billing.md
 
 package neutron
 
@@ -13,35 +15,14 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
-// ExternalNetworkByPort maps each VM port ID to the label of the
-// external network its egress leaves through:
+// ExternalNetworkByPort maps each VM port to the external network its
+// egress leaves through: a bound floating IP wins (OVN NATs through it
+// whichever router carries the traffic), else the external gateway of
+// an attached router. Ports with neither are absent. The label is the
+// network Name, which is what rate tables key on.
 //
-//  1. A floating IP bound to the port pins it to the FIP's network —
-//     the strongest signal, because OVN NATs the VM's external traffic
-//     through the FIP regardless of which router carries it.
-//  2. Otherwise, the external gateway of a router attached to any of
-//     the port's subnets: traffic leaves via the router's
-//     `external_gateway_info` network (SNAT).
-//
-// Ports with neither path are absent from the map — their VMs have no
-// external attribution and emit the [metadata.NoExternalNetwork]
-// sentinel via the zone gate.
-//
-// The label is the network's operator-assigned Name, falling back to
-// its ID when the name is empty — names are what dashboards and rate
-// tables key on ("public-1" vs "public-2").
-//
-// Known limitation (first cut, tracked on the metadata task): a VM
-// with multiple external paths gets ONE attribution, chosen
-// deterministically (lexicographically smallest label, FIP tier
-// first) so successive syncs over an unchanged topology attribute
-// identically — an attribution flap would needlessly settle-and-
-// relabel live series every reconcile pass. Each ambiguous port is
-// surfaced as a [MultiExternalPathHit] on the anomalies gauge
-// (`lachesis_neutron_anomalies{class="multi_external_path"}`) and the
-// /debug/anomalies page via [DetectAnomalies]; here it only logs at
-// Debug, because a legitimately multi-homed VM is a persistent
-// condition, not a per-pass event.
+// A multi-homed VM gets ONE attribution, picked deterministically, so
+// an unchanged topology never flaps and re-labels live series.
 func ExternalNetworkByPort(snap *Snapshot) map[string]string {
 	out := make(map[string]string)
 	for portID, c := range externalCandidatesByPort(snap) {
@@ -106,18 +87,12 @@ func externalCandidatesByPort(snap *Snapshot) map[string]portCandidates {
 		}
 	}
 
-	// Tier 2: subnet → external-network label, via attached routers
-	// with external gateways. Built first so FIP hits can shadow it.
-	//
-	// The gateway-IP rule: Neutron allows several routers on one
-	// subnet, but only one interface holds the subnet's gateway_ip —
-	// and the VMs' default route points exactly there, so SNAT egress
-	// is deterministic via that router. Interfaces holding the
-	// gateway IP are therefore authoritative (gwExt); other attached
-	// routers (anyExt) count only when no gateway-owning router has
-	// an external gateway — they can carry traffic solely via
-	// in-guest static routes, the documented-unsolvable case
-	// (docs/architecture/edge-cases.md#tier-4--subtle-correctness row 9).
+	// Tier 2: subnet → external label via attached routers, built first
+	// so FIP hits can shadow it. Only one interface holds a subnet's
+	// gateway_ip and the VMs' default route points there, so that router
+	// is authoritative for SNAT. Others count only when no
+	// gateway-owning router has an external gateway — the documented
+	// unsolvable case (edge-cases.md row 9).
 	routerExt := make(map[string]string) // routerID → ext label
 	for _, r := range snap.Routers {
 		if r.ExternalNetworkID != "" {
@@ -198,17 +173,10 @@ func dedupe(in []string) []string {
 	return out
 }
 
-// RouterExtMACs maps each router-interface port's MAC (as a
-// [bpf.MACKey] u64) to the label of the external network its router
-// gateways to — the per-flow attribution source for routed external
-// traffic (docs/architecture/billing.md): a routed external flow's peer MAC is
-// a router interface's MAC, unique per logical router interface on OVN
-// (the duplicate_router_mac anomaly asserts exactly this), so the map
-// identifies which exit network actually carried each flow. Interfaces
-// of routers with no external gateway are absent — their flows fall
-// back to the per-VM attribution. Ports with unparseable MACs are
-// skipped silently (mirroring the VM-port admission gate; a malformed
-// port must not log every pass).
+// RouterExtMACs maps each router-interface MAC to its router's external
+// network — the per-flow attribution for routed external traffic, since
+// such a flow's peer MAC IS that interface. Relies on OVN's unique
+// per-interface MAC, which the duplicate_router_mac anomaly asserts.
 func RouterExtMACs(snap *Snapshot) map[uint64]string {
 	netLabel := make(map[string]string, len(snap.Networks))
 	for _, n := range snap.Networks {

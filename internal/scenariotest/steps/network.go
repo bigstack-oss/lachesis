@@ -92,12 +92,8 @@ func routerRef(env *scenariotest.StepEnv, dsl string) (scenariotest.ResourceRef,
 	return scenariotest.ResourceRef{}, fmt.Errorf("run-state has no router %q", dsl)
 }
 
-// SetRouterRoutesStep replaces a router's static (extra) routes mid-run
-// via the Neutron API — the live route change behind the
-// extraroute-mutation scenario. The agent's next reconcile rebuilds the
-// trie insert-then-delete (docs/architecture/trie-construction.md), so
-// new traffic reclassifies with no MISS window. Routes wholly replaces
-// the router's route set (an empty slice clears them).
+// SetRouterRoutesStep replaces a router's static routes mid-run.
+// Routes wholly replaces the set; an empty slice clears it.
 type SetRouterRoutesStep struct {
 	Router string
 	Routes []scenariotest.RouteSpec
@@ -118,13 +114,9 @@ func (s SetRouterRoutesStep) Run(ctx context.Context, env *scenariotest.StepEnv)
 }
 
 // SetRouterGatewayStep re-points a router's external gateway to another
-// DSL external network mid-run — the re-gateway mutation. The agent's
-// reconcile rebuilds the router-interface-MAC → external-network map;
-// every flow riding a changed router MAC folds under its OLD label
-// first (reconcile/routers.go [state.SettleRebase]), keeping the
-// external_network series monotone across the move. ExternalNet is a
-// DSL external-network id resolved to its live network via the
-// run-state (a [scenariotest.Scenario.CreateExternalNets] marker).
+// DSL external network mid-run. Flows on a changed router MAC settle
+// under their OLD label first, so the external_network series stays
+// monotone across the move.
 type SetRouterGatewayStep struct {
 	Router      string
 	ExternalNet string
@@ -162,14 +154,10 @@ func (s SetRouterGatewayStep) Run(ctx context.Context, env *scenariotest.StepEnv
 	return nil
 }
 
-// AddRouteStep adds an in-guest static route on a VM (`sudo ip route
-// add CIDR via Via`) — how a scenario steers traffic through a
-// specific router when the VM's default route points elsewhere (the
-// second-router drive of the multi-external-path scenario). The
-// platform cannot see in-guest routes, which is exactly the point:
-// the per-flow router-MAC attribution must still label the traffic by
-// the router that carried it. Assumes the VM is SSH-reachable (a
-// prior DriveStep's readiness gate, in practice).
+// AddRouteStep adds an in-guest static route on a VM, steering traffic
+// through a specific router. The platform cannot see in-guest routes,
+// which is the point: per-flow router-MAC attribution must still label
+// the traffic by the router that carried it.
 type AddRouteStep struct {
 	VM   string
 	CIDR string
@@ -204,29 +192,19 @@ func (s AddRouteStep) Run(ctx context.Context, env *scenariotest.StepEnv) error 
 }
 
 // EnableForwardingStep turns a VM into a router, which takes two
-// sysctls, not one:
+// sysctls, not one: `ip_forward=1`, and `rp_filter=0`.
 //
-//   - `net.ipv4.ip_forward=1` so packets addressed through the VM are
-//     forwarded rather than dropped.
-//   - `rp_filter=0` (all + default) so they survive reverse-path
-//     filtering. This one is easy to miss and fails silently: a packet
-//     arriving on the transit NIC carries the ORIGINAL sender's source
-//     address, and the appliance has no route back to that subnet via
-//     the NIC it arrived on (its only default route is via its boot
-//     NIC), so with rp_filter on, Linux discards it before forwarding
-//     — no counter moves anywhere, which reads exactly like "the
-//     platform never delivered the traffic".
+// rp_filter is the one that fails silently. A forwarded packet arrives
+// on the transit NIC carrying the ORIGINAL source address, and the
+// appliance has no route back to that subnet via that NIC — so with
+// rp_filter on, Linux drops it before forwarding and no counter moves
+// anywhere, which reads exactly like the platform never delivered the
+// traffic.
 //
-// Together they are what makes a VM usable as an extraroute nexthop
-// (`device_owner compute:*`) — the resolver's scenariotest.Step B case
-// (docs/architecture/trie-construction.md#the-static-route-resolver),
-// exercised live by the vm-appliance-nexthop scenario.
+// The forwarded packet keeps the original source IP, so the egress port
+// must ALSO have port security off or OVN anti-spoofing drops it.
 //
-// The forwarded packet keeps the ORIGINAL source IP, so the port it
-// leaves by must ALSO have port security disabled
-// ([scenariotest.PortSpec.PortSecurityOff] / [AttachPortStep.PortSecurityOff]) or
-// OVN anti-spoofing drops it on the way out. Same absolute-path +
-// SSH-FIP spelling as [AddRouteStep].
+// docs/architecture/trie-construction.md#the-static-route-resolver
 type EnableForwardingStep struct {
 	VM string
 }
@@ -246,14 +224,10 @@ func (s EnableForwardingStep) Run(ctx context.Context, env *scenariotest.StepEnv
 	if err := gate.SSHReady(ctx, env, s.VM, fip); err != nil {
 		return fmt.Errorf("enable-forwarding: %w", err)
 	}
-	// Written straight to /proc: cirros has no /sbin/sysctl in sudo's
-	// PATH, and tee-ing the pseudo-files is the portable spelling. Both
-	// values are read back so a silently-ignored write fails HERE rather
-	// than as a mystifying zero-delta at the appliance's tap.
-	// Every conf/*/rp_filter, not just conf/all: the kernel takes
-	// max(conf.all, conf.<dev>), so a per-device 1 left over from
-	// interface creation would still drop the forwarded packet. The
-	// read-back collapses them with sort -u, so any surviving 1 shows up.
+	// Straight to /proc: cirros has no sysctl in sudo's PATH. Both
+	// values are read back so an ignored write fails HERE, not as a
+	// mystifying zero-delta later. Every conf/*/rp_filter, not just
+	// conf/all — the kernel takes max(all, <dev>).
 	const cmd = "echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward >/dev/null; " +
 		"for f in /proc/sys/net/ipv4/conf/*/rp_filter; do echo 0 | sudo tee $f >/dev/null; done; " +
 		"cat /proc/sys/net/ipv4/ip_forward; " +
@@ -270,14 +244,11 @@ func (s EnableForwardingStep) Run(ctx context.Context, env *scenariotest.StepEnv
 	return nil
 }
 
-// DeleteFIPStep removes the floating IP(s) a prior [AssociateFIPStep]
-// bound to VM from the named DSL network. Provider-net FIPs (Network
-// "" in the run-state — the SSH path) are never touched — unless
-// Provider is set, which targets EXACTLY that SSH FIP: the
-// router-regateway scenario frees it so Neutron will let the router's
-// external gateway change (RouterExternalGatewayInUseByFloatingIp
-// otherwise). Deleting it sacrifices SSH, so only steps that drive
-// nothing afterward use Provider.
+// DeleteFIPStep removes the floating IPs a prior [AssociateFIPStep]
+// bound to VM. The provider-net SSH FIP is never touched unless
+// Provider is set — which targets exactly it, so Neutron will allow a
+// gateway change. That sacrifices SSH, so only steps that drive nothing
+// afterward use it.
 type DeleteFIPStep struct {
 	VM       string
 	Network  string

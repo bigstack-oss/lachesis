@@ -1,31 +1,20 @@
 // Package metadata is the userspace mirror of the kernel
-// `mac_tenant_map`. It maps a VM MAC to a [*TenantMeta] carrying the
-// richer attributes the kernel cannot store (project UUID, VM name,
-// LB-Amphora flag, deletion grace timestamp). See docs/architecture/data-structures.md#userspace-structures.
+// `mac_tenant_map`, mapping a VM MAC to a [*TenantMeta] carrying the
+// attributes the kernel cannot store.
 //
-// # Invariants
+// Two invariants:
 //
-// (1) Stored [TenantMeta] values are immutable. Multiple MACs may
-// share the same `*TenantMeta` — pointer-replace on update, never
-// in-place mutation. A scrape that captures the pointer may keep
-// using it after a concurrent update; the captured fields stay
-// consistent for the lifetime of that scrape.
+//   - Stored [TenantMeta] values are IMMUTABLE. Several MACs may share
+//     one pointer, and a scrape may hold it across an update — replace
+//     the pointer, never mutate in place.
+//   - The map is a strict SUPERSET of the kernel's. Insert
+//     userspace-first, delete kernel-first after the ghost window. The
+//     ordering is the caller's responsibility.
 //
-// (2) [ShardedMetadataMap] is a strict superset of the kernel
-// `mac_tenant_map`. Insertions go userspace-first, then kernel.
-// Deletions go kernel-first (after the 60 s Lingering Ghost in
-// docs/architecture/data-structures.md#lingering-ghost), then userspace. The ordering is the caller's
-// responsibility; this package only enforces the data-structure
-// invariants and provides the [MarkDelete] hook the GC drives.
+// The MAC encoding matches the kernel's `mac_to_u64`; that agreement
+// is what makes cross-language lookups consistent.
 //
-// # Sharding
-//
-// 64 shards × `sync.RWMutex`, indexed by `mac & 63`. The shard count
-// is fixed and load-bearing: it bounds writer contention while
-// keeping every shard's working set close to one L1 cacheline of
-// metadata at typical scales. The MAC encoding (big-endian into the
-// low 48 bits of a u64) matches the kernel's `mac_to_u64`; both
-// sides agreeing is what makes cross-language map lookups consistent.
+// docs/architecture/data-structures.md#lingering-ghost
 package metadata
 
 import (
@@ -83,9 +72,11 @@ func (s *ShardedMetadataMap) Insert(mac uint64, meta *TenantMeta) {
 
 // Delete unconditionally removes mac. Intended for the GC after the
 // Lingering Ghost window has expired and the kernel `mac_tenant_map`
-// entry has already been removed (docs/architecture/data-structures.md#map-lifecycle-invariants). Most call
-// sites that observe a Neutron deletion event should call
-// [ShardedMetadataMap.MarkDelete] instead.
+// entry has already been removed. Most call sites that observe a
+// Neutron deletion event should call [ShardedMetadataMap.MarkDelete]
+// instead.
+//
+// Full rationale: docs/architecture/data-structures.md#map-lifecycle-invariants
 func (s *ShardedMetadataMap) Delete(mac uint64) {
 	sh := s.shardFor(mac)
 	sh.mu.Lock()
@@ -125,15 +116,10 @@ func (s *ShardedMetadataMap) Len() int {
 	return n
 }
 
-// Range calls f for every live (MAC, *TenantMeta) entry. The walk
-// is shard-by-shard under a shared (read) lock per shard, so f must
-// not call any method on s that takes a write lock on the same
-// shard — that deadlocks. f returning false stops iteration early.
-//
-// Snapshot semantics are weak: entries in shards iterated after the
-// current one may already reflect concurrent inserts / deletes
-// completed during the walk. Callers that need a fully consistent
-// view should serialise externally.
+// Range calls f for every live entry, shard-by-shard under a per-shard
+// read lock — so f must not call any method that write-locks the same
+// shard, which deadlocks. Returning false stops early. Snapshot
+// semantics are weak: later shards may reflect concurrent writes.
 func (s *ShardedMetadataMap) Range(f func(mac uint64, meta *TenantMeta) bool) {
 	for i := range s.shards {
 		s.shards[i].mu.RLock()

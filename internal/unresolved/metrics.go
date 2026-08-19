@@ -2,8 +2,8 @@ package unresolved
 
 import "github.com/prometheus/client_golang/prometheus"
 
-// Metrics holds the Prometheus instruments for the UnresolvedBuffer
-// (docs/architecture/metrics.md). The instruments are:
+// Metrics holds the Prometheus instruments for the UnresolvedBuffer.
+// The instruments are:
 //
 //   - lachesis_unresolved_buffer_depth              gauge
 //   - lachesis_unresolved_buffer_evictions_total{reason}  counter
@@ -14,6 +14,8 @@ import "github.com/prometheus/client_golang/prometheus"
 // resolved counts late-binding successes — it stays at zero until the
 // Kafka consumer can make a buffered MAC newly known (a later sprint),
 // and is declared now so the series exists from the start.
+//
+// Metric catalogue: docs/architecture/metrics.md
 type Metrics struct {
 	depth     prometheus.Gauge
 	evictions *prometheus.CounterVec

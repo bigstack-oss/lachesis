@@ -6,27 +6,18 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// unresolvedLatebind exercises the UnresolvedBuffer's head-of-life
-// (docs/architecture/data-structures.md#userspace-structures): a flow
-// whose VM-side MAC the agent has not learned yet parks in the buffer
-// (billed to no real tenant), and when the metadata later arrives it
-// late-binds to the right tenant with a write-back that prevents the
-// bytes being counted twice.
+// unresolvedLatebind exercises the UnresolvedBuffer's head-of-life: a
+// flow whose VM MAC is not yet known parks in the buffer, then
+// late-binds to the right tenant with the write-back that stops the
+// bytes counting twice.
 //
-// Staging the "metadata not yet arrived" window deterministically needs
-// agent control. vm-x is pinned to node:0 and deferred; the agent there
-// is restarted under an alt config with Kafka OFF and a very long
-// reconcile interval, so a VM booted afterward is NOT learned. vm-x's
-// traffic then parks unresolved. A SIGHUP reload with a short reconcile
-// interval resumes the metadata feed WITHOUT restarting (the buffer is
-// in-memory — a restart would discard it); the next periodic reconcile
-// learns vm-x and the following scrape late-binds. The whole
-// park→resolve must fit inside the buffer TTL, so the resume config
-// uses a short interval and the assertions poll.
+// Staging that window needs agent control: the node's agent restarts
+// with Kafka off and a long reconcile interval, so a VM booted after is
+// NOT learned and its traffic parks. A SIGHUP with a short interval
+// then resumes the feed WITHOUT restarting — a restart would discard
+// the in-memory buffer. The whole park→resolve must fit inside the TTL.
 //
-// Nothing is pre-staged on that host: each phase names the keys it
-// changes and the step derives the config from what the node already
-// runs, so the final RestoreConfig returns the node's own original.
+// docs/architecture/data-structures.md#userspace-structures
 func unresolvedLatebind() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").
@@ -71,15 +62,12 @@ func unresolvedLatebind() *scenariotest.Scenario {
 			// re-attributed) — you cannot resolve what was never buffered.
 			steps.ResolvedGrewStep{Min: 1,
 				Note: "buffered flow late-bound to its tenant within the TTL"},
-			// It attributed to T1 (lower bound, polled against the drive's
-			// baseline — the bytes surface only once the late-bind lands).
-			// The zone is `miss`, not `external`: the kernel bakes dst_zone
-			// at packet time from the SOURCE tenant, and while vm-x's MAC is
-			// unlearned the source tenant is unknown, so the packet keys
-			// miss. Late-binding re-attributes the TENANT (unknown→T1); the
-			// zone stays whatever the kernel recorded. The billing property
-			// this proves is that the bytes reach the right tenant instead
-			// of being lost to "unknown".
+			// The zone is `miss`, not `external`: the kernel bakes
+			// dst_zone at packet time from the SOURCE tenant, and while
+			// vm-x's MAC is unlearned that is unknown. Late-binding
+			// re-attributes the TENANT only; the zone stays as recorded.
+			// What this proves is that the bytes reach the right tenant
+			// instead of being lost to "unknown".
 			steps.AssertStep{Note: "parked bytes re-attributed to the tenant", Expect: []scenariotest.Expect{
 				{TenantID: "T1", Zone: "miss", Direction: "tx", MinBytes: 900 << 10},
 			}},

@@ -9,22 +9,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Metrics holds the Neutron-subsystem Prometheus instruments. Owned
-// by the [Neutron] struct ([New] constructs the bundle and threads
-// it through Sync/Commit); the agent registers the slice from
-// [Metrics.Collectors] with its `prometheus.Registry`. nil is a
-// valid receiver on every observation helper, so code paths that
-// elide metrics for tests can pass nil safely.
+// Metrics holds the Neutron-subsystem instruments, owned by [Neutron]
+// and registered by the agent. nil is a valid receiver on every
+// observation helper, so test paths can elide it.
 //
-// The instruments:
-//
-//   - lachesis_neutron_sync_age_seconds                          gauge (sync recency)
-//   - lachesis_neutron_api_errors_total{endpoint, code}          counter
-//   - lachesis_neutron_unknown_device_owner_total{owner}         counter
-//   - lachesis_neutron_builder_step_duration_seconds{step}       histogram
-//   - lachesis_neutron_anomalies{class}                          gauge (topology health)
-//   - lachesis_neutron_trunk_subports                            gauge (data-plane blind spot)
-//   - lachesis_neutron_amphora_ports                             gauge (LB re-attribution reach)
+// docs/architecture/metrics.md
 type Metrics struct {
 	syncAge       prometheus.GaugeFunc
 	apiErrors     *prometheus.CounterVec
@@ -35,19 +24,13 @@ type Metrics struct {
 	amphoraPorts  prometheus.Gauge
 }
 
-// NewMetrics constructs the bundle. `lastSync` returns the most
-// recent successful cold-start / reconcile time. A zero time.Time
-// (never synced) is reported as `-1` — operators filter
-// `lachesis_neutron_sync_age_seconds < 0` to surface
-// never-yet-synced agents.
+// NewMetrics constructs the bundle. A never-synced lastSync reports
+// -1, so operators can filter `sync_age_seconds < 0`.
 //
-// Each Endpoint* child of the api_errors counter is seeded at zero
-// under the codeNetwork class — a labelled counter emits no series
-// until its first increment, so without the seed a healthy agent
-// shows "No data" instead of 0 on the dashboard. HTTP status codes
-// are not enumerable in advance and appear on first occurrence. The
-// unknown-owner counter stays unseeded for the same reason: its
-// owner label space is open-ended.
+// Per-endpoint error counters are seeded at zero: a labelled counter
+// emits nothing until first increment, so without the seed a healthy
+// agent reads "No data" instead of 0. Open-ended label spaces (HTTP
+// codes, unknown owners) stay unseeded.
 func NewMetrics(lastSync func() time.Time) *Metrics {
 	m := &Metrics{
 		apiErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -137,12 +120,11 @@ func (m *Metrics) RecordUnknownOwner(deviceOwner string) {
 	m.unknownOwners.WithLabelValues(deviceOwner).Inc()
 }
 
-// SetTrunkSubports publishes how many trunk subport MACs the latest
-// cold-start or resync admitted to mac_tenant_map. Gauge semantics —
-// every sync replaces the previous count, so deleting the last trunk
-// drops the gauge back to 0 on the next pass. The data plane cannot
-// count 802.1Q-tagged subport traffic (docs/architecture/edge-cases.md#tier-1--hard-limits), so
-// a nonzero value flags a billing blind spot. nil receivers no-op.
+// SetTrunkSubports publishes how many trunk subport MACs the last sync
+// admitted. The data plane cannot count their 802.1Q traffic, so a
+// nonzero value flags a billing blind spot.
+//
+// docs/architecture/edge-cases.md#tier-1--hard-limits
 func (m *Metrics) SetTrunkSubports(n int) {
 	if m == nil {
 		return

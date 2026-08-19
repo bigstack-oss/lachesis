@@ -25,20 +25,16 @@ type Options struct {
 }
 
 // Run deletes everything the run-state records, in reverse creation
-// order, idempotently: every delete tolerates already-gone (a re-run
-// after a partial failure converges), errors are collected rather
-// than aborting the pass, and three things are never touched —
-// projects (policy: reuse-or-create, never delete), the run-state
-// file, and the assert report (the evidence outlives the topology).
+// order and idempotently, so a re-run after a partial failure
+// converges. Errors are collected, not fatal. Three things are never
+// touched: projects, the run-state file, and the assert report — the
+// evidence outlives the topology.
 //
-// Order: FIPs (exact recorded IDs only — never a listing) → servers
-// (wait until gone; their taps must vanish before ports die) →
-// router routes (a route pins the interface its next-hop sits on) →
-// router interfaces (subnet- and port-based) → recorded ports →
-// routers (Neutron drops the gateway port itself) → a residual port
-// sweep scoped to each scenario network (platform-created ports like
-// CubeCOS's cube:mgr appear in no run-state but block deletion) →
-// subnets → networks.
+// The order is forced by Neutron's own dependencies: FIPs (by exact
+// recorded ID, never a listing) → servers (waited gone, so taps vanish
+// before ports) → router routes → router interfaces → ports → routers →
+// a residual port sweep per network (platform ports appear in no
+// run-state but block deletion) → subnets → networks.
 func Run(ctx context.Context, opts Options) error {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
@@ -71,19 +67,12 @@ func Run(ctx context.Context, opts Options) error {
 		})
 	}
 	// Residual server sweep: a server Nova accepted in the create→save
-	// window (the process died after the boot call returned, before the
-	// state save) is recorded nowhere, so the loop above can't reach it
-	// and the port/network sweeps below would strand it — the port sweep
-	// frees its network out from under it, leaving a live VM on no
-	// network that survives every `down`. Mirror the residual-port
-	// sweep, but scope it to the run's own projects AND to servers whose
-	// name carries this exact run id: the mangled prefix
-	// "<prefix>-<runID>-" is collision-free by construction, so the
-	// listing can never reach a sibling run reusing the same project
-	// (projects are shared across runs) or another tenant. This runs
-	// before the port teardown so a swept server's tap vanishes before
-	// `down` deletes the (recorded) port it sat on — Neutron 409s a
-	// bound-port delete otherwise.
+	// window is recorded nowhere, so the loop above cannot reach it and
+	// the sweeps below would strand it on no network, surviving every
+	// `down`. Scoped to this run's projects AND its exact run id — the
+	// mangled prefix is collision-free, so the listing can never reach
+	// a sibling run sharing the project. Runs BEFORE port teardown, or
+	// Neutron 409s the bound-port delete.
 	runPrefix := scenariotest.Mangle(rs.Prefix, rs.RunID, "")
 	for _, proj := range rs.Projects {
 		found, err := opts.Cloud.ListProjectServers(ctx, proj.ID)

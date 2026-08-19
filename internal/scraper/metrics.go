@@ -12,7 +12,7 @@ import (
 // [Scraper.SetMetrics]. nil is acceptable — the Observe* helpers handle
 // it, so a Scraper without metrics simply records nothing.
 //
-// The bundle mirrors docs/architecture/metrics.md:
+// The bundle mirrors the metric catalogue:
 //
 //   - lachesis_scrape_duration_seconds   one successful drain+integrate tick
 type Metrics struct {
@@ -23,8 +23,9 @@ type Metrics struct {
 // matches the WAL flush and Collect histograms (1 ms..1 s) so the three
 // per-tick costs are directly comparable on a dashboard; the upper decade
 // matters here because the drain grows with entries × N_CPU and is
-// expected to reach tens of milliseconds on high-core hosts
-// (docs/architecture/performance.md).
+// expected to reach tens of milliseconds on high-core hosts.
+//
+// Cost model: docs/architecture/performance.md
 func NewMetrics() *Metrics {
 	return &Metrics{
 		scrapeDuration: prometheus.NewHistogram(prometheus.HistogramOpts{

@@ -6,24 +6,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Metrics holds the WAL-subsystem Prometheus instruments. Construct
-// with [NewMetrics], register the slice from [Metrics.Collectors]
-// with your prometheus.Registry, then pass the *Metrics through to
-// [Save] and to the boot loader. nil is acceptable everywhere
-// observations land — the Observe* helpers handle it.
+// Metrics holds the WAL instruments: the three flush phases
+// (copy-under-lock, marshal, write+fsync+rename), the per-stage failure
+// counter, the boot-load fallback counter, and the state-restart epoch
+// the boot restore decides. nil is acceptable everywhere observations
+// land.
 //
-// The five instruments mirror docs/architecture/metrics.md:
-//
-//   - lachesis_wal_snapshot_copy_seconds        copy-under-lock phase
-//   - lachesis_wal_marshal_seconds              JSON marshal phase
-//   - lachesis_wal_flush_latency_seconds        write+fsync+rename phase
-//   - lachesis_wal_flush_failures_total{stage}  per-stage failure counter
-//   - lachesis_wal_load_fallback_total{from}    boot-load fallback counter
-//
-// plus the state-restart epoch the boot restore decides
-// (docs/architecture/boot-and-recovery.md):
-//
-//   - lachesis_agent_counters_reset_timestamp_seconds  discontinuity marker
+// docs/architecture/metrics.md
 type Metrics struct {
 	snapshotCopySeconds prometheus.Histogram
 	marshalSeconds      prometheus.Histogram

@@ -6,8 +6,7 @@ import "github.com/prometheus/client_golang/prometheus"
 // Construct with [NewMetrics], register the slice from
 // [Metrics.Collectors] with the agent's registry.
 //
-// The two instruments are cataloged in docs/architecture/metrics.md
-// (health metrics):
+// The two instruments are cataloged under health metrics:
 //
 //   - lachesis_tc_attach_failures_total{iface_kind}  per-attempt
 //     failure counter, labelled by iface_kind for which the attach
@@ -15,6 +14,8 @@ import "github.com/prometheus/client_golang/prometheus"
 //     explicit-allowlist entries)
 //   - lachesis_attached_interfaces                   current size of
 //     the Interface Registry
+//
+// Metric catalogue: docs/architecture/metrics.md
 type Metrics struct {
 	attachFailures *prometheus.CounterVec
 	attached       prometheus.GaugeFunc

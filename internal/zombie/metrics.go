@@ -8,11 +8,12 @@ import "github.com/prometheus/client_golang/prometheus"
 // call [Metrics.RecordCleaned] once with the count returned by
 // [Hunt].
 //
-// The single instrument is cataloged in docs/architecture/metrics.md
-// (health metrics):
+// The single instrument is cataloged under health metrics:
 //
 //   - lachesis_zombie_filters_cleaned_total  orphan TC filters
 //     deleted at startup
+//
+// Metric catalogue: docs/architecture/metrics.md
 type Metrics struct {
 	cleaned prometheus.Counter
 }

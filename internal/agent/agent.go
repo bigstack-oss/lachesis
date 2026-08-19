@@ -1,28 +1,14 @@
-// Package agent wires the spine packages — state, scraper, metrics,
-// runtime, logging — onto an HTTP server. It is the in-process glue
-// between the BPF data plane and the Prometheus endpoint.
+// Package agent is the composition root: it wires state, scraper,
+// metrics, runtime and logging onto an HTTP server — the glue between
+// the BPF data plane and the Prometheus endpoint.
 //
-// # Composition
+// One [Agent] struct with method files by functionality: construction
+// here, HTTP in http.go, the Run/shutdown lifecycle in run.go, the
+// worker table in worker.go, the WAL slice in walflush.go.
 //
-//   - state.GlobalState owns cumulative counters.
-//   - scraper.Scraper periodically drains a MapReader into it.
-//   - metrics.Collector emits Prometheus metrics from it.
-//   - runtime.Manager re-reads YAML on SIGHUP and serves /debug.
-//
-// # File layout
-//
-// One [Agent] struct, method files by functionality: construction
-// here, the HTTP surface in http.go, the Run/shutdown lifecycle in
-// run.go, the worker table in worker.go, the WAL flush slice in
-// walflush.go. Options and the subsystem metric bundle have their
-// own files.
-//
-// # Cross-platform boundary
-//
-// The Agent and its method files depend only on the
-// scraper.MapReader interface, so unit tests can run on macOS with a
-// synthetic reader. The production BPF reader and the boot sequence
-// live in `reader_linux.go` and `bootstrap_linux.go`.
+// The Agent depends only on the scraper.MapReader seam, so unit tests
+// run on macOS; the real BPF reader and boot sequence are the
+// _linux.go files.
 package agent
 
 import (
@@ -115,7 +101,9 @@ type Agent struct {
 	meta *metadata.ShardedMetadataMap
 	// routers is the router-interface-MAC → external-network store the
 	// Resolver reads per flow; cold start seeds it, the reconciler
-	// swaps it per pass (docs/architecture/billing.md).
+	// swaps it per pass.
+	//
+	// Billing tiers: docs/architecture/billing.md
 	routers *metadata.RouterMACs
 	// tun is the hot-reloadable knob snapshot every cadence loop and
 	// bound reads live; the runtime Manager swaps it on SIGHUP.
@@ -146,20 +134,9 @@ type Agent struct {
 	buildID string
 }
 
-// New constructs the agent. The HTTP listener is opened immediately so
-// callers can use [Agent.Addr] before [Agent.Run] starts serving — useful
-// for tests that request an ephemeral port (":0") and then need the
-// resolved address.
-//
-// New reads top-to-bottom as the agent's composition order: validate
-// inputs, construct the Neutron subsystem (credentials resolve here,
-// so a malformed openrc fails construction instead of the cold-start
-// retry loop), bundle the subsystem metrics, wire the data plane
-// (state + scraper + collector — the scraper's reader is wrapped in
-// [telemetryFillReader], which feeds the bundle's telemetry_map fill
-// gauge), then mount the HTTP surface and open the listener. The
-// bundle and HTTP steps live in [newSubsystemMetrics] and
-// [Agent.openHTTP]; New itself only composes.
+// New constructs the agent, reading top-to-bottom as the composition
+// order. The HTTP listener opens immediately so [Agent.Addr] is usable
+// before [Agent.Run] — tests bind ":0" and read the resolved port.
 func New(opts Options) (*Agent, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err

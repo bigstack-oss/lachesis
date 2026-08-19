@@ -1,43 +1,19 @@
 // Package state owns the agent's authoritative cumulative counters,
-// keyed by [bpf.FlowKey]. It is the staging area between the
-// [internal/scraper] (which feeds raw kernel readings) and the
-// [internal/metrics] custom Collector (which emits cumulatives to
-// Prometheus).
+// keyed by [bpf.FlowKey] — the staging area between the scraper, which
+// feeds raw kernel readings, and the metrics Collector, which emits
+// cumulatives to Prometheus.
 //
-// # Lifecycle of an entry
+// Three invariants a caller must not break:
 //
-// On first sight the scraper calls [GlobalState.ApplyDelta] with the
-// raw kernel counter. The entry is created with that value as both
-// Total and LastEbpfRaw; no delta is applied. This is the
-// restart-without-WAL guard: re-seeing a flow on agent startup must
-// not double-count the prior cumulative.
+//   - Delta math compares the entry-identity stamp, never counter
+//     magnitudes. See [GlobalState.ApplyDelta].
+//   - A row whose attribution is about to change or die is folded via
+//     [GlobalState.Settle] first, or its whole history re-buckets at
+//     the next scrape.
+//   - Every reader takes one lock across live rows AND settled buckets.
+//     A snapshot torn across a fold double-counts or drops the bytes.
 //
-// On subsequent sightings delta = current − lastRaw, with a u64
-// wraparound guard treating current<lastRaw as a kernel-side reset
-// (kernel reboot or post-eviction re-creation). Total += delta;
-// LastEbpfRaw = current. See [GlobalState.ApplyDelta] and
-// docs/architecture/contracts.md#required-contracts.
-//
-// # TenantSettled bytes
-//
-// A flow row's tenant is late-bound: the Collector resolves the MAC at
-// scrape time. When that binding is about to disappear (a dead VM's
-// metadata swept, a live port re-pointed at a new tenant), the flow's
-// cumulative would silently re-bucket — so the owner of that moment
-// calls [GlobalState.Settle], which folds the row's Total into a
-// per-(tenant, zone, direction) settled accumulator that the Collector
-// adds to its emission forever after. TenantSettled buckets only grow; they
-// are what keeps a tenant's exposed series monotonic across VM churn
-// (docs/architecture/data-structures.md#settled-bytes, docs/architecture/contracts.md#required-contracts Contract 7).
-//
-// # Concurrency
-//
-// The maps are guarded by one sync.RWMutex. The single scraper
-// goroutine is the writer; the metrics Collector is the reader.
-// Snapshot is a copy-out so the Collector can release the RLock before
-// doing the (allocating) prometheus emission — holding the RLock
-// across encoding would block the scraper for the duration of a
-// Prometheus scrape.
+// docs/architecture/contracts.md#required-contracts
 package state
 
 import (
@@ -46,28 +22,20 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 )
 
-// GlobalState is the agent's authoritative flow-keyed counter store,
-// plus the settled-bytes accumulator that keeps a tenant's exposed
-// series monotonic after its flows stop resolving
-// (docs/architecture/data-structures.md#settled-bytes). See the package doc for invariants.
+// GlobalState is the agent's authoritative flow-keyed counter store
+// plus the settled-bytes accumulators that keep an exposed series
+// monotone after its flows stop resolving. All maps live under one
+// mutex: Settle moves value between them, and a reader that saw only
+// one side would lose or double-count the folded bytes.
 //
-// All maps live under the one mutex deliberately: [GlobalState.Settle]
-// moves value between them, and every reader (the Collector's combined
-// snapshot, the WAL's combined snapshot) must observe all sides
-// consistently — a snapshot taken between "row deleted" and "settled
-// credited" would lose the folded bytes for that scrape or flush, and
-// the reverse order would double-count them.
+// docs/architecture/data-structures.md#settled-bytes
 type GlobalState struct {
 	mu            sync.RWMutex
 	counts        map[bpf.FlowKey]*Counter
 	tenantSettled map[TenantSettledKey]*settledTotal
-	// serverSettled is the server tier's fold absorber
-	// (docs/architecture/data-structures.md#settled-bytes): [GlobalState.Settle]
-	// credits it in the same critical section it credits settled, the
-	// Collector emits Σ live rows + serverSettled per server tuple, and
-	// [GlobalState.PruneServerSettled] releases a bucket when its server
-	// leaves the Nova server list — the server series is monotone for
-	// exactly the server's lifetime.
+	// serverSettled is the server tier's fold absorber, credited in the
+	// same critical section as settled and released only when its
+	// server leaves the Nova list.
 	serverSettled map[ServerSettledKey]*settledTotal
 	// totalSettled is the total tier's fold absorber: the total family
 	// is derived (Σ tenant tier at Collect), so a tenant-settled bucket
@@ -143,15 +111,12 @@ func (g *GlobalState) ApplyDelta(key bpf.FlowKey, raw bpf.FlowMetrics) {
 	g.mu.Unlock()
 }
 
-// Add folds m into the cumulative total for key without delta math:
-// Total grows by m's bytes/packets and tracks the max LastSeenNs. It is
-// the entry point for already-computed deltas — the UnresolvedBuffer
-// folds an expired flow's accumulated total into a synthetic
-// "unknown"-tenant key this way (docs/architecture/data-structures.md#userspace-structures). Unlike
-// [GlobalState.ApplyDelta] it never reads or writes LastEbpfRaw, so a
-// key only ever touched by Add stays monotonic: its series can only
-// rise, so rate() never goes negative. Callers must not mix Add and
-// ApplyDelta on the same key.
+// Add folds m into key's cumulative without delta math, for
+// already-computed totals (the UnresolvedBuffer's fold to "unknown").
+// It never touches LastEbpfRaw, so a key only ever passed to Add stays
+// monotone. Never mix Add and ApplyDelta on one key.
+//
+// docs/architecture/data-structures.md#userspace-structures
 func (g *GlobalState) Add(key bpf.FlowKey, m bpf.FlowMetrics) {
 	g.mu.Lock()
 	c, ok := g.counts[key]
@@ -168,18 +133,12 @@ func (g *GlobalState) Add(key bpf.FlowKey, m bpf.FlowMetrics) {
 	g.mu.Unlock()
 }
 
-// Resolve credits a late-bound flow whose VM MAC just became known: it
-// folds total (the bytes the UnresolvedBuffer accumulated while the MAC
-// was unknown) into the flow's GlobalState total, and sets LastEbpfRaw
-// to lastRaw — the kernel cumulative the buffer last observed. The next
-// [GlobalState.ApplyDelta] for this key then counts only bytes that
-// arrive after the hand-off (current − lastRaw), never re-counting what
-// total already captured. Omitting the LastEbpfRaw write-back is the
-// classic double-count documented in docs/architecture/data-structures.md#userspace-structures.
+// Resolve credits a late-bound flow whose MAC just became known: it
+// folds the buffer's accumulated total in and sets LastEbpfRaw to
+// lastRaw. Omitting that write-back is the classic double-count — the
+// next ApplyDelta re-counts everything total already captured.
 //
-// First sight of the key is the expected case — a buffered flow is, by
-// the Classifier's known/unknown split, never simultaneously in
-// GlobalState. The merge branch is defensive only.
+// docs/architecture/data-structures.md#userspace-structures
 func (g *GlobalState) Resolve(key bpf.FlowKey, total, lastRaw bpf.FlowMetrics) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -212,27 +171,12 @@ func AddDelta(total, lastRaw *uint64, current uint64) {
 	*lastRaw = current
 }
 
-// Settle folds every flow row that resolve maps to an attribution into
-// the settled accumulator, under one write-lock critical section: for
-// each row where resolve(key) returns (tenant, extNet, true), Total's
-// bytes and packets are added to the (tenant, extNet, key.DstZone,
-// key.Direction) settled bucket, and the row is then evicted or rebased
-// per mode (see [SettleMode]). Rows where resolve returns false are
-// untouched. Returns the number of rows folded.
+// Settle folds every resolvable row into the settled accumulators and
+// evicts or rebases it per mode, in ONE critical section so the exposed
+// aggregate never changes across the fold. Call it at the last moment
+// the attribution is knowable. extNet must already be the gated label.
 //
-// extNet must be the already-gated external_network label for that row
-// (metadata.ExternalNetworkLabel over the dying attribution and the
-// row's zone) so the fold lands in exactly the series the live flow
-// occupied.
-//
-// Settle is how a flow's bytes survive the death of their attribution:
-// callers invoke it at the last moment the attribution is still
-// knowable — the ghost sweep just before it deletes a dead MAC's
-// metadata, the reconciler just before it re-points a live MAC at a new
-// tenant or external network. The exposed per-tenant aggregate is
-// unchanged by the fold (value moves between the two maps inside one
-// critical section), which is exactly the docs/architecture/contracts.md#required-contracts Contract 7 monotonicity
-// guarantee.
+// docs/architecture/contracts.md#required-contracts
 func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant, extNet, server string, ok bool)) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -250,13 +194,9 @@ func (g *GlobalState) Settle(mode SettleMode, resolve func(bpf.FlowKey) (tenant,
 		}
 		t.bytes += c.Total.Bytes
 		t.packets += c.Total.Packets
-		// The server tier's absorber: credit the SAME folded bytes into
-		// the server-settled bucket, keyed by the full server tuple, so
-		// the server series stays monotone across the fold for the
-		// server's whole lifetime (docs/architecture/data-structures.md#settled-bytes).
-		// Rows with no server_id (unattributable traffic) have no server
-		// series, so nothing to credit. Same critical section as the
-		// tenant credit — a torn fold would over/under-expose one scrape.
+		// Credit the same bytes to the server tier in this critical
+		// section; a torn fold over/under-exposes one scrape. Rows with
+		// no server_id have no server series.
 		if server != "" {
 			ck := ServerSettledKey{ServerID: server, Tenant: tenant, ExtNet: extNet, Zone: k.DstZone, Dir: k.Direction}
 			sc := g.serverSettled[ck]
@@ -293,14 +233,11 @@ func (g *GlobalState) Snapshot(dst []Entry) []Entry {
 	return dst
 }
 
-// SnapshotWithSettled appends every live flow to flows and every
-// settled bucket to settled, under ONE RLock — the Collector's read
-// path. Atomicity with respect to [GlobalState.Settle] is the point:
-// two separate snapshots would let a concurrent fold move value
-// between them, and the scrape would double-count (live then settled)
-// or drop (settled then live) the folded bytes for one exposure —
-// either way the next scrape breaks series monotonicity. Both slices
-// follow the [GlobalState.Snapshot] reuse contract.
+// SnapshotWithSettled appends live flows and settled buckets under ONE
+// RLock — the Collector's read path. Two snapshots would let a
+// concurrent fold move value between them, double-counting or dropping
+// the bytes for that exposure. Both slices follow the
+// [GlobalState.Snapshot] reuse contract.
 func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []TenantSettledRecord, serverSettled []ServerSettledRecord, totalSettled []TotalSettledRecord) ([]Entry, []TenantSettledRecord, []ServerSettledRecord, []TotalSettledRecord) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -313,7 +250,9 @@ func (g *GlobalState) SnapshotWithSettled(flows []Entry, settled []TenantSettled
 	// Server-settled rides the SAME RLock as live+settled: the server
 	// family's emitted value is live+serverSettled per tuple, and a fold
 	// moving bytes rows→bucket must never be observable half-done across
-	// a scrape (docs/architecture/contracts.md#required-contracts Contract 7).
+	// a scrape (Contract 7).
+	//
+	// Full rationale: docs/architecture/contracts.md#required-contracts
 	for k, t := range g.serverSettled {
 		serverSettled = append(serverSettled, ServerSettledRecord{Key: k, Bytes: t.bytes, Packets: t.packets})
 	}
@@ -332,17 +271,12 @@ func (g *GlobalState) Len() int {
 	return len(g.counts)
 }
 
-// SnapshotForWAL appends every (key, Counter) pair to flows and every
-// settled bucket to settled, under ONE RLock, and returns both slices.
-// Same reuse contract as [GlobalState.Snapshot]: pass the prior return
-// values to keep steady-state allocations at zero.
-//
-// The combined walk exists for the same atomicity-against-Settle
-// reason as [GlobalState.SnapshotWithSettled]: a WAL snapshot torn
-// across a fold would persist the folded bytes twice or not at all,
-// and a crash would make that permanent. Values are copied out so the
-// records are safe to use after the RLock is released, including
-// across the (no-lock) marshal and flush phases of the WAL writer.
+// SnapshotForWAL appends flows and settled buckets under ONE RLock;
+// same reuse contract as [GlobalState.Snapshot]. The combined walk is
+// for atomicity against Settle, as in [GlobalState.SnapshotWithSettled]
+// — a torn WAL snapshot persists the folded bytes twice or not at all,
+// and a crash makes that permanent. Values are copied out, so records
+// outlive the RLock.
 func (g *GlobalState) SnapshotForWAL(flows []Record, settled []TenantSettledRecord, serverSettled []ServerSettledRecord, totalSettled []TotalSettledRecord) ([]Record, []TenantSettledRecord, []ServerSettledRecord, []TotalSettledRecord) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -412,15 +346,12 @@ func (g *GlobalState) ServerSettledLen() int {
 	return len(g.serverSettled)
 }
 
-// PruneServerSettled drops every server-settled bucket whose ServerID is
-// not in alive — the server tier's lifecycle rule: a server series ends
-// when (and only when) its server leaves the Nova server list
-// (docs/architecture/data-structures.md#settled-bytes). The caller (the
-// reconciler, after a successful sync) must pass a set built from a
-// SUCCESSFUL Nova fetch and must skip the call entirely when the fetch
-// failed or returned nothing — pruning on missing data would end live
-// servers' series. No TTL, no clock: server-list absence is the one
-// unambiguous death signal. Returns the number of buckets dropped.
+// PruneServerSettled drops buckets whose ServerID is not in alive — a
+// server's series ends when it leaves the Nova list, never on a TTL.
+// alive MUST come from a successful, non-empty Nova fetch; pruning on
+// missing data ends live servers' series. Returns buckets dropped.
+//
+// docs/architecture/data-structures.md#settled-bytes
 func (g *GlobalState) PruneServerSettled(alive map[string]struct{}) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -434,22 +365,13 @@ func (g *GlobalState) PruneServerSettled(alive map[string]struct{}) int {
 	return dropped
 }
 
-// PruneTenantSettled releases every tenant-settled bucket whose Tenant
-// is not in alive — the tenant tier's lifecycle rule: a project's
-// series ends when (and only when) the project leaves the Keystone
-// project list (docs/architecture/data-structures.md#settled-bytes).
-// Unlike the server prune this is a settle-to-parent, not a plain
-// delete: the total family is derived (Σ tenant tier at Collect), so
-// each dying bucket's totals fold into the total-settled absorber in
-// this same critical section — deleting without folding would make the
-// immortal lachesis_bytes_total series decrease while continuing.
+// PruneTenantSettled releases buckets absent from alive — a
+// settle-to-parent, not a delete: each dying bucket folds into the
+// total absorber or lachesis_bytes_total dips. alive MUST come from a
+// successful, non-empty Keystone fetch and MUST include
+// metadata.UnknownTenantID.
 //
-// The caller (the reconciler, after a successful sync) must pass a set
-// built from a SUCCESSFUL Keystone fetch, must skip the call when the
-// list is empty, and must include any pseudo-tenants that are not
-// Keystone projects (metadata.UnknownTenantID) in alive — they have no
-// project to die with. No TTL, no clock: project-list absence is the
-// one unambiguous death signal. Returns the number of buckets released.
+// docs/architecture/data-structures.md#settled-bytes
 func (g *GlobalState) PruneTenantSettled(alive map[string]struct{}) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()

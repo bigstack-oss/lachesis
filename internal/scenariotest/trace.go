@@ -1,6 +1,7 @@
 // trace.go defines the wire-level logging tier below DEBUG: one line
 // per OpenStack API call, agent /metrics scrape, or VM SSH exec —
 // enough to see what was sent and what came back without reading code.
+
 package scenariotest
 
 import (

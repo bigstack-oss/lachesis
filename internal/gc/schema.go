@@ -19,11 +19,16 @@ const labelReason = "reason"
 // reason* are the values of the [labelReason] label. ttl is a
 // lingering-ghost expiry deleting a MAC from mac_tenant_map;
 // pressure_relief is an oldest-flow eviction from telemetry_map when it
-// crosses the configured fill high watermark (docs/architecture/data-structures.md#kernel-side-bpf-maps);
-// ghost_residual_flow is a telemetry_map flow deleted because its VM's
-// MAC was swept from mac_tenant_map — the residual counter that would
-// otherwise be re-drained as "unknown" (docs/architecture/data-structures.md#lingering-ghost). All are
-// seeded at zero so the series exist from the first scrape.
+// crosses the configured fill high watermark; ghost_residual_flow is a
+// telemetry_map flow deleted because its VM's MAC was swept from
+// mac_tenant_map — the residual counter that would otherwise be
+// re-drained as "unknown". All are seeded at zero so the series exist
+// from the first scrape.
+//
+// # References
+//
+//   - Kernel maps: docs/architecture/data-structures.md#kernel-side-bpf-maps
+//   - Lingering Ghost: docs/architecture/data-structures.md#lingering-ghost
 const (
 	reasonTTL               = "ttl"
 	reasonPressureRelief    = "pressure_relief"

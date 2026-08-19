@@ -6,34 +6,20 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
-// gcPressureRelief exercises pressure-relief GC end to end: the
-// telemetry_map crossing its fill high watermark, the eviction of the
-// oldest flows, and — the property that matters for billing — the
-// "flush before evict" ordering that keeps a tenant's bytes intact
-// across the eviction (docs/architecture/data-structures.md#kernel-side-bpf-maps).
+// gcPressureRelief exercises pressure-relief GC end to end: crossing
+// the fill watermark, evicting the oldest flows, and the "flush before
+// evict" ordering that keeps a tenant's bytes intact across it.
 //
-// Reaching the real 80% watermark would need >52,000 concurrent flows
-// (max_entries 65,536), which no single VM can produce — one VM is one
-// (MAC-pair, direction, zone) key. Rather than manufacture flows, this
-// scenario moves the trigger to the traffic: the watermarks are
-// hot-reloadable tunables (docs/operations/runtime.md), so node:0's
-// agent is restarted under an alt config whose watermarks are a few
-// entries, and the VM's own handful of real flows then exceeds them.
-// That drives the genuine code path on genuine resolved flows.
+// The real 80% watermark needs >52,000 concurrent flows, which one VM
+// cannot produce, so the trigger moves to the traffic: the agent
+// restarts under watermarks of a few entries, derived from the node's
+// own config and restored at the end.
 //
-// Nothing has to be pre-staged on the agent host: the opening
-// RestartAgentStep derives the low-watermark config from whatever the
-// node already runs (SetConfig overrides two keys, everything else —
-// broker list, WAL path, credentials — is preserved), backs the original
-// up, and the closing RestoreConfig puts it back. So the scenario runs
-// on any cluster with agent_control configured.
+// Debugging note: if exposed bytes come up short, check
+// unresolved_buffer_evictions_total{reason="lru"} before suspecting the
+// GC. That buffer also DELETES kernel entries when it evicts.
 //
-// Debugging note: if the exposed bytes come up short, check
-// lachesis_unresolved_buffer_evictions_total{reason="lru"} before
-// suspecting the GC. Flows whose VM MAC the agent has not learned park
-// in the UnresolvedBuffer, which is capped at 10,000 and DELETES the
-// kernel telemetry_map entry when it evicts — a second, unrelated path
-// that removes map entries and is easily mistaken for GC eviction.
+// docs/architecture/data-structures.md#kernel-side-bpf-maps
 func gcPressureRelief() *scenariotest.Scenario {
 	b := scenario.New()
 	b.Network("net-T1", "T1").
@@ -49,29 +35,17 @@ func gcPressureRelief() *scenariotest.Scenario {
 		Builder:   b,
 		Placement: scenariotest.Placement{"vm-g": "node:0"},
 		Steps: []scenariotest.Step{
-			// Lower the watermarks so real flows trip the trigger. Both
-			// ratios are chosen to TRUNCATE TO ZERO entries against
-			// max_entries 65,536 (bpf.MapTelemetryMaxEntries): the reliever
-			// computes its bounds as int(ratio * max_entries), so
-			// 0.000002 * 65536 = 0.13 -> 0 and 0.000001 * 65536 = 0.07 -> 0.
-			// Config validation still holds (0 < low < high < 1).
+			// Both ratios TRUNCATE TO ZERO entries against max_entries
+			// 65,536, because the reliever computes int(ratio * max).
+			// Validation still holds (0 < low < high < 1).
 			//
-			// Zero bounds make the eviction UNCONDITIONAL: with low = 0 the
-			// per-pass victim count is `want = n - low = n`, so every entry
-			// is evicted on every pass — including the flow currently
-			// carrying the driven traffic.
-			//
-			// That determinism is the point. The reliever evicts the OLDEST
-			// entries first, so with a nonzero low watermark the active flow
-			// is only caught once ambient map population is high enough for
-			// `n - low` to reach it. On a quiet node it survives, nothing is
-			// lost, and this scenario passes while the defect it exists to
-			// catch is still present — which is exactly what happened on c36
-			// on 2026-07-26, five runs green against an unfixed agent
-			// (lachesis#287). Do not raise these back above zero entries.
-			//
-			// Derived from the node's own config, which is backed up for the
-			// final restore.
+			// Zero bounds make eviction UNCONDITIONAL: with low = 0 the
+			// victim count is the whole map, including the flow carrying
+			// the driven traffic. DO NOT raise these above zero entries.
+			// With a nonzero low watermark the active flow survives on a
+			// quiet node, nothing is lost, and this scenario passes green
+			// against an agent that still has the defect — which is
+			// exactly what it did for five runs before lachesis#287.
 			steps.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
 				"gc.pressure_high_watermark": "0.000002",
 				"gc.pressure_low_watermark":  "0.000001",
