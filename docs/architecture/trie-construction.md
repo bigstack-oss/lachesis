@@ -103,6 +103,45 @@ Notes, in step order:
   Trivial volume; accepted.
 - **IPv6 subnets and fixed IPs are skipped** — the kernel trie is keyed on
   u32 IPv4. Deferred: [contracts.md](./contracts.md#deferred-work) item 1.
+### Port classification (`device_owner`)
+
+Step 4 partitions the `device_owner` space: a port is either *infra* (its
+fixed IPs become `/32` INFRA rows) or *VM-like* (its MAC is admitted to
+`mac_tenant_map`). `internal/neutron.IsInfraPort` / `IsVMPort` implement the
+split; this table is the verified ground truth on the deployment target
+(OVN-Yoga, observed on dev-cmp).
+
+| `device_owner` | infra | VM-like | note |
+|---|---|---|---|
+| `network:router_interface` | yes | no | |
+| `network:router_gateway` | yes | no | |
+| `network:distributed` | yes | no | fixed IP only; MAC never on the wire |
+| `network:dhcp` | yes | no | |
+| `network:metadata` | yes | no | absent under OVN |
+| `network:floatingip` | no | no | bookkeeping; no L2 endpoint, so kernel state would be wasted |
+| `compute:nova` | no | yes | plus AZ-specific `compute:<az>` suffixes |
+| `Octavia`, `Octavia:health-mgr` | no | yes | |
+| `manila:share` | no | yes | |
+| `baremetal:nova` | no | yes | |
+| `cube:mgr` | no | yes | CubeCOS management VMs; billed as ordinary tenant traffic |
+| `trunk:*` | no | yes | admitted, but 802.1Q frames pass uncounted — [edge-cases.md](./edge-cases.md#tier-1--hard-limits) |
+| *(empty)* | no | no | unbound port |
+
+**Infra is prefix-matched, not allow-listed.** Any `network:` value counts,
+which picks up deployment-specific and future owners without a code change
+(`network:floatingip_agent_gateway` for DVR, `network:ha_router_replicated_interface`
+for L3-HA, `network:routed` for segmented access). `network:floatingip` is the
+single carve-out. Misclassifying a VM port as INFRA would corrupt SAME_TENANT
+billing, so the boundary is deliberately conservative in the other direction:
+an unrecognised non-`network:` owner admits as VM-like.
+
+**The known-owner allowlist is separate and stricter.** `IsKnownVMOwner`
+covers `compute:*`, `Octavia*`, `manila:*`, `baremetal:*`, `trunk:*` and
+`cube:mgr`. An owner outside it still admits via `IsVMPort` — the
+billing-safe default — but cold start warn-logs it and increments
+`lachesis_neutron_unknown_device_owner_total`, so operators see vendor or
+plugin drift without classification changing under them.
+
 - **No per-host MAC enumeration step exists.** Traditional Neutron with DVR
   needed a step that queried `dvr-mac-addresses` for each chassis's router
   MAC. OVN eliminates this: a logical router's interface has one MAC across
