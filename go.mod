@@ -4,7 +4,7 @@ go 1.25.3
 
 require (
 	github.com/cilium/ebpf v0.22.0
-	github.com/gopacket/gopacket v1.7.0
+	github.com/gopacket/gopacket v1.7.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/vishvananda/netlink v1.3.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -33,15 +33,15 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/log v1.0.0
-	github.com/gophercloud/gophercloud/v2 v2.13.0
-	github.com/prometheus/client_model v0.6.2
-	github.com/prometheus/common v0.70.1
+	github.com/gophercloud/gophercloud/v2 v2.14.0
+	github.com/prometheus/client_model v0.6.3
+	github.com/prometheus/common v0.71.0
 	github.com/segmentio/kafka-go v0.4.51
 	github.com/spf13/cobra v1.10.2
 	github.com/vishvananda/netns v0.0.5
