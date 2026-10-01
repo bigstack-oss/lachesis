@@ -72,6 +72,15 @@ func New(opts Options) (Subscriber, error) {
 	return &linuxSubscriber{opts: opts}, nil
 }
 
+// linkGone reports whether the kernel positively says the link at
+// index does not exist. Any other lookup error counts as present, so
+// an unexplained attach failure is still recorded as one.
+func linkGone(index int) bool {
+	_, err := netlink.LinkByIndex(index)
+	var notFound netlink.LinkNotFoundError
+	return errors.As(err, &notFound)
+}
+
 // Run drives the subscriber until ctx is cancelled. Returns nil on
 // clean shutdown.
 func (s *linuxSubscriber) Run(ctx context.Context) error {
@@ -148,13 +157,14 @@ func (s *linuxSubscriber) Run(ctx context.Context) error {
 // path. Filtering by name happens here, not in the netlink layer,
 // so the subscriber's match policy stays in one place.
 func (s *linuxSubscriber) handle(ev netlink.LinkUpdate) {
-	name := ev.Link.Attrs().Name
+	attrs := ev.Attrs()
+	name := attrs.Name
 	if !ShouldAttach(name, s.opts.Prefixes, s.opts.Explicit) {
 		return
 	}
 	switch ev.Header.Type {
 	case unix.RTM_NEWLINK:
-		s.onNewLink(name)
+		s.onNewLink(name, attrs.Index)
 	case unix.RTM_DELLINK:
 		s.onDelLink(name)
 	}
@@ -165,7 +175,12 @@ func (s *linuxSubscriber) handle(ev netlink.LinkUpdate) {
 // already-attached interface is a netlink no-op via FilterReplace, so
 // we skip the round-trip when the Registry already records us as
 // attached.
-func (s *linuxSubscriber) onNewLink(name string) {
+//
+// A failure on a link that has since vanished is not an attach
+// failure: a tap unregistering (e.g. the source side of a live
+// migration) can still have a NEWLINK queued behind its DELLINK, and
+// there is nothing left to attach to or bill.
+func (s *linuxSubscriber) onNewLink(name string, index int) {
 	if s.opts.Registry.IsAttached(name) {
 		return
 	}
@@ -173,6 +188,11 @@ func (s *linuxSubscriber) onNewLink(name string) {
 	// so the link is left unattached and the Registry/gauge stay
 	// consistent with reality.
 	if err := s.opts.Attacher.AttachLink(name); err != nil {
+		if linkGone(index) {
+			slog.Debug("attach skipped: interface vanished",
+				"component", component, "iface", name, "err", err)
+			return
+		}
 		slog.Warn("attach failed",
 			"component", component, "iface", name, "err", err)
 		s.opts.Metrics.recordAttachFailure(s.kindFor(name))

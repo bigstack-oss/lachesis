@@ -129,7 +129,7 @@ or sum by (tenant_id) (rate(lachesis_tenant_bytes_total[1m]))
 | `lachesis_neutron_trunk_subports` | gauge | — | trunk subport MACs admitted to `mac_tenant_map` at the last cold-start or resync; nonzero flags the trunk blind spot ([edge-cases.md](./edge-cases.md), Tier 1 row 3a) |
 | `lachesis_neutron_amphora_ports` | gauge | — | Octavia Amphora ports re-attributed from the service project to their load balancer's owning tenant at the last cold-start or resync ([octavia.md](./octavia.md)); a drop to 0 while load balancers exist means the Octavia lists stopped resolving and that traffic silently reverted to billing the service project |
 | `lachesis_zombie_filters_cleaned_total` | counter | — | startup Zombie Hunter |
-| `lachesis_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher |
+| `lachesis_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher: failed attaches on a still-present interface; one whose link vanished before the attach (e.g. a live migration's source tap) is a debug-logged skip, not counted |
 | `lachesis_attached_interfaces` | gauge | — | current Interface Registry size |
 | `lachesis_gc_evictions_total` | counter | `reason="ttl\|pressure_relief\|ghost_residual_flow"` | GC: lingering-ghost sweep (`ttl`, mac_tenant_map), scraper pressure-relief (`pressure_relief`, telemetry_map), and a swept MAC's residual telemetry_map flows removed so they are not re-billed as "unknown" (`ghost_residual_flow`) |
 | `lachesis_gc_pressure_relief_runs_total` | counter | — | scraper pressure-relief pass (fill above the high watermark) |
