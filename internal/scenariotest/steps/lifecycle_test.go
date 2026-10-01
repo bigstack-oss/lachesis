@@ -41,6 +41,41 @@ func TestSteps_MigrateMovesAndRecords(t *testing.T) {
 	}
 }
 
+func TestSteps_MigrateStrictAttach(t *testing.T) {
+	for name, tc := range map[string]struct {
+		strict       bool
+		failures     float64
+		wantErr      string
+		wantBaseline float64
+	}{
+		"strict, no new failures": {strict: true, failures: 0, wantBaseline: 0},
+		"strict, new failures":    {strict: true, failures: 1, wantErr: "new TC attach failure", wantBaseline: 0},
+		"tolerant re-baselines":   {strict: false, failures: 1, wantBaseline: 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := &fake.Env{BaseAttached: 1, Failures: tc.failures}
+			cloud := fake.NewCloud(env)
+			cloud.Hyps = []string{"compute-0", "compute-1"}
+			cloud.Hosts["srv-1"] = "compute-0"
+			cfg := fake.Config()
+			cfg.Cluster.Agents = append(cfg.Cluster.Agents, scenariotest.AgentConfig{Host: "compute-1", MetricsURL: "http://compute-1:9100/metrics"})
+			rs := &scenariotest.RunState{RunID: "run1", Servers: []scenariotest.ResourceRef{{DSLID: "vm-a", ID: "srv-1", ProjectID: "p1"}}}
+			senv := &scenariotest.StepEnv{Config: cfg, State: rs, StatePath: t.TempDir() + "/s.json", Cloud: cloud, Metrics: &fake.Metrics{Env: env}, Log: slog.New(slog.DiscardHandler)}
+
+			err := MigrateStep{VM: "vm-a", Target: "node:1", Timeout: time.Second, StrictAttach: tc.strict}.Run(context.Background(), senv)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("MigrateStep: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+			}
+			if rs.Attach.Failures != tc.wantBaseline {
+				t.Errorf("attach failure baseline = %v, want %v", rs.Attach.Failures, tc.wantBaseline)
+			}
+		})
+	}
+}
+
 func TestSteps_MigrateErrors(t *testing.T) {
 	env := &fake.Env{BaseAttached: 1}
 	cloud := fake.NewCloud(env)

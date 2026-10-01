@@ -55,7 +55,9 @@ func liveMigrationContinuity() *scenariotest.Scenario {
 
 			// Move the sender across the cluster.
 			steps.CaptureStep{},
-			steps.MigrateStep{VM: "vm-a", Target: "node:1"},
+			// Strict: the source agent skips its vanished tap rather
+			// than counting an attach failure.
+			steps.MigrateStep{VM: "vm-a", Target: "node:1", StrictAttach: true},
 
 			// The move itself billed nothing and lost nothing.
 			steps.MonotoneStep{Tenant: "T1", Note: "monotone across live migration"},

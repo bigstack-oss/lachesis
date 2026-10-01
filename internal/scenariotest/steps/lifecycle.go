@@ -238,6 +238,13 @@ func dashEmpty(s string) string {
 type MigrateStep struct {
 	VM     string
 	Target string
+	// StrictAttach fails the step if the migration grew the attach
+	// failure counter, instead of re-baselining it. The baseline is
+	// left as it was, so a later drive's recheck also catches an
+	// increment that lands after this step's scrape. Against an agent
+	// that counts its dying source tap as a failure, a strict migration
+	// fails.
+	StrictAttach bool
 	// Timeout bounds the wait for the migration to land; zero uses
 	// [DefaultMigrateTimeout]. Tests set a small value.
 	Timeout time.Duration
@@ -292,14 +299,20 @@ func (s MigrateStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 			}
 			env.State.Migrations = append(env.State.Migrations, scenariotest.MigrationRecord{VM: s.VM, From: from, To: host})
 			// Re-baseline the attach record: migration legitimately
-			// re-plumbs taps, and the source agent racing its dying tap
-			// increments the failure counter (benign — the link is
-			// gone). Without a fresh baseline the next drive's recheck
-			// reads that noise as taps lost since up.
-			if snap, err := scenariotest.SampleAcross(ctx, env.Metrics, env.Config.Cluster.Agents); err == nil {
-				env.State.Attach.Failures = snap.AttachFailures
-			} else {
+			// re-plumbs taps, and an agent predating the vanished-link
+			// skip counts its dying source tap as a failure (benign —
+			// the link is gone). Without a fresh baseline the next
+			// drive's recheck reads that noise as taps lost since up.
+			snap, err := scenariotest.SampleAcross(ctx, env.Metrics, env.Config.Cluster.Agents)
+			if err != nil {
 				return fmt.Errorf("migrate: attach re-baseline scrape: %w", err)
+			}
+			if s.StrictAttach {
+				if snap.AttachFailures > env.State.Attach.Failures {
+					return fmt.Errorf("migrate: %.0f new TC attach failure(s) across the migration", snap.AttachFailures-env.State.Attach.Failures)
+				}
+			} else {
+				env.State.Attach.Failures = snap.AttachFailures
 			}
 			if err := env.State.Save(env.StatePath); err != nil {
 				return err
