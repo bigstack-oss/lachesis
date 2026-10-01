@@ -623,11 +623,12 @@ func buildNetlinkSubscriber(ag *Agent, bpfCfg config.BPFConfig, coll *ebpf.Colle
 			bpf.ProgramIngress, bpf.ProgramEgress)
 	}
 	sub, err := cnetlink.New(cnetlink.Options{
-		Attacher: tcattach.NewLinkAttacher(ingress, egress),
-		Prefixes: bpfCfg.AttachPrefixes,
-		Explicit: bpfCfg.AttachInterfaces,
-		Registry: ag.mx.registry,
-		Metrics:  ag.mx.netlink,
+		Attacher:       tcattach.NewLinkAttacher(ingress, egress),
+		Prefixes:       bpfCfg.AttachPrefixes,
+		Explicit:       bpfCfg.AttachInterfaces,
+		Registry:       ag.mx.registry,
+		Metrics:        ag.mx.netlink,
+		ResyncInterval: bpfCfg.AttachResyncInterval,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("netlink subscriber: %w", err)

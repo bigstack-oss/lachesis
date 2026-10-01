@@ -3,6 +3,7 @@ package config_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/config"
 )
@@ -46,6 +47,24 @@ func TestBPFValidate(t *testing.T) {
 			name:    "empty interface entry rejected",
 			cfg:     config.BPFConfig{PinPath: abs, AttachInterfaces: []string{"eth1", ""}},
 			wantErr: "attach_interfaces[1] is empty",
+		},
+		{
+			name: "zero resync interval disables the sweep",
+			cfg:  config.BPFConfig{PinPath: abs, AttachResyncInterval: 0},
+		},
+		{
+			name: "resync interval at the floor validates",
+			cfg:  config.BPFConfig{PinPath: abs, AttachResyncInterval: 10 * time.Second},
+		},
+		{
+			name:    "resync interval below the floor rejected",
+			cfg:     config.BPFConfig{PinPath: abs, AttachResyncInterval: time.Millisecond},
+			wantErr: "attach_resync_interval",
+		},
+		{
+			name:    "negative resync interval rejected",
+			cfg:     config.BPFConfig{PinPath: abs, AttachResyncInterval: -time.Second},
+			wantErr: "attach_resync_interval",
 		},
 		{
 			name: "valid prefixes and interfaces validate",

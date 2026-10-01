@@ -1,12 +1,14 @@
 // schema.go gathers package config's package-level constants: the schema
 // version, the default environment-variable prefix, the JSON secret
-// placeholder, and the env-var name suffixes shared between applyEnv and
-// applyFlags (load.go). The section
+// placeholder, the attach-resync floor, and the env-var name suffixes
+// shared between applyEnv and applyFlags (load.go). The section
 // types keep the documented one-file-per-section layout (http.go, bpf.go,
 // scrape.go, logging.go, wal.go, neutron.go), each owning its own defaults
 // helper and Validate method.
 
 package config
+
+import "time"
 
 // Version is the configuration schema version this binary understands.
 // Bumped only on breaking schema changes; consumers gate on it.
@@ -19,6 +21,11 @@ const DefaultEnvPrefix = "LACHESIS"
 // ([NeutronConfig.MarshalJSON]), keeping credentials off the
 // unauthenticated /debug/config wire.
 const redactedSecret = "***"
+
+// minAttachResyncInterval floors a non-zero bpf.attach_resync_interval
+// so a typo (e.g. "1ms") cannot make the attach-presence sweep spin on
+// netlink dumps.
+const minAttachResyncInterval = 10 * time.Second
 
 // Environment-variable name suffixes. applyEnv reads <prefix>_<suffix>
 // and applyFlags' envHint advertises the same <prefix>_<suffix> in
