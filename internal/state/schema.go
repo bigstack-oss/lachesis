@@ -40,6 +40,20 @@ type Entry struct {
 type Record struct {
 	Key     bpf.FlowKey
 	Counter Counter
+	// Owner is the row's resolved attribution when the WAL was written.
+	// GlobalState neither stores nor reads it; the agent fills it at
+	// flush so a restore can settle a row whose owner changed while the
+	// agent was down. Zero on a pre-v8 file.
+	Owner Owner
+}
+
+// Owner is a flow row's resolved attribution — exactly the triple
+// [GlobalState.Settle]'s resolve returns. ExtNet is the gated label.
+// The zero value means "did not resolve".
+type Owner struct {
+	Tenant string
+	ExtNet string
+	Server string
 }
 
 // TenantSettledKey identifies one settled bucket. It is exactly the

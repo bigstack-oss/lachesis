@@ -23,6 +23,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/config"
 	"github.com/bigstack-oss/lachesis/internal/logging"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
 	"github.com/bigstack-oss/lachesis/internal/state"
 	"github.com/bigstack-oss/lachesis/internal/wal"
 )
@@ -342,4 +343,129 @@ func TestRestoreFromWAL_CountersResetDecision(t *testing.T) {
 			t.Fatalf("gauge = %d, want a now-ish stamp with WAL disabled", got)
 		}
 	})
+}
+
+// TestRestoreFromWAL_SettlesRowsWhoseOwnerChanged pins the boot-time
+// fold: a restored row whose owner no longer resolves the way the WAL
+// recorded it (port deleted or reassigned while the agent was down) is
+// settled under the RECORDED owner, so that tenant's series keeps the
+// bytes instead of them late-binding to "unknown" or the new owner.
+func TestRestoreFromWAL_SettlesRowsWhoseOwnerChanged(t *testing.T) {
+	key := func(last uint8) bpf.FlowKey {
+		return bpf.FlowKey{
+			SrcMac: [6]uint8{0xaa, 0, 0, 0, 0, last}, DstMac: [6]uint8{0xbb, 0, 0, 0, 0, 1},
+			EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant,
+		}
+	}
+	owner := func(tenant, server string) state.Owner {
+		return state.Owner{Tenant: tenant, ExtNet: metadata.NoExternalNetwork, Server: server}
+	}
+	cases := []struct {
+		name        string
+		recorded    state.Owner          // what the WAL says
+		live        *metadata.TenantMeta // what metadata says at boot (nil = port gone)
+		wantSettled map[string]uint64    // tenant-settled bytes after restore
+		wantTotal   uint64               // the row's live Total after restore
+		prior       uint64               // bytes the WAL already holds under the recorded owner's tuple
+	}{
+		{"port deleted while down", owner("gone", "srv-1"), nil, map[string]uint64{"gone": 5000}, 0, 0},
+		// The WAL's own settled buckets restore too; the fold must add
+		// to them, not be overwritten by them.
+		{"port deleted, owner already has settled bytes", owner("gone", "srv-1"), nil, map[string]uint64{"gone": 5700}, 0, 700},
+		{"port reassigned while down", owner("old", "srv-1"),
+			&metadata.TenantMeta{ProjectID: "new", ServerID: "srv-2"}, map[string]uint64{"old": 5000}, 0, 0},
+		{"owner unchanged", owner("same", "srv-1"),
+			&metadata.TenantMeta{ProjectID: "same", ServerID: "srv-1"}, map[string]uint64{}, 5000, 0},
+		{"pre-v8 row, no owner", state.Owner{}, nil, map[string]uint64{}, 5000, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "wal.json")
+			rec := state.Record{
+				Key: key(1),
+				Counter: state.Counter{
+					Total:       bpf.FlowMetrics{Bytes: 5000, Packets: 5, LastSeenNs: 1},
+					LastEbpfRaw: bpf.FlowMetrics{Bytes: 5000, Packets: 5, LastSeenNs: 1},
+				},
+				Owner: tc.recorded,
+			}
+			var prior []state.TenantSettledRecord
+			if tc.prior > 0 {
+				prior = []state.TenantSettledRecord{{
+					Key:   state.TenantSettledKey{Tenant: tc.recorded.Tenant, ExtNet: tc.recorded.ExtNet, Zone: rec.Key.DstZone, Dir: rec.Key.Direction},
+					Bytes: tc.prior,
+				}}
+			}
+			if err := wal.Save(path, "", []state.Record{rec}, prior, nil, nil, 1753400000, nil); err != nil {
+				t.Fatalf("seed save: %v", err)
+			}
+			ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path, FlushInterval: time.Minute})
+			if tc.live != nil {
+				agent.MetadataForTest(ag).Insert(metadata.VMMAC(rec.Key), tc.live)
+			}
+			if err := agent.RestoreFromWALForTest(ag); err != nil {
+				t.Fatalf("restore: %v", err)
+			}
+			if err := agent.FlushWALForTest(ag); err != nil {
+				t.Fatalf("flush: %v", err)
+			}
+			res, err := wal.Load(path)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if len(res.Records) != 1 {
+				t.Fatalf("records = %+v, want the row kept", res.Records)
+			}
+			if got := res.Records[0].Counter.Total.Bytes; got != tc.wantTotal {
+				t.Errorf("row Total = %d, want %d", got, tc.wantTotal)
+			}
+			if got := res.Records[0].Counter.LastEbpfRaw.Bytes; got != 5000 {
+				t.Errorf("row LastEbpfRaw = %d, want 5000 kept (no re-count of a surviving kernel entry)", got)
+			}
+			settled := map[string]uint64{}
+			for _, s := range res.TenantSettled {
+				settled[s.Key.Tenant] += s.Bytes
+			}
+			if len(settled) != len(tc.wantSettled) {
+				t.Errorf("tenant-settled = %v, want %v", settled, tc.wantSettled)
+			}
+			for tenant, want := range tc.wantSettled {
+				if settled[tenant] != want {
+					t.Errorf("tenant-settled[%q] = %d, want %d", tenant, settled[tenant], want)
+				}
+			}
+		})
+	}
+}
+
+// TestFlushWAL_RecordsEachRowsOwner: the flush stamps every row with the
+// owner it resolves to now, and leaves an unresolved row ownerless.
+func TestFlushWAL_RecordsEachRowsOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path, FlushInterval: time.Minute})
+	known := bpf.FlowKey{SrcMac: [6]uint8{0xaa, 0, 0, 0, 0, 1}, EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneSameTenant}
+	stray := known
+	stray.SrcMac = [6]uint8{0xaa, 0, 0, 0, 0, 2}
+	agent.MetadataForTest(ag).Insert(metadata.VMMAC(known), &metadata.TenantMeta{ProjectID: "p", ServerID: "s"})
+	ag.SeedState([]state.Record{
+		{Key: known, Counter: state.Counter{Total: bpf.FlowMetrics{Bytes: 1}}},
+		{Key: stray, Counter: state.Counter{Total: bpf.FlowMetrics{Bytes: 1}}},
+	})
+	if err := agent.FlushWALForTest(ag); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got := map[bpf.FlowKey]state.Owner{}
+	for _, r := range res.Records {
+		got[r.Key] = r.Owner
+	}
+	if want := (state.Owner{Tenant: "p", ExtNet: metadata.NoExternalNetwork, Server: "s"}); got[known] != want {
+		t.Errorf("known row Owner = %+v, want %+v", got[known], want)
+	}
+	if got[stray] != (state.Owner{}) {
+		t.Errorf("unresolved row Owner = %+v, want zero", got[stray])
+	}
 }

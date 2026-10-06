@@ -847,3 +847,71 @@ func TestSaveLoad_EntryIdentityRoundTrips(t *testing.T) {
 		t.Errorf("LastEbpfRaw.CreatedNs = %d, want 777 round-tripped", got)
 	}
 }
+
+// TestSaveLoad_OwnerRoundTrips: v8 persists each row's resolved owner,
+// and an unresolved row (zero Owner) writes no owner at all.
+func TestSaveLoad_OwnerRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	owned := state.Owner{Tenant: "proj-a", ExtNet: "public", Server: "srv-1"}
+	recs := []state.Record{
+		{Key: bpf.FlowKey{SrcMac: [6]uint8{0xaa, 0, 0, 0, 0, 1}, EthProto: 0x0800}, Owner: owned},
+		{Key: bpf.FlowKey{SrcMac: [6]uint8{0xaa, 0, 0, 0, 0, 2}, EthProto: 0x0800}},
+	}
+	if err := wal.Save(path, "test", recs, nil, nil, nil, 0, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(raw), `"owner"`); n != 1 {
+		t.Errorf("file carries %d owner objects, want 1 (unresolved rows write none)", n)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := map[bpf.FlowKey]state.Owner{}
+	for _, r := range res.Records {
+		got[r.Key] = r.Owner
+	}
+	if o := got[recs[0].Key]; o != owned {
+		t.Errorf("owned row Owner = %+v, want %+v", o, owned)
+	}
+	if o := got[recs[1].Key]; o != (state.Owner{}) {
+		t.Errorf("unresolved row Owner = %+v, want zero", o)
+	}
+}
+
+// TestLoad_V7SnapshotHasNoOwner: a v7 file predates persisted owners.
+// It must load clean with a zero Owner, which the boot restore reads as
+// "nothing to settle" — today's behaviour.
+func TestLoad_V7SnapshotHasNoOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	v7 := `{
+  "schema_version": 7,
+  "agent_build": "pre-owner",
+  "written_at_ns": "1",
+  "counters_reset_at_s": 1700000000,
+  "global_state": [
+    {
+      "key": {"src_mac": [170,0,0,0,0,1], "dst_mac": [170,0,0,0,0,2], "eth_proto": 2048, "direction": 0, "dst_zone": 2},
+      "total": {"bytes": "5000", "packets": "10", "last_seen_ns": "1", "created_ns": "7"},
+      "last_raw": {"bytes": "5000", "packets": "10", "last_seen_ns": "1", "created_ns": "7"}
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(v7), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.Records) != 1 || res.Records[0].Owner != (state.Owner{}) {
+		t.Fatalf("Records = %+v, want one with a zero Owner", res.Records)
+	}
+	if got := res.Records[0].Counter.Total.Bytes; got != 5000 {
+		t.Errorf("Total.Bytes = %d, want 5000 intact", got)
+	}
+}

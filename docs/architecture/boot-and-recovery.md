@@ -37,7 +37,10 @@ survives each kind of crash.
      allocates a new chain per call, so every re-attach would stack
      another filter copy and double-count.
 
-5. Read WAL → restore GlobalState (live rows + settled accumulator)
+5. Read WAL → restore GlobalState (live rows + settled accumulator),
+   then settle every restored row whose recorded owner no longer
+   matches the cold-start metadata
+   ([settled bytes](./data-structures.md#settled-bytes))
 
 6. Start the Run workers, one goroutine each, from the drain-ordered
    workers() table:
