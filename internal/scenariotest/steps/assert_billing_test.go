@@ -156,58 +156,55 @@ func TestZoneGrowthStep(t *testing.T) {
 	}
 }
 
-// tupleMetrics reports a fixed settled-tuple sum, for SettledTuplesGrewStep.
-type tupleMetrics struct{ tuples float64 }
+// flowMetrics serves fixed /debug/flows rows, for FlowsFoldedStep.
+type flowMetrics struct{ rows []scenariotest.FlowRow }
 
-func (m tupleMetrics) Scrape(context.Context, string) (scenariotest.ScrapeResult, error) {
-	return scenariotest.ScrapeResult{
-		Present:       map[string]bool{scenariotest.MetricTenantSettledTuples: true, scenariotest.MetricBytesTotal: true, scenariotest.MetricAttachedInterfaces: true},
-		SettledTuples: m.tuples,
-	}, nil
+func (flowMetrics) Scrape(context.Context, string) (scenariotest.ScrapeResult, error) {
+	return scenariotest.ScrapeResult{}, nil
 }
 
-func (tupleMetrics) LookupMAC(context.Context, string, string) (scenariotest.MACLookup, error) {
+func (flowMetrics) LookupMAC(context.Context, string, string) (scenariotest.MACLookup, error) {
 	return scenariotest.MACLookup{}, nil
 }
 
-func (tupleMetrics) LookupFlows(context.Context, string, string) ([]scenariotest.FlowRow, error) {
-	return nil, nil
+func (m flowMetrics) LookupFlows(context.Context, string, string) ([]scenariotest.FlowRow, error) {
+	return m.rows, nil
 }
 
-func TestSettledTuplesGrewStep(t *testing.T) {
+func TestFlowsFoldedStep(t *testing.T) {
 	// Timing isn't under test: shrink the poll so the timeout (fail) cases
 	// resolve in milliseconds.
 	defer func(d time.Duration) { sweepPollInterval = d }(sweepPollInterval)
 	sweepPollInterval = time.Millisecond
 
+	ext := func(b float64) scenariotest.FlowRow { return scenariotest.FlowRow{Zone: "external", Bytes: b} }
 	cases := []struct {
-		name          string
-		base, current float64
-		min           int64
-		wantPass      bool
+		name     string
+		rows     []scenariotest.FlowRow
+		wantPass bool
 	}{
-		{"fold fired (grew past floor)", 5, 8, 1, true},
-		{"exactly at floor", 5, 6, 1, true},
-		{"flat — no fold — fails", 5, 5, 1, false},
-		{"grew but short of floor", 5, 6, 3, false},
+		{"rebased rows at noise", []scenariotest.FlowRow{ext(0), ext(1200)}, true},
+		{"not folded — still holds the drive", []scenariotest.FlowRow{ext(1 << 20)}, false},
+		{"no rows is vacuous, not a fold", nil, false},
+		{"other zones are ignored", []scenariotest.FlowRow{ext(0), {Zone: "infra", Bytes: 1 << 20}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := &scenariotest.StepEnv{
-				Config:   fake.Config(),
-				State:    &scenariotest.RunState{},
-				Metrics:  tupleMetrics{tuples: tc.current},
-				Log:      slog.New(slog.DiscardHandler),
-				Report:   &scenariotest.AssertReport{OK: true},
-				Captured: scenariotest.Capture{SettledTuples: tc.base},
+				Config:  fake.Config(),
+				State:   &scenariotest.RunState{},
+				Metrics: flowMetrics{rows: tc.rows},
+				Log:     slog.New(slog.DiscardHandler),
+				Report:  &scenariotest.AssertReport{OK: true},
 			}
-			step := SettledTuplesGrewStep{Min: tc.min, Timeout: 10 * time.Millisecond}
+			env.RecordMAC("vm-a", "fa:16:3e:00:00:01")
+			step := FlowsFoldedStep{VM: "vm-a", Zone: "external", MaxBytes: 256 << 10, Timeout: 10 * time.Millisecond}
 			if err := step.Run(context.Background(), env); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			row := env.Report.Rows[len(env.Report.Rows)-1]
 			if row.Pass != tc.wantPass {
-				t.Errorf("Pass = %v, want %v (delta %.0f, min %d)", row.Pass, tc.wantPass, row.Delta, tc.min)
+				t.Errorf("Pass = %v, want %v (bytes %.0f)", row.Pass, tc.wantPass, row.Current)
 			}
 		})
 	}

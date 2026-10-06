@@ -56,8 +56,9 @@ func routerRegateway() *scenariotest.Scenario {
 			steps.SetRouterGatewayStep{Router: "r-T1", ExternalNet: "net-ext2"},
 			steps.SleepStep{Duration: reconcileSettle},
 
-			// The fold fired (a settled tuple was added for the old label)...
-			steps.SettledTuplesGrewStep{Min: 1,
+			// The fold fired: vm-a's external rows survive, rebased to
+			// noise (they held the 1 MiB drive before the move)...
+			steps.FlowsFoldedStep{VM: "vm-a", Zone: "external", MaxBytes: 256 << 10,
 				Note: "A→B re-gateway folded the old-label flows"},
 			// ...and the old external-net series is frozen and monotone —
 			// the fold preserved every byte it had emitted (totals conserved).
