@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Per-VM TC classifier. Counts bytes and packets per
- * (src_mac, dst_mac, eth_proto, direction, dst_zone) tuple and classifies
- * the destination zone via a hybrid MAC-first / LPM-fallback lookup.
+ * (src_mac, dst_mac, eth_proto, direction, dst_zone, l4_proto) tuple and
+ * classifies the destination zone via a hybrid MAC-first / LPM-fallback
+ * lookup.
  *
  * Attached at each VM's tap interface (clsact ingress and egress). The
  * userspace agent populates mac_tenant_map and subnet_zone_trie; this
@@ -22,6 +23,12 @@
 #define TC_ACT_OK         0
 #define ETH_P_IP          0x0800
 #define ETH_P_IPV6        0x86DD
+
+/* IANA protocol numbers read from the IPv4 protocol / IPv6 next-header byte. */
+#define IPNUM_ICMP        1
+#define IPNUM_TCP         6
+#define IPNUM_UDP         17
+#define IPNUM_ICMPV6      58
 
 /*
  * Zone codes stored in flow_key.dst_zone. Values are STABLE across
@@ -50,8 +57,26 @@ enum tc_direction {
 } __attribute__((packed));
 
 /*
- * flow_key: 16-byte composite key for telemetry_map. Packed so the kernel's
- * byte-wise hash is stable (no uninitialized padding bytes).
+ * L4 protocol class stored in flow_key.l4_proto. Values are STABLE across
+ * releases — they are persisted to the WAL. Mirror the L4Proto* constants
+ * in internal/bpf/schema.go. The kernel never writes L4_UNKNOWN: it marks
+ * rows restored from a WAL written before the class existed.
+ *
+ * docs/adr/0015-l4-protocol-class-in-flow-key.md
+ */
+enum l4_proto {
+	L4_UNKNOWN = 0,	/* pre-class WAL row; never written here */
+	L4_TCP     = 1,
+	L4_UDP     = 2,
+	L4_ICMP    = 3,	/* ICMPv4 and ICMPv6 */
+	L4_OTHER   = 4,	/* any other protocol, or an IPv6 extension header */
+} __attribute__((packed));
+
+/*
+ * flow_key: 18-byte composite key for telemetry_map. pad is always zero:
+ * the kernel hashes the key byte-wise, so a stray byte would split one
+ * flow across two entries. 18 bytes is naturally aligned for the u16, so
+ * there is no implicit padding even without packed.
  */
 struct flow_key {
 	__u8  src_mac[6];
@@ -59,6 +84,8 @@ struct flow_key {
 	__u16 eth_proto;
 	enum tc_direction direction;
 	enum zone_code    dst_zone;
+	enum l4_proto     l4_proto;
+	__u8  pad;
 } __attribute__((packed));
 
 /*
@@ -87,7 +114,16 @@ struct lpm_key {
 	__u32 ip;
 };
 
-/* PERCPU_HASH: each CPU writes to its own slot; no atomics on the hot path. */
+/*
+ * PERCPU_HASH: each CPU writes to its own slot; no atomics on the hot path.
+ *
+ * Sizing: entries ≈ Σ_ports (peer MACs × 2 directions × zones in use ×
+ * L4 classes in use). Classes in use per MAC pair are typically 1-2, at
+ * most 4, so a 500-VM node needs ~17,000 entries and ~34,000 in the worst
+ * case — under the 80% pressure-relief watermark of 65,536 (52,428).
+ *
+ * docs/adr/0015-l4-protocol-class-in-flow-key.md
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
 	__uint(max_entries, 65536);
@@ -324,6 +360,43 @@ static __always_inline __u8 lookup_zone(const __u8 vm_mac[6],
 	return zone ? *zone : ZONE_MISS;
 }
 
+/*
+ * l4_class - bucket an IP protocol number into an l4_proto class. An IPv6
+ * extension header is not walked: it lands in L4_OTHER.
+ */
+static __always_inline enum l4_proto l4_class(__u8 ipnum, _Bool v6)
+{
+	if (ipnum == IPNUM_TCP)
+		return L4_TCP;
+	if (ipnum == IPNUM_UDP)
+		return L4_UDP;
+	if (ipnum == (v6 ? IPNUM_ICMPV6 : IPNUM_ICMP))
+		return L4_ICMP;
+	return L4_OTHER;
+}
+
+/*
+ * l4_proto_of - classify the frame's L4 protocol from the one IP header
+ * byte that names it. Both bytes lie inside the pulled Ethernet + IPv4
+ * span. A truncated header classifies as L4_OTHER rather than skipping the
+ * frame: whether to count it is handle_packet's decision, not this one's.
+ */
+static __always_inline enum l4_proto l4_proto_of(const struct ethhdr *eth,
+						 __u16 proto, void *data_end)
+{
+	if (proto == ETH_P_IP) {
+		const struct iphdr *iph = (const void *)(eth + 1);
+		if ((void *)(iph + 1) > data_end)
+			return L4_OTHER;
+		return l4_class(iph->protocol, 0);
+	}
+	/* IPv6 next-header: offset 6 of the fixed header. */
+	const __u8 *nexthdr = (const __u8 *)(eth + 1) + 6;
+	if ((void *)(nexthdr + 1) > data_end)
+		return L4_OTHER;
+	return l4_class(*nexthdr, 1);
+}
+
 /* IEEE 802 I/G bit: multicast and broadcast destinations. */
 static __always_inline _Bool is_group_mac(const __u8 mac[6])
 {
@@ -396,6 +469,7 @@ static __always_inline int handle_packet(struct __sk_buff *skb,
 	__builtin_memcpy(key.dst_mac, eth->h_dest, 6);
 	key.eth_proto = proto;
 	key.direction = direction;
+	key.l4_proto  = l4_proto_of(eth, proto, data_end);
 
 	if (is_group_mac(key.dst_mac)) {
 		key.dst_zone = ZONE_MULTICAST;

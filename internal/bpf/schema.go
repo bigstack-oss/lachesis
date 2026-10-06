@@ -7,8 +7,9 @@ package bpf
 
 import "strconv"
 
-// FlowKey is the Go-side mirror of the BPF flow_key, the 16-byte key
-// the classifier writes into telemetry_map.
+// FlowKey is the Go-side mirror of the BPF flow_key, the 18-byte key
+// the classifier writes into telemetry_map. Its Pad byte is always zero:
+// the kernel hashes the key byte-wise.
 //
 // INVARIANT — never add the u32 tenant_id to this key. It is interned
 // fresh each boot, so a WAL-restored row would key under a stale value
@@ -41,6 +42,11 @@ type ZoneCode = telemetryZoneCode
 // Direction is the enum stored in [FlowKey.Direction]. See [DirectionIngress]
 // and [DirectionEgress] for the set of valid values.
 type Direction = telemetryTcDirection
+
+// L4Proto is the L4 protocol class stored in [FlowKey.L4Proto]. See
+// [L4ProtoUnknown] and the other L4Proto constants for the set of valid
+// values.
+type L4Proto = telemetryL4Proto
 
 // ZoneExternal through ZoneMulticast are the zone codes stored in
 // [FlowKey.DstZone]. Values are stable across releases — they are
@@ -80,6 +86,41 @@ func (z ZoneCode) String() string {
 		return "multicast"
 	}
 	return strconv.FormatUint(uint64(z), 10)
+}
+
+// L4ProtoUnknown through L4ProtoOther are the L4 protocol classes stored
+// in [FlowKey.L4Proto]. Values are stable across releases — they are
+// persisted to the WAL. The kernel never writes L4ProtoUnknown; it marks
+// rows restored from a WAL written before the class existed, which no
+// kernel entry can match again.
+//
+// docs/adr/0015-l4-protocol-class-in-flow-key.md
+const (
+	L4ProtoUnknown = telemetryL4ProtoL4UNKNOWN
+	L4ProtoTCP     = telemetryL4ProtoL4TCP
+	L4ProtoUDP     = telemetryL4ProtoL4UDP
+	L4ProtoICMP    = telemetryL4ProtoL4ICMP
+	L4ProtoOther   = telemetryL4ProtoL4OTHER
+)
+
+// String returns the canonical class name — the `proto` label value on
+// the per-port protocol family, pinned by dashboards. Unknown codes
+// render numerically. Constant strings only, for the zero-allocation
+// Collect() path.
+func (p L4Proto) String() string {
+	switch p {
+	case L4ProtoUnknown:
+		return "unknown"
+	case L4ProtoTCP:
+		return "tcp"
+	case L4ProtoUDP:
+		return "udp"
+	case L4ProtoICMP:
+		return "icmp"
+	case L4ProtoOther:
+		return "other"
+	}
+	return strconv.FormatUint(uint64(p), 10)
 }
 
 // DirectionIngress and DirectionEgress are the TC hook direction values

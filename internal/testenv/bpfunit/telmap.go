@@ -41,6 +41,27 @@ func FindZone(m *ebpf.Map, srcMAC, dstMAC uint64, dir bpf.Direction) (bpf.ZoneCo
 	return 0, false, nil
 }
 
+// FindKey scans telemetry_map for the first entry whose flow_key matches
+// (srcMAC, dstMAC, dir) and returns the whole key, for assertions on
+// fields other than the zone. The map is PERCPU_HASH; this helper
+// inspects only keys.
+func FindKey(m *ebpf.Map, srcMAC, dstMAC uint64, dir bpf.Direction) (bpf.FlowKey, bool, error) {
+	srcB := MACBytes(srcMAC)
+	dstB := MACBytes(dstMAC)
+	var key bpf.FlowKey
+	var vals []bpf.FlowMetrics
+	iter := m.Iterate()
+	for iter.Next(&key, &vals) {
+		if key.SrcMac == srcB && key.DstMac == dstB && key.Direction == dir {
+			return key, true, nil
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return bpf.FlowKey{}, false, fmt.Errorf("bpfunit: iterate telemetry_map: %w", err)
+	}
+	return bpf.FlowKey{}, false, nil
+}
+
 // DrainTelemetryByMACs deletes every telemetry_map entry whose flow_key
 // matches the (srcMAC, dstMAC) pair in either direction. Tests call this
 // between subcases so a prior /24 hit doesn't carry over to a later case

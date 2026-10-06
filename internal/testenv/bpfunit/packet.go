@@ -81,6 +81,58 @@ func EthIPv6TCP(srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP, srcPort, d
 	return serialize(eth, ip, tcp, gopacket.Payload(payload))
 }
 
+// EthIPv4ICMP returns a serialized Ethernet + IPv4 + ICMP echo request.
+func EthIPv4ICMP(srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP) []byte {
+	eth := &layers.Ethernet{SrcMAC: srcMAC, DstMAC: dstMAC, EthernetType: layers.EthernetTypeIPv4}
+	ip := &layers.IPv4{
+		Version: 4, IHL: 5, TTL: 64, Protocol: layers.IPProtocolICMPv4,
+		SrcIP: srcIP.To4(), DstIP: dstIP.To4(),
+	}
+	icmp := &layers.ICMPv4{TypeCode: layers.CreateICMPv4TypeCode(layers.ICMPv4TypeEchoRequest, 0)}
+	return serialize(eth, ip, icmp)
+}
+
+// EthIPv4Raw returns a serialized Ethernet + IPv4 frame carrying payload
+// under an arbitrary IP protocol number — e.g. GRE (47) — for the
+// catch-all L4 class.
+func EthIPv4Raw(srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP, proto layers.IPProtocol, payload []byte) []byte {
+	eth := &layers.Ethernet{SrcMAC: srcMAC, DstMAC: dstMAC, EthernetType: layers.EthernetTypeIPv4}
+	ip := &layers.IPv4{
+		Version: 4, IHL: 5, TTL: 64, Protocol: proto,
+		SrcIP: srcIP.To4(), DstIP: dstIP.To4(),
+	}
+	return serialize(eth, ip, gopacket.Payload(payload))
+}
+
+// EthIPv6ICMP returns a serialized Ethernet + IPv6 + ICMPv6 echo request.
+func EthIPv6ICMP(srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP) []byte {
+	eth := &layers.Ethernet{SrcMAC: srcMAC, DstMAC: dstMAC, EthernetType: layers.EthernetTypeIPv6}
+	ip := &layers.IPv6{
+		Version: 6, NextHeader: layers.IPProtocolICMPv6, HopLimit: 64,
+		SrcIP: srcIP.To16(), DstIP: dstIP.To16(),
+	}
+	icmp := &layers.ICMPv6{TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0)}
+	_ = icmp.SetNetworkLayerForChecksum(ip)
+	return serialize(eth, ip, icmp)
+}
+
+// EthIPv6DestOptsTCP returns an Ethernet + IPv6 frame whose fixed header
+// names a Destination Options extension header (next header 60), which in
+// turn names TCP — the shape that exercises "an extension header is not
+// walked". The extension header is 8 bytes: next header, length 0, and a
+// 4-byte PadN option.
+func EthIPv6DestOptsTCP(srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP) []byte {
+	eth := &layers.Ethernet{SrcMAC: srcMAC, DstMAC: dstMAC, EthernetType: layers.EthernetTypeIPv6}
+	ip := &layers.IPv6{
+		Version: 6, NextHeader: layers.IPProtocolIPv6Destination, HopLimit: 64,
+		SrcIP: srcIP.To16(), DstIP: dstIP.To16(),
+	}
+	destOpts := []byte{byte(layers.IPProtocolTCP), 0, 1, 4, 0, 0, 0, 0}
+	tcpHdr := make([]byte, 20) // zero ports; only the class byte matters
+	tcpHdr[12] = 5 << 4        // data offset: 5 words
+	return serialize(eth, ip, gopacket.Payload(append(destOpts, tcpHdr...)))
+}
+
 // ARPFrame returns a minimal ARP request frame for non-IP pass-through tests.
 func ARPFrame(srcMAC, dstMAC net.HardwareAddr) []byte {
 	eth := &layers.Ethernet{

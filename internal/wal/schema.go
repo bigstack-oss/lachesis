@@ -17,7 +17,7 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 // the history table, not just changing the number.
 //
 // docs/architecture/data-structures.md#wal-schema-history
-const SchemaVersion uint = 8
+const SchemaVersion uint = 9
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
 // previous snapshot. TempSuffix is the in-progress write target.
@@ -169,6 +169,13 @@ type flowKeyWire struct {
 	EthProto  uint16   `json:"eth_proto"`
 	Direction uint8    `json:"direction"`
 	DstZone   uint8    `json:"dst_zone"`
+	// L4Proto (v9+) is the flow's L4 protocol class. Absent from a v7 or
+	// v8 file, where it decodes as 0 = [bpf.L4ProtoUnknown]: a class the
+	// kernel never writes, so the restored row keeps its total and no
+	// kernel entry ever diffs against its baseline.
+	//
+	// docs/adr/0015-l4-protocol-class-in-flow-key.md
+	L4Proto uint8 `json:"l4_proto,omitempty"`
 }
 
 type flowMetricsWire struct {

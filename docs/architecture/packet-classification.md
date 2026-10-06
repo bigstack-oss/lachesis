@@ -76,7 +76,9 @@ codes mirror `enum zone_code` in `bpf/telemetry.c` and `internal/bpf`.
                       or ZONE_MISS                          # no catchall
                                                             # (boot bug)
 
-8. Build flow_key { src_mac, dst_mac, eth_proto, direction, dst_zone }.
+8. Build flow_key { src_mac, dst_mac, eth_proto, direction, dst_zone,
+                     l4_proto }   # IPv4 protocol / IPv6 next-header
+                                  # byte, bucketed (ADR 0015)
 
 9. Look up telemetry_map[flow_key]:
      hit:   val->bytes += skb->len          # PERCPU slot, no atomics

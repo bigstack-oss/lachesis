@@ -55,6 +55,18 @@ const (
 	MetricPortPacketsTotal = "lachesis_port_packets_total"
 )
 
+// MetricPortProtoBytesTotal is the per-port L4 protocol breakdown — live
+// rows only, like the port tier it refines: summed over proto it equals
+// the port tier summed over zone and external_network. Not a billing
+// family; it carries no zone so its cardinality stays ports × classes ×
+// directions.
+//
+// docs/adr/0015-l4-protocol-class-in-flow-key.md
+const (
+	MetricPortProtoBytesTotal   = "lachesis_port_proto_bytes_total"
+	MetricPortProtoPacketsTotal = "lachesis_port_proto_packets_total"
+)
+
 // totalAggKey is the total tier's aggregation granularity: the tenant
 // dimension summed away.
 type totalAggKey struct {
@@ -92,6 +104,16 @@ type portAggKey struct {
 	tenant string
 	ext    string
 	zone   bpf.ZoneCode
+	dir    bpf.Direction
+}
+
+// protoAggKey is the protocol family's granularity — the port identity
+// plus the L4 class. Live rows only, like portAggKey.
+type protoAggKey struct {
+	server string
+	port   string
+	tenant string
+	proto  bpf.L4Proto
 	dir    bpf.Direction
 }
 

@@ -295,6 +295,7 @@ func toWire(r state.Record) entryWire {
 			EthProto:  r.Key.EthProto,
 			Direction: uint8(r.Key.Direction),
 			DstZone:   uint8(r.Key.DstZone),
+			L4Proto:   uint8(r.Key.L4Proto),
 		},
 		Total:   toMetricsWire(r.Counter.Total),
 		LastRaw: toMetricsWire(r.Counter.LastEbpfRaw),
@@ -318,6 +319,7 @@ func fromSnapshot(snap snapshotWire) []state.Record {
 				EthProto:  e.Key.EthProto,
 				Direction: bpf.Direction(e.Key.Direction),
 				DstZone:   bpf.ZoneCode(e.Key.DstZone),
+				L4Proto:   bpf.L4Proto(e.Key.L4Proto),
 			},
 			Counter: state.Counter{
 				Total:       fromMetricsWire(e.Total),

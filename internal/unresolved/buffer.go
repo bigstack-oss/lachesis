@@ -181,7 +181,7 @@ func (b *Buffer) evictOverCap() {
 }
 
 // foldToUnknown adds total to a synthetic key that keeps the flow's
-// eth_proto, direction and zone but zeroes both MACs. An all-zero source
+// eth_proto, direction, zone and L4 class but zeroes both MACs. An all-zero source
 // MAC never occurs in real traffic, so the key cannot collide, and all
 // unknown traffic collapses into a handful of monotone series.
 func (b *Buffer) foldToUnknown(key bpf.FlowKey, total bpf.FlowMetrics) {
@@ -189,6 +189,7 @@ func (b *Buffer) foldToUnknown(key bpf.FlowKey, total bpf.FlowMetrics) {
 		EthProto:  key.EthProto,
 		Direction: key.Direction,
 		DstZone:   key.DstZone,
+		L4Proto:   key.L4Proto,
 	}, total)
 }
 

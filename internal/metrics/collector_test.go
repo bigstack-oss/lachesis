@@ -10,6 +10,7 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/state"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/prometheus/common/expfmt"
 )
 
 // Compile-time check: metadata.Resolver must satisfy
@@ -820,5 +821,99 @@ lachesis_state_total_settled_tuples 1
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(watermark),
 		"lachesis_state_total_settled_tuples"); err != nil {
 		t.Fatalf("total-settled watermark: %v", err)
+	}
+}
+
+// billingFamilies are the eight families whose label sets and values
+// must not move when the kernel splits a flow by L4 class.
+var billingFamilies = []string{
+	metrics.MetricBytesTotal, metrics.MetricPacketsTotal,
+	metrics.MetricTenantBytesTotal, metrics.MetricTenantPacketsTotal,
+	metrics.MetricServerBytesTotal, metrics.MetricServerPacketsTotal,
+	metrics.MetricPortBytesTotal, metrics.MetricPortPacketsTotal,
+}
+
+// TestCollect_BillingFamiliesIgnoreL4Class is the golden comparison for
+// docs/adr/0015-l4-protocol-class-in-flow-key.md: the same traffic held
+// as one row, or split across L4 classes, must expose byte-identical
+// billing families. Only the protocol family may tell them apart.
+func TestCollect_BillingFamiliesIgnoreL4Class(t *testing.T) {
+	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	resolver := func() metrics.TenantResolver {
+		meta := metadata.New()
+		meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
+			ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
+		})
+		return metadata.NewResolver(meta, nil)
+	}
+	key := func(p bpf.L4Proto) bpf.FlowKey {
+		return bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 1}, EthProto: 0x0800,
+			Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal, L4Proto: p}
+	}
+
+	whole := state.New()
+	whole.ApplyDelta(key(bpf.L4ProtoUnknown), bpf.FlowMetrics{Bytes: 750, Packets: 8, LastSeenNs: 1})
+	split := state.New()
+	split.ApplyDelta(key(bpf.L4ProtoTCP), bpf.FlowMetrics{Bytes: 600, Packets: 6, LastSeenNs: 1})
+	split.ApplyDelta(key(bpf.L4ProtoUDP), bpf.FlowMetrics{Bytes: 100, Packets: 1, LastSeenNs: 1})
+	split.ApplyDelta(key(bpf.L4ProtoOther), bpf.FlowMetrics{Bytes: 50, Packets: 1, LastSeenNs: 1})
+
+	want, err := testutil.CollectAndFormat(metrics.New(whole, stubScraper{}, resolver()), expfmt.TypeTextPlain, billingFamilies...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(want), metrics.MetricPortBytesTotal) {
+		t.Fatalf("golden is missing the port family:\n%s", want)
+	}
+	got, err := testutil.CollectAndFormat(metrics.New(split, stubScraper{}, resolver()), expfmt.TypeTextPlain, billingFamilies...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("billing families differ when split by L4 class:\n--- split\n%s\n--- whole\n%s", got, want)
+	}
+}
+
+// TestCollect_ProtoFamilySplitsPortLeaf pins the protocol family: one
+// series per (port, class, direction) from live rows of a resolved
+// server, "unknown" for a row restored from a pre-class WAL, and no
+// series for a MAC that resolves to no server.
+func TestCollect_ProtoFamilySplitsPortLeaf(t *testing.T) {
+	meta := metadata.New()
+	vmMAC := [6]uint8{0xaa, 0, 0, 0, 0, 1}
+	meta.Insert(bpf.MACKey(vmMAC), &metadata.TenantMeta{
+		ProjectID: "tenant-a", ServerID: "srv-1", PortID: "port-1", ExternalNetwork: "public-1",
+	})
+	st := state.New()
+	for _, r := range []struct {
+		zone  bpf.ZoneCode
+		proto bpf.L4Proto
+		bytes uint64
+	}{
+		{bpf.ZoneExternal, bpf.L4ProtoTCP, 600},
+		{bpf.ZoneSameTenant, bpf.L4ProtoTCP, 200}, // a second zone folds into the same tcp series
+		{bpf.ZoneExternal, bpf.L4ProtoUDP, 100},
+		{bpf.ZoneExternal, bpf.L4ProtoUnknown, 50},
+	} {
+		st.ApplyDelta(bpf.FlowKey{SrcMac: vmMAC, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 1}, EthProto: 0x0800,
+			Direction: bpf.DirectionIngress, DstZone: r.zone, L4Proto: r.proto},
+			bpf.FlowMetrics{Bytes: r.bytes, Packets: 1, LastSeenNs: 1})
+	}
+	st.ApplyDelta(bpf.FlowKey{SrcMac: [6]uint8{0xbb, 0, 0, 0, 0, 9}, DstMac: [6]uint8{0xee, 0, 0, 0, 0, 3},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal, L4Proto: bpf.L4ProtoTCP},
+		bpf.FlowMetrics{Bytes: 55, Packets: 1, LastSeenNs: 2})
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(metrics.New(st, stubScraper{}, metadata.NewResolver(meta, nil)))
+
+	expected := `
+# HELP lachesis_port_proto_bytes_total Per-port network bytes by L4 protocol class (tcp/udp/icmp/other; "unknown" for rows restored from a pre-class WAL), cumulative while the port's binding lives — a breakdown of lachesis_port_bytes_total with the same mortal-leaf lifetime. Never a billing family (docs/adr/0015-l4-protocol-class-in-flow-key.md).
+# TYPE lachesis_port_proto_bytes_total counter
+lachesis_port_proto_bytes_total{direction="tx",port_id="port-1",proto="tcp",server_id="srv-1",tenant_id="tenant-a"} 800
+lachesis_port_proto_bytes_total{direction="tx",port_id="port-1",proto="udp",server_id="srv-1",tenant_id="tenant-a"} 100
+lachesis_port_proto_bytes_total{direction="tx",port_id="port-1",proto="unknown",server_id="srv-1",tenant_id="tenant-a"} 50
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), metrics.MetricPortProtoBytesTotal); err != nil {
+		t.Errorf("GatherAndCompare: %v", err)
 	}
 }
