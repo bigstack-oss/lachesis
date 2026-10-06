@@ -59,8 +59,8 @@ func agentColdRestart() *scenariotest.Scenario {
 
 			// Leg 1 — WARM: WAL intact, epoch carries, series monotone.
 			steps.CaptureStep{},
-			steps.RestartAgentStep{},
-			steps.EpochStep{Changed: false,
+			steps.RestartAgentStep{Node: "node:0"},
+			steps.EpochStep{Node: "node:0", Changed: false,
 				Note: "warm restart carries the stored epoch"},
 			steps.MonotoneStep{Tenant: "T1", Note: "series monotone across the warm restart"},
 
@@ -70,8 +70,8 @@ func agentColdRestart() *scenariotest.Scenario {
 			// bytes drop out here. That drop aligns with the declared
 			// epoch and is what per-segment baseline subtraction absorbs.
 			steps.CaptureStep{},
-			steps.RestartAgentStep{RemoveWAL: true},
-			steps.EpochStep{Changed: true,
+			steps.RestartAgentStep{Node: "node:0", RemoveWAL: true},
+			steps.EpochStep{Node: "node:0", Changed: true,
 				Note: "WAL loss stamps a fresh epoch (adopted pins)"},
 			steps.SleepStep{Duration: drainWait},
 			steps.DriveStep{Flows: []scenariotest.Flow{
@@ -85,8 +85,8 @@ func agentColdRestart() *scenariotest.Scenario {
 			// Fresh epoch again; series legitimately restart, and new
 			// traffic accrues on the fresh counters.
 			steps.CaptureStep{},
-			steps.RestartAgentStep{RemoveWAL: true, RemovePins: true},
-			steps.EpochStep{Changed: true,
+			steps.RestartAgentStep{Node: "node:0", RemoveWAL: true, RemovePins: true},
+			steps.EpochStep{Node: "node:0", Changed: true,
 				Note: "WAL+pin loss stamps a fresh epoch (zero restart)"},
 			steps.SleepStep{Duration: drainWait},
 			steps.DriveStep{Flows: []scenariotest.Flow{

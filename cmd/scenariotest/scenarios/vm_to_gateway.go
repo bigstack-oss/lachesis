@@ -34,7 +34,10 @@ func vmToGateway() *scenariotest.Scenario {
 		Desc:    "VM probing the metadata service / gateway. Infra zone.",
 		Builder: b,
 		Flows: []scenariotest.Flow{
-			{From: "vm-a", To: scenariotest.ExternalTarget("169.254.169.254"), Bytes: 1 << 10, Proto: scenariotest.TCP},
+			// Five sized pings, not one: a lost echo reply is tolerated by
+			// the driver, so a single ping that loses one fragment of its
+			// reply leaves the rx row at zero.
+			{From: "vm-a", To: scenariotest.ExternalTarget("169.254.169.254"), Bytes: 5 * 60000, Proto: scenariotest.TCP},
 		},
 		Expect: []scenariotest.Expect{
 			{TenantID: "T1", Zone: "infra", Direction: "tx", MinBytes: 1 << 10},
