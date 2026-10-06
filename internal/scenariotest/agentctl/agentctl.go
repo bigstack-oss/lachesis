@@ -194,6 +194,38 @@ func (c *Controller) Restart(ctx context.Context, cy Cycle) (oldPID string, err 
 	return oldPID, nil
 }
 
+// Stop stops the unit and returns its pre-stop MainPID — the restart
+// evidence [Controller.AwaitReady] needs once [Controller.Start] runs.
+// The pair splits [Controller.Restart] so a scenario can act while the
+// agent is down.
+func (c *Controller) Stop(ctx context.Context) (oldPID string, err error) {
+	oldPID, _ = c.MainPID(ctx)
+	if out, err := c.exec.Run(ctx, c.Host, "sudo systemctl stop "+c.Unit); err != nil {
+		return "", fmt.Errorf("stop %s on %s: %w (output: %s)", c.Unit, c.Host, err, out)
+	}
+	c.log.Info("agent stopped", "host", c.Host, "unit", c.Unit, "old_pid", oldPID)
+	return oldPID, nil
+}
+
+// Start starts the unit, first destroying the durable state cy names
+// (the same shapes as [Controller.Restart]).
+func (c *Controller) Start(ctx context.Context, cy Cycle) error {
+	cmd := "sudo systemctl start " + c.Unit
+	if cy.RemoveWAL || cy.RemovePins {
+		rm, err := c.removeStateCmd(cy)
+		if err != nil {
+			return err
+		}
+		cmd = rm + " && " + cmd
+	}
+	if out, err := c.exec.Run(ctx, c.Host, cmd); err != nil {
+		return fmt.Errorf("start %s on %s: %w (output: %s)", c.Unit, c.Host, err, out)
+	}
+	c.log.Info("agent started", "host", c.Host, "unit", c.Unit,
+		"remove_wal", cy.RemoveWAL, "remove_pins", cy.RemovePins)
+	return nil
+}
+
 // removeStateCmd builds the state-removal command for a cold restart:
 // the WAL (and .bak) always; the bpffs pins when RemovePins asks for a
 // full host-reboot simulation. Paths come from agent_control so

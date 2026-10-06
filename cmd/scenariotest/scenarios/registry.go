@@ -30,6 +30,7 @@ func All() []*scenariotest.Scenario {
 		crossHostSameTenant(),
 		liveMigrationContinuity(),
 		walRestartContinuity(),
+		vmDeletedWhileAgentDown(),
 		agentColdRestart(),
 		liveMigrateRoundTrip(),
 		multiPortPartialDelete(),
