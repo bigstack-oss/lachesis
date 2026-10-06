@@ -452,6 +452,93 @@ func TestAgent_WALFinalFlushOnShutdown(t *testing.T) {
 	}
 }
 
+// TestAgent_FinalFlushSettlesLingeringGhosts pins the restart fold: a
+// ghost still inside its grace at shutdown has its rows settled under
+// its tenant before the final flush, because the next boot cannot
+// resolve a deleted port. A live MAC's row is left untouched.
+func TestAgent_FinalFlushSettlesLingeringGhosts(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	walPath := filepath.Join(t.TempDir(), "wal.json")
+
+	ghostKey := bpf.FlowKey{
+		SrcMac:    [6]uint8{0xaa, 0, 0, 0, 0, 1},
+		DstMac:    [6]uint8{0xaa, 0, 0, 0, 0, 2},
+		EthProto:  0x0800,
+		Direction: bpf.DirectionIngress,
+		DstZone:   bpf.ZoneSameTenant,
+	}
+	liveKey := ghostKey
+	liveKey.SrcMac = [6]uint8{0xaa, 0, 0, 0, 0, 3}
+	r := &staticReader{entries: map[bpf.FlowKey]bpf.FlowMetrics{
+		ghostKey: {Bytes: 9999, Packets: 33, LastSeenNs: 1},
+		liveKey:  {Bytes: 4242, Packets: 7, LastSeenNs: 1},
+	}}
+
+	cfg := config.Defaults()
+	cfg.HTTP.Listen = "127.0.0.1:0"
+	cfg.Scrape.Interval = 25 * time.Millisecond
+	cfg.WAL.Path = walPath
+	cfg.WAL.FlushInterval = 30 * time.Second // only the final flush writes
+	cfg.WAL.Enabled = true
+	log, err := logging.Init(cfg.Logging, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	ag, err := agent.New(agent.Options{Config: cfg, Reader: r, Log: log})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	meta := agent.MetadataForTest(ag)
+	ghostMAC := metadata.VMMAC(ghostKey)
+	meta.Insert(ghostMAC, &metadata.TenantMeta{ProjectID: "doomed"})
+	meta.MarkDelete(ghostMAC, time.Now().Add(time.Hour)) // still lingering
+	meta.Insert(metadata.VMMAC(liveKey), &metadata.TenantMeta{ProjectID: "alive"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = ag.Run(ctx)
+		close(done)
+	}()
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent did not exit within 2s of cancel")
+	}
+
+	res, err := wal.Load(walPath)
+	if err != nil {
+		t.Fatalf("wal.Load: %v", err)
+	}
+	totals := map[bpf.FlowKey]uint64{}
+	raws := map[bpf.FlowKey]uint64{}
+	for _, rec := range res.Records {
+		totals[rec.Key] = rec.Counter.Total.Bytes
+		raws[rec.Key] = rec.Counter.LastEbpfRaw.Bytes
+	}
+	if totals[ghostKey] != 0 || raws[ghostKey] != 9999 {
+		t.Errorf("ghost row = {Total:%d LastEbpfRaw:%d}, want {0 9999} (rebased, watermark kept)",
+			totals[ghostKey], raws[ghostKey])
+	}
+	if totals[liveKey] != 4242 {
+		t.Errorf("live row Total = %d, want 4242 (untouched)", totals[liveKey])
+	}
+	var settled uint64
+	for _, s := range res.TenantSettled {
+		switch s.Key.Tenant {
+		case "doomed":
+			settled += s.Bytes
+		case "alive":
+			t.Errorf("live tenant settled %d bytes, want none", s.Bytes)
+		}
+	}
+	if settled != 9999 {
+		t.Errorf("doomed tenant settled = %d bytes, want 9999", settled)
+	}
+}
+
 // mutableReader returns whatever its current entries hold, and the
 // entries can be swapped mid-test to model the kernel map advancing
 // between ticks. Each BatchLookup sleeps briefly so a WAL final flush
