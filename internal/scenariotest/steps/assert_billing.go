@@ -85,37 +85,51 @@ func (s MaxGrowthStep) Run(ctx context.Context, env *scenariotest.StepEnv) error
 	return nil
 }
 
-// SettledTuplesGrewStep asserts the summed settled-tuple gauges rose by
-// at least Min since the last [CaptureStep] — live proof a fold fired.
-// Polls, because folds land a reconcile pass after the mutation. Unlike
-// the GC-only settled_flows counter this also moves on a
-// reconcile-driven [state.SettleRebase].
-type SettledTuplesGrewStep struct {
-	Min     int64
-	Timeout time.Duration
-	Note    string
+// FlowsFoldedStep asserts a reconcile fold fired on THIS VM's flows:
+// [state.SettleRebase] zeroes the folded rows' live totals but keeps
+// the rows, so the VM's /debug/flows rows in Zone must still exist and
+// hold at most MaxBytes. Polls, because folds land a reconcile pass
+// after the mutation. Global settled-tuple gauges can't prove this on
+// a shared agent — another run's server-bucket releases shrink them
+// mid-assert, and a fold into an already-existing tenant bucket adds
+// no tuple.
+type FlowsFoldedStep struct {
+	VM       string // DSL VM whose MAC carries the folded flows
+	Zone     string
+	MaxBytes int64
+	Timeout  time.Duration
+	Note     string
 }
 
-func (SettledTuplesGrewStep) Kind() string { return "assert-settled-tuples-grew" }
+func (FlowsFoldedStep) Kind() string { return "assert-flows-folded" }
 
-func (SettledTuplesGrewStep) RequiredMetrics() []string {
-	return []string{scenariotest.MetricTenantSettledTuples}
-}
-
-func (s SettledTuplesGrewStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+func (s FlowsFoldedStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	mac, err := env.VMMAC(ctx, s.VM)
+	if err != nil {
+		return fmt.Errorf("assert-flows-folded: %w", err)
+	}
 	timeout := s.Timeout
 	if timeout <= 0 {
 		timeout = DefaultSweepTimeout
 	}
 	deadline := time.Now().Add(timeout)
-	var delta float64
+	var total float64
+	var rows int
 	for {
-		snap, err := env.Scrape(ctx)
-		if err != nil {
-			return err
+		total, rows = 0, 0
+		for _, u := range scenariotest.AgentURLs(env.Config) {
+			got, err := env.Metrics.LookupFlows(ctx, u, mac)
+			if err != nil {
+				return fmt.Errorf("assert-flows-folded: %w", err)
+			}
+			for _, r := range got {
+				if r.Zone == s.Zone {
+					total += r.Bytes
+					rows++
+				}
+			}
 		}
-		delta = snap.SettledTuples - env.Captured.SettledTuples
-		if delta >= float64(s.Min) || time.Now().After(deadline) {
+		if (rows > 0 && total <= float64(s.MaxBytes)) || time.Now().After(deadline) {
 			break
 		}
 		select {
@@ -124,11 +138,14 @@ func (s SettledTuplesGrewStep) Run(ctx context.Context, env *scenariotest.StepEn
 		case <-time.After(sweepPollInterval):
 		}
 	}
+	// No rows means the MAC never carried Zone traffic on any agent —
+	// nothing was folded, so a vacuous zero must not pass.
 	env.AddRow(scenariotest.AssertRow{
-		Tenant: "settled-tuples", Zone: "-", Direction: "-",
-		Baseline: env.Captured.SettledTuples, Current: env.Captured.SettledTuples + delta, Delta: delta,
-		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
+		Tenant: "flows-folded", Zone: s.Zone, VM: s.VM, Direction: "-",
+		Current: total, Delta: total, MinBytes: s.MaxBytes,
+		Pass: rows > 0 && total <= float64(s.MaxBytes), Note: s.Note,
 	})
+	env.Log.Info("assert-flows-folded", "vm", s.VM, "mac", mac, "zone", s.Zone, "rows", rows, "bytes", total, "max", s.MaxBytes)
 	return nil
 }
 
