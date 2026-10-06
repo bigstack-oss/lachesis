@@ -27,6 +27,12 @@ func RestoreFromWALForTest(a *Agent) error {
 	return restoreFromWAL(a)
 }
 
+// FlushWALForTest runs one WAL flush, so a test can reload the file and
+// see what a restore did to GlobalState.
+func FlushWALForTest(a *Agent) error {
+	return a.flushWAL()
+}
+
 // BuildIDFromForTest exposes buildIDFrom so the extraction of the
 // agent_build identity can be pinned against a synthetic BuildInfo.
 func BuildIDFromForTest(bi *debug.BuildInfo) string {

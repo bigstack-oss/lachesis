@@ -86,6 +86,46 @@ func (a *Agent) settleLingeringGhosts() int {
 		}))
 }
 
+// ownerResolver resolves a flow row to the (tenant, external-network
+// label, server) the Collector emits it under — the shape
+// [state.GlobalState.Settle] takes.
+func (a *Agent) ownerResolver() func(bpf.FlowKey) (string, string, string, bool) {
+	return metadata.SettleResolver(a.routers, func(k bpf.FlowKey) (*metadata.TenantMeta, bool) {
+		return a.meta.Lookup(metadata.VMMAC(k))
+	})
+}
+
+// settleChangedOwners folds every restored row whose owner now resolves
+// differently from the one the WAL recorded — its port was deleted or
+// reassigned while the agent was down. Without this the row late-binds
+// to "unknown" (or to the MAC's new owner) and the old owner's series
+// dips. It is the reconcile's attribution-change fold, run once at
+// boot; Rebase for the same reason: pinned kernel counters may survive.
+// Runs after the Neutron cold-start, so metadata is current.
+//
+// docs/architecture/data-structures.md#settled-bytes
+func settleChangedOwners(ag *Agent, records []state.Record) int {
+	resolve := ag.ownerResolver()
+	changed := make(map[bpf.FlowKey]state.Owner)
+	for _, r := range records {
+		if r.Owner.Tenant == "" {
+			continue // pre-v8 file, or never resolved: nothing to keep
+		}
+		tenant, extNet, server, ok := resolve(r.Key)
+		if ok && (state.Owner{Tenant: tenant, ExtNet: extNet, Server: server}) == r.Owner {
+			continue
+		}
+		changed[r.Key] = r.Owner
+	}
+	if len(changed) == 0 {
+		return 0
+	}
+	return ag.state.Settle(state.SettleRebase, func(k bpf.FlowKey) (string, string, string, bool) {
+		o, ok := changed[k]
+		return o.Tenant, o.ExtNet, o.Server, ok
+	})
+}
+
 // flushWAL snapshots GlobalState and writes it via [wal.Save]. The
 // snapshot uses a reused buffer; steady-state flushes do not
 // allocate beyond the JSON marshal that wal.Save performs. The
@@ -96,6 +136,14 @@ func (a *Agent) flushWAL() error {
 	copyStart := time.Now()
 	a.walRecBuf, a.walTenantSettledBuf, a.walServerSettledBuf, a.walTotalSettledBuf = a.state.SnapshotForWAL(a.walRecBuf[:0], a.walTenantSettledBuf[:0], a.walServerSettledBuf[:0], a.walTotalSettledBuf[:0])
 	a.mx.wal.ObserveCopy(time.Since(copyStart))
+	resolve := a.ownerResolver()
+	for i := range a.walRecBuf {
+		r := &a.walRecBuf[i]
+		r.Owner = state.Owner{}
+		if tenant, extNet, server, ok := resolve(r.Key); ok {
+			r.Owner = state.Owner{Tenant: tenant, ExtNet: extNet, Server: server}
+		}
+	}
 	return wal.Save(a.cfg.WAL.Path, a.buildID, a.walRecBuf, a.walTenantSettledBuf, a.walServerSettledBuf, a.walTotalSettledBuf, a.countersResetAt, a.mx.wal)
 }
 
@@ -153,6 +201,12 @@ func restoreFromWAL(ag *Agent) error {
 	}
 	if len(res.TotalSettled) > 0 {
 		ag.SeedTotalSettled(res.TotalSettled)
+	}
+	// After every seed: the settled restores assign their buckets, so a
+	// fold run before them would be overwritten.
+	if n := settleChangedOwners(ag, res.Records); n > 0 {
+		slog.Info("settled restored flows whose owner changed while the agent was down",
+			"component", componentWAL, "flows", n)
 	}
 	// The epoch is decided here ONCE: a warm boot carries the stored
 	// one, so the gauge keeps naming the last TRUE restart; an empty

@@ -316,6 +316,7 @@ flush rotation destroy the only forward snapshot within two flushes.
 | v5 | `total_settled` (total tier absorber) | a v4 file predates any project dying, so the section is legitimately empty |
 | v6 | `counters_reset_at_s`, the state-restart epoch | decodes as 0 = "epoch unknown"; the boot restore stamps a fresh one. The one spurious discontinuity at upgrade is billing-free under the ETL's per-segment baseline subtraction |
 | v7 | `created_ns` on each flow's raw counters — the kernel entry-identity stamp ([ADR 0014](../adr/0014-in-band-entry-identity-over-inferred-resets.md)) | decodes as 0 = "identity unknown"; the first scrape falls back to the value guard, then adopts the kernel's stamp |
+| v8 | `owner` (tenant, external network, server) on each flow row — its resolved attribution at write time | absent = "owner unknown"; the boot restore settles nothing for that row, which is the v7 behaviour |
 
 Adding a version means adding a row here, not just bumping the constant.
 
@@ -383,13 +384,14 @@ The Collector late-binds `tenant_id`: every scrape resolves each GlobalState flo
 
 Either way an exposed per-tenant series would *decrease* — breaking [Contract 7](./contracts.md#required-contracts) and the [subtraction-billing contract](./billing.md) (silent under-billing), while the re-bucketed step spikes the revenue-leak SLO with bytes that are historical, not leaking.
 
-The fix is **fold-forward at the moment attribution dies**. GlobalState carries a second map — the **settled accumulator**, keyed `(tenant_id, zone, external_network, direction)`, exactly the exposed label tuple — and `Settle(mode, resolve)` folds matching rows' totals into it inside one write-lock critical section. Three callers, two modes:
+The fix is **fold-forward at the moment attribution dies**. GlobalState carries a second map — the **settled accumulator**, keyed `(tenant_id, zone, external_network, direction)`, exactly the exposed label tuple — and `Settle(mode, resolve)` folds matching rows' totals into it inside one write-lock critical section. Four callers, two modes:
 
 | Caller | Moment | Mode | Why that mode |
 |---|---|---|---|
 | Ghost sweep | after the kernel MAC + residual-flow deletes, before the userspace metadata delete — the last instant the tenant is knowable | **SettleEvict** — fold, then delete the rows | The flow's kernel counters are already gone, so the rows are dead; evicting them is also what stops GlobalState (and the WAL) growing with every VM that ever lived on the host |
 | MAC reconcile, attribution change | just before the `*TenantMeta` pointer-replace (or router-map swap) | **SettleRebase** — fold, zero `Total`, keep `LastEbpfRaw` | The port lives on and its kernel counters keep running; the intact watermark makes the next drain credit only post-fold bytes, which late-bind to the new attribution. Evicting instead would re-count the full kernel cumulative as first sight |
 | Graceful shutdown, for ghosts still inside their grace | after the scraper's final tick, before the WAL's final flush | **SettleRebase** | The WAL keeps flow rows but not ghost metadata, and the next boot's Neutron cold-start no longer lists the deleted port — unsettled, the rows would restore under `unknown`. The kernel counters outlive the process, so the watermark must survive too |
+| Boot, for restored rows whose owner changed while the agent was down | right after the WAL restore (step 5), with the Neutron cold-start's metadata in place | **SettleRebase** | Each WAL row carries the owner it resolved to at write time (schema v8). A row that now resolves differently — port deleted or reassigned while the agent was stopped or crashed — settles under the recorded owner, the boot-time twin of the reconcile's attribution-change fold. Pinned kernel counters may have survived, so the watermark stays |
 
 `Collect()` emits **live + settled** per tuple, and snapshots both maps under ONE RLock — a snapshot torn across a concurrent fold would double-count (live then settled) or drop (settled then live) the folded bytes for one scrape, breaking monotonicity at the next. The WAL snapshot is combined for the same reason (a torn WAL pair would make the error permanent on crash-restore). The per-tuple sum is invariant across a fold; that invariance *is* the Contract 7 guarantee.
 
@@ -397,7 +399,7 @@ Consequences and boundaries:
 
 - **MAC reuse is safe.** A swept MAC reborn on another tenant's port starts a fresh GlobalState row from a fresh kernel counter; the old tenant's bytes are already settled. Without the fold, the surviving row's whole history would re-bind to the new tenant at the next scrape (over-billing it) — raw bytes were never at risk (the Contract 5 wraparound guard treats the restarted kernel counter as a reset), but attribution was.
 - **Settled buckets only grow**, and their cardinality is bounded by `tenants × zones × external networks × 2 directions` — a few KB even at hub-tenant scale. They round-trip through the WAL (additively since schema v2) and restore before the scraper starts.
-- **Hard-crash window.** A fold becomes durable at the next WAL flush (≤60s). A hard crash in between restores the pre-fold rows, whose metadata may already be gone — so up to one flush window of folds can degrade to `unknown` on the next boot. The same holds for a ghost still inside its grace at the crash: only the graceful path settles it. This is the same envelope as the WAL's general ≤60s tail-loss trade-off; a graceful shutdown's final flush loses nothing.
+- **Crash and downtime.** A row's owner is recorded at every WAL flush, and the boot-time fold settles any row whose owner changed while the agent was down — a crash inside a ghost's grace, or a VM deleted while the agent was stopped, keeps its tenant. What remains is the WAL's general ≤60s tail: bytes counted after the last periodic flush, and an owner change inside that same window, are only as durable as the flush. A graceful shutdown's final flush loses nothing.
 - The UnresolvedBuffer's synthetic `unknown` keys have zero MACs and never settle — `unknown` is not a tenant whose history needs preserving, and those rows are already terminal.
 
 ### Server-settled (the server layer's fold absorber)

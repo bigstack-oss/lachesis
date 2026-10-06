@@ -17,7 +17,7 @@ import "github.com/bigstack-oss/lachesis/internal/state"
 // the history table, not just changing the number.
 //
 // docs/architecture/data-structures.md#wal-schema-history
-const SchemaVersion uint = 7
+const SchemaVersion uint = 8
 
 // BackupSuffix is appended to the WAL path for the rotated-aside
 // previous snapshot. TempSuffix is the in-progress write target.
@@ -152,6 +152,15 @@ type entryWire struct {
 	Key     flowKeyWire     `json:"key"`
 	Total   flowMetricsWire `json:"total"`
 	LastRaw flowMetricsWire `json:"last_raw"`
+	// Owner (v8+) is the row's resolved attribution at write time;
+	// absent when the row did not resolve, and on a v7 file.
+	Owner *ownerWire `json:"owner,omitempty"`
+}
+
+type ownerWire struct {
+	Tenant string `json:"tenant"`
+	ExtNet string `json:"external_network"`
+	Server string `json:"server_id,omitempty"`
 }
 
 type flowKeyWire struct {

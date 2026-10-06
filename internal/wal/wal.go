@@ -283,7 +283,12 @@ func readAndParse(path string) (snapshotWire, error) {
 }
 
 func toWire(r state.Record) entryWire {
+	var owner *ownerWire
+	if r.Owner.Tenant != "" {
+		owner = &ownerWire{Tenant: r.Owner.Tenant, ExtNet: r.Owner.ExtNet, Server: r.Owner.Server}
+	}
 	return entryWire{
+		Owner: owner,
 		Key: flowKeyWire{
 			SrcMac:    r.Key.SrcMac,
 			DstMac:    r.Key.DstMac,
@@ -318,6 +323,9 @@ func fromSnapshot(snap snapshotWire) []state.Record {
 				Total:       fromMetricsWire(e.Total),
 				LastEbpfRaw: fromMetricsWire(e.LastRaw),
 			},
+		}
+		if e.Owner != nil {
+			out[i].Owner = state.Owner{Tenant: e.Owner.Tenant, ExtNet: e.Owner.ExtNet, Server: e.Owner.Server}
 		}
 	}
 	return out
