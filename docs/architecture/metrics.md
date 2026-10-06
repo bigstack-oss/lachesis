@@ -26,6 +26,8 @@ the registry — a metric that drifts from this catalog fails CI by name.
 | `lachesis_server_packets_total` | counter | `server_id, tenant_id, zone, external_network, direction` | **server layer** — packets companion, same lifetime as the bytes family; diagnostic, never billed |
 | `lachesis_port_bytes_total` | counter | `server_id, port_id, tenant_id, zone, external_network, direction` | **port layer** — the mortal leaf: live rows of one port; stops at port delete, restarts fresh on detach→reattach (drill-down view; billing exactness lives one layer up) |
 | `lachesis_port_packets_total` | counter | `server_id, port_id, tenant_id, zone, external_network, direction` | **port layer** — packets companion, same lifetime as the bytes family; diagnostic, never billed |
+| `lachesis_port_proto_bytes_total` | counter | `server_id, port_id, tenant_id, proto, direction` | **port layer, by L4 class** — the same live rows as `lachesis_port_bytes_total`, split by `proto` instead of `zone`/`external_network`; summed over `proto` it equals the port family summed over zone and external network. Same mortal lifetime; not a billing family ([ADR 0015](../adr/0015-l4-protocol-class-in-flow-key.md)) |
+| `lachesis_port_proto_packets_total` | counter | `server_id, port_id, tenant_id, proto, direction` | **port layer, by L4 class** — packets companion; diagnostic, never billed |
 
 ### Billing label vocabulary
 
@@ -40,6 +42,7 @@ them, so changing any value is a breaking change once consumers exist.
 | `server_id` | Nova instance UUID (Neutron port `device_id`) | Per-server family only. Never `unknown` — flows whose MAC doesn't resolve to a server are absent from the family by construction |
 | `port_id` | Neutron port UUID | Port layer only. A MAC maps to exactly one port; a recreated port is a new UUID, hence a new series |
 | `direction` | `tx`, `rx` | `tx` = the VM is sending; `rx` = the VM is receiving |
+| `proto` | `tcp`, `udp`, `icmp`, `other`, `unknown` | Protocol family only. The kernel's L4 class from the IPv4 protocol / IPv6 next-header byte; `icmp` covers ICMPv4 and ICMPv6, an IPv6 extension header is `other`, and `unknown` marks bytes restored from a pre-v9 WAL. Rendered by `bpf.L4Proto.String()` |
 
 **Attribution changes settle first.** Any change to a live MAC's attribution
 tuple (tenant, external network, server binding) folds the MAC's accumulated

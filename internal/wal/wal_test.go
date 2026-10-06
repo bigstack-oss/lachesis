@@ -915,3 +915,147 @@ func TestLoad_V7SnapshotHasNoOwner(t *testing.T) {
 		t.Errorf("Total.Bytes = %d, want 5000 intact", got)
 	}
 }
+
+// TestLoad_V7SnapshotRestoresUnknownL4Class: a v7 file has no l4_proto,
+// which must decode as [bpf.L4ProtoUnknown] — a class the kernel never
+// writes, so the restored row keeps its total and is never diffed
+// against a v9 kernel entry (docs/adr/0015-l4-protocol-class-in-flow-key.md).
+func TestLoad_V7SnapshotRestoresUnknownL4Class(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	v7 := `{
+  "schema_version": 7,
+  "agent_build": "pre-l4-class",
+  "written_at_ns": "1",
+  "global_state": [
+    {
+      "key": {"src_mac": [170,0,0,0,0,1], "dst_mac": [170,0,0,0,0,2], "eth_proto": 2048, "direction": 0, "dst_zone": 0},
+      "total": {"bytes": "7000", "packets": "7", "last_seen_ns": "1", "created_ns": "55"},
+      "last_raw": {"bytes": "7000", "packets": "7", "last_seen_ns": "1", "created_ns": "55"}
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(v7), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.Records) != 1 {
+		t.Fatalf("Records = %+v, want one", res.Records)
+	}
+	r := res.Records[0]
+	if r.Key.L4Proto != bpf.L4ProtoUnknown {
+		t.Errorf("Key.L4Proto = %s, want unknown", r.Key.L4Proto)
+	}
+	if r.Counter.Total.Bytes != 7000 || r.Counter.LastEbpfRaw.CreatedNs != 55 {
+		t.Errorf("Counter = %+v, want the v7 total and stamp intact", r.Counter)
+	}
+}
+
+// TestSaveLoad_L4ClassRoundTrips: v9 persists the class, so rows that
+// differ only by class restore as distinct keys.
+func TestSaveLoad_L4ClassRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	base := bpf.FlowKey{SrcMac: [6]uint8{0xaa, 0, 0, 0, 0, 1}, DstMac: [6]uint8{0xaa, 0, 0, 0, 0, 2}, EthProto: 0x0800}
+	var recs []state.Record
+	for _, p := range []bpf.L4Proto{bpf.L4ProtoTCP, bpf.L4ProtoUDP, bpf.L4ProtoICMP, bpf.L4ProtoOther} {
+		k := base
+		k.L4Proto = p
+		recs = append(recs, state.Record{Key: k, Counter: state.Counter{
+			Total:       bpf.FlowMetrics{Bytes: uint64(p) * 100},
+			LastEbpfRaw: bpf.FlowMetrics{Bytes: uint64(p) * 100},
+		}})
+	}
+	if err := wal.Save(path, "test", recs, nil, nil, nil, 0, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.Records) != len(recs) {
+		t.Fatalf("got %d records, want %d", len(res.Records), len(recs))
+	}
+	for i, r := range res.Records {
+		if r.Key != recs[i].Key || r.Counter.Total.Bytes != recs[i].Counter.Total.Bytes {
+			t.Errorf("record %d = %+v, want %+v", i, r, recs[i])
+		}
+	}
+}
+
+// TestLoad_V8SnapshotKeepsOwnerAndRestoresUnknownL4Class: a v8 file
+// carries each row's owner but no l4_proto. The owner must survive and the
+// class must decode as [bpf.L4ProtoUnknown], with the total and the ADR
+// 0014 stamp intact, so the upgrade neither drops the owner nor diffs the
+// row against a v9 kernel entry.
+func TestLoad_V8SnapshotKeepsOwnerAndRestoresUnknownL4Class(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	v8 := `{
+  "schema_version": 8,
+  "agent_build": "pre-l4-class",
+  "written_at_ns": "1",
+  "counters_reset_at_s": 1700000000,
+  "global_state": [
+    {
+      "key": {"src_mac": [170,0,0,0,0,1], "dst_mac": [170,0,0,0,0,2], "eth_proto": 2048, "direction": 0, "dst_zone": 2},
+      "total": {"bytes": "9000", "packets": "9", "last_seen_ns": "1", "created_ns": "77"},
+      "last_raw": {"bytes": "9000", "packets": "9", "last_seen_ns": "1", "created_ns": "77"},
+      "owner": {"tenant": "proj-a", "external_network": "public", "server_id": "srv-1"}
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(v8), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.Records) != 1 {
+		t.Fatalf("Records = %+v, want one", res.Records)
+	}
+	r := res.Records[0]
+	if r.Key.L4Proto != bpf.L4ProtoUnknown {
+		t.Errorf("Key.L4Proto = %s, want unknown", r.Key.L4Proto)
+	}
+	if want := (state.Owner{Tenant: "proj-a", ExtNet: "public", Server: "srv-1"}); r.Owner != want {
+		t.Errorf("Owner = %+v, want %+v", r.Owner, want)
+	}
+	if r.Counter.Total.Bytes != 9000 || r.Counter.LastEbpfRaw.CreatedNs != 77 {
+		t.Errorf("Counter = %+v, want the v8 total and stamp intact", r.Counter)
+	}
+}
+
+// TestSaveLoad_V9CarriesOwnerAndL4Class: a v9 row persists both the owner
+// and the class, and they round-trip independently.
+func TestSaveLoad_V9CarriesOwnerAndL4Class(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.json")
+	owned := state.Owner{Tenant: "proj-a", ExtNet: "public", Server: "srv-1"}
+	k := bpf.FlowKey{SrcMac: [6]uint8{0xaa, 0, 0, 0, 0, 1}, EthProto: 0x0800, L4Proto: bpf.L4ProtoUDP}
+	recs := []state.Record{{Key: k, Owner: owned, Counter: state.Counter{
+		Total:       bpf.FlowMetrics{Bytes: 4242},
+		LastEbpfRaw: bpf.FlowMetrics{Bytes: 4242, CreatedNs: 9},
+	}}}
+	if err := wal.Save(path, "test", recs, nil, nil, nil, 0, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.ReplaceAll(string(raw), " ", ""), `"schema_version":9`) {
+		t.Errorf("file does not declare schema_version 9")
+	}
+	res, err := wal.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(res.Records) != 1 {
+		t.Fatalf("Records = %+v, want one", res.Records)
+	}
+	r := res.Records[0]
+	if r.Key != k || r.Owner != owned || r.Counter.Total.Bytes != 4242 || r.Counter.LastEbpfRaw.CreatedNs != 9 {
+		t.Errorf("record = %+v, want key %+v owner %+v total 4242 stamp 9", r, k, owned)
+	}
+}

@@ -149,7 +149,7 @@ indistinguishable from run-to-run noise** — no measurable throughput penalty.
 
 ## Scalability ceiling
 
-- The `telemetry_map` upper bound is `max_entries` (65,536 today) — it limits distinct (MAC-pair, direction, zone) combinations per node.
+- The `telemetry_map` upper bound is `max_entries` (65,536 today) — it limits distinct (MAC-pair, direction, zone, L4 class) combinations per node.
 - On a 50-VM node: typical fill is ~850 entries (~1.3% — nowhere near the cap).
 - On a 500-VM node (extreme): proportionally ~8,500 entries — ~13% fill, still comfortable.
 - If a host reports fill >80% sustained (`lachesis_bpf_map_current_entries / lachesis_bpf_map_max_entries`), pressure-relief GC is already cycling and the deployment has outgrown the map; rebuild with a larger `max_entries` or add compute nodes. The gauge pair makes this visible before it becomes a billing problem ([metrics.md](./metrics.md)).

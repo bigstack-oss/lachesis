@@ -1,6 +1,9 @@
 package bpf
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 // TestZoneCode_String pins the canonical zone vocabulary. These
 // strings are the `zone` label values on lachesis_bytes_total /
@@ -142,5 +145,40 @@ func TestTenantFlagAndMaskArePartition(t *testing.T) {
 	}
 	if TenantAmphoraFlag|TenantIDMask != 0xFFFF_FFFF {
 		t.Errorf("flag %#x | mask %#x leaves a gap", TenantAmphoraFlag, TenantIDMask)
+	}
+}
+
+// TestL4Proto_StringAndWireValues pins the `proto` label vocabulary and
+// the persisted encodings. The values are written to the WAL, and 0 is
+// reserved for rows restored from a pre-class WAL — renumbering either
+// side re-buckets history.
+func TestL4Proto_StringAndWireValues(t *testing.T) {
+	for _, tc := range []struct {
+		p    L4Proto
+		wire uint8
+		name string
+	}{
+		{L4ProtoUnknown, 0, "unknown"},
+		{L4ProtoTCP, 1, "tcp"},
+		{L4ProtoUDP, 2, "udp"},
+		{L4ProtoICMP, 3, "icmp"},
+		{L4ProtoOther, 4, "other"},
+		{L4Proto(9), 9, "9"},
+	} {
+		if uint8(tc.p) != tc.wire {
+			t.Errorf("%s = %d, want %d (persisted in WAL snapshots — do not renumber)", tc.name, uint8(tc.p), tc.wire)
+		}
+		if got := tc.p.String(); got != tc.name {
+			t.Errorf("L4Proto(%d).String() = %q, want %q", tc.wire, got, tc.name)
+		}
+	}
+}
+
+// TestFlowKey_Size pins the kernel key at 18 bytes. A size the C side
+// disagrees with would fail every map operation; this catches a stale
+// generated binding before the kernel does.
+func TestFlowKey_Size(t *testing.T) {
+	if got := binary.Size(FlowKey{}); got != 18 {
+		t.Errorf("binary.Size(FlowKey{}) = %d, want 18", got)
 	}
 }

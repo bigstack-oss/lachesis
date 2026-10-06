@@ -763,3 +763,70 @@ func TestApplyDelta_SurvivingEntryDoesNotDoubleCount(t *testing.T) {
 			got, want, 800_000)
 	}
 }
+
+// TestApplyDelta_L4ClassKeysAcrossUpgrade is the pre-v9 → v9 upgrade in
+// delta-math terms (docs/adr/0015-l4-protocol-class-in-flow-key.md). A
+// row restored from a v7 or v8 WAL carries L4ProtoUnknown; the upgrade boot
+// recreates the kernel map, so every v9 entry is a new key and counts
+// whole, while the restored row keeps its total untouched. The sum is
+// neither doubled nor dropped.
+func TestApplyDelta_L4ClassKeysAcrossUpgrade(t *testing.T) {
+	legacy := keyA() // L4ProtoUnknown: the zero value
+	tcp, udp := keyA(), keyA()
+	tcp.L4Proto, udp.L4Proto = bpf.L4ProtoTCP, bpf.L4ProtoUDP
+
+	for _, tc := range []struct {
+		name    string
+		applies []struct {
+			key bpf.FlowKey
+			raw bpf.FlowMetrics
+		}
+		want map[bpf.L4Proto]uint64
+	}{
+		{
+			name: "fresh v9 entries count whole beside the restored row",
+			applies: []struct {
+				key bpf.FlowKey
+				raw bpf.FlowMetrics
+			}{
+				{tcp, bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 10, CreatedNs: 99}},
+				{udp, bpf.FlowMetrics{Bytes: 40, Packets: 1, LastSeenNs: 10, CreatedNs: 98}},
+			},
+			want: map[bpf.L4Proto]uint64{bpf.L4ProtoUnknown: 5000, bpf.L4ProtoTCP: 300, bpf.L4ProtoUDP: 40},
+		},
+		{
+			name: "a class key then diffs against its own baseline",
+			applies: []struct {
+				key bpf.FlowKey
+				raw bpf.FlowMetrics
+			}{
+				{tcp, bpf.FlowMetrics{Bytes: 300, Packets: 3, LastSeenNs: 10, CreatedNs: 99}},
+				{tcp, bpf.FlowMetrics{Bytes: 450, Packets: 4, LastSeenNs: 11, CreatedNs: 99}},
+			},
+			want: map[bpf.L4Proto]uint64{bpf.L4ProtoUnknown: 5000, bpf.L4ProtoTCP: 450},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := state.New()
+			g.Restore([]state.Record{{Key: legacy, Counter: state.Counter{
+				Total:       bpf.FlowMetrics{Bytes: 5000, Packets: 50, LastSeenNs: 1, CreatedNs: 77},
+				LastEbpfRaw: bpf.FlowMetrics{Bytes: 5000, Packets: 50, LastSeenNs: 1, CreatedNs: 77},
+			}}})
+			for _, a := range tc.applies {
+				g.ApplyDelta(a.key, a.raw)
+			}
+			got := map[bpf.L4Proto]uint64{}
+			for _, e := range g.Snapshot(nil) {
+				got[e.Key.L4Proto] = e.Total.Bytes
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("rows = %v, want %v", got, tc.want)
+			}
+			for p, b := range tc.want {
+				if got[p] != b {
+					t.Errorf("%s bytes = %d, want %d", p, got[p], b)
+				}
+			}
+		})
+	}
+}

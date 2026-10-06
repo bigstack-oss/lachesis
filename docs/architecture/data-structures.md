@@ -18,7 +18,7 @@ Pinning:     PinByName under bpf.pin_path — the counter-bearing maps
              zero-loss recovery (contracts.md, deferred item 7 — shipped;
              boot-and-recovery.md#agent-crash-process-killed-kernel-intact)
 
-KEY:   struct flow_key  (16 bytes, packed)
+KEY:   struct flow_key  (18 bytes, packed, naturally aligned)
    ┌──────────────────────────────────────────────────────────────────┐
    │ src_mac    [6]u8                                                 │
    │ dst_mac    [6]u8                                                 │
@@ -26,6 +26,8 @@ KEY:   struct flow_key  (16 bytes, packed)
    │ direction  u8    (0=VM sending, 1=VM receiving)                  │
    │ dst_zone   u8    (0=ext 1=same 2=other 3=infra 4=miss 5=shared   │
    │                   6=multicast)                                   │
+   │ l4_proto   u8    (0=unknown 1=tcp 2=udp 3=icmp 4=other — ADR 0015)│
+   │ pad        u8    (always 0: the kernel hashes the key byte-wise)  │
    └──────────────────────────────────────────────────────────────────┘
 
 VALUE: struct flow_metrics  (24 bytes, one slot per CPU)
@@ -51,7 +53,7 @@ VALUE: struct flow_metrics  (24 bytes, one slot per CPU)
 
 If the map sustains >80% fill across many scrapes despite the GC, the deployment has outgrown the configured `max_entries` and the operator must rebuild with a larger value — surfaced via the map-entry gauges before it becomes a billing problem.
 
-**Why MAC-pair, not 5-tuple.** MAC-pair scales with topology (~850 entries on a 50-VM node). 5-tuple scales with connection count and explodes both the map and downstream Prometheus labels. Detailed comparison in [ADR 0004](../adr/0004-mac-pair-flow-key-over-5-tuple.md).
+**Why MAC-pair, not 5-tuple.** MAC-pair scales with topology (~850 entries on a 50-VM node; ~2× that once split by L4 class, [ADR 0015](../adr/0015-l4-protocol-class-in-flow-key.md)). 5-tuple scales with connection count and explodes both the map and downstream Prometheus labels. Detailed comparison in [ADR 0004](../adr/0004-mac-pair-flow-key-over-5-tuple.md).
 
 **Why `dst_zone` is in the key.** When VM-A in subnet-1 sends to VM-B in subnet-2 via the tenant router, the L2 destination MAC at VM-A's tap is the router's MAC — *identical* to VM-A talking to the internet via the same router. Without an L3 classification baked into the key, the four billing categories collapse into one ambiguous bucket. `dst_zone` is the L3 tiebreaker, populated by an in-kernel [LPM lookup](./primer.md#lpm-trie).
 
@@ -317,6 +319,7 @@ flush rotation destroy the only forward snapshot within two flushes.
 | v6 | `counters_reset_at_s`, the state-restart epoch | decodes as 0 = "epoch unknown"; the boot restore stamps a fresh one. The one spurious discontinuity at upgrade is billing-free under the ETL's per-segment baseline subtraction |
 | v7 | `created_ns` on each flow's raw counters — the kernel entry-identity stamp ([ADR 0014](../adr/0014-in-band-entry-identity-over-inferred-resets.md)) | decodes as 0 = "identity unknown"; the first scrape falls back to the value guard, then adopts the kernel's stamp |
 | v8 | `owner` (tenant, external network, server) on each flow row — its resolved attribution at write time | absent = "owner unknown"; the boot restore settles nothing for that row, which is the v7 behaviour |
+| v9 | `l4_proto` on each flow key — the L4 protocol class ([ADR 0015](../adr/0015-l4-protocol-class-in-flow-key.md)) | decodes as 0 = `unknown` from a v7 or v8 file (a v8 row keeps its `owner`), a class the kernel never writes: the restored row keeps its total, and no kernel entry ever diffs against its baseline. The upgrade boot recreates the incompatible pinned map, so every v9 entry counts whole |
 
 Adding a version means adding a row here, not just bumping the constant.
 

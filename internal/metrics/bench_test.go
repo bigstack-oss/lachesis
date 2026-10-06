@@ -21,6 +21,7 @@ func benchCollectKeys(n int) []bpf.FlowKey {
 			EthProto:  0x0800,
 			Direction: bpf.Direction(i % 2),
 			DstZone:   bpf.ZoneCode(i % 6),
+			L4Proto:   bpf.L4Proto(1 + i%4),
 		}
 	}
 	return keys

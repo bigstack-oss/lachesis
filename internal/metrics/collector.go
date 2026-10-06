@@ -60,6 +60,8 @@ type Collector struct {
 	serverPacketsDesc *prometheus.Desc
 	portBytesDesc     *prometheus.Desc
 	portPacketsDesc   *prometheus.Desc
+	protoBytesDesc    *prometheus.Desc
+	protoPacketsDesc  *prometheus.Desc
 	flowsDesc         *prometheus.Desc
 	tenantSettledDesc *prometheus.Desc
 	serverSettledDesc *prometheus.Desc
@@ -92,6 +94,9 @@ type Collector struct {
 	aggBuf       map[aggKey]aggValue
 	serverAggBuf map[serverAggKey]aggValue
 	portAggBuf   map[portAggKey]aggValue
+	// protoAggBuf is the per-port protocol breakdown, built alongside
+	// portAggBuf from the same live rows.
+	protoAggBuf map[protoAggKey]aggValue
 }
 
 // New constructs a Collector. A nil resolver falls back to
@@ -110,6 +115,7 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 		aggBuf:       make(map[aggKey]aggValue),
 		serverAggBuf: make(map[serverAggKey]aggValue),
 		portAggBuf:   make(map[portAggKey]aggValue),
+		protoAggBuf:  make(map[protoAggKey]aggValue),
 		totalBytesDesc: prometheus.NewDesc(
 			MetricBytesTotal,
 			"Total network bytes observed by the node, cumulative — the top of the four-layer billing hierarchy: Σ over all tenants (including \"unknown\") of live rows + settled. Immortal (docs/architecture/billing.md).",
@@ -149,6 +155,16 @@ func New(st *state.GlobalState, sc ScraperStats, resolver TenantResolver) *Colle
 			MetricPortPacketsTotal,
 			"Per-port network packets (GSO/GRO superpackets), cumulative while the port's binding lives — the mortal leaf's diagnostic companion to lachesis_port_bytes_total. Never a billing dimension (docs/architecture/billing.md).",
 			[]string{"server_id", "port_id", "tenant_id", "zone", "external_network", "direction"}, nil,
+		),
+		protoBytesDesc: prometheus.NewDesc(
+			MetricPortProtoBytesTotal,
+			"Per-port network bytes by L4 protocol class (tcp/udp/icmp/other; \"unknown\" for rows restored from a pre-class WAL), cumulative while the port's binding lives — a breakdown of lachesis_port_bytes_total with the same mortal-leaf lifetime. Never a billing family (docs/adr/0015-l4-protocol-class-in-flow-key.md).",
+			[]string{"server_id", "port_id", "tenant_id", "proto", "direction"}, nil,
+		),
+		protoPacketsDesc: prometheus.NewDesc(
+			MetricPortProtoPacketsTotal,
+			"Per-port network packets (GSO/GRO superpackets) by L4 protocol class, cumulative while the port's binding lives — the diagnostic companion to lachesis_port_proto_bytes_total. Never a billing dimension (docs/adr/0015-l4-protocol-class-in-flow-key.md).",
+			[]string{"server_id", "port_id", "tenant_id", "proto", "direction"}, nil,
 		),
 		flowsDesc: prometheus.NewDesc(
 			"lachesis_state_flows",
@@ -198,6 +214,8 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.serverPacketsDesc
 	ch <- c.portBytesDesc
 	ch <- c.portPacketsDesc
+	ch <- c.protoBytesDesc
+	ch <- c.protoPacketsDesc
 	ch <- c.flowsDesc
 	ch <- c.tenantSettledDesc
 	ch <- c.serverSettledDesc
@@ -241,6 +259,7 @@ func (c *Collector) aggregate() {
 	clear(c.aggBuf)
 	clear(c.serverAggBuf)
 	clear(c.portAggBuf)
+	clear(c.protoAggBuf)
 	c.foldTenantSettled()
 	c.aggregateLiveRows()
 	c.foldServerSettled()
@@ -268,7 +287,8 @@ func (c *Collector) foldTenantSettled() {
 // tier it belongs to: always the tenant tier; the server and port tiers
 // only when the MAC resolves to a server — unattributable traffic has
 // no server_id (and no port_id) by definition and lives in the tenant
-// tier's "unknown" series alone.
+// tier's "unknown" series alone. The per-port protocol breakdown rides
+// with the port tier.
 func (c *Collector) aggregateLiveRows() {
 	for i := range c.emitBuf {
 		e := &c.emitBuf[i]
@@ -296,6 +316,12 @@ func (c *Collector) aggregateLiveRows() {
 			pv.bytes += e.Total.Bytes
 			pv.packets += e.Total.Packets
 			c.portAggBuf[pk] = pv
+			qk := protoAggKey{server: a.ServerID, port: a.PortID, tenant: a.Tenant,
+				proto: e.Key.L4Proto, dir: e.Key.Direction}
+			qv := c.protoAggBuf[qk]
+			qv.bytes += e.Total.Bytes
+			qv.packets += e.Total.Packets
+			c.protoAggBuf[qk] = qv
 		}
 	}
 }
@@ -380,6 +406,13 @@ func (c *Collector) emitBilling(ch chan<- prometheus.Metric) {
 			c.portBytesDesc, prometheus.CounterValue, float64(v.bytes), k.server, k.port, k.tenant, zone, k.ext, dir)
 		ch <- prometheus.MustNewConstMetric(
 			c.portPacketsDesc, prometheus.CounterValue, float64(v.packets), k.server, k.port, k.tenant, zone, k.ext, dir)
+	}
+	for k, v := range c.protoAggBuf {
+		proto, dir := k.proto.String(), k.dir.String()
+		ch <- prometheus.MustNewConstMetric(
+			c.protoBytesDesc, prometheus.CounterValue, float64(v.bytes), k.server, k.port, k.tenant, proto, dir)
+		ch <- prometheus.MustNewConstMetric(
+			c.protoPacketsDesc, prometheus.CounterValue, float64(v.packets), k.server, k.port, k.tenant, proto, dir)
 	}
 }
 
