@@ -56,7 +56,7 @@ func (e *restartExec) Run(_ context.Context, addr, command string) (string, erro
 		return "", fmt.Errorf("fake ssh: command failed: %s", command)
 	}
 	switch {
-	case strings.Contains(command, "systemctl restart"):
+	case strings.Contains(command, "systemctl restart"), strings.Contains(command, "systemctl start"):
 		e.restarted = true
 		return "", nil
 	case strings.Contains(command, "MainPID"):
@@ -142,6 +142,97 @@ func TestSteps_RestartAgentTimeout(t *testing.T) {
 	err := (RestartAgentStep{}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil))
 	if err == nil || !strings.Contains(err.Error(), "restart not confirmed") {
 		t.Fatalf("want a 'restart not confirmed' timeout, got %v", err)
+	}
+}
+
+// downStep records where in the host's command log it ran, and can fail.
+type downStep struct {
+	exec  *restartExec
+	ranAt *int
+	fail  bool
+}
+
+func (downStep) Kind() string { return "down-probe" }
+
+func (d downStep) Run(context.Context, *scenariotest.StepEnv) error {
+	*d.ranAt = len(d.exec.Calls)
+	if d.fail {
+		return fmt.Errorf("probe failed")
+	}
+	return nil
+}
+
+// shrinkingMetrics reports base taps on the first scrape (the step's
+// pre-stop baseline) and base-gone afterwards — a VM deleted while the
+// agent was down takes its tap with it.
+type shrinkingMetrics struct {
+	fake.InstantMACs
+	base, gone float64
+	scrapes    int
+}
+
+func (m *shrinkingMetrics) Scrape(context.Context, string) (scenariotest.ScrapeResult, error) {
+	m.scrapes++
+	a := m.base
+	if m.scrapes > 1 {
+		a = m.base - m.gone
+	}
+	return scenariotest.ScrapeResult{
+		Present:            map[string]bool{scenariotest.MetricBytesTotal: true, scenariotest.MetricAttachedInterfaces: true},
+		AttachedInterfaces: a,
+	}, nil
+}
+
+// TestSteps_RestartAgentDown: Down steps run between stop and start, in
+// that order, and the readiness wait expects TapsGoneWhileDown fewer
+// taps.
+func TestSteps_RestartAgentDown(t *testing.T) {
+	agents := []scenariotest.AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := scenariotest.AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis", ReadyTimeout: 300 * time.Millisecond}
+
+	exec := &restartExec{}
+	ranAt := -1
+	step := RestartAgentStep{Down: []scenariotest.Step{downStep{exec: exec, ranAt: &ranAt}}, TapsGoneWhileDown: 1}
+	if err := step.Run(context.Background(), restartEnv(t, agents, ac, exec, &shrinkingMetrics{base: 5, gone: 1})); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	stopAt, startAt := -1, -1
+	for i, c := range exec.Calls {
+		switch {
+		case strings.Contains(c.Command, "systemctl stop lachesis"):
+			stopAt = i
+		case strings.Contains(c.Command, "systemctl start lachesis"):
+			startAt = i
+		case strings.Contains(c.Command, "systemctl restart"):
+			t.Errorf("issued a plain restart; Down needs stop/start: %q", c.Command)
+		}
+	}
+	if !(stopAt >= 0 && stopAt < ranAt && ranAt <= startAt) {
+		t.Errorf("order stop=%d down-step=%d start=%d, want stop < down-step <= start", stopAt, ranAt, startAt)
+	}
+
+	// Without TapsGoneWhileDown the wait holds out for the deleted tap.
+	exec = &restartExec{}
+	step = RestartAgentStep{Down: []scenariotest.Step{downStep{exec: exec, ranAt: &ranAt}}}
+	if err := step.Run(context.Background(), restartEnv(t, agents, ac, exec, &shrinkingMetrics{base: 5, gone: 1})); err == nil {
+		t.Errorf("readiness passed one tap short without TapsGoneWhileDown")
+	}
+}
+
+// TestSteps_RestartAgentDownFailureStillStarts: a failing Down step must
+// not leave the host without its agent.
+func TestSteps_RestartAgentDownFailureStillStarts(t *testing.T) {
+	agents := []scenariotest.AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := scenariotest.AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis", ReadyTimeout: time.Second}
+	exec := &restartExec{}
+	ranAt := -1
+	step := RestartAgentStep{Down: []scenariotest.Step{downStep{exec: exec, ranAt: &ranAt, fail: true}}}
+	err := step.Run(context.Background(), restartEnv(t, agents, ac, exec, nil))
+	if err == nil || !strings.Contains(err.Error(), "while agent down") {
+		t.Fatalf("err = %v, want the Down step's failure", err)
+	}
+	if !exec.has("systemctl start lachesis") {
+		t.Errorf("agent not started after a failed Down step: %+v", exec.Calls)
 	}
 }
 

@@ -47,6 +47,14 @@ type RestartAgentStep struct {
 	// (agent_control.pin_path) — combined with RemoveWAL this simulates
 	// a host reboot: the true restart-from-zero shape.
 	RemovePins bool
+	// Down runs these steps while the agent is stopped, between stop and
+	// start — e.g. a [DeleteVMStep], to model a VM deleted during an
+	// agent outage. They must not need the agent's /metrics. The agent
+	// is started again even if one fails.
+	Down []scenariotest.Step
+	// TapsGoneWhileDown is how many of this node's taps the Down steps
+	// remove, so the readiness wait expects that many fewer re-attached.
+	TapsGoneWhileDown int
 	// Timeout overrides [scenariotest.AgentControlConfig.ReadyTimeout] for the
 	// post-restart readiness wait.
 	Timeout time.Duration
@@ -57,15 +65,24 @@ func (RestartAgentStep) Kind() string { return "restart-agent" }
 // HostNeeds declares the agent_control keys this step reads, so a
 // cluster that has not staged them SKIPs rather than failing mid-run.
 func (s RestartAgentStep) HostNeeds() scenariotest.HostNeeds {
-	return scenariotest.HostNeeds{AgentSSH: true, WALPath: s.RemoveWAL, PinPath: s.RemovePins}
+	n := scenariotest.HostNeeds{AgentSSH: true, WALPath: s.RemoveWAL, PinPath: s.RemovePins}
+	for _, st := range s.Down {
+		if r, ok := st.(scenariotest.HostRequirer); ok {
+			m := r.HostNeeds()
+			n.WALPath = n.WALPath || m.WALPath
+			n.PinPath = n.PinPath || m.PinPath
+		}
+	}
+	return n
 }
 
 // requiredMetrics declares both families the readiness gate checks
 // ([requiredMetrics]), so the pre-create step-metric gate refuses up
 // front on an agent missing either — not just the one this step reads
 // for the tap baseline.
-func (RestartAgentStep) RequiredMetrics() []string {
-	return []string{scenariotest.MetricBytesTotal, scenariotest.MetricAttachedInterfaces}
+func (s RestartAgentStep) RequiredMetrics() []string {
+	return append([]string{scenariotest.MetricBytesTotal, scenariotest.MetricAttachedInterfaces},
+		RequiredMetrics(s.Down)...)
 }
 
 func (s RestartAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
@@ -94,14 +111,43 @@ func (s RestartAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) er
 	case restored:
 		env.ClearConfigDirty(s.Node)
 	}
-	oldPID, err := ctl.Restart(ctx, agentctl.Cycle{RemoveWAL: s.RemoveWAL, RemovePins: s.RemovePins})
-	if err != nil {
+	cycle := agentctl.Cycle{RemoveWAL: s.RemoveWAL, RemovePins: s.RemovePins}
+	var oldPID string
+	if len(s.Down) == 0 {
+		if oldPID, err = ctl.Restart(ctx, cycle); err != nil {
+			return fmt.Errorf("restart-agent: %w", err)
+		}
+	} else if oldPID, err = s.cycleAround(ctx, env, ctl, cycle); err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
-	if err := ctl.AwaitReady(ctx, oldPID, base.AttachedInterfaces, s.Timeout); err != nil {
+	wantTaps := base.AttachedInterfaces - float64(s.TapsGoneWhileDown)
+	if err := ctl.AwaitReady(ctx, oldPID, wantTaps, s.Timeout); err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
 	return nil
+}
+
+// cycleAround stops the agent, runs the Down steps, and starts it again
+// — always, so a failed Down step never leaves the host without its
+// agent. A Down failure wins over a start failure in the error.
+func (s RestartAgentStep) cycleAround(ctx context.Context, env *scenariotest.StepEnv, ctl *agentctl.Controller, cy agentctl.Cycle) (string, error) {
+	oldPID, err := ctl.Stop(ctx)
+	if err != nil {
+		return "", err
+	}
+	var downErr error
+	for _, st := range s.Down {
+		env.Log.Info("restart-agent: agent down", "step", st.Kind())
+		if downErr = st.Run(ctx, env); downErr != nil {
+			downErr = fmt.Errorf("while agent down: %s: %w", st.Kind(), downErr)
+			break
+		}
+	}
+	startErr := ctl.Start(ctx, cy)
+	if downErr != nil {
+		return "", downErr
+	}
+	return oldPID, startErr
 }
 
 func (s ReloadAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
