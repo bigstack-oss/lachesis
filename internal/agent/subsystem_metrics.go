@@ -42,7 +42,7 @@ type subsystemMetrics struct {
 	runtime    *runtime.Metrics
 	registry   *cnetlink.Registry
 	// neutronInfo emits the identity info-metric families
-	// (lachesis_tenant_info, lachesis_server_info). Owned by the agent's
+	// (lachesis_tenant_info, lachesis_server_info, lachesis_port_info). Owned by the agent's
 	// [neutron.Neutron] like neutron above; registered under the neutron
 	// component in [subsystemMetrics.registrations].
 	neutronInfo *neutron.InfoCollector

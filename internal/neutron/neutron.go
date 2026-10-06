@@ -34,7 +34,7 @@ type Neutron struct {
 	// Never nil (the tunables required-dependency rule).
 	tun *tunables.Store
 	// info emits the identity info-metric families (lachesis_tenant_info,
-	// lachesis_server_info) from the committed snapshot. Registered by
+	// lachesis_server_info, lachesis_port_info) from the committed snapshot. Registered by
 	// the agent alongside the metrics bundle. Never nil.
 	info *InfoCollector
 
