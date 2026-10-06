@@ -96,3 +96,78 @@ func TestInfoCollector_SkipsEmptyIDsAndDuplicates(t *testing.T) {
 		t.Errorf("CollectAndCompare: %v", err)
 	}
 }
+
+const portInfoHeader = `# HELP lachesis_port_info Identity mapping for a VM port: value is always 1, joined onto the per-port family by port_id (group_left) to render its MAC and fixed IPs. One series per VM port; ips is the sorted, comma-joined fixed-IP list.
+# TYPE lachesis_port_info gauge
+`
+
+// TestInfoCollector_PortInfo pins lachesis_port_info: VM ports only
+// (the mac_tenant_map admission predicate), one series per port with a
+// sorted comma-joined ips label, and the same skip/dedupe guards as the
+// other families.
+func TestInfoCollector_PortInfo(t *testing.T) {
+	vm := func(id string, ips ...string) Port {
+		p := Port{ID: id, ProjectID: "proj-1", MACAddress: "fa:16:3e:00:00:01", DeviceOwner: "compute:nova", DeviceID: "srv-1"}
+		for _, ip := range ips {
+			p.FixedIPs = append(p.FixedIPs, FixedIP{SubnetID: "sub", IPAddress: ip})
+		}
+		return p
+	}
+	tests := []struct {
+		name  string
+		ports []Port
+		want  string // series lines, header excluded; empty = no series
+	}{
+		{
+			name:  "single fixed IP",
+			ports: []Port{vm("port-1", "10.0.0.5")},
+			want:  `lachesis_port_info{ips="10.0.0.5",mac="fa:16:3e:00:00:01",port_id="port-1",server_id="srv-1",tenant_id="proj-1"} 1` + "\n",
+		},
+		{
+			name:  "dual-stack sorted regardless of Neutron order",
+			ports: []Port{vm("port-1", "fd00::5", "10.0.0.5")},
+			want:  `lachesis_port_info{ips="10.0.0.5,fd00::5",mac="fa:16:3e:00:00:01",port_id="port-1",server_id="srv-1",tenant_id="proj-1"} 1` + "\n",
+		},
+		{
+			name:  "no fixed IP still emits with empty ips",
+			ports: []Port{vm("port-1")},
+			want:  `lachesis_port_info{ips="",mac="fa:16:3e:00:00:01",port_id="port-1",server_id="srv-1",tenant_id="proj-1"} 1` + "\n",
+		},
+		{
+			name: "infra ports excluded",
+			ports: []Port{
+				{ID: "rtr", ProjectID: "proj-1", MACAddress: "fa:16:3e:00:00:02", DeviceOwner: "network:router_interface"},
+				{ID: "dhcp", ProjectID: "proj-1", MACAddress: "fa:16:3e:00:00:03", DeviceOwner: "network:dhcp"},
+			},
+		},
+		{
+			name: "ports outside mac_tenant_map excluded",
+			ports: []Port{
+				{ID: "unbound", ProjectID: "proj-1", MACAddress: "fa:16:3e:00:00:04"},         // no device_owner
+				{ID: "no-proj", MACAddress: "fa:16:3e:00:00:05", DeviceOwner: "compute:nova"}, // no project
+				{ID: "no-mac", ProjectID: "proj-1", DeviceOwner: "compute:nova"},              // no MAC
+				{ProjectID: "proj-1", MACAddress: "fa:16:3e:00:00:06", DeviceOwner: "compute:nova"},
+			},
+		},
+		{
+			name:  "duplicate port id emitted once (first wins)",
+			ports: []Port{vm("port-1", "10.0.0.5"), vm("port-1", "10.0.0.9")},
+			want:  `lachesis_port_info{ips="10.0.0.5",mac="fa:16:3e:00:00:01",port_id="port-1",server_id="srv-1",tenant_id="proj-1"} 1` + "\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewInfoCollector(snapFunc(&Snapshot{Ports: tt.ports}))
+			if tt.want == "" {
+				if n := testutil.CollectAndCount(c, "lachesis_port_info"); n != 0 {
+					t.Errorf("emitted %d port_info series, want 0", n)
+				}
+				return
+			}
+			if err := testutil.CollectAndCompare(c, strings.NewReader(portInfoHeader+tt.want),
+				"lachesis_port_info"); err != nil {
+				t.Errorf("CollectAndCompare: %v", err)
+			}
+		})
+	}
+}

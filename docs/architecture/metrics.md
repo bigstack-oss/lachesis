@@ -65,8 +65,8 @@ depends on them. Do not reintroduce hook-frame strings into the metric labels.
 
 ## Identity info metrics (join series; emitted from the Neutron snapshot)
 
-Two additive *info* families let dashboards render human names next to the
-UUID labels without putting a name label on the billing families — the
+Three additive *info* families let dashboards render human names (and, for
+ports, the MAC and fixed IPs) next to the UUID labels without putting a name label on the billing families — the
 kube-state-metrics `kube_pod_info` pattern (a value-`1` series joined with
 PromQL `group_left`).
 
@@ -74,6 +74,7 @@ PromQL `group_left`).
 |---|---|---|---|
 | `lachesis_tenant_info` | gauge (always 1) | `tenant_id, name` | mortal — one series per Keystone project in the committed snapshot |
 | `lachesis_server_info` | gauge (always 1) | `server_id, name, tenant_id` | mortal — one series per Nova server; **absent** when the Nova fetch fails |
+| `lachesis_port_info` | gauge (always 1) | `port_id, server_id, tenant_id, mac, ips` | mortal — one series per VM port (the `mac_tenant_map` admission predicate: VM-like `device_owner`, project and MAC set; router/DHCP ports excluded) |
 
 They are emitted by a dedicated `neutron.InfoCollector` (registered under the
 neutron subsystem), **not** the billing `metrics.Collector` — the billing
@@ -82,7 +83,16 @@ a historical join shows the name an entity held *at that time* rather than
 back-dating a rename. Each scrape re-emits from the current
 `neutron.Snapshot()`, so a series vanishes the sync after its entity leaves the
 snapshot (a `GaugeVec` would instead leak deleted-entity series forever).
-Cardinality is one series per tenant / per server — no churn amplification.
+Cardinality is one series per tenant / per server / per VM port — no churn
+amplification.
+
+`lachesis_port_info` comes free from the port list `Sync` already fetches.
+`server_id` is the port's `device_id`, the same value the per-port billing family
+carries. `ips` is the port's fixed IPs, **sorted and comma-joined** into one value
+(`10.0.0.5,fd00::5`; empty for a port with none): one series per port, not per
+IP, keeps a `group_left` join 1:1 — a per-IP series would duplicate billing rows
+on join — and sorting keeps an unchanged port from churning into a new series
+when Neutron reorders the list. Floating IPs are not included.
 
 `tenant_id` names come free from the project list `Sync` already fetches;
 `server_id` names need a Nova server list, fetched **best-effort**
@@ -96,6 +106,13 @@ sum by (tenant_id) (rate(lachesis_tenant_bytes_total[1m]))
   * on(tenant_id) group_left(name) lachesis_tenant_info          # named rows
 or sum by (tenant_id) (rate(lachesis_tenant_bytes_total[1m]))
      unless on(tenant_id) lachesis_tenant_info                   # bare-id fallback
+```
+
+The per-port join works the same way, adding the MAC and fixed IPs:
+
+```promql
+sum by (port_id) (rate(lachesis_port_bytes_total{server_id="<uuid>"}[1m]))
+  * on(port_id) group_left(mac, ips) lachesis_port_info
 ```
 
 ## Health (per-subsystem; bounded cardinality)
