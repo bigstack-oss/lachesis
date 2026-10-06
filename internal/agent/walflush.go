@@ -12,6 +12,9 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/bigstack-oss/lachesis/internal/bpf"
+	"github.com/bigstack-oss/lachesis/internal/metadata"
+	"github.com/bigstack-oss/lachesis/internal/state"
 	"github.com/bigstack-oss/lachesis/internal/wal"
 )
 
@@ -35,6 +38,10 @@ func (a *Agent) walFlushLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			if n := a.settleLingeringGhosts(); n > 0 {
+				slog.Info("settled lingering ghosts before the final flush",
+					"component", componentWAL, "flows", n)
+			}
 			if err := a.flushWAL(); err != nil {
 				slog.Warn("final flush failed", "component", componentWAL, "err", err)
 				return
@@ -51,6 +58,32 @@ func (a *Agent) walFlushLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// settleLingeringGhosts folds every still-lingering ghost's rows into
+// settled. The WAL keeps flow rows but not ghost metadata, and the next
+// boot's Neutron cold-start no longer lists a deleted port — unsettled,
+// a ghost's history would restore under tenant_id="unknown". Rebase,
+// not evict: the kernel counters outlive the process, and the kept
+// LastEbpfRaw stops the next drain re-counting them.
+//
+// docs/architecture/data-structures.md#settled-bytes
+func (a *Agent) settleLingeringGhosts() int {
+	ghosts := make(map[uint64]*metadata.TenantMeta)
+	a.meta.Range(func(mac uint64, meta *metadata.TenantMeta) bool {
+		if !meta.DeleteAt.IsZero() {
+			ghosts[mac] = meta
+		}
+		return true
+	})
+	if len(ghosts) == 0 {
+		return 0
+	}
+	return a.state.Settle(state.SettleRebase, metadata.SettleResolver(a.routers,
+		func(k bpf.FlowKey) (*metadata.TenantMeta, bool) {
+			meta, ok := ghosts[metadata.VMMAC(k)]
+			return meta, ok
+		}))
 }
 
 // flushWAL snapshots GlobalState and writes it via [wal.Save]. The
