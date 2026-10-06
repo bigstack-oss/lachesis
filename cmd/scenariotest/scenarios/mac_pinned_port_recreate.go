@@ -49,9 +49,12 @@ func macPinnedPortRecreate() *scenariotest.Scenario {
 			// Model the Kafka outage for the node under test. The kafka-off
 			// config is derived from the node's own — nothing is staged on
 			// the agent hosts — and the closing RestoreConfig puts the
-			// original back.
+			// original back. With Kafka off the periodic reconcile is the
+			// only rebind path; its 5-minute default outlasts the 2-minute
+			// binding wait, so tighten it to fit.
 			steps.RestartAgentStep{Node: "node:0", SetConfig: map[string]string{
-				"kafka.enabled": "false",
+				"kafka.enabled":      "false",
+				"reconcile.interval": "60s",
 			}},
 
 			// Baseline NIC: fresh port, traffic, and the port tier

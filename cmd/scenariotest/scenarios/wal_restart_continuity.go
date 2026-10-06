@@ -34,6 +34,12 @@ func walRestartContinuity() *scenariotest.Scenario {
 		Name:    "wal-restart-continuity",
 		Desc:    "Restart the agent mid-run; WAL restores counters, taps re-attach, series stay monotone (lachesis#184/#185, step-scripted).",
 		Builder: b,
+		// Both VMs ride the restarted agent's node, so a multi-agent
+		// config restarts the agent that owns their taps.
+		Placement: scenariotest.Placement{
+			"vm-a": "node:0",
+			"vm-b": "node:0",
+		},
 		Steps: []scenariotest.Step{
 			steps.DriveStep{Flows: []scenariotest.Flow{
 				{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP},
@@ -46,7 +52,7 @@ func walRestartContinuity() *scenariotest.Scenario {
 			// Warm restart: WAL intact. The agent re-reads it, the zombie
 			// hunter re-attaches the taps, /metrics comes back.
 			steps.CaptureStep{},
-			steps.RestartAgentStep{},
+			steps.RestartAgentStep{Node: "node:0"},
 
 			// No reset: the restored counters are at or above capture.
 			steps.MonotoneStep{Tenant: "T1", Note: "series monotone across agent restart"},
