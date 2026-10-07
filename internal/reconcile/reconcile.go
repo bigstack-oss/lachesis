@@ -175,7 +175,9 @@ func New(opts Options) *Reconciler {
 func (r *Reconciler) Kick() {
 	select {
 	case r.kick <- struct{}{}:
+		r.mx.RecordKick(kickQueued)
 	default: // a pass is already pending; coalesce
+		r.mx.RecordKick(kickCoalesced)
 	}
 }
 
@@ -200,15 +202,24 @@ func (r *Reconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
-			r.reconcileOnce(ctx, now)
+			r.timedPass(ctx, now, triggerTick)
 		case <-r.kick:
-			r.reconcileOnce(ctx, time.Now())
+			r.timedPass(ctx, time.Now(), triggerKick)
 		}
 		if next := r.intervalNow(); next != cur {
 			t.Reset(next)
 			cur = next
 		}
 	}
+}
+
+// timedPass runs one reconcile pass and records its wall time under
+// trigger. The clock starts here, not at now: a tick value can be stale
+// when it waited behind a kick-triggered pass.
+func (r *Reconciler) timedPass(ctx context.Context, now time.Time, trigger string) {
+	start := time.Now()
+	r.reconcileOnce(ctx, now)
+	r.mx.ObservePass(trigger, time.Since(start))
 }
 
 // intervalNow returns the live reconcile cadence. A hot change applies
