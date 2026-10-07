@@ -173,11 +173,10 @@ func New(opts Options) *Reconciler {
 // buffered channel holds at most one pending kick, so a burst of events
 // costs a single extra pass — and safe to call from any goroutine.
 func (r *Reconciler) Kick() {
+	r.mx.RecordKick()
 	select {
 	case r.kick <- struct{}{}:
-		r.mx.RecordKick(kickQueued)
 	default: // a pass is already pending; coalesce
-		r.mx.RecordKick(kickCoalesced)
 	}
 }
 
