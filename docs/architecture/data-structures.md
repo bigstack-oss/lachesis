@@ -143,7 +143,7 @@ Populated from Neutron ports matching `device_owner` in:
 NOT populated:
 - `network:floatingip` — handled via the NAT path ([octavia.md](./octavia.md) for the LB case)
 - External / internet MACs — resolve via the LPM trie
-- `network:distributed` — **verified empirically**: OVN does NOT use the Neutron `network:distributed` port MAC on the wire; it synthesizes its own DHCP `server_mac`, which misses here and classifies via the LPM fallback instead. Full story in [trie-construction.md, step 4](./trie-construction.md#the-five-step-algorithm).
+- `network:distributed` — **verified empirically**: OVN does NOT use the Neutron `network:distributed` port MAC for DHCP; it synthesizes its own DHCP `server_mac`, which misses here and classifies via the LPM fallback instead. Full story in [trie-construction.md, step 4](./trie-construction.md#the-five-step-algorithm). The MAC *is* on the wire in one place: inside the `ovnmeta-*` metadata-proxy namespace, behind a veth the agent deliberately never attaches ([edge-cases.md](./edge-cases.md#tier-4--subtle-correctness), Tier 4 row 22).
 
 ### `amphora_base_ip` — Octavia Segment-1 / Segment-2 split
 

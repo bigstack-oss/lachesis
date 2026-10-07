@@ -22,3 +22,11 @@ const (
 	outcomeHealed = "healed"
 	outcomeFailed = "failed"
 )
+
+// linkTypeVeth is the netlink.Link Type() of a veth pair end — the
+// link kind [ShouldAttach] refuses on a prefix match.
+const linkTypeVeth = "veth"
+
+// reason label values for lachesis_netlink_skipped_interfaces_total.
+// [ShouldAttach] returns these; [NewMetrics] seeds each at zero.
+const skipReasonVeth = "veth"

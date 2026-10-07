@@ -17,11 +17,13 @@ type BPFConfig struct {
 	// netlink subscriber treats as eligible for attach. A new
 	// interface matches when its name starts with any prefix here.
 	// Default: ["tap"] — the OVN/Neutron convention for VM ports.
+	// A prefix match on a veth is refused (OVN metadata-proxy veths
+	// share the tap naming).
 	AttachPrefixes []string `yaml:"attach_prefixes"`
 	// AttachInterfaces is an explicit allowlist of interface names
 	// the netlink subscriber will attach to even when they do not
-	// match a prefix. Empty by default. Use for outliers such as a
-	// dedicated test interface.
+	// match a prefix, whatever their link type. Empty by default. Use
+	// for outliers such as a dedicated test interface.
 	AttachInterfaces []string `yaml:"attach_interfaces"`
 	// AttachResyncInterval is the cadence of the netlink subscriber's
 	// attach-presence sweep, which re-attaches any allowlisted

@@ -6,16 +6,25 @@ import "strings"
 // an exact match in explicit, or a prefix match in prefixes. Both may
 // be empty, in which case nothing attaches.
 //
-// It deliberately does NOT skip loopback, bridges or other "obviously
-// uninteresting" links — every decision goes through the operator's
-// allowlist, so there is no second place to disagree with them.
-func ShouldAttach(iface string, prefixes, explicit []string) bool {
+// A prefix match on a veth is refused, and skip names why: an OVN
+// metadata-proxy veth is named like a VM tap, and attaching it
+// double-counts every VM's metadata traffic as tenant "unknown"
+// (docs/architecture/edge-cases.md#tier-4--subtle-correctness, row 22).
+// An explicit entry is the operator naming the link outright, so it
+// attaches whatever its type. Nothing else is implicitly skipped.
+func ShouldAttach(iface, linkType string, prefixes, explicit []string) (attach bool, skip string) {
 	for _, name := range explicit {
 		if iface == name {
-			return true
+			return true, ""
 		}
 	}
-	return matchesPrefix(iface, prefixes)
+	if !matchesPrefix(iface, prefixes) {
+		return false, ""
+	}
+	if linkType == linkTypeVeth {
+		return false, skipReasonVeth
+	}
+	return true, ""
 }
 
 // matchesPrefix reports whether iface starts with any non-empty entry

@@ -21,6 +21,8 @@ import "github.com/prometheus/client_golang/prometheus"
 //     removed out-of-band
 //   - lachesis_netlink_subscriber_restarts_total     re-subscribes
 //     after a lost netlink subscription
+//   - lachesis_netlink_skipped_interfaces_total{reason}  prefix-matched
+//     links the subscriber refused, once per link appearance
 //
 // Metric catalogue: docs/architecture/metrics.md
 type Metrics struct {
@@ -29,6 +31,7 @@ type Metrics struct {
 	unattached     *prometheus.GaugeVec
 	reattaches     *prometheus.CounterVec
 	restarts       prometheus.Counter
+	skipped        *prometheus.CounterVec
 }
 
 // NewMetrics constructs the bundle. The current-size gauge is
@@ -59,6 +62,10 @@ func NewMetrics(registrySize func() int) *Metrics {
 			Name: "lachesis_netlink_subscriber_restarts_total",
 			Help: "Re-subscribes after the netlink link-event subscription was lost (e.g. socket overflow under an event storm).",
 		}),
+		skipped: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "lachesis_netlink_skipped_interfaces_total",
+			Help: "Interfaces matching an attach prefix that the netlink subscriber refused, labelled by reason (\"veth\": an OVN metadata-proxy veth named like a VM tap).",
+		}, []string{"reason"}),
 	}
 	for _, kind := range []string{ifaceKindTap, ifaceKindOther} {
 		m.attachFailures.WithLabelValues(kind).Add(0)
@@ -67,12 +74,13 @@ func NewMetrics(registrySize func() int) *Metrics {
 			m.reattaches.WithLabelValues(kind, outcome).Add(0)
 		}
 	}
+	m.skipped.WithLabelValues(skipReasonVeth).Add(0)
 	return m
 }
 
 // Collectors returns every instrument in the bundle.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.attachFailures, m.attached, m.unattached, m.reattaches, m.restarts}
+	return []prometheus.Collector{m.attachFailures, m.attached, m.unattached, m.reattaches, m.restarts, m.skipped}
 }
 
 // recordAttachFailure increments the failure counter for kind.
@@ -110,4 +118,13 @@ func (m *Metrics) recordRestart() {
 		return
 	}
 	m.restarts.Inc()
+}
+
+// recordSkip increments the skipped-interface counter for reason.
+// Nil-safe like [Metrics.recordAttachFailure].
+func (m *Metrics) recordSkip(reason string) {
+	if m == nil {
+		return
+	}
+	m.skipped.WithLabelValues(reason).Inc()
 }

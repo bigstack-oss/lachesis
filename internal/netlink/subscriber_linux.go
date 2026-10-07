@@ -94,6 +94,10 @@ type linuxSubscriber struct {
 	// failing holds the links the last sweep failed to re-attach, so
 	// a persistently failing link warns once rather than every sweep.
 	failing map[string]struct{}
+
+	// skipped holds the links ShouldAttach refused on the event path,
+	// so a link's repeated NEWLINKs log and count its skip once.
+	skipped map[string]struct{}
 }
 
 // New constructs a Subscriber. Returns an error if Options are
@@ -116,6 +120,7 @@ func newLinuxSubscriber(opts Options) *linuxSubscriber {
 		backoff:   backoffPolicy{min: resubscribeBackoffMin, max: resubscribeBackoffMax},
 		after:     time.After,
 		failing:   make(map[string]struct{}),
+		skipped:   make(map[string]struct{}),
 	}
 	s.stream = s.runStream
 	return s
@@ -254,11 +259,15 @@ func (s *linuxSubscriber) runStream(ctx context.Context, resyncFirst bool) error
 }
 
 // handle dispatches a single LinkUpdate to the attach or detach
-// path. Filtering by name happens here, not in the netlink layer,
-// so the subscriber's match policy stays in one place.
+// path. Filtering happens here, not in the netlink layer, so the
+// subscriber's match policy stays in one place.
 func (s *linuxSubscriber) handle(ev netlink.LinkUpdate) {
 	name := ev.Attrs().Name
-	if !ShouldAttach(name, s.opts.Prefixes, s.opts.Explicit) {
+	attach, skip := ShouldAttach(name, ev.Type(), s.opts.Prefixes, s.opts.Explicit)
+	if !attach {
+		if skip != "" {
+			s.onSkip(ev.Header.Type, name, skip)
+		}
 		return
 	}
 	switch ev.Header.Type {
@@ -356,7 +365,9 @@ func (s *linuxSubscriber) resync() {
 	for _, link := range links {
 		attrs := link.Attrs()
 		name := attrs.Name
-		if !ShouldAttach(name, s.opts.Prefixes, s.opts.Explicit) {
+		// A refused link is not "unattached": the event path already
+		// logged and counted its skip.
+		if attach, _ := ShouldAttach(name, link.Type(), s.opts.Prefixes, s.opts.Explicit); !attach {
 			continue
 		}
 		kind := s.kindFor(name)
@@ -403,6 +414,23 @@ func (s *linuxSubscriber) resync() {
 			"component", component, "healed", healed,
 			"failing", len(failing), "undecided", undecided)
 	}
+}
+
+// onSkip records a prefix-matched link that ShouldAttach refused:
+// logged and counted on its first NEWLINK, forgotten on DELLINK so a
+// re-created link of the same name is reported again.
+func (s *linuxSubscriber) onSkip(msgType uint16, name, reason string) {
+	if msgType == unix.RTM_DELLINK {
+		delete(s.skipped, name)
+		return
+	}
+	if _, seen := s.skipped[name]; seen {
+		return
+	}
+	s.skipped[name] = struct{}{}
+	s.opts.Metrics.recordSkip(reason)
+	slog.Info("attach skipped",
+		"component", component, "iface", name, "reason", reason)
 }
 
 // kindFor returns the iface_kind label value for metrics: "tap" when
