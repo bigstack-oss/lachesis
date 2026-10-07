@@ -163,6 +163,8 @@ sum by (port_id) (rate(lachesis_port_bytes_total{server_id="<uuid>"}[1m]))
 | `lachesis_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer entries folded to "unknown", by cause |
 | `lachesis_unresolved_resolved_total` | counter | — | late-binding successes: a buffered flow whose MAC became known (reconcile or Kafka) attributed to the right tenant with the delta write-back |
 | `lachesis_reconcile_runs_total` | counter | `result="ok\|sync_error\|apply_error"` | periodic + Kafka-kicked Neutron reconcile passes by outcome; `apply_error` is the runtime kernelwriter-failure sink |
+| `lachesis_reconcile_duration_seconds` | histogram | `trigger="tick\|kick"` | wall time of one reconcile pass (full Neutron snapshot fetch + kernel apply + commit), by what started it |
+| `lachesis_reconcile_kicks_total` | counter | `result="queued\|coalesced"` | Kafka-driven kicks: `queued` started a pass; `coalesced` folded into one already pending — together the Neutron change-event rate |
 | `lachesis_kafka_lag_messages` | gauge | `topic` | Kafka consumer lag behind the topic head; sustained growth = falling behind live updates |
 | `lachesis_kafka_consume_errors_total` | counter | `topic` | Kafka consumer read failures (broker unreachable, fetch errors) |
 
