@@ -17,18 +17,16 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/tunables"
 )
 
-// TestKick_CountsQueuedAndCoalesced: with no Run draining the channel,
-// the first kick fills it and every later one coalesces.
-func TestKick_CountsQueuedAndCoalesced(t *testing.T) {
+// TestKick_CountsEveryKick: every kick is counted, including the ones
+// that coalesce into an already-pending pass (no Run drains the channel).
+func TestKick_CountsEveryKick(t *testing.T) {
 	tests := []struct {
-		name          string
-		kicks         int
-		wantQueued    int
-		wantCoalesced int
+		name  string
+		kicks int
 	}{
-		{"none", 0, 0, 0},
-		{"one", 1, 1, 0},
-		{"burst", 5, 1, 4},
+		{"none", 0},
+		{"one", 1},
+		{"burst", 5},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -40,10 +38,9 @@ func TestKick_CountsQueuedAndCoalesced(t *testing.T) {
 			reg := prometheus.NewPedanticRegistry()
 			reg.MustRegister(mx.kicks)
 			want := `
-# HELP lachesis_reconcile_kicks_total Kafka-driven reconcile kicks: queued = started a pass; coalesced = a pass was already pending, so the kick was folded into it.
+# HELP lachesis_reconcile_kicks_total Kafka-driven reconcile kicks (one per committed Neutron metadata change). Kick-started passes are lachesis_reconcile_duration_seconds_count{trigger="kick"}; the gap between the two is kicks folded into a pass.
 # TYPE lachesis_reconcile_kicks_total counter
-lachesis_reconcile_kicks_total{result="coalesced"} ` + strconv.Itoa(tc.wantCoalesced) + `
-lachesis_reconcile_kicks_total{result="queued"} ` + strconv.Itoa(tc.wantQueued) + `
+lachesis_reconcile_kicks_total ` + strconv.Itoa(tc.kicks) + `
 `
 			if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "lachesis_reconcile_kicks_total"); err != nil {
 				t.Fatal(err)

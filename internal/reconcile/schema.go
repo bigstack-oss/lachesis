@@ -12,9 +12,8 @@ package reconcile
 // registration error name the subsystem identically.
 const component = "reconcile"
 
-// labelResult is the label on lachesis_reconcile_runs_total and
-// lachesis_reconcile_kicks_total; its values are the result* and kick*
-// constants below.
+// labelResult is the label on lachesis_reconcile_runs_total; its values
+// are the result* constants below.
 const labelResult = "result"
 
 // labelTrigger is the label on lachesis_reconcile_duration_seconds; its
@@ -25,16 +24,6 @@ const labelTrigger = "trigger"
 const (
 	triggerTick = "tick"
 	triggerKick = "kick"
-)
-
-// kick* are the lachesis_reconcile_kicks_total{result} label values.
-const (
-	// kickQueued: the kick entered the empty one-deep channel and will
-	// start a pass.
-	kickQueued = "queued"
-	// kickCoalesced: a pass was already pending, so the kick was folded
-	// into it.
-	kickCoalesced = "coalesced"
 )
 
 // result* are the lachesis_reconcile_runs_total{result} label values —

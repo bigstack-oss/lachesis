@@ -18,11 +18,11 @@ import (
 //
 //   - lachesis_reconcile_runs_total{result}        counter
 //   - lachesis_reconcile_duration_seconds{trigger} histogram
-//   - lachesis_reconcile_kicks_total{result}       counter
+//   - lachesis_reconcile_kicks_total               counter
 type Metrics struct {
 	runs     *prometheus.CounterVec
 	duration *prometheus.HistogramVec
-	kicks    *prometheus.CounterVec
+	kicks    prometheus.Counter
 }
 
 // NewMetrics constructs the bundle with every label value seeded so each
@@ -38,18 +38,16 @@ func NewMetrics() *Metrics {
 			Help:    "Wall time of one reconcile pass (Neutron snapshot fetch, kernel apply, commit), by what started it: tick = the periodic timer, kick = a Kafka-driven Neutron change.",
 			Buckets: prometheus.ExponentialBuckets(0.05, 2, 10), // 50ms..25.6s: a pass is a full set of Neutron list calls
 		}, []string{labelTrigger}),
-		kicks: prometheus.NewCounterVec(prometheus.CounterOpts{
+		kicks: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lachesis_reconcile_kicks_total",
-			Help: "Kafka-driven reconcile kicks: queued = started a pass; coalesced = a pass was already pending, so the kick was folded into it.",
-		}, []string{labelResult}),
+			Help: "Kafka-driven reconcile kicks (one per committed Neutron metadata change). Kick-started passes are lachesis_reconcile_duration_seconds_count{trigger=\"kick\"}; the gap between the two is kicks folded into a pass.",
+		}),
 	}
 	m.runs.WithLabelValues(resultOK)
 	m.runs.WithLabelValues(resultSyncError)
 	m.runs.WithLabelValues(resultApplyError)
 	m.duration.WithLabelValues(triggerTick)
 	m.duration.WithLabelValues(triggerKick)
-	m.kicks.WithLabelValues(kickQueued)
-	m.kicks.WithLabelValues(kickCoalesced)
 	return m
 }
 
@@ -77,9 +75,9 @@ func (m *Metrics) ObservePass(trigger string, d time.Duration) {
 }
 
 // RecordKick increments lachesis_reconcile_kicks_total for one kick.
-func (m *Metrics) RecordKick(result string) {
+func (m *Metrics) RecordKick() {
 	if m == nil {
 		return
 	}
-	m.kicks.WithLabelValues(result).Inc()
+	m.kicks.Inc()
 }
