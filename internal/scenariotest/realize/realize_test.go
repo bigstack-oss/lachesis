@@ -227,6 +227,28 @@ func TestRealize_PersistsResolvedPlacement(t *testing.T) {
 	}
 }
 
+// TestRealize_RecordsAnomalyBaseline: realize records the anomaly
+// counts the cluster carried before it created anything, so a later
+// anomaly assertion measures only what the run added.
+func TestRealize_RecordsAnomalyBaseline(t *testing.T) {
+	env := &fake.Env{BaseAttached: 5, Anomalies: map[string]float64{"dangling_route": 1, "cycle": 4}}
+	rs, err := Run(context.Background(), Options{
+		Config:    fake.Config(),
+		Scenario:  fake.SameTenantScenario(),
+		RunID:     "run1",
+		StatePath: t.TempDir() + "/state.json",
+		Cloud:     fake.NewCloud(env),
+		Metrics:   &fake.Metrics{Env: env},
+		Log:       slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatalf("Realize: %v", err)
+	}
+	if rs.AnomalyBaseline["dangling_route"] != 1 || rs.AnomalyBaseline["cycle"] != 4 {
+		t.Errorf("AnomalyBaseline = %v, want dangling_route:1 cycle:4", rs.AnomalyBaseline)
+	}
+}
+
 func TestRealize_PlacementSlotBeyondAgents_CreatesNothing(t *testing.T) {
 	env := &fake.Env{BaseAttached: 5}
 	cloud := fake.NewCloud(env)

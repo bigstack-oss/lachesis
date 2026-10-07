@@ -23,6 +23,9 @@ type Env struct {
 	BaseAttached float64
 	Booted       int // CreateServer increments; one tap per boot
 	Failures     float64
+	// Anomalies is the lachesis_neutron_anomalies breakdown every
+	// scrape reports.
+	Anomalies map[string]float64
 }
 
 // Cloud is a recording [scenariotest.Cloud]: lookups return configured IDs,
@@ -564,6 +567,7 @@ func (m *Metrics) Scrape(context.Context, string) (scenariotest.ScrapeResult, er
 		Present:            map[string]bool{scenariotest.MetricBytesTotal: true, scenariotest.MetricAttachedInterfaces: true},
 		AttachedInterfaces: m.Env.BaseAttached + float64(m.Env.Booted),
 		AttachFailures:     m.Env.Failures,
+		Anomalies:          m.Env.Anomalies,
 	}, nil
 }
 

@@ -40,6 +40,13 @@ type RunState struct {
 	// attached before pushing traffic.
 	Attach AttachRecord `json:"attach"`
 
+	// AnomalyBaseline is each lachesis_neutron_anomalies class, summed
+	// across agents, as realize found it BEFORE creating anything — so
+	// an anomaly assertion measures what this run's topology added,
+	// not anomalies the cluster already carries. Absent in run-states
+	// predating it, which then assert on the absolute count.
+	AnomalyBaseline map[string]float64 `json:"anomaly_baseline,omitempty"`
+
 	// Placement is Scenario.Placement with its "node:<i>" slots
 	// resolved to configured agent hosts, recorded at realize so the
 	// run-state stands alone as evidence of where each VM was pinned
