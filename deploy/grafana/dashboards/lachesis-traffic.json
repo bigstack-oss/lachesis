@@ -234,7 +234,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[1m])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)",
+          "expr": "(sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[$__rate_interval])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)) and on(tenant_id) topk(10, sum by (tenant_id) (clamp_min(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"} @ end() - lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"} @ end() offset $__range, 0) or lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"} @ end()))",
           "legendFormat": "{{name}} ({{tenant_id}})",
           "datasource": {
             "type": "prometheus",
@@ -243,7 +243,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[1m])) unless on(tenant_id) lachesis_tenant_info",
+          "expr": "(sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"}[$__rate_interval])) unless on(tenant_id) lachesis_tenant_info) and on(tenant_id) topk(10, sum by (tenant_id) (clamp_min(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"} @ end() - lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"} @ end() offset $__range, 0) or lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"tx\"} @ end()))",
           "legendFormat": "{{tenant_id}}",
           "datasource": {
             "type": "prometheus",
@@ -299,7 +299,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[1m])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)",
+          "expr": "(sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[$__rate_interval])) * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)) and on(tenant_id) topk(10, sum by (tenant_id) (clamp_min(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"} @ end() - lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"} @ end() offset $__range, 0) or lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"} @ end()))",
           "legendFormat": "{{name}} ({{tenant_id}})",
           "datasource": {
             "type": "prometheus",
@@ -308,7 +308,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[1m])) unless on(tenant_id) lachesis_tenant_info",
+          "expr": "(sum by (tenant_id) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"}[$__rate_interval])) unless on(tenant_id) lachesis_tenant_info) and on(tenant_id) topk(10, sum by (tenant_id) (clamp_min(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"} @ end() - lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"} @ end() offset $__range, 0) or lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\",direction=\"rx\"} @ end()))",
           "legendFormat": "{{tenant_id}}",
           "datasource": {
             "type": "prometheus",
@@ -364,7 +364,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(\n  sum by (tenant_id, zone, direction) (lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)\n)\nor\nlabel_replace(\n  sum by (tenant_id, zone, direction) (lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    unless on(tenant_id) lachesis_tenant_info,\n  \"name\", \"\", \"\", \"\"\n)",
+          "expr": "((\n  sum by (tenant_id, zone, direction) (lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    * on(tenant_id) group_left(name) max by (tenant_id, name) (lachesis_tenant_info)\n)\nor\nlabel_replace(\n  sum by (tenant_id, zone, direction) (lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"})\n    unless on(tenant_id) lachesis_tenant_info,\n  \"name\", \"\", \"\", \"\"\n))\nand on(tenant_id) topk(20, sum by (tenant_id) (lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}))",
           "format": "table",
           "instant": true,
           "datasource": {
@@ -437,7 +437,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (zone) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[1m]))",
+          "expr": "sum by (zone) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[$__rate_interval]))",
           "legendFormat": "{{zone}}",
           "datasource": {
             "type": "prometheus",
@@ -506,7 +506,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (external_network) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"tx\"}[1m]))",
+          "expr": "sum by (external_network) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"tx\"}[$__rate_interval]))",
           "legendFormat": "{{external_network}}",
           "datasource": {
             "type": "prometheus",
@@ -562,7 +562,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (external_network) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"rx\"}[1m]))",
+          "expr": "sum by (external_network) (rate(lachesis_tenant_bytes_total{instance=~\"$node\",tenant_id=~\"$tenant\",external_network=~\"$external_network\",zone=\"external\",direction=\"rx\"}[$__rate_interval]))",
           "legendFormat": "{{external_network}}",
           "datasource": {
             "type": "prometheus",
@@ -703,7 +703,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (server_id, direction) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[1m])) * on(server_id) group_left(name) max by (server_id, name) (lachesis_server_info)",
+          "expr": "(sum by (server_id, direction) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[$__rate_interval])) * on(server_id) group_left(name) max by (server_id, name) (lachesis_server_info)) and on(server_id, direction) topk(10, sum by (server_id, direction) (clamp_min(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"} @ end() - lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"} @ end() offset $__range, 0) or lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"} @ end()))",
           "legendFormat": "{{name}} ({{server_id}}) {{direction}}",
           "datasource": {
             "type": "prometheus",
@@ -712,7 +712,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (server_id, direction) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[1m])) unless on(server_id) lachesis_server_info",
+          "expr": "(sum by (server_id, direction) (rate(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"}[$__rate_interval])) unless on(server_id) lachesis_server_info) and on(server_id, direction) topk(10, sum by (server_id, direction) (clamp_min(lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"} @ end() - lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"} @ end() offset $__range, 0) or lachesis_server_bytes_total{instance=~\"$node\",server_id=~\"$server\",tenant_id=~\"$tenant\",zone=~\"$zone\",external_network=~\"$external_network\"} @ end()))",
           "legendFormat": "{{server_id}} {{direction}}",
           "datasource": {
             "type": "prometheus",
