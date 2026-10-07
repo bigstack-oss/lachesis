@@ -342,6 +342,55 @@ func (s ResolvedGrewStep) Run(ctx context.Context, env *scenariotest.StepEnv) er
 	return nil
 }
 
+// ReattachHealedStep asserts the agent's attach-presence sweep healed
+// at least Min taps (lachesis_tc_reattach_total{outcome="healed"})
+// since the most recent [CaptureStep] — the proof a tap whose filters
+// vanished without a link event (a [StripTCStep]) was found and
+// re-attached. Polls until the floor is met or Timeout (default
+// [DefaultReattachTimeout]) records a failing row, because the heal
+// lands on the agent's next sweep tick.
+type ReattachHealedStep struct {
+	Min     int64
+	Timeout time.Duration
+	Note    string
+}
+
+func (ReattachHealedStep) Kind() string { return "assert-reattach-healed" }
+
+func (ReattachHealedStep) RequiredMetrics() []string {
+	return []string{scenariotest.MetricReattachTotal}
+}
+
+func (s ReattachHealedStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultReattachTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	var delta float64
+	for {
+		snap, err := env.Scrape(ctx)
+		if err != nil {
+			return err
+		}
+		delta = snap.ReattachHealed - env.Captured.Healed
+		if delta >= float64(s.Min) || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sweepPollInterval):
+		}
+	}
+	env.AddRow(scenariotest.AssertRow{
+		Tenant: "reattach-healed", Zone: "-", Direction: "-",
+		Baseline: env.Captured.Healed, Current: env.Captured.Healed + delta, Delta: delta,
+		MinBytes: s.Min, Pass: delta >= float64(s.Min), Note: s.Note,
+	})
+	return nil
+}
+
 // EvictionsGrewStep asserts the pressure-relief eviction counter rose
 // by at least Min since the last [CaptureStep]. Reads the
 // pressure_relief reason ALONE — the family also carries ttl and

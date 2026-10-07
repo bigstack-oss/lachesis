@@ -110,6 +110,34 @@ lachesis_gc_evictions_total{reason="ghost_residual_flow"} 7
 	}
 }
 
+// The re-attach family splits by iface_kind and outcome; only healed
+// re-attaches count, summed across kinds — a failed attempt is not a
+// heal.
+func TestClient_ScrapeReattachHealed(t *testing.T) {
+	const exposition = `# HELP lachesis_tc_reattach_total Attach-presence sweep re-attach attempts.
+# TYPE lachesis_tc_reattach_total counter
+lachesis_tc_reattach_total{iface_kind="tap",outcome="healed"} 600
+lachesis_tc_reattach_total{iface_kind="tap",outcome="failed"} 9
+lachesis_tc_reattach_total{iface_kind="other",outcome="healed"} 2
+lachesis_tc_reattach_total{iface_kind="other",outcome="failed"} 0
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(exposition))
+	}))
+	defer srv.Close()
+
+	res, err := New(nil).Scrape(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Scrape: %v", err)
+	}
+	if !res.Present[scenariotest.MetricReattachTotal] {
+		t.Errorf("metric %s reported absent", scenariotest.MetricReattachTotal)
+	}
+	if res.ReattachHealed != 602 {
+		t.Errorf("ReattachHealed = %v, want 602 (healed across kinds, failed excluded)", res.ReattachHealed)
+	}
+}
+
 func TestClient_MissingMetric(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("# TYPE other_metric gauge\nother_metric 1\n"))

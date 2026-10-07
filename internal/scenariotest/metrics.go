@@ -93,6 +93,16 @@ const (
 	// ReasonPressureRelief is the [MetricGCEvictions] `reason` value for a
 	// telemetry_map fill-watermark eviction.
 	ReasonPressureRelief = "pressure_relief"
+	// MetricReattachTotal counts the agent's attach-presence sweep
+	// re-attach attempts, split by `iface_kind` and `outcome`. Only
+	// outcome="healed" is a tap the sweep found without its telemetry
+	// filters and restored; ReattachHealedStep asserts on it.
+	//
+	// docs/architecture/boot-and-recovery.md#attach-presence-resync
+	MetricReattachTotal = "lachesis_tc_reattach_total"
+	// OutcomeHealed is the [MetricReattachTotal] `outcome` value for a
+	// successful re-attach.
+	OutcomeHealed = "healed"
 )
 
 // BytesSample is one lachesis_tenant_bytes_total series: the {tenant_id, zone,
@@ -163,6 +173,9 @@ type ScrapeResult struct {
 	// PressureReliefEvictions is lachesis_gc_evictions_total for the
 	// pressure_relief reason alone.
 	PressureReliefEvictions float64
+	// ReattachHealed is lachesis_tc_reattach_total for the healed
+	// outcome alone.
+	ReattachHealed float64
 	// Anomalies is lachesis_neutron_anomalies broken out by its
 	// `class` label.
 	Anomalies map[string]float64
@@ -187,6 +200,9 @@ type MetricsSnapshot struct {
 	// PressureReliefEvictions sums pressure-relief evictions across all
 	// agents.
 	PressureReliefEvictions float64
+	// ReattachHealed sums healed attach-presence re-attaches across all
+	// agents.
+	ReattachHealed float64
 	// Anomalies sums each anomaly class across all agents.
 	Anomalies map[string]float64
 	// CountersResetEpochs is each agent's state-restart epoch, keyed by
@@ -251,6 +267,7 @@ func SampleAcross(ctx context.Context, src MetricsSource, agents []AgentConfig) 
 		snap.SettledTuples += r.SettledTuples
 		snap.UnresolvedResolved += r.UnresolvedResolved
 		snap.PressureReliefEvictions += r.PressureReliefEvictions
+		snap.ReattachHealed += r.ReattachHealed
 		snap.LingeringGhosts += r.LingeringGhosts
 		for _, s := range r.Bytes {
 			s.Node = a.Host

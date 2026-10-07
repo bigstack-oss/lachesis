@@ -253,6 +253,62 @@ func TestResolvedGrewStep(t *testing.T) {
 	}
 }
 
+// healedMetrics reports a fixed healed re-attach total, for
+// ReattachHealedStep.
+type healedMetrics struct{ healed float64 }
+
+func (m healedMetrics) Scrape(context.Context, string) (scenariotest.ScrapeResult, error) {
+	return scenariotest.ScrapeResult{
+		Present:        map[string]bool{scenariotest.MetricReattachTotal: true, scenariotest.MetricBytesTotal: true, scenariotest.MetricAttachedInterfaces: true},
+		ReattachHealed: m.healed,
+	}, nil
+}
+
+func (healedMetrics) LookupMAC(context.Context, string, string) (scenariotest.MACLookup, error) {
+	return scenariotest.MACLookup{}, nil
+}
+
+func (healedMetrics) LookupFlows(context.Context, string, string) ([]scenariotest.FlowRow, error) {
+	return nil, nil
+}
+
+func TestReattachHealedStep(t *testing.T) {
+	defer func(d time.Duration) { sweepPollInterval = d }(sweepPollInterval)
+	sweepPollInterval = time.Millisecond
+
+	cases := []struct {
+		name          string
+		base, current float64
+		min           int64
+		wantPass      bool
+	}{
+		{"sweep healed the stripped tap", 2, 3, 1, true},
+		{"healed more than the floor", 2, 602, 1, true},
+		{"no heal — fails", 2, 2, 1, false},
+		{"healed short of the floor", 2, 3, 2, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &scenariotest.StepEnv{
+				Config:   fake.Config(),
+				State:    &scenariotest.RunState{},
+				Metrics:  healedMetrics{healed: tc.current},
+				Log:      slog.New(slog.DiscardHandler),
+				Report:   &scenariotest.AssertReport{OK: true},
+				Captured: scenariotest.Capture{Healed: tc.base},
+			}
+			step := ReattachHealedStep{Min: tc.min, Timeout: 10 * time.Millisecond}
+			if err := step.Run(context.Background(), env); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			row := env.Report.Rows[len(env.Report.Rows)-1]
+			if row.Pass != tc.wantPass {
+				t.Errorf("Pass = %v, want %v (delta %.0f, min %d)", row.Pass, tc.wantPass, row.Delta, tc.min)
+			}
+		})
+	}
+}
+
 // evictionMetrics reports a fixed pressure-relief eviction total, for
 // EvictionsGrewStep.
 type evictionMetrics struct{ evictions float64 }

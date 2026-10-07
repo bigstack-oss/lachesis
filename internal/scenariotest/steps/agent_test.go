@@ -435,3 +435,45 @@ func TestReloadAgentStep_SetConfig(t *testing.T) {
 		}
 	})
 }
+
+// TestSteps_StripTC: the step resolves the VM's port to its tap name
+// ("tap" + the port UUID's first 11 characters) and deletes that tap's
+// clsact qdisc on the agent host over SSH; a VM with no port in the
+// run-state fails before any host is touched.
+func TestSteps_StripTC(t *testing.T) {
+	agents := []scenariotest.AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m", SSHHost: "10.0.0.10"}}
+	ac := scenariotest.AgentControlConfig{User: "root", KeyPath: "/k"}
+
+	t.Run("strips the VM's tap", func(t *testing.T) {
+		exec := &fake.Exec{}
+		env := restartEnv(t, agents, ac, exec, nil)
+		env.State.Ports = []scenariotest.ResourceRef{{DSLID: "vm-a", ID: "29d49b14-242c-4df9-9b2d-bee0d540aa26"}}
+		if err := (StripTCStep{VM: "vm-a"}).Run(context.Background(), env); err != nil {
+			t.Fatalf("strip-tc: %v", err)
+		}
+		want := fake.ExecCall{Addr: "10.0.0.10", Command: "sudo tc qdisc del dev tap29d49b14-24 clsact"}
+		if len(exec.Calls) != 1 || exec.Calls[0] != want {
+			t.Errorf("calls = %+v, want exactly %+v", exec.Calls, want)
+		}
+	})
+
+	t.Run("unknown VM touches no host", func(t *testing.T) {
+		exec := &fake.Exec{}
+		err := (StripTCStep{VM: "vm-x"}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil))
+		if err == nil || !strings.Contains(err.Error(), "no port") {
+			t.Fatalf("want a no-port error, got %v", err)
+		}
+		if len(exec.Calls) != 0 {
+			t.Errorf("host touched for an unknown VM: %+v", exec.Calls)
+		}
+	})
+
+	t.Run("host command failure surfaces", func(t *testing.T) {
+		exec := &fake.Exec{Fail: "tc qdisc del"}
+		env := restartEnv(t, agents, ac, exec, nil)
+		env.State.Ports = []scenariotest.ResourceRef{{DSLID: "vm-a", ID: "29d49b14-242c-4df9-9b2d-bee0d540aa26"}}
+		if err := (StripTCStep{VM: "vm-a"}).Run(context.Background(), env); err == nil {
+			t.Fatal("want the failed tc command surfaced, got nil")
+		}
+	})
+}

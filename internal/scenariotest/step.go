@@ -70,6 +70,7 @@ type Capture struct {
 	Resolved      float64
 	Evictions     float64
 	Ghosts        float64
+	Healed        float64
 }
 
 // StepEnv is the shared environment a scripted run threads through its
@@ -140,11 +141,13 @@ func (e *StepEnv) TakeCapture(ctx context.Context) error {
 		Resolved:      snap.UnresolvedResolved,
 		Evictions:     snap.PressureReliefEvictions,
 		Ghosts:        snap.LingeringGhosts,
+		Healed:        snap.ReattachHealed,
 	}
 	e.Log.Info("capture", "tuples", len(e.Captured.Tuples),
 		"server_tuples", len(e.Captured.Servers), "settled_flows", e.Captured.SettledFlows,
 		"settled_tuples", e.Captured.SettledTuples, "unresolved_resolved", e.Captured.Resolved,
-		"pressure_relief_evictions", e.Captured.Evictions, "lingering_ghosts", e.Captured.Ghosts)
+		"pressure_relief_evictions", e.Captured.Evictions, "lingering_ghosts", e.Captured.Ghosts,
+		"reattach_healed", e.Captured.Healed)
 	return nil
 }
 

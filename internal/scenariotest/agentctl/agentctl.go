@@ -264,6 +264,24 @@ func (c *Controller) Reload(ctx context.Context) error {
 	return nil
 }
 
+// StripTC deletes the clsact qdisc on iface, and with it every TC
+// filter there — the agent's telemetry filters included — without any
+// link event the agent's netlink subscriber could see. It models an
+// operator's out-of-band `tc qdisc del` (the shared-clsact teardown
+// trap); only the agent's attach-presence sweep can repair it.
+//
+// docs/architecture/boot-and-recovery.md#attach-presence-resync
+func (c *Controller) StripTC(ctx context.Context, iface string) error {
+	if err := scenariotest.ShellSafe("interface", iface); err != nil {
+		return err
+	}
+	if out, err := c.exec.Run(ctx, c.Host, "sudo tc qdisc del dev "+iface+" clsact"); err != nil {
+		return fmt.Errorf("strip TC on %s@%s: %w (output: %s)", iface, c.Host, err, out)
+	}
+	c.log.Info("TC clsact stripped", "host", c.Host, "iface", iface)
+	return nil
+}
+
 // AwaitReady blocks until the restart is confirmed AND the agent is
 // serving: a MainPID different from oldPID, and /metrics answering with
 // the tap count back at baseTaps.
