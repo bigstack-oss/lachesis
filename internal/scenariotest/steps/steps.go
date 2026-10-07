@@ -56,10 +56,11 @@ const (
 	// within seconds of the triggering resource event, with the
 	// 5-minute periodic pass as the no-Kafka ceiling.
 	DefaultAnomalyTimeout = 8 * time.Minute
-	// anomalyPollInterval is the pause between AssertAnomalyStep
-	// scrapes.
-	anomalyPollInterval = 5 * time.Second
 )
+
+// anomalyPollInterval is the pause between AssertAnomalyStep scrapes;
+// a var so tests can shrink it.
+var anomalyPollInterval = 5 * time.Second
 
 // Migration timing: live migrations on the target clusters complete
 // in well under a minute; five bounds a stuck migration without

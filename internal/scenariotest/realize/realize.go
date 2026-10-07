@@ -119,6 +119,15 @@ func (r *realizer) run() error {
 	if err := r.resolvePrereqs(); err != nil {
 		return err
 	}
+
+	// Anomaly baseline before the first create: a scenario's own
+	// topology can raise an anomaly within seconds of its routes
+	// landing, so any later scrape could already include it.
+	pre, err := scenariotest.SampleAcross(r.ctx, r.opts.Metrics, r.opts.Config.Cluster.Agents)
+	if err != nil {
+		return fmt.Errorf("anomaly baseline scrape: %w", err)
+	}
+	r.rs.AnomalyBaseline = pre.Anomalies
 	if err := r.networks(snap); err != nil {
 		return err
 	}

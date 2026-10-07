@@ -253,6 +253,68 @@ func TestResolvedGrewStep(t *testing.T) {
 	}
 }
 
+// anomalyMetrics reports a fixed lachesis_neutron_anomalies breakdown,
+// for AssertAnomalyStep.
+type anomalyMetrics struct{ anomalies map[string]float64 }
+
+func (m anomalyMetrics) Scrape(context.Context, string) (scenariotest.ScrapeResult, error) {
+	return scenariotest.ScrapeResult{
+		Present:   map[string]bool{scenariotest.MetricNeutronAnomalies: true, scenariotest.MetricBytesTotal: true, scenariotest.MetricAttachedInterfaces: true},
+		Anomalies: m.anomalies,
+	}, nil
+}
+
+func (anomalyMetrics) LookupMAC(context.Context, string, string) (scenariotest.MACLookup, error) {
+	return scenariotest.MACLookup{}, nil
+}
+
+func (anomalyMetrics) LookupFlows(context.Context, string, string) ([]scenariotest.FlowRow, error) {
+	return nil, nil
+}
+
+// TestAssertAnomalyStep: Min and Max bound what the run added over the
+// pre-create baseline, so an anomaly the cluster already carried
+// cannot fail the bound (the dev-cmp dangling route that failed
+// resolver-dangling-route's exact-1 check).
+func TestAssertAnomalyStep(t *testing.T) {
+	defer func(d time.Duration) { anomalyPollInterval = d }(anomalyPollInterval)
+	anomalyPollInterval = time.Millisecond
+
+	cases := []struct {
+		name     string
+		baseline map[string]float64
+		current  float64
+		min, max int64
+		wantPass bool
+	}{
+		{"own anomaly on top of a pre-existing one", map[string]float64{"dangling_route": 1}, 2, 1, 1, true},
+		{"only the pre-existing one — own missing", map[string]float64{"dangling_route": 1}, 1, 1, 1, false},
+		{"two added where exactly one expected", map[string]float64{"dangling_route": 1}, 3, 1, 1, false},
+		{"none expected, cluster carries one", map[string]float64{"dangling_route": 1}, 1, 0, 0, true},
+		{"no baseline recorded asserts the absolute count", nil, 1, 1, 1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &scenariotest.StepEnv{
+				Config:  fake.Config(),
+				State:   &scenariotest.RunState{AnomalyBaseline: tc.baseline},
+				Metrics: anomalyMetrics{anomalies: map[string]float64{"dangling_route": tc.current}},
+				Log:     slog.New(slog.DiscardHandler),
+				Report:  &scenariotest.AssertReport{OK: true},
+			}
+			step := AssertAnomalyStep{Class: "dangling_route", Min: tc.min, Max: tc.max, Timeout: 10 * time.Millisecond}
+			if err := step.Run(context.Background(), env); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			row := env.Report.Rows[len(env.Report.Rows)-1]
+			if row.Pass != tc.wantPass {
+				t.Errorf("Pass = %v, want %v (current %.0f, delta %.0f, bounds [%d,%d])",
+					row.Pass, tc.wantPass, row.Current, row.Delta, tc.min, tc.max)
+			}
+		})
+	}
+}
+
 // healedMetrics reports a fixed healed re-attach total, for
 // ReattachHealedStep.
 type healedMetrics struct{ healed float64 }

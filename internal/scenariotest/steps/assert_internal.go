@@ -188,11 +188,15 @@ func (s AssertFlowPeerStep) Run(ctx context.Context, env *scenariotest.StepEnv) 
 }
 
 // AssertAnomalyStep polls the agents' summed
-// lachesis_neutron_anomalies{class=Class} until Min ≤ value ≤ Max
-// (both inclusive) or Timeout (default [DefaultAnomalyTimeout])
-// fires, then records one report row either way. Polling — rather
-// than a one-shot read — because the gauge only updates when a
-// reconcile pass commits the topology change the step just made.
+// lachesis_neutron_anomalies{class=Class} until Min ≤ value − baseline
+// ≤ Max (both inclusive) or Timeout (default [DefaultAnomalyTimeout])
+// fires, then records one report row either way. The baseline is the
+// class count realize recorded before creating anything
+// ([scenariotest.RunState.AnomalyBaseline]), so Min and Max bound what
+// this run's topology adds — an anomaly the cluster already carries
+// cannot fail the bound. Polling — rather than a one-shot read —
+// because the gauge only updates when a reconcile pass commits the
+// topology change the step just made.
 type AssertAnomalyStep struct {
 	Class   string
 	Min     int64
@@ -212,7 +216,9 @@ func (s AssertAnomalyStep) Run(ctx context.Context, env *scenariotest.StepEnv) e
 	if timeout <= 0 {
 		timeout = DefaultAnomalyTimeout
 	}
-	env.Log.Info("assert-anomaly", "class", s.Class, "min", s.Min, "max", s.Max, "timeout", timeout)
+	base := env.State.AnomalyBaseline[s.Class]
+	env.Log.Info("assert-anomaly", "class", s.Class, "min", s.Min, "max", s.Max,
+		"baseline", base, "timeout", timeout)
 	deadline := time.Now().Add(timeout)
 	var last float64
 	for {
@@ -221,7 +227,7 @@ func (s AssertAnomalyStep) Run(ctx context.Context, env *scenariotest.StepEnv) e
 			return err
 		}
 		last = snap.Anomalies[s.Class]
-		if last >= float64(s.Min) && last <= float64(s.Max) {
+		if d := last - base; d >= float64(s.Min) && d <= float64(s.Max) {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -233,10 +239,11 @@ func (s AssertAnomalyStep) Run(ctx context.Context, env *scenariotest.StepEnv) e
 		case <-time.After(anomalyPollInterval):
 		}
 	}
+	delta := last - base
 	env.AddRow(scenariotest.AssertRow{
 		Tenant: "anomaly", Zone: s.Class, Direction: "-",
-		Current: last, Delta: last, MinBytes: s.Min,
-		Pass: last >= float64(s.Min) && last <= float64(s.Max),
+		Baseline: base, Current: last, Delta: delta, MinBytes: s.Min,
+		Pass: delta >= float64(s.Min) && delta <= float64(s.Max),
 		Note: s.Note,
 	})
 	return nil
