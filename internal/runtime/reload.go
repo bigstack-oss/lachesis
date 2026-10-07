@@ -129,6 +129,9 @@ func (m *Manager) Reload() error {
 	warnLoadTimeChange("bpf.unsafe_allow_unpinned_maps",
 		strconv.FormatBool(m.current.BPF.UnsafeAllowUnpinnedMaps),
 		strconv.FormatBool(next.BPF.UnsafeAllowUnpinnedMaps))
+	warnLoadTimeChange("bpf.attach_resync_interval",
+		m.current.BPF.AttachResyncInterval.String(),
+		next.BPF.AttachResyncInterval.String())
 	warnLoadTimeChange("wal.path", m.current.WAL.Path, next.WAL.Path)
 	warnLoadTimeChange("logging.format", m.current.Logging.Format, next.Logging.Format)
 

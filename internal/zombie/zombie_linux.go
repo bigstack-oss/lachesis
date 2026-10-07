@@ -18,8 +18,8 @@ import (
 // successfully deleted.
 //
 // Hunt is best-effort. Per-link netlink errors during enumeration
-// are expected — most links have no clsact qdisc and FilterList
-// returns an error for them — and are silently skipped. Per-filter
+// are expected — most links have no clsact qdisc — and are silently
+// skipped (see [tcattach.TelemetryFilters]). Per-filter
 // FilterDel failures are logged at warn and aggregated into the
 // returned error, but do not abort the scan: a partial cleanup is
 // still safer than no cleanup. Callers should treat the returned
@@ -35,35 +35,24 @@ func Hunt() (int, error) {
 		delErrs []error
 	)
 	for _, link := range links {
-		// Iterate the agent's own (name, parent) hook table so the
-		// hunt scans exactly the clsact slots tcattach attaches to —
-		// a hook-location change is then a single edit in tcattach.
-		for _, hook := range tcattach.Hooks {
-			filters, ferr := netlink.FilterList(link, hook.Parent)
-			if ferr != nil {
-				// No clsact on this link/parent — most links are
-				// in this state. Move on without noise.
-				continue
-			}
-			for _, f := range filters {
-				if !isTelemetryOrphan(f) {
-					continue
-				}
-				if derr := netlink.FilterDel(f); derr != nil {
-					slog.Warn("delete orphan filter failed",
-						"component", component,
-						"link", link.Attrs().Name,
-						"handle", f.Attrs().Handle,
-						"err", derr)
-					delErrs = append(delErrs, derr)
-					continue
-				}
-				cleaned++
-				slog.Info("deleted orphan filter",
+		// Scan by name only, not the exact attach slot: an orphan from
+		// an older build may sit at a different priority, and every
+		// telemetry-named filter at boot is an orphan.
+		for _, f := range tcattach.TelemetryFilters(link) {
+			if derr := netlink.FilterDel(f); derr != nil {
+				slog.Warn("delete orphan filter failed",
 					"component", component,
 					"link", link.Attrs().Name,
-					"handle", f.Attrs().Handle)
+					"handle", f.Attrs().Handle,
+					"err", derr)
+				delErrs = append(delErrs, derr)
+				continue
 			}
+			cleaned++
+			slog.Info("deleted orphan filter",
+				"component", component,
+				"link", link.Attrs().Name,
+				"handle", f.Attrs().Handle)
 		}
 	}
 
@@ -71,16 +60,4 @@ func Hunt() (int, error) {
 		return cleaned, fmt.Errorf("zombie: %d filter deletes failed: %w", len(delErrs), errors.Join(delErrs...))
 	}
 	return cleaned, nil
-}
-
-// isTelemetryOrphan reports whether f was installed by a previous
-// agent run. Only BPF filters whose name matches one of the agent's
-// two telemetry slots qualify; any other filter (u32, generic, BPF
-// installed by a different program) is left alone.
-func isTelemetryOrphan(f netlink.Filter) bool {
-	bf, ok := f.(*netlink.BpfFilter)
-	if !ok {
-		return false
-	}
-	return tcattach.IsTelemetryFilterName(bf.Name)
 }

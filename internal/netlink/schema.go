@@ -13,3 +13,12 @@ const (
 	ifaceKindTap   = "tap"
 	ifaceKindOther = "other"
 )
+
+// outcome label values for lachesis_tc_reattach_total: "healed" when
+// the attach-presence sweep re-attached a link, "failed" when its
+// attempt errored on a still-present link. [NewMetrics] seeds every
+// (iface_kind, outcome) pair at zero.
+const (
+	outcomeHealed = "healed"
+	outcomeFailed = "failed"
+)

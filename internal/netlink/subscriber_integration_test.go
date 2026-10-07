@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	vnl "github.com/vishvananda/netlink"
 
 	cnetlink "github.com/bigstack-oss/lachesis/internal/netlink"
@@ -260,6 +262,118 @@ func TestSubscriber_IgnoresNonAllowlist(t *testing.T) {
 
 	cancel()
 	<-subErr
+}
+
+// TestSubscriber_ResyncHealsRemovedFilter verifies the attach-presence
+// sweep end to end: filters removed out-of-band from an attached tap —
+// no netlink event marks that — are re-installed by the next sweep and
+// counted as healed, and a Registry entry for a link that no longer
+// exists (a missed DELLINK) is dropped.
+func TestSubscriber_ResyncHealsRemovedFilter(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("rlimit: %v", err)
+	}
+	spec, err := fixtures.LoadNoop()
+	if err != nil {
+		t.Fatalf("load noop spec: %v", err)
+	}
+	drv, err := bpfunit.New(spec)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
+	}
+	defer drv.Close()
+	prog := drv.Program(fixtures.ProgNoopIn)
+
+	ns, err := tns.New()
+	if err != nil {
+		t.Fatalf("new ns: %v", err)
+	}
+	defer ns.Close()
+
+	registry := cnetlink.NewRegistry()
+	registry.MarkAttached("tap-ghost")
+	metrics := cnetlink.NewMetrics(registry.Len)
+	sub, err := cnetlink.New(cnetlink.Options{
+		Attacher:       tcattach.NewLinkAttacher(prog, prog),
+		Prefixes:       []string{"tap-"},
+		Registry:       registry,
+		Metrics:        metrics,
+		ResyncInterval: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	subErr := make(chan error, 1)
+	go func() {
+		subErr <- ns.Do(func() error { return sub.Run(ctx) })
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	innerMAC, _ := net.ParseMAC("aa:bb:cc:dd:f3:01")
+	outerMAC, _ := net.ParseMAC("aa:bb:cc:dd:f3:02")
+	innerIP := &net.IPNet{IP: net.IPv4(10, 84, 0, 1), Mask: net.CIDRMask(30, 32)}
+	outerIP := &net.IPNet{IP: net.IPv4(10, 84, 0, 2), Mask: net.CIDRMask(30, 32)}
+	host, err := ns.AddVeth(tns.VethSpec{
+		InnerName: "tap-heal", OuterName: "tap-heal-out",
+		InnerMAC: innerMAC, OuterMAC: outerMAC,
+		InnerIP: innerIP, OuterIP: outerIP,
+	})
+	if err != nil {
+		t.Fatalf("add veth: %v", err)
+	}
+	defer vnl.LinkDel(host)
+
+	if !waitFor(2*time.Second, func() bool {
+		return registry.IsAttached("tap-heal") && !registry.IsAttached("tap-ghost")
+	}) {
+		t.Fatalf("attach + ghost prune did not land in time; registry=%v", registry.Snapshot())
+	}
+
+	// Remove both telemetry filters behind the subscriber's back.
+	if err := ns.Do(func() error {
+		link, err := vnl.LinkByName("tap-heal")
+		if err != nil {
+			return err
+		}
+		for _, f := range tcattach.TelemetryFilters(link) {
+			if err := vnl.FilterDel(f); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("remove filters: %v", err)
+	}
+
+	if !waitFor(2*time.Second, func() bool {
+		return countTelemetryFiltersInNS(t, ns, "tap-heal") == 2
+	}) {
+		t.Fatalf("resync did not re-attach tap-heal within budget")
+	}
+	if got := testutil.ToFloat64(reattachHealed(t, metrics)); got < 1 {
+		t.Errorf("healed re-attaches = %v, want >= 1", got)
+	}
+
+	cancel()
+	<-subErr
+}
+
+// reattachHealed returns the tap-kind healed child of
+// lachesis_tc_reattach_total from the bundle's collectors.
+func reattachHealed(t *testing.T, m *cnetlink.Metrics) prometheus.Collector {
+	t.Helper()
+	for _, c := range m.Collectors() {
+		if cv, ok := c.(*prometheus.CounterVec); ok {
+			if child, err := cv.GetMetricWithLabelValues("tap", "healed"); err == nil {
+				return child
+			}
+		}
+	}
+	t.Fatal("lachesis_tc_reattach_total not in Metrics.Collectors")
+	return nil
 }
 
 // waitFor polls cond every 10 ms up to budget. Returns true if cond

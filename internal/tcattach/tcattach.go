@@ -11,8 +11,10 @@
 package tcattach
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink"
@@ -71,11 +73,85 @@ func IsTelemetryFilterName(name string) bool {
 	return false
 }
 
-// LinkAttacher attaches the telemetry programs to an interface looked
-// up by name. It adapts the by-name attach to a single-method seam so
-// the L3 netlink subscriber can drive attach through an interface
-// without importing this (L1) package or holding *ebpf.Program — the
-// agent composition root wires a LinkAttacher in as that interface.
+// TelemetryFilters returns the BPF filters on link's clsact hooks that
+// carry one of the agent's telemetry names, wherever they sit on the
+// hook. A hook whose filters cannot be listed contributes nothing —
+// most links have no clsact qdisc, and FilterList errors for them. A
+// dump that stays interrupted contributes what it returned.
+func TelemetryFilters(link netlink.Link) []*netlink.BpfFilter {
+	var out []*netlink.BpfFilter
+	for _, h := range Hooks {
+		fs, _ := hookFilters(link, h.Parent)
+		out = append(out, fs...)
+	}
+	return out
+}
+
+// HasTelemetry reports whether link carries both telemetry filters in
+// the exact slot [AttachTelemetry] installs them: the hook's own name
+// at [FilterHandle] and [FilterPriority]. A same-named filter in any
+// other slot does not count, so a link holding only that is reported
+// unattached and a re-attach installs the real pair.
+//
+// A non-nil error means the answer is unknown: the kernel kept
+// interrupting the filter dump (concurrent tc changes), so a missing
+// filter may only be missing from the partial result.
+func HasTelemetry(link netlink.Link) (bool, error) {
+	for _, h := range Hooks {
+		fs, err := hookFilters(link, h.Parent)
+		if err != nil {
+			return false, err
+		}
+		if !slices.ContainsFunc(fs, func(f *netlink.BpfFilter) bool {
+			return f.Name == h.Name &&
+				f.Handle == FilterHandle &&
+				f.Priority == FilterPriority
+		}) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// hookFilters lists the BPF filters under parent on link whose name is
+// a telemetry filter name. A dump the kernel interrupted is retried
+// once; if it is still interrupted, the partial result comes back with
+// netlink.ErrDumpInterrupted. Any other listing error yields no filters
+// and no error (see [TelemetryFilters]).
+func hookFilters(link netlink.Link, parent uint32) ([]*netlink.BpfFilter, error) {
+	filters, err := netlink.FilterList(link, parent)
+	if errors.Is(err, netlink.ErrDumpInterrupted) {
+		filters, err = netlink.FilterList(link, parent)
+	}
+	if err != nil && !errors.Is(err, netlink.ErrDumpInterrupted) {
+		return nil, nil
+	}
+	var out []*netlink.BpfFilter
+	for _, f := range filters {
+		if bf, ok := telemetryFilter(f); ok {
+			out = append(out, bf)
+		}
+	}
+	return out, err
+}
+
+// telemetryFilter reports whether f is a BPF filter carrying one of
+// the agent's telemetry names. Any other filter (u32, generic, a BPF
+// filter of another program) is not ours.
+func telemetryFilter(f netlink.Filter) (*netlink.BpfFilter, bool) {
+	bf, ok := f.(*netlink.BpfFilter)
+	if !ok || !IsTelemetryFilterName(bf.Name) {
+		return nil, false
+	}
+	return bf, true
+}
+
+// LinkAttacher attaches the telemetry programs to a link and reports
+// whether a link carries them. It adapts this package to the netlink
+// subscriber's consumer-defined seam so the L3 subscriber can drive
+// attach without importing this (L1) package or holding *ebpf.Program
+// — the agent composition root wires a LinkAttacher in as that
+// interface.
 type LinkAttacher struct {
 	ingress, egress *ebpf.Program
 }
@@ -86,15 +162,16 @@ func NewLinkAttacher(ingress, egress *ebpf.Program) *LinkAttacher {
 	return &LinkAttacher{ingress: ingress, egress: egress}
 }
 
-// AttachLink looks up the named interface and attaches both telemetry
-// programs via [AttachTelemetry] (all-or-nothing). Returns an error if
-// the interface is missing or either attach fails.
-func (a *LinkAttacher) AttachLink(name string) error {
-	link, err := netlink.LinkByName(name)
-	if err != nil {
-		return fmt.Errorf("tcattach: lookup interface %s: %w", name, err)
-	}
+// Attach attaches both telemetry programs to link via
+// [AttachTelemetry] (all-or-nothing).
+func (a *LinkAttacher) Attach(link netlink.Link) error {
 	return AttachTelemetry(link, a.ingress, a.egress)
+}
+
+// Attached reports whether link carries both telemetry filters
+// ([HasTelemetry]); a non-nil error means the answer is unknown.
+func (a *LinkAttacher) Attached(link netlink.Link) (bool, error) {
+	return HasTelemetry(link)
 }
 
 // clsactHandle is the kernel-reserved TC handle for the clsact

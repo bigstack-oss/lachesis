@@ -151,6 +151,9 @@ sum by (port_id) (rate(lachesis_port_bytes_total{server_id="<uuid>"}[1m]))
 | `lachesis_zombie_filters_cleaned_total` | counter | — | startup Zombie Hunter |
 | `lachesis_tc_attach_failures_total` | counter | `iface_kind="tap\|other"` | Netlink Watcher: failed attaches on a still-present interface; one whose link vanished before the attach (e.g. a live migration's source tap) is a debug-logged skip, not counted |
 | `lachesis_attached_interfaces` | gauge | — | current Interface Registry size |
+| `lachesis_tc_unattached_interfaces` | gauge | `iface_kind="tap\|other"` | attach-presence sweep: allowlisted links the last sweep found without the telemetry filters and failed to re-attach; sustained > 0 = unbilled traffic ([boot-and-recovery.md](./boot-and-recovery.md#attach-presence-resync)) |
+| `lachesis_tc_reattach_total` | counter | `iface_kind="tap\|other", outcome="healed\|failed"` | attach-presence sweep re-attach attempts; `healed` rising = a missed netlink event or a filter removed out-of-band |
+| `lachesis_netlink_subscriber_restarts_total` | counter | — | re-subscribes after the netlink subscription was lost (e.g. socket overflow under an event storm) |
 | `lachesis_gc_evictions_total` | counter | `reason="ttl\|pressure_relief\|ghost_residual_flow"` | GC: lingering-ghost sweep (`ttl`, mac_tenant_map), scraper pressure-relief (`pressure_relief`, telemetry_map), and a swept MAC's residual telemetry_map flows removed so they are not re-billed as "unknown" (`ghost_residual_flow`) |
 | `lachesis_gc_pressure_relief_runs_total` | counter | — | scraper pressure-relief pass (fill above the high watermark) |
 | `lachesis_gc_settled_flows_total` | counter | — | GlobalState flow rows the ghost sweep folded into the settled-bytes accumulator, keeping deleted VMs' bytes attributed to their tenant |
