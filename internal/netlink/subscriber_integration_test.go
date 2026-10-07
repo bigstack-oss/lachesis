@@ -26,7 +26,9 @@ import (
 // telemetry filters to it within a small budget.
 //
 // The subscriber runs inside a fresh netns so its host-wide
-// LinkSubscribe scan is scoped to the test's veth pair (plus lo).
+// LinkSubscribe scan is scoped to the test's veth pair (plus lo). The
+// veth stands in for a tap, so it is named explicitly: a prefix match
+// refuses veths (TestSubscriber_SkipsPrefixMatchedVeth).
 func TestSubscriber_AttachesNewTap(t *testing.T) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		t.Fatalf("rlimit: %v", err)
@@ -55,7 +57,7 @@ func TestSubscriber_AttachesNewTap(t *testing.T) {
 	registry := cnetlink.NewRegistry()
 	sub, err := cnetlink.New(cnetlink.Options{
 		Attacher: tcattach.NewLinkAttacher(prog, prog),
-		Prefixes: []string{"tap-"},
+		Explicit: []string{"tap-nlsub"},
 		Registry: registry,
 	})
 	if err != nil {
@@ -143,7 +145,7 @@ func TestSubscriber_ForgetsOnDelLink(t *testing.T) {
 	registry := cnetlink.NewRegistry()
 	sub, err := cnetlink.New(cnetlink.Options{
 		Attacher: tcattach.NewLinkAttacher(prog, prog),
-		Prefixes: []string{"tap-"},
+		Explicit: []string{"tap-gone"},
 		Registry: registry,
 	})
 	if err != nil {
@@ -295,7 +297,7 @@ func TestSubscriber_ResyncHealsRemovedFilter(t *testing.T) {
 	metrics := cnetlink.NewMetrics(registry.Len)
 	sub, err := cnetlink.New(cnetlink.Options{
 		Attacher:       tcattach.NewLinkAttacher(prog, prog),
-		Prefixes:       []string{"tap-"},
+		Explicit:       []string{"tap-heal"},
 		Registry:       registry,
 		Metrics:        metrics,
 		ResyncInterval: 100 * time.Millisecond,
@@ -361,19 +363,93 @@ func TestSubscriber_ResyncHealsRemovedFilter(t *testing.T) {
 	<-subErr
 }
 
-// reattachHealed returns the tap-kind healed child of
-// lachesis_tc_reattach_total from the bundle's collectors.
+// reattachHealed returns the other-kind healed child of
+// lachesis_tc_reattach_total from the bundle's collectors — "other"
+// because the test's veth is attached as an explicit entry.
 func reattachHealed(t *testing.T, m *cnetlink.Metrics) prometheus.Collector {
 	t.Helper()
 	for _, c := range m.Collectors() {
 		if cv, ok := c.(*prometheus.CounterVec); ok {
-			if child, err := cv.GetMetricWithLabelValues("tap", "healed"); err == nil {
+			if child, err := cv.GetMetricWithLabelValues("other", "healed"); err == nil {
 				return child
 			}
 		}
 	}
 	t.Fatal("lachesis_tc_reattach_total not in Metrics.Collectors")
 	return nil
+}
+
+// TestSubscriber_SkipsPrefixMatchedVeth verifies the metadata-veth
+// veto against real kernel events: a veth whose name matches an
+// attach prefix — the shape of an OVN ovnmeta-* host end — is neither
+// registered nor given telemetry filters.
+func TestSubscriber_SkipsPrefixMatchedVeth(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("rlimit: %v", err)
+	}
+	spec, err := fixtures.LoadNoop()
+	if err != nil {
+		t.Fatalf("load noop spec: %v", err)
+	}
+	drv, err := bpfunit.New(spec)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
+	}
+	defer drv.Close()
+	prog := drv.Program(fixtures.ProgNoopIn)
+
+	ns, err := tns.New()
+	if err != nil {
+		t.Fatalf("new ns: %v", err)
+	}
+	defer ns.Close()
+
+	registry := cnetlink.NewRegistry()
+	sub, err := cnetlink.New(cnetlink.Options{
+		Attacher: tcattach.NewLinkAttacher(prog, prog),
+		Prefixes: []string{"tap-"},
+		Registry: registry,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	subErr := make(chan error, 1)
+	go func() {
+		subErr <- ns.Do(func() error { return sub.Run(ctx) })
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	innerMAC, _ := net.ParseMAC("aa:bb:cc:dd:f3:01")
+	outerMAC, _ := net.ParseMAC("aa:bb:cc:dd:f3:02")
+	innerIP := &net.IPNet{IP: net.IPv4(10, 83, 0, 1), Mask: net.CIDRMask(30, 32)}
+	outerIP := &net.IPNet{IP: net.IPv4(10, 83, 0, 2), Mask: net.CIDRMask(30, 32)}
+
+	host, err := ns.AddVeth(tns.VethSpec{
+		InnerName: "tap-meta", OuterName: "tap-meta-out",
+		InnerMAC: innerMAC, OuterMAC: outerMAC,
+		InnerIP: innerIP, OuterIP: outerIP,
+	})
+	if err != nil {
+		t.Fatalf("add veth: %v", err)
+	}
+	defer vnl.LinkDel(host)
+
+	// Same window as TestSubscriber_IgnoresNonAllowlist: long enough
+	// for a NEWLINK round-trip had the matcher attached.
+	time.Sleep(250 * time.Millisecond)
+	if registry.IsAttached("tap-meta") {
+		t.Errorf("registry attached prefix-matched veth tap-meta; snapshot=%v", registry.Snapshot())
+	}
+	if got := countTelemetryFiltersInNS(t, ns, "tap-meta"); got != 0 {
+		t.Errorf("filter count on tap-meta = %d, want 0", got)
+	}
+
+	cancel()
+	<-subErr
 }
 
 // waitFor polls cond every 10 ms up to budget. Returns true if cond

@@ -303,3 +303,95 @@ func TestRun_Resubscribes(t *testing.T) {
 		t.Errorf("restarts = %v, want %d", got, len(lives))
 	}
 }
+
+// TestHandle_VethSkip pins the metadata-veth veto on the event path: a
+// prefix-matched veth never reaches the Attacher, its repeated
+// NEWLINKs count once, a DELLINK re-arms the count for a re-created
+// link of the same name, and an explicit entry attaches a veth anyway.
+func TestHandle_VethSkip(t *testing.T) {
+	newVeth := func(msgType uint16, name string) netlink.LinkUpdate {
+		return netlink.LinkUpdate{
+			Header: unix.NlMsghdr{Type: msgType},
+			Link:   vethLink(name, loIndex(t)),
+		}
+	}
+	attacher := &fakeAttacher{}
+	registry := NewRegistry()
+	metrics := NewMetrics(registry.Len)
+	s := newLinuxSubscriber(Options{
+		Attacher: attacher,
+		Prefixes: []string{"tap"},
+		Explicit: []string{"tap-explicit"},
+		Registry: registry,
+		Metrics:  metrics,
+	})
+
+	s.handle(newVeth(unix.RTM_NEWLINK, "tapf386a51d-c0"))
+	s.handle(newVeth(unix.RTM_NEWLINK, "tapf386a51d-c0")) // same link, state change
+	s.handle(newVeth(unix.RTM_DELLINK, "tapf386a51d-c0"))
+	s.handle(newVeth(unix.RTM_NEWLINK, "tapf386a51d-c0")) // re-created
+	s.handle(newVeth(unix.RTM_NEWLINK, "tap-explicit"))
+
+	if want := []string{"tap-explicit"}; !reflect.DeepEqual(attacher.calls, want) {
+		t.Errorf("Attach calls = %v, want %v", attacher.calls, want)
+	}
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(metrics.Collectors()...)
+	want := `
+# HELP lachesis_netlink_skipped_interfaces_total Interfaces matching an attach prefix that the netlink subscriber refused, labelled by reason ("veth": an OVN metadata-proxy veth named like a VM tap).
+# TYPE lachesis_netlink_skipped_interfaces_total counter
+lachesis_netlink_skipped_interfaces_total{reason="veth"} 2
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want),
+		"lachesis_netlink_skipped_interfaces_total"); err != nil {
+		t.Errorf("metric mismatch:\n%v", err)
+	}
+}
+
+// TestResync_SkipsVeth: the attach-presence sweep applies the same
+// veto — a prefix-matched veth is neither re-attached nor counted
+// unattached, while an explicitly listed veth is healed.
+func TestResync_SkipsVeth(t *testing.T) {
+	present := loIndex(t)
+	attacher := &fakeAttacher{}
+	registry := NewRegistry()
+	metrics := NewMetrics(registry.Len)
+	s := newLinuxSubscriber(Options{
+		Attacher: attacher,
+		Prefixes: []string{"tap"},
+		Explicit: []string{"tap-explicit"},
+		Registry: registry,
+		Metrics:  metrics,
+	})
+	s.listLinks = func() ([]netlink.Link, error) {
+		return []netlink.Link{
+			vethLink("tapf386a51d-c0", present),
+			vethLink("tap-explicit", present),
+		}, nil
+	}
+
+	s.resync()
+
+	if want := []string{"tap-explicit"}; !reflect.DeepEqual(attacher.calls, want) {
+		t.Errorf("Attach calls = %v, want %v", attacher.calls, want)
+	}
+	if got, want := registry.Snapshot(), []string{"tap-explicit"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Registry = %v, want %v", got, want)
+	}
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(metrics.Collectors()...)
+	want := `
+# HELP lachesis_tc_unattached_interfaces Allowlisted interfaces the last attach-presence sweep found without the telemetry TC programs and failed to re-attach, labelled by iface_kind. Sustained > 0 means traffic on them is unbilled.
+# TYPE lachesis_tc_unattached_interfaces gauge
+lachesis_tc_unattached_interfaces{iface_kind="other"} 0
+lachesis_tc_unattached_interfaces{iface_kind="tap"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want),
+		"lachesis_tc_unattached_interfaces"); err != nil {
+		t.Errorf("metric mismatch:\n%v", err)
+	}
+}
+
+func vethLink(name string, index int) netlink.Link {
+	return &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: name, Index: index}}
+}

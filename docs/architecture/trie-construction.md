@@ -91,11 +91,14 @@ Notes, in step order:
   port (verified empirically — it exists only in OVN's own DB), so
   `mac_tenant_map` misses on DHCP responses and the LPM lookup on the gateway
   IP carries the classification. The `network:distributed` filter contributes
-  its **fixed IP only** — its MAC is never on the wire, so
+  its **fixed IP only** — its MAC never reaches a tap the agent attaches, so
   [`mac_tenant_map` population](./data-structures.md#kernel-side-bpf-maps)
-  excludes it. OVN also has no `network:metadata` ports (the OVN metadata
-  agent proxies 169.254.169.254 directly); absent values produce zero results
-  harmlessly, so one filter set covers both architectures.
+  excludes it. (It is the metadata proxy's MAC inside the `ovnmeta-*`
+  namespace, whose veth the agent refuses —
+  [edge-cases.md](./edge-cases.md#tier-4--subtle-correctness), Tier 4 row 22.)
+  OVN also has no `network:metadata` ports (the OVN metadata agent proxies
+  169.254.169.254 directly); absent values produce zero results harmlessly, so
+  one filter set covers both architectures.
 - **DHCP broadcast half.** The `gateway_ip/32 → INFRA` rule only catches the
   server's side of the exchange. The broadcast DISCOVER/REQUEST half has a
   group destination MAC and classifies `multicast` (never billed, decided by
@@ -115,7 +118,7 @@ split; this table is the verified ground truth on the deployment target
 |---|---|---|---|
 | `network:router_interface` | yes | no | |
 | `network:router_gateway` | yes | no | |
-| `network:distributed` | yes | no | fixed IP only; MAC never on the wire |
+| `network:distributed` | yes | no | fixed IP only; MAC only on the unattached metadata veth |
 | `network:dhcp` | yes | no | |
 | `network:metadata` | yes | no | absent under OVN |
 | `network:floatingip` | no | no | bookkeeping; no L2 endpoint, so kernel state would be wasted |
