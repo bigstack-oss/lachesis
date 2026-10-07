@@ -45,7 +45,8 @@ survives each kind of crash.
 6. Start the Run workers, one goroutine each, from the drain-ordered
    workers() table:
 
-     netlink subscriber   (performs step 4's attach sweep)
+     netlink subscriber   (performs step 4's attach sweep; then the
+                           periodic attach-presence resync)
      ghost sweeper        (awaits StateRestored)
      kafka consumer       (awaits StateRestored)
      reconciler           (awaits StateRestored; 5-min timer + kicks)
@@ -97,6 +98,62 @@ are separate goroutines. This is [Contract 4](./contracts.md#required-contracts)
 **Partial Neutron failures** (e.g., `GET /v2.0/ports` succeeds, `GET /v2.0/routers` returns 500):
 - **Cold-start is all-or-nothing.** If any required endpoint fails, the entire cold-start fails and the boot loop retries from the top. Starting with partial metadata reproduces the same permanent-miss problem as a full Neutron outage.
 - **Runtime reconcile is best-effort per endpoint.** A 500 on one endpoint doesn't invalidate state derived from successfully-fetched endpoints; the per-endpoint error counter tracks recovery. The next reconcile cycle retries the failed endpoint.
+
+## Attach-presence resync
+
+The netlink event path alone can leave an allowlisted tap present but
+unattached, and so silently unbilled, with nothing counting it:
+
+- **A lost subscription.** An event storm (a mass VM launch, HA failover
+  rescheduling many ports) can overflow the netlink socket. Receive then fails
+  with ENOBUFS and the subscription ends. Every event until the re-subscribe is
+  lost.
+- **Filters removed out-of-band.** An operator `tc qdisc del … clsact` (the
+  shared-clsact teardown trap) or another tool rewriting the hook drops our
+  filters without any link event.
+- **A stale Registry.** A DELLINK lost with the socket leaves the name
+  registered. If a tap later reappears under that name, its NEWLINK is skipped
+  as "already attached".
+
+`lachesis_tc_attach_failures_total` sees none of these, because none of them
+reaches an attach call. Two measures in the subscriber close the gap:
+
+1. **Re-subscribe.** A lost subscription is re-established after a capped
+   exponential backoff (1s doubling to 30s; a stream that stayed up for 30s
+   resets it), and counted on `lachesis_netlink_subscriber_restarts_total`.
+   The new stream's ListExisting replay covers links created during the gap,
+   and the stream opens with a resync sweep for the rest.
+2. **Resync sweep.** Every `bpf.attach_resync_interval` (default 60s; 0
+   disables) the subscriber lists the host's links, checks each allowlisted
+   one in the kernel for both telemetry filters in their exact slot (name,
+   `FilterHandle`, `FilterPriority`), and re-attaches any that lack them.
+   `FilterReplace` is idempotent, so a healthy host performs no kernel writes.
+   The Registry is then rebuilt as exactly the set the kernel carries. The
+   kernel is the truth, not the Registry. Under churn the kernel can interrupt a dump,
+   returning a partial result. An interrupted dump is retried once. If it
+   stays interrupted, the sweep skips that round (for the link list) or leaves
+   that link as it was (for its filter list), rather than pruning live entries
+   or counting a false heal.
+
+The sweep is a ticker case in the subscriber's own event loop, not a separate
+worker. That keeps all netlink work on one goroutine (the integration harness
+pins it to a netns), and the sweep can never race the event path on the
+Registry. The sweep interval is its own rate limit: a persistently failing
+link is retried once per sweep, and it warns once until it heals or vanishes.
+While a sweep runs, events queue in the subscriber's buffer, which slightly
+raises the overflow risk during a storm. That is accepted, because an
+overflow now costs one re-subscribe, which resyncs anyway.
+
+Signals: `lachesis_tc_reattach_total{outcome="healed"}` rising means events
+were missed or filters were removed; `lachesis_tc_unattached_interfaces`
+sustained above 0 means links the sweep cannot attach, whose traffic is
+unbilled.
+
+This is deliberately **not** a runtime Zombie Hunter. It only ever adds
+filters. Zombie deletion stays boot-only, because only before the first attach
+is every telemetry-named filter an orphan by definition. A runtime deleter
+would have to tell live filters from orphans, and a bug there silently
+undercounts billing.
 
 ## Crash resilience
 

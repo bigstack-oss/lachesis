@@ -38,6 +38,13 @@ bpf:
   # that does not match any prefix. Empty by default.
   attach_interfaces: []
 
+  # Cadence of the attach-presence sweep: every interval the netlink
+  # subscriber checks each allowlisted interface in the kernel and
+  # re-attaches any that lost (or never got) the telemetry filters — a
+  # missed netlink event or a filter removed out-of-band. 0 disables
+  # the sweep; otherwise at least 10s. Load-time (restart to change).
+  attach_resync_interval: 60s
+
   # When true, boot continues with UNPINNED maps if pinning cannot be
   # established under pin_path (e.g. /sys/fs/bpf is not mounted as a
   # bpf filesystem). Agent-crash recovery then degrades from zero-loss

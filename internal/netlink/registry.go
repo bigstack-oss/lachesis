@@ -55,6 +55,19 @@ func (r *Registry) Forget(iface string) {
 	delete(r.names, iface)
 }
 
+// Replace sets the registry's contents to exactly names, dropping
+// every entry not in it — the attach-presence sweep's rebuild from
+// what the kernel carries.
+func (r *Registry) Replace(names []string) {
+	next := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		next[name] = struct{}{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.names = next
+}
+
 // Len returns the current number of attached interfaces, suitable
 // for the lachesis_attached_interfaces gauge.
 func (r *Registry) Len() int {

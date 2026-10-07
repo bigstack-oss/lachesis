@@ -233,3 +233,99 @@ func listBPFFiltersInNS(t *testing.T, ns *tns.NS, linkName string, parent uint32
 	}
 	return out
 }
+
+// TestHasTelemetry pins the presence check the attach-presence sweep
+// trusts: false on a bare link, true once [tcattach.AttachTelemetry]
+// installed both filters, false again when one is deleted — even with a
+// same-named filter sitting at another priority, which
+// [tcattach.TelemetryFilters] (the zombie hunter's name-only scan)
+// still reports.
+func TestHasTelemetry(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("rlimit: %v", err)
+	}
+	spec, err := fixtures.LoadNoop()
+	if err != nil {
+		t.Fatalf("load noop spec: %v", err)
+	}
+	drv, err := bpfunit.New(spec)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
+	}
+	defer drv.Close()
+	prog := drv.Program(fixtures.ProgNoopIn)
+	if prog == nil {
+		t.Fatal("tc_noop_in program missing from collection")
+	}
+
+	ns, err := tns.New()
+	if err != nil {
+		t.Fatalf("new ns: %v", err)
+	}
+	defer ns.Close()
+
+	innerMAC, _ := net.ParseMAC("aa:bb:cc:dd:e7:01")
+	outerMAC, _ := net.ParseMAC("aa:bb:cc:dd:e7:02")
+	innerIP := &net.IPNet{IP: net.IPv4(10, 85, 0, 1), Mask: net.CIDRMask(30, 32)}
+	outerIP := &net.IPNet{IP: net.IPv4(10, 85, 0, 2), Mask: net.CIDRMask(30, 32)}
+	host, err := ns.AddVeth(tns.VethSpec{
+		InnerName: "vm-tchas", OuterName: "tap-tchas",
+		InnerMAC: innerMAC, OuterMAC: outerMAC,
+		InnerIP: innerIP, OuterIP: outerIP,
+	})
+	if err != nil {
+		t.Fatalf("add veth: %v", err)
+	}
+	defer netlink.LinkDel(host)
+
+	if err := ns.Do(func() error {
+		link, err := netlink.LinkByName("vm-tchas")
+		if err != nil {
+			return err
+		}
+		if ok, err := tcattach.HasTelemetry(link); ok || err != nil {
+			t.Errorf("bare link: HasTelemetry = %v, %v; want false, nil", ok, err)
+		}
+		if err := tcattach.AttachTelemetry(link, prog, prog); err != nil {
+			return err
+		}
+		if ok, err := tcattach.HasTelemetry(link); !ok || err != nil {
+			t.Errorf("after AttachTelemetry: HasTelemetry = %v, %v; want true, nil", ok, err)
+		}
+
+		// Move the egress filter off its slot: delete it, then install
+		// a same-named one at another priority.
+		if err := netlink.FilterDel(&netlink.BpfFilter{FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_EGRESS,
+			Handle:    tcattach.FilterHandle,
+			Priority:  tcattach.FilterPriority,
+			Protocol:  unix.ETH_P_ALL,
+		}}); err != nil {
+			return err
+		}
+		if err := netlink.FilterReplace(&netlink.BpfFilter{
+			FilterAttrs: netlink.FilterAttrs{
+				LinkIndex: link.Attrs().Index,
+				Parent:    netlink.HANDLE_MIN_EGRESS,
+				Handle:    tcattach.FilterHandle,
+				Priority:  tcattach.FilterPriority + 1,
+				Protocol:  unix.ETH_P_ALL,
+			},
+			Fd:           prog.FD(),
+			Name:         tcattach.FilterEgressName,
+			DirectAction: true,
+		}); err != nil {
+			return err
+		}
+		if ok, err := tcattach.HasTelemetry(link); ok || err != nil {
+			t.Errorf("egress filter off its slot: HasTelemetry = %v, %v; want false, nil", ok, err)
+		}
+		if got := len(tcattach.TelemetryFilters(link)); got != 2 {
+			t.Errorf("TelemetryFilters = %d filters, want 2 (name-only scan sees the off-slot one)", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+}

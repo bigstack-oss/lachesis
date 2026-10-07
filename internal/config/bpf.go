@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // BPFConfig groups settings for the eBPF subsystem.
@@ -22,6 +23,15 @@ type BPFConfig struct {
 	// match a prefix. Empty by default. Use for outliers such as a
 	// dedicated test interface.
 	AttachInterfaces []string `yaml:"attach_interfaces"`
+	// AttachResyncInterval is the cadence of the netlink subscriber's
+	// attach-presence sweep, which re-attaches any allowlisted
+	// interface the kernel shows without the telemetry filters (a
+	// missed netlink event, a filter removed out-of-band). Zero
+	// disables the sweep; otherwise at least minAttachResyncInterval.
+	// Load-time: a change takes effect at the next restart.
+	//
+	// docs/architecture/boot-and-recovery.md#attach-presence-resync
+	AttachResyncInterval time.Duration `yaml:"attach_resync_interval"`
 	// UnsafeAllowUnpinnedMaps lets the agent boot when the
 	// counter-bearing maps cannot be pinned, degrading crash recovery
 	// from zero-loss to the ≤60s WAL-bounded path. Default false is
@@ -41,12 +51,13 @@ func bpfDefaults() BPFConfig {
 		// Explicit empty (not nil) so the shipped example YAML, which
 		// lists `attach_interfaces: []`, round-trips equal to Defaults
 		// under the drift test's reflect.DeepEqual.
-		AttachInterfaces: []string{},
+		AttachInterfaces:     []string{},
+		AttachResyncInterval: 60 * time.Second,
 	}
 }
 
-// Validate checks the pin path is absolute and rejects empty entries
-// in the attach allowlists. None of the three attach knobs is checked
+// Validate checks the pin path is absolute, rejects empty entries
+// in the attach allowlists, and bounds the resync interval. None of the three attach knobs is checked
 // against the host's interface list — the agent's attach step does that
 // and reports a more precise error. An entirely empty allowlist is
 // allowed on purpose: it is the "attach managed out-of-band" mode the
@@ -72,6 +83,9 @@ func (c BPFConfig) Validate() error {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("attach_interfaces[%d] is empty", i)
 		}
+	}
+	if c.AttachResyncInterval < 0 || (c.AttachResyncInterval > 0 && c.AttachResyncInterval < minAttachResyncInterval) {
+		return fmt.Errorf("attach_resync_interval %v must be 0 (disabled) or >= %v", c.AttachResyncInterval, minAttachResyncInterval)
 	}
 	return nil
 }
