@@ -198,6 +198,50 @@ type ReloadAgentStep struct {
 
 func (ReloadAgentStep) Kind() string { return "reload-agent" }
 
+// StripTCStep deletes the clsact qdisc — and with it the agent's
+// telemetry filters — on a VM's tap, behind the agent's back. No link
+// event marks it, so the netlink subscriber's event path cannot see it;
+// only the agent's attach-presence sweep restores the filters. Pair it
+// with a [CaptureStep] before and a [ReattachHealedStep] after.
+//
+// docs/architecture/boot-and-recovery.md#attach-presence-resync
+type StripTCStep struct {
+	// VM is the DSL id of the VM whose tap is stripped.
+	VM string
+	// Node selects the agent host the VM's tap lives on: a placement
+	// slot ("node:0") or a literal agent host. Empty means the sole
+	// agent (errors if more than one).
+	Node string
+}
+
+func (StripTCStep) Kind() string { return "strip-tc" }
+
+// HostNeeds declares the agent-host SSH this step drives, so a cluster
+// without agent_control SKIPs rather than failing mid-run.
+func (StripTCStep) HostNeeds() scenariotest.HostNeeds {
+	return scenariotest.HostNeeds{AgentSSH: true}
+}
+
+func (s StripTCStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	portID := scenariotest.LiveID(env.State.Ports, s.VM)
+	if len(portID) < tapNameLen-len("tap") {
+		return fmt.Errorf("strip-tc: run-state has no port for VM %q", s.VM)
+	}
+	ctl, err := agentctl.For(env, s.Node)
+	if err != nil {
+		return fmt.Errorf("strip-tc: %w", err)
+	}
+	if err := ctl.StripTC(ctx, tapName(portID)); err != nil {
+		return fmt.Errorf("strip-tc: %w", err)
+	}
+	return nil
+}
+
+// tapName is the host-side tap interface of the Neutron port portID.
+func tapName(portID string) string {
+	return ("tap" + portID)[:tapNameLen]
+}
+
 // RestoreDirtyConfigs puts back every agent config a step modified and
 // did not restore — the safety net for abort paths, where a step error
 // returns straight out of the executor and the trailing restore step

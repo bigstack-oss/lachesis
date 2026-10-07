@@ -59,6 +59,7 @@ func All() []*scenariotest.Scenario {
 		hostRouteNexthop(),
 		gcPressureRelief(),
 		octaviaLBAttribution(),
+		attachPresenceHeal(),
 	}
 }
 

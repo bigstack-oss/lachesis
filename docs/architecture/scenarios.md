@@ -210,6 +210,7 @@ At packet time (VM-A → 172.16.99.x):
 | infra zone (gateway/DHCP) | `vm-to-gateway` |
 | lifecycle (ghost sweep, MAC reuse) | `mac-reuse` |
 | live migration continuity | `live-migration-continuity` |
+| attach-presence resync (filters removed out-of-band) | `attach-presence-heal` |
 
 The catalog-audit backlog tracks scenarios for every remaining designed case;
 the harness itself is documented in [development/testing.md](../development/testing.md).

@@ -6,12 +6,12 @@ import (
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 )
 
-// reasonSum sums only the samples of family name whose `reason` label
-// equals want. The eviction families pack several distinct reasons into
-// one family, so [familySum] would conflate unrelated eviction paths —
-// notably pressure-relief (telemetry_map fill) with the ghost sweep's
-// ttl expiry.
-func reasonSum(fams map[string]*dto.MetricFamily, name, want string) float64 {
+// labelSum sums only the samples of family name whose label equals
+// want. Several families pack distinct meanings into one label, so
+// [familySum] would conflate them — notably the eviction family's
+// pressure-relief (telemetry_map fill) with the ghost sweep's ttl
+// expiry, and the re-attach family's healed with failed.
+func labelSum(fams map[string]*dto.MetricFamily, name, label, want string) float64 {
 	fam, ok := fams[name]
 	if !ok {
 		return 0
@@ -19,7 +19,7 @@ func reasonSum(fams map[string]*dto.MetricFamily, name, want string) float64 {
 	var total float64
 	for _, m := range fam.GetMetric() {
 		for _, lp := range m.GetLabel() {
-			if lp.GetName() == "reason" && lp.GetValue() == want {
+			if lp.GetName() == label && lp.GetValue() == want {
 				total += sampleValue(m)
 			}
 		}

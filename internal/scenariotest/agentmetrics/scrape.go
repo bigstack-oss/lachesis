@@ -18,7 +18,7 @@ func (c *Client) Scrape(ctx context.Context, url string) (scenariotest.ScrapeRes
 		scenariotest.MetricSettledFlows, scenariotest.MetricLingeringGhosts, scenariotest.MetricServerBytesTotal,
 		scenariotest.MetricNeutronAnomalies, scenariotest.MetricTenantSettledTuples,
 		scenariotest.MetricUnresolvedResolved, scenariotest.MetricGCEvictions,
-		scenariotest.MetricCountersReset,
+		scenariotest.MetricCountersReset, scenariotest.MetricReattachTotal,
 	} {
 		_, ok := fams[n]
 		r.Present[n] = ok
@@ -30,7 +30,8 @@ func (c *Client) Scrape(ctx context.Context, url string) (scenariotest.ScrapeRes
 		familySum(fams, scenariotest.MetricServerSettledTuples) +
 		familySum(fams, scenariotest.MetricTotalSettledTuples)
 	r.UnresolvedResolved = familySum(fams, scenariotest.MetricUnresolvedResolved)
-	r.PressureReliefEvictions = reasonSum(fams, scenariotest.MetricGCEvictions, scenariotest.ReasonPressureRelief)
+	r.PressureReliefEvictions = labelSum(fams, scenariotest.MetricGCEvictions, "reason", scenariotest.ReasonPressureRelief)
+	r.ReattachHealed = labelSum(fams, scenariotest.MetricReattachTotal, "outcome", scenariotest.OutcomeHealed)
 	r.LingeringGhosts = familySum(fams, scenariotest.MetricLingeringGhosts)
 	r.Bytes = bytesSamples(fams)
 	r.Servers = serverSamples(fams)

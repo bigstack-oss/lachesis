@@ -37,6 +37,17 @@ const (
 	configRestoreTimeout = 3 * time.Minute
 )
 
+// DefaultReattachTimeout bounds [ReattachHealedStep]'s poll. A stripped
+// tap is restored at the agent's next attach-presence sweep
+// (bpf.attach_resync_interval, default 60s) and counted on the next
+// scrape, so this covers the default interval with room to spare.
+const DefaultReattachTimeout = 3 * time.Minute
+
+// tapNameLen is the length of a VM tap's name: "tap" plus the first 11
+// characters of its Neutron port UUID (Linux's 15-character interface
+// name limit).
+const tapNameLen = 14
+
 // --- the vocabulary ---
 
 const (
