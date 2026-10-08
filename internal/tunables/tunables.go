@@ -37,6 +37,10 @@ type Values struct {
 	// metadata-freshness ceiling when Kafka is down. The /debug
 	// sync-stale badge derives from it.
 	ReconcileInterval time.Duration `knob:"reconcile.interval"`
+	// KickDebounce is the quiet window a Kafka kick waits for before
+	// its reconcile pass starts, so a burst of Neutron events shares
+	// one pass; 0 runs a pass per kick immediately.
+	KickDebounce time.Duration `knob:"reconcile.kick_debounce"`
 	// ScrapeInterval is the kernel-drain cadence. Safe to retune live:
 	// the delta math is interval-agnostic by design.
 	ScrapeInterval time.Duration `knob:"scrape.interval"`

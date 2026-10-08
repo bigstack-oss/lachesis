@@ -102,6 +102,8 @@ type Reconciler struct {
 	// of events coalesces into a single pending pass; [Reconciler.Run]
 	// drains it.
 	kick chan struct{}
+	// maxWait is [kickMaxWait]; a field so tests can shorten it.
+	maxWait time.Duration
 }
 
 // Options bundles the inputs to [New]. Source, Trie, Interner, and
@@ -163,15 +165,16 @@ func New(opts Options) *Reconciler {
 		bpfGauge:     opts.BPFGauge,
 		amphoraGauge: opts.AmphoraGauge,
 		kick:         make(chan struct{}, 1),
+		maxWait:      kickMaxWait,
 	}
 }
 
-// Kick requests an immediate reconcile pass out of band. The Kafka
-// consumer calls it when a Neutron notification shows metadata changed,
-// so the trie and mac_tenant_map refresh within one pass instead of
-// waiting up to a full interval. It is non-blocking and coalescing — the
-// buffered channel holds at most one pending kick, so a burst of events
-// costs a single extra pass — and safe to call from any goroutine.
+// Kick requests a reconcile pass out of band, after the kick-debounce
+// window (see [Reconciler.Run]). The Kafka consumer calls it when a
+// Neutron notification shows metadata changed, so the trie and
+// mac_tenant_map refresh within seconds instead of waiting up to a full
+// interval. It is non-blocking and coalescing — the buffered channel
+// holds at most one pending kick — and safe to call from any goroutine.
 func (r *Reconciler) Kick() {
 	r.mx.RecordKick()
 	select {
@@ -182,9 +185,12 @@ func (r *Reconciler) Kick() {
 
 // Run reconciles on each tick and on each [Reconciler.Kick] until ctx
 // is cancelled — one applier goroutine for both, so passes never
-// overlap. Blocks on [boot.PhaseStateRestored] first: a delta computed
-// before cold-start committed the initial trie would be wrong. No
-// immediate first pass; cold start already populated the trie.
+// overlap. A kick's pass waits for the live kick-debounce window to go
+// quiet (each kick restarts it, up to maxWait from the first), so a
+// burst of Neutron events costs one pass. Blocks on
+// [boot.PhaseStateRestored] first: a delta computed before cold-start
+// committed the initial trie would be wrong. No immediate first pass;
+// cold start already populated the trie.
 func (r *Reconciler) Run(ctx context.Context) {
 	if r.seq != nil {
 		if err := r.seq.Await(ctx, boot.PhaseStateRestored); err != nil {
@@ -196,13 +202,37 @@ func (r *Reconciler) Run(ctx context.Context) {
 	cur := r.intervalNow()
 	t := time.NewTicker(cur)
 	defer t.Stop()
+	settle := time.NewTimer(0)
+	settle.Stop()
+	defer settle.Stop()
+	var (
+		settleC  <-chan time.Time // nil while no kick is waiting
+		deadline time.Time        // first waiting kick + maxWait
+	)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
 			r.timedPass(ctx, now, triggerTick)
+			// The pass read state after every waiting kick arrived,
+			// so it already covers them.
+			settle.Stop()
+			settleC = nil
 		case <-r.kick:
+			window := r.tun.Get().KickDebounce
+			if window <= 0 {
+				r.timedPass(ctx, time.Now(), triggerKick)
+				break
+			}
+			now := time.Now()
+			if settleC == nil {
+				deadline = now.Add(r.maxWait)
+			}
+			settle.Reset(min(window, deadline.Sub(now)))
+			settleC = settle.C
+		case <-settleC:
+			settleC = nil
 			r.timedPass(ctx, time.Now(), triggerKick)
 		}
 		if next := r.intervalNow(); next != cur {

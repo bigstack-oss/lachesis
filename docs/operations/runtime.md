@@ -43,6 +43,7 @@ added to the config but never registered in the projection.
 | `gc.pressure_low_watermark` | pressure reliever | hysteresis floor |
 | `gc.pressure_max_per_pass` | pressure reliever | per-pass eviction cap (bounds scrape stall) |
 | `reconcile.interval` | reconciler | the no-Kafka staleness ceiling |
+| `reconcile.kick_debounce` | reconciler | quiet window a Kafka burst must leave before its one reconcile pass starts (default 1s, capped at 5s from the first kick; 0 = a pass per kick, immediately) |
 | `wal.flush_interval` | WAL flusher | durability window (the ≤60s loss bound) |
 | `unresolved.cap` | UnresolvedBuffer | entry bound (floor ≥ 1 — Contract 1) |
 | `unresolved.ttl` | UnresolvedBuffer | late-binding window |
