@@ -40,7 +40,7 @@ func NewMetrics() *Metrics {
 		}, []string{labelTrigger}),
 		kicks: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lachesis_reconcile_kicks_total",
-			Help: "Kafka-driven reconcile kicks (one per committed Neutron metadata change). Kick-started passes are lachesis_reconcile_duration_seconds_count{trigger=\"kick\"}; the gap between the two is kicks folded into a pass.",
+			Help: "Reconcile kicks: one per committed Neutron metadata change from Kafka, plus one per SIGHUP config reload. Kick-started passes are lachesis_reconcile_duration_seconds_count{trigger=\"kick\"}; the gap between the two is kicks folded into a pass.",
 		}),
 	}
 	m.runs.WithLabelValues(resultOK)
