@@ -38,7 +38,7 @@ func TestKick_CountsEveryKick(t *testing.T) {
 			reg := prometheus.NewPedanticRegistry()
 			reg.MustRegister(mx.kicks)
 			want := `
-# HELP lachesis_reconcile_kicks_total Kafka-driven reconcile kicks (one per committed Neutron metadata change). Kick-started passes are lachesis_reconcile_duration_seconds_count{trigger="kick"}; the gap between the two is kicks folded into a pass.
+# HELP lachesis_reconcile_kicks_total Reconcile kicks: one per committed Neutron metadata change from Kafka, plus one per SIGHUP config reload. Kick-started passes are lachesis_reconcile_duration_seconds_count{trigger="kick"}; the gap between the two is kicks folded into a pass.
 # TYPE lachesis_reconcile_kicks_total counter
 lachesis_reconcile_kicks_total ` + strconv.Itoa(tc.kicks) + `
 `
