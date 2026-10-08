@@ -27,6 +27,7 @@ func TestTunablesProjection_CoversEveryField(t *testing.T) {
 	perturbed.GC.PressureLowWatermark = 0.37
 	perturbed.GC.PressureMaxPerPass = 74
 	perturbed.Reconcile.Interval = 75 * time.Second
+	perturbed.Reconcile.KickDebounce = 80 * time.Millisecond
 	perturbed.Scrape.Interval = 76 * time.Second
 	perturbed.WAL.FlushInterval = 77 * time.Second
 	perturbed.Unresolved.Cap = 78

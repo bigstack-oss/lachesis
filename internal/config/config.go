@@ -100,6 +100,7 @@ func (c Config) Tunables() tunables.Values {
 		GhostGrace:            c.GC.GhostGrace,
 		GhostSweepInterval:    c.GC.GhostSweepInterval,
 		ReconcileInterval:     c.Reconcile.Interval,
+		KickDebounce:          c.Reconcile.KickDebounce,
 		ScrapeInterval:        c.Scrape.Interval,
 		WALFlushInterval:      c.WAL.FlushInterval,
 		UnresolvedTTL:         c.Unresolved.TTL,

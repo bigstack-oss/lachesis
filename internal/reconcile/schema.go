@@ -6,6 +6,8 @@
 
 package reconcile
 
+import "time"
+
 // component is the slog `component` attribute for every log this
 // package emits, and the subsystem label the agent registers its
 // metrics under. One vocabulary so a log line and a /metrics
@@ -41,3 +43,8 @@ const (
 	// same prior state and retries (including any skipped deletes).
 	resultApplyError = "apply_error"
 )
+
+// kickMaxWait caps how long a debounced kick can be postponed by a
+// steady stream of further kicks, measured from the first kick of the
+// burst — a busy cloud still reconciles at least this often.
+const kickMaxWait = 5 * time.Second
