@@ -19,10 +19,12 @@ import (
 //   - lachesis_reconcile_runs_total{result}        counter
 //   - lachesis_reconcile_duration_seconds{trigger} histogram
 //   - lachesis_reconcile_kicks_total               counter
+//   - lachesis_reconcile_ghosted_ratio             gauge
 type Metrics struct {
-	runs     *prometheus.CounterVec
-	duration *prometheus.HistogramVec
-	kicks    prometheus.Counter
+	runs         *prometheus.CounterVec
+	duration     *prometheus.HistogramVec
+	kicks        prometheus.Counter
+	ghostedRatio prometheus.Gauge
 }
 
 // NewMetrics constructs the bundle with every label value seeded so each
@@ -42,6 +44,10 @@ func NewMetrics() *Metrics {
 			Name: "lachesis_reconcile_kicks_total",
 			Help: "Reconcile kicks: one per committed Neutron metadata change from Kafka, plus one per SIGHUP config reload. Kick-started passes are lachesis_reconcile_duration_seconds_count{trigger=\"kick\"}; the gap between the two is kicks folded into a pass.",
 		}),
+		ghostedRatio: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "lachesis_reconcile_ghosted_ratio",
+			Help: "Share of live VM ports (metadata entries not already ghosts) the last successful reconcile pass ghosted, 0..1. A spike is a mass teardown or a snapshot that dropped live ports; alert-only, ghosting proceeds either way.",
+		}),
 	}
 	m.runs.WithLabelValues(resultOK)
 	m.runs.WithLabelValues(resultSyncError)
@@ -54,7 +60,7 @@ func NewMetrics() *Metrics {
 // Collectors returns the underlying prometheus.Collector values for
 // registration by the agent.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.runs, m.duration, m.kicks}
+	return []prometheus.Collector{m.runs, m.duration, m.kicks, m.ghostedRatio}
 }
 
 // RecordRun increments lachesis_reconcile_runs_total for one terminal
@@ -80,4 +86,12 @@ func (m *Metrics) RecordKick() {
 		return
 	}
 	m.kicks.Inc()
+}
+
+// SetGhostedRatio publishes the share of live VM ports one pass ghosted.
+func (m *Metrics) SetGhostedRatio(ratio float64) {
+	if m == nil {
+		return
+	}
+	m.ghostedRatio.Set(ratio)
 }

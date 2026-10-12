@@ -49,7 +49,8 @@ func (r *Reconciler) reconcileMACs(snap *neutron.Snapshot, now time.Time) macDel
 	}
 	desired := DesiredMACs(snap)
 	inserted, changed := r.learnMACs(desired)
-	ghosted := r.ghostGoneMACs(desired, now)
+	ghosted, live := r.ghostGoneMACs(desired, now)
+	r.publishGhostedRatio(ghosted, live)
 	r.publishAmphoraCount(desired)
 	return macDelta{Inserted: inserted, Changed: changed, Ghosted: ghosted}
 }
@@ -198,15 +199,17 @@ func (r *Reconciler) insertMAC(mac uint64, meta metadata.TenantMeta) {
 }
 
 // ghostGoneMACs MarkDeletes every live entry whose MAC left desired,
-// starting its grace window. Collects under Range and marks afterwards:
-// MarkDelete takes a shard write lock that Range holds as a read lock.
-// Already-ghosted entries keep their original deadline.
+// starting its grace window, and returns (ghosted, live) — live being
+// the entries that were not already ghosts. Collects under Range and
+// marks afterwards: MarkDelete takes a shard write lock that Range holds
+// as a read lock. Already-ghosted entries keep their original deadline.
 //
 // docs/architecture/data-structures.md#lingering-ghost
-func (r *Reconciler) ghostGoneMACs(desired map[uint64]metadata.TenantMeta, now time.Time) int {
+func (r *Reconciler) ghostGoneMACs(desired map[uint64]metadata.TenantMeta, now time.Time) (ghosted, live int) {
 	var gone []uint64
 	r.meta.Range(func(mac uint64, m *metadata.TenantMeta) bool {
 		if m.DeleteAt.IsZero() {
+			live++
 			if _, want := desired[mac]; !want {
 				gone = append(gone, mac)
 			}
@@ -216,5 +219,17 @@ func (r *Reconciler) ghostGoneMACs(desired map[uint64]metadata.TenantMeta, now t
 	for _, mac := range gone {
 		r.meta.MarkDelete(mac, now.Add(r.tun.Get().GhostGrace))
 	}
-	return len(gone)
+	return len(gone), live
+}
+
+// publishGhostedRatio sets lachesis_reconcile_ghosted_ratio for this
+// pass — 0 when nothing was ghosted, so a spike clears on the next pass.
+// Alert-only: a mass teardown and a snapshot that dropped live ports look
+// the same here, and ghosting proceeds either way.
+func (r *Reconciler) publishGhostedRatio(ghosted, live int) {
+	ratio := 0.0
+	if live > 0 {
+		ratio = float64(ghosted) / float64(live)
+	}
+	r.mx.SetGhostedRatio(ratio)
 }

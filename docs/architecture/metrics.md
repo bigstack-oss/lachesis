@@ -159,6 +159,7 @@ sum by (port_id) (rate(lachesis_port_bytes_total{server_id="<uuid>"}[1m]))
 | `lachesis_gc_pressure_relief_runs_total` | counter | — | scraper pressure-relief pass (fill above the high watermark) |
 | `lachesis_gc_settled_flows_total` | counter | — | GlobalState flow rows the ghost sweep folded into the settled-bytes accumulator, keeping deleted VMs' bytes attributed to their tenant |
 | `lachesis_lingering_ghosts_active` | gauge | — | metadata entries inside the 60s ghost grace window |
+| `lachesis_reconcile_ghosted_ratio` | gauge | — | share (0..1) of live VM ports — metadata entries not already ghosts — the last successful reconcile pass ghosted; 0 on a pass that ghosts nothing. A spike is a mass teardown or a snapshot that dropped live ports; alert-only (`LachesisMassGhosting`, > 0.2) |
 | `lachesis_unresolved_buffer_depth` | gauge | — | UnresolvedBuffer occupancy (panic threshold near the cap) |
 | `lachesis_unresolved_buffer_evictions_total` | counter | `reason="lru\|expired"` | UnresolvedBuffer entries folded to "unknown", by cause |
 | `lachesis_unresolved_resolved_total` | counter | — | late-binding successes: a buffered flow whose MAC became known (reconcile or Kafka) attributed to the right tenant with the delta write-back |
