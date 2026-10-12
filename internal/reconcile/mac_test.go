@@ -2,9 +2,12 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/bigstack-oss/lachesis/internal/bpf"
 	"github.com/bigstack-oss/lachesis/internal/metadata"
@@ -588,5 +591,52 @@ func TestReconcileMACs_RepublishesAmphoraCount(t *testing.T) {
 		if gauge.counts[i] != w {
 			t.Errorf("pass %d published %d, want %d (full: %v)", i+1, gauge.counts[i], w, gauge.counts)
 		}
+	}
+}
+
+// TestReconcileMACs_GhostedRatio: the gauge is ghosted ÷ live (entries
+// not already ghosts) for the pass, and the next pass with nothing new
+// to ghost resets it to 0 — so a spike is one pass wide, whatever caused
+// it.
+func TestReconcileMACs_GhostedRatio(t *testing.T) {
+	macStr := func(i int) string { return fmt.Sprintf("ee:00:00:00:00:%02x", i) }
+	tests := []struct {
+		name   string
+		live   int // live entries before the pass
+		ghosts int // entries already ghosted before the pass
+		keep   int // live entries still in the snapshot
+		want   float64
+	}{
+		{"no change", 10, 0, 10, 0},
+		{"shrunken snapshot drops most live ports", 10, 0, 4, 0.6},
+		{"existing ghosts are not live", 4, 1, 3, 0.25},
+		{"empty map", 0, 0, 0, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := metadata.New()
+			now := time.Unix(3000, 0)
+			for i := range tc.live {
+				meta.Insert(mac(t, macStr(i)), &metadata.TenantMeta{ProjectID: "p"})
+			}
+			for i := range tc.ghosts {
+				meta.Insert(mac(t, macStr(0x80+i)), &metadata.TenantMeta{ProjectID: "p", DeleteAt: now.Add(time.Minute)})
+			}
+			var ports []neutron.Port
+			for i := range tc.keep {
+				ports = append(ports, vmPort(macStr(i), "p"))
+			}
+			r := newMacReconciler(meta, &fakeMacWriter{})
+			snap := &neutron.Snapshot{Ports: ports}
+
+			r.reconcileMACs(snap, now)
+			if got := testutil.ToFloat64(r.mx.ghostedRatio); got != tc.want {
+				t.Errorf("ghosted ratio = %v, want %v", got, tc.want)
+			}
+			r.reconcileMACs(snap, now.Add(time.Second))
+			if got := testutil.ToFloat64(r.mx.ghostedRatio); got != 0 {
+				t.Errorf("ghosted ratio after an unchanged pass = %v, want 0", got)
+			}
+		})
 	}
 }

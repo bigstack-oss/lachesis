@@ -787,7 +787,7 @@
       "gridPos": {
         "x": 0,
         "y": 16,
-        "w": 6,
+        "w": 5,
         "h": 6
       },
       "targets": [
@@ -852,9 +852,9 @@
       },
       "description": "The unbillable streams behind the ratio: bytes whose destination could not be classified (miss) and bytes whose VM MAC is not known to the metadata layer (unknown, excluding multicast). Persistent flow in these two means lost revenue \u2014 drill down at /debug/anomalies and /debug/lookup. The multicast series is platform-L2 chatter (mDNS/SSDP): counted, never billed, and deliberately excluded from the SLO numerator.",
       "gridPos": {
-        "x": 6,
+        "x": 5,
         "y": 16,
-        "w": 9,
+        "w": 7,
         "h": 6
       },
       "targets": [
@@ -922,9 +922,9 @@
       },
       "description": "How often flow records are folded into the per-tenant settled totals \u2014 this happens when a VM is deleted or its attribution changes. A burst here is normal after teardown waves; it also means per-server series just ended on this node.",
       "gridPos": {
-        "x": 15,
+        "x": 12,
         "y": 16,
-        "w": 9,
+        "w": 6,
         "h": 6
       },
       "targets": [
@@ -961,6 +961,73 @@
             "lastNotNull",
             "max"
           ]
+        }
+      }
+    },
+    {
+      "id": 135,
+      "title": "Mass ghosting (share of live ports ghosted per pass)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "lachesis_reconcile_ghosted_ratio, max over 5m: the share of live VM ports one reconcile pass started the Lingering-Ghost grace for. A spike is a mass teardown or a Neutron snapshot that dropped live ports. Red line = the LachesisMassGhosting alert threshold (20%, only on agents with >= 20 known MACs). Alert-only: ghosting proceeds either way.",
+      "gridPos": {
+        "x": 18,
+        "y": 16,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (instance) (max_over_time(lachesis_reconcile_ghosted_ratio{instance=~\"$node\"}[5m]))",
+          "legendFormat": "{{instance}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
       }
     },

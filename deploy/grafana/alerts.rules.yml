@@ -71,6 +71,33 @@ groups:
             kernel maps are full or mis-sized — check the "BPF Maps" row and
             lachesis_bpf_update_failures_total.
 
+      # One reconcile pass ghosted a large share of the live VM ports: a
+      # mass teardown, or a Neutron snapshot that came back successful but
+      # missing live ports (lachesis#228's flap — closed not planned until
+      # this fires on something that is NOT a teardown). Alert-only:
+      # ghosting proceeds either way. max_over_time because the gauge is
+      # per pass and clears on the next one, and the kick debounce can put
+      # a whole teardown into a single pass. The mac_tenant_map floor
+      # keeps a 1-of-3 deletion on a small test cloud from paging.
+      # Threshold: 20% of live ports in one pass.
+      - alert: LachesisMassGhosting
+        expr: >-
+          max_over_time(lachesis_reconcile_ghosted_ratio[5m]) > 0.2
+          and on(instance) lachesis_bpf_map_current_entries{map="mac_tenant_map"} >= 20
+        labels:
+          severity: warning
+        annotations:
+          summary: 'one reconcile pass ghosted >20% of live VM ports on {{ $labels.instance }}'
+          description: >-
+            lachesis_reconcile_ghosted_ratio spiked: a single reconcile pass
+            started the Lingering-Ghost grace for more than 20% of the live VM
+            ports. If a tenant or operator just tore down that many VMs, this is
+            expected — acknowledge it. If not, the Neutron snapshot dropped live
+            ports: their flows fold to settled after the 60s grace and their
+            traffic bills "unknown" until a later pass re-learns them. Compare
+            `openstack port list` against the agent's /debug view, and record
+            the event on lachesis#228.
+
       # A counters-reset epoch changed: the agent declared a billing-state
       # discontinuity (WAL destroyed / volume replaced / reinstall without
       # reboot / first boot of a host). The billing ETL compensates via
