@@ -56,7 +56,8 @@ func (e *restartExec) Run(_ context.Context, addr, command string) (string, erro
 		return "", fmt.Errorf("fake ssh: command failed: %s", command)
 	}
 	switch {
-	case strings.Contains(command, "systemctl restart"), strings.Contains(command, "systemctl start"):
+	case strings.Contains(command, "systemctl restart"), strings.Contains(command, "systemctl start"),
+		strings.Contains(command, "kill -9"):
 		e.restarted = true
 		return "", nil
 	case strings.Contains(command, "MainPID"):
@@ -234,6 +235,62 @@ func TestSteps_RestartAgentDownFailureStillStarts(t *testing.T) {
 	if !exec.has("systemctl start lachesis") {
 		t.Errorf("agent not started after a failed Down step: %+v", exec.Calls)
 	}
+}
+
+// TestSteps_RestartAgentKill: Kill SIGKILLs the running MainPID instead
+// of a systemctl restart, and the unit's own restart satisfies the
+// readiness wait.
+func TestSteps_RestartAgentKill(t *testing.T) {
+	agents := []scenariotest.AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := scenariotest.AgentControlConfig{User: "root", KeyPath: "/k", Unit: "lachesis", ReadyTimeout: time.Second}
+	exec := &restartExec{}
+	if err := (RestartAgentStep{Kill: true}).Run(context.Background(), restartEnv(t, agents, ac, exec, nil)); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if !exec.has("sudo kill -9 1111") {
+		t.Errorf("did not SIGKILL the running MainPID 1111: %+v", exec.Calls)
+	}
+	if exec.has("systemctl restart") || exec.has("systemctl stop") || exec.has("systemctl start") {
+		t.Errorf("Kill must leave the restart to systemd: %+v", exec.Calls)
+	}
+}
+
+// TestSteps_RestartAgentKillRefusals: Kill cannot combine with a
+// stopped-agent gap, and an agent that is not running has nothing to
+// kill. The combination is refused before the host is touched.
+func TestSteps_RestartAgentKillRefusals(t *testing.T) {
+	agents := []scenariotest.AgentConfig{{Host: "compute-0", MetricsURL: "http://c0/m"}}
+	ac := scenariotest.AgentControlConfig{User: "root", KeyPath: "/k", WALPath: "/w", ReadyTimeout: time.Second}
+	ranAt := -1
+	for name, step := range map[string]RestartAgentStep{
+		"down":       {Kill: true, Down: []scenariotest.Step{downStep{exec: &restartExec{}, ranAt: &ranAt}}},
+		"remove wal": {Kill: true, RemoveWAL: true},
+	} {
+		exec := &restartExec{}
+		err := step.Run(context.Background(), restartEnv(t, agents, ac, exec, nil))
+		if err == nil || !strings.Contains(err.Error(), "Kill cannot combine") {
+			t.Errorf("%s: err = %v, want the combination refused", name, err)
+		}
+		if len(exec.Calls) != 0 {
+			t.Errorf("%s: host touched before the refusal: %+v", name, exec.Calls)
+		}
+	}
+
+	stopped := &stoppedExec{}
+	err := (RestartAgentStep{Kill: true}).Run(context.Background(), restartEnv(t, agents, ac, stopped, nil))
+	if err == nil || !strings.Contains(err.Error(), "nothing to kill") {
+		t.Errorf("err = %v, want a not-running refusal", err)
+	}
+}
+
+// stoppedExec is an agent host whose unit is not running.
+type stoppedExec struct{}
+
+func (stoppedExec) Run(_ context.Context, _, command string) (string, error) {
+	if strings.Contains(command, "MainPID") {
+		return "MainPID=0\n", nil
+	}
+	return "", nil
 }
 
 func TestSteps_RestartAgentErrors(t *testing.T) {

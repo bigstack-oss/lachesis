@@ -6,9 +6,11 @@ package drive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
@@ -55,6 +57,16 @@ type Options struct {
 	// races a benign dying-tap attach failure). Normal drives leave this
 	// false so a genuinely lost tap still aborts before traffic.
 	SkipAttachRecheck bool
+	// PaceMiB, when positive, streams each VM and load-balancer flow in
+	// PaceMiB-sized chunks one second apart instead of one burst, so a
+	// flow lasts about Bytes/PaceMiB seconds. Every chunk is PaceMiB, so
+	// the pushed bytes still meet the budget.
+	PaceMiB int64
+	// During, when set, runs on the caller's goroutine while the flows
+	// stream on another: it starts DuringAfter after the first stream
+	// begins, Run waits for both, and a During error cancels the flows.
+	During      func(context.Context) error
+	DuringAfter time.Duration
 }
 
 const (
@@ -95,6 +107,9 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	d := &driver{ctx: ctx, opts: opts}
 
+	if err := d.checkPace(); err != nil {
+		return err
+	}
 	if opts.SkipAttachRecheck {
 		opts.Log.Warn("attach recheck: skipped by request (drive follows a tap teardown)")
 	} else if err := d.recheckAttach(); err != nil {
@@ -110,13 +125,10 @@ func Run(ctx context.Context, opts Options) error {
 	} else if err := d.captureBaseline(); err != nil {
 		return err
 	}
-	for i, f := range opts.Scenario.Flows {
-		if err := d.runFlow(i, f); err != nil {
-			return fmt.Errorf("flow %d (%s → %s%s): %w", i, f.From, f.To.VMID, f.To.IP, err)
-		}
+	if opts.During != nil {
+		return d.runFlowsDuring(ctx)
 	}
-	d.opts.Log.Info("drive complete", "flows", len(opts.Scenario.Flows))
-	return nil
+	return d.runFlows()
 }
 
 type driver struct {
@@ -124,6 +136,94 @@ type driver struct {
 	opts Options
 
 	ready map[string]bool // VM DSL ids already confirmed SSH-ready
+
+	// streaming is closed once, just before the first flow's traffic
+	// command runs; nil when nothing waits on it.
+	streaming     chan struct{}
+	streamingOnce sync.Once
+}
+
+func (d *driver) runFlows() error {
+	for i, f := range d.opts.Scenario.Flows {
+		if err := d.runFlow(i, f); err != nil {
+			return fmt.Errorf("flow %d (%s → %s%s): %w", i, f.From, f.To.VMID, f.To.IP, err)
+		}
+	}
+	d.opts.Log.Info("drive complete", "flows", len(d.opts.Scenario.Flows))
+	return nil
+}
+
+// runFlowsDuring streams the flows on a goroutine and runs
+// opts.During on this one once they are in flight. A During that
+// starts after the flows finished overlapped nothing, so that is an
+// error rather than a pass.
+func (d *driver) runFlowsDuring(ctx context.Context) error {
+	flowCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	d.ctx = flowCtx
+	d.streaming = make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- d.runFlows() }()
+
+	finishedEarly := func(err error) error {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("drive: the flows finished before During started, so it overlapped no traffic — pace them longer (PaceMiB) or shorten DuringAfter")
+	}
+	select {
+	case <-d.streaming:
+	case err := <-done:
+		return finishedEarly(err)
+	}
+	select {
+	case <-time.After(d.opts.DuringAfter):
+	case err := <-done:
+		return finishedEarly(err)
+	}
+
+	d.opts.Log.Info("drive: running During steps while the flows stream")
+	duringErr := d.opts.During(ctx)
+	select {
+	case flowErr := <-done:
+		if flowErr == nil && duringErr == nil {
+			d.opts.Log.Warn("drive: the flows ended before During finished; the tail of During saw no traffic")
+		}
+		return errors.Join(flowErr, duringErr)
+	default:
+	}
+	if duringErr != nil {
+		cancel()
+		<-done
+		return duringErr
+	}
+	return <-done
+}
+
+// markStreaming signals runFlowsDuring that traffic is starting.
+func (d *driver) markStreaming() {
+	if d.streaming != nil {
+		d.streamingOnce.Do(func() { close(d.streaming) })
+	}
+}
+
+// checkPace rejects, before any traffic, a paced flow whose nominal
+// duration reaches the per-command SSH budget: the exec would be
+// killed mid-stream and the shortfall would read as lost bytes.
+func (d *driver) checkPace() error {
+	timeout := d.opts.Config.SSH.Timeout
+	if d.opts.PaceMiB <= 0 || timeout <= 0 {
+		return nil
+	}
+	for i, f := range d.opts.Scenario.Flows {
+		if f.To.VMID == "" && f.To.FIPOf == "" && f.To.LBID == "" && f.To.LBFIPOf == "" {
+			continue // external ping flows are not paced
+		}
+		if dur := time.Duration(paceChunks(mibCount(f.Bytes), d.opts.PaceMiB)) * time.Second; dur >= timeout {
+			return fmt.Errorf("flow %d: paced stream lasts about %s, at or over ssh.timeout %s — raise ssh.timeout or PaceMiB", i, dur, timeout)
+		}
+	}
+	return nil
 }
 
 // recheckAttach verifies the taps `up` gated on are still attached:
@@ -294,12 +394,12 @@ func (d *driver) runVMFlow(i int, f scenariotest.Flow, srcFIP string) error {
 	}
 	d.sleepSinkDelay()
 
-	count := mibCount(f.Bytes)
-	stream := fmt.Sprintf("dd if=/dev/zero bs=1M count=%d 2>/dev/null | nc %s %d", count, dstAddr, port)
+	stream, mib := d.streamCmd(f.Bytes, dstAddr, port)
+	d.markStreaming()
 	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, stream); err != nil {
 		return fmt.Errorf("stream: %w", err)
 	}
-	d.opts.Log.Info("flow: tcp stream", "flow", i, "from", f.From, "to", dstVM, "dst", dstAddr, "port", port, "mib", count)
+	d.opts.Log.Info("flow: tcp stream", "flow", i, "from", f.From, "to", dstVM, "dst", dstAddr, "port", port, "mib", mib)
 	return nil
 }
 
@@ -345,14 +445,14 @@ func (d *driver) runLBFlow(f scenariotest.Flow, srcFIP string) error {
 	}
 	d.sleepSinkDelay()
 
-	count := mibCount(f.Bytes)
-	stream := fmt.Sprintf("dd if=/dev/zero bs=1M count=%d 2>/dev/null | nc %s %d", count, vip, decl.Port)
+	stream, mib := d.streamCmd(f.Bytes, vip, decl.Port)
+	d.markStreaming()
 	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, stream); err != nil {
 		return fmt.Errorf("stream to vip: %w", err)
 	}
 	d.opts.Log.Info("flow: tcp stream to vip",
 		"from", f.From, "lb", lbID, "external", external, "vip", vip, "port", decl.Port,
-		"members", len(decl.Members), "mib", count)
+		"members", len(decl.Members), "mib", mib)
 	return nil
 }
 
@@ -415,6 +515,7 @@ func (d *driver) vmByInternalIP(ip string) (string, bool) {
 func (d *driver) runExternalFlow(f scenariotest.Flow, srcFIP string) error {
 	count := (f.Bytes + pingPayloadBytes - 1) / pingPayloadBytes
 	cmd := fmt.Sprintf("ping -c %d -s %d %s >/dev/null 2>&1 || [ $? -eq 1 ]", count, pingPayloadBytes, f.To.IP)
+	d.markStreaming()
 	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, cmd); err != nil {
 		return fmt.Errorf("ping push: %w", err)
 	}
@@ -482,6 +583,25 @@ func internalIP(sc *scenariotest.Scenario, vmID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("scenario declares no fixed IP for VM %q", vmID)
+}
+
+// streamCmd is the busybox-safe source-side command pushing bytes into
+// an `nc` sink at addr:port, paced when [Options.PaceMiB] asks, and
+// the MiB it pushes.
+func (d *driver) streamCmd(bytes int64, addr string, port int) (string, int64) {
+	count := mibCount(bytes)
+	src := fmt.Sprintf("dd if=/dev/zero bs=1M count=%d 2>/dev/null", count)
+	if pace := d.opts.PaceMiB; pace > 0 {
+		chunks := paceChunks(count, pace)
+		src = fmt.Sprintf("for i in $(seq %d); do dd if=/dev/zero bs=1M count=%d 2>/dev/null; sleep 1; done", chunks, pace)
+		count = chunks * pace
+	}
+	return fmt.Sprintf("%s | nc %s %d", src, addr, port), count
+}
+
+// paceChunks is how many pace-MiB chunks cover count MiB.
+func paceChunks(count, pace int64) int64 {
+	return (count + pace - 1) / pace
 }
 
 // mibCount converts a byte budget to whole `dd bs=1M` blocks,
