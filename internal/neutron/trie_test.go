@@ -71,6 +71,49 @@ func TestBuildTrie_Step2OwnedSubnets(t *testing.T) {
 	}
 }
 
+// TestBuildTrie_Step2OwnedSubnetInfra asserts an owned subnet's own
+// infra IPs (gateway, router interface, OVN distributed port) are also
+// emitted under the owning tenant, once each, and only under that
+// tenant: the kernel reads tenant rows first, so the global /32 alone
+// loses to the tenant's /24.
+func TestBuildTrie_Step2OwnedSubnetInfra(t *testing.T) {
+	got, _, _ := BuildTrie(Snapshot{
+		Networks: []Network{{ID: "n1", ProjectID: "T1"}, {ID: "n2", ProjectID: "T2"}},
+		Subnets: []Subnet{
+			{ID: "s1", NetworkID: "n1", CIDR: "10.0.0.0/24", GatewayIP: "10.0.0.1", IPVersion: 4},
+			{ID: "s2", NetworkID: "n2", CIDR: "10.9.0.0/24", GatewayIP: "10.9.0.1", IPVersion: 4},
+		},
+		Ports: []Port{
+			{DeviceOwner: "network:router_interface", FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.0.1"}}},
+			{DeviceOwner: "network:distributed", FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.0.2"}}},
+			{DeviceOwner: "compute:nova", FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.0.42"}}},
+		},
+	})
+	count := func(e TrieEntry) int {
+		n := 0
+		for _, g := range got {
+			if g == e {
+				n++
+			}
+		}
+		return n
+	}
+	for _, ip := range []string{"10.0.0.1", "10.0.0.2"} {
+		if n := count(TrieEntry{"T1", mustPrefix(t, ip+"/32"), bpf.ZoneInfra}); n != 1 {
+			t.Errorf("T1 INFRA row for %s: count = %d, want 1", ip, n)
+		}
+		if n := count(TrieEntry{"T2", mustPrefix(t, ip+"/32"), bpf.ZoneInfra}); n != 0 {
+			t.Errorf("T1's infra IP %s leaked into T2's rows", ip)
+		}
+	}
+	if n := count(TrieEntry{"T2", mustPrefix(t, "10.9.0.1/32"), bpf.ZoneInfra}); n != 1 {
+		t.Errorf("T2 gateway INFRA row: count = %d, want 1", n)
+	}
+	if n := count(TrieEntry{"T1", mustPrefix(t, "10.0.0.42/32"), bpf.ZoneInfra}); n != 0 {
+		t.Errorf("VM port IP emitted as INFRA")
+	}
+}
+
 // TestBuildTrie_SharedNetworkEmitsShared asserts a subnet on a
 // shared network emits exactly one SHARED row with TenantID="" —
 // the kernel sentinel fallback covers every tenant's view, owner

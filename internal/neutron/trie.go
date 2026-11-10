@@ -53,6 +53,7 @@ type trieBuilder struct {
 	tenants          []string
 	sharedPrefixes   []netip.Prefix
 	infraPrefixes    []netip.Prefix
+	infraBySubnet    map[string][]netip.Prefix
 	ri               *resolveIndex
 
 	metrics *Metrics
@@ -67,7 +68,7 @@ type trieBuilder struct {
 func newTrieBuilder(snap Snapshot, m *Metrics, maxHops int) *trieBuilder {
 	subnetsByNetwork := groupSubnetsByNetwork(snap.Subnets)
 	sharedPrefixes := buildSharedPrefixes(snap.Networks, subnetsByNetwork)
-	infraPrefixes := buildInfraPrefixes(snap.Subnets, snap.Ports)
+	infraPrefixes, infraBySubnet := buildInfraPrefixes(snap.Subnets, snap.Ports)
 	return &trieBuilder{
 		networks:         snap.Networks,
 		routers:          snap.Routers,
@@ -75,6 +76,7 @@ func newTrieBuilder(snap Snapshot, m *Metrics, maxHops int) *trieBuilder {
 		tenants:          collectTenants(snap.Networks, snap.Ports, snap.Routers),
 		sharedPrefixes:   sharedPrefixes,
 		infraPrefixes:    infraPrefixes,
+		infraBySubnet:    infraBySubnet,
 		ri:               newResolveIndex(snap, maxHops),
 		metrics:          m,
 		// Capacity hint: globals + an over-approximation of per-tenant
@@ -116,6 +118,12 @@ func (b *trieBuilder) emitCatchall() {
 // External networks (router:external=true) fall through to the
 // Step-1 catchall — they classify as EXTERNAL even when an operator
 // has marked them owned by some admin project.
+//
+// Each subnet's own infra /32s are repeated here under the tenant: the
+// kernel reads the tenant's rows before the global ones, so the global
+// INFRA /32 alone would lose to the SAME_TENANT /24 around it.
+//
+// docs/architecture/trie-construction.md#the-five-step-algorithm
 func (b *trieBuilder) emitOwnedSubnets() {
 	for _, tenant := range b.tenants {
 		for _, n := range b.networks {
@@ -128,6 +136,9 @@ func (b *trieBuilder) emitOwnedSubnets() {
 					continue
 				}
 				b.entries = append(b.entries, TrieEntry{tenant, p, bpf.ZoneSameTenant})
+				for _, infra := range b.infraBySubnet[s.ID] {
+					b.entries = append(b.entries, TrieEntry{tenant, infra, bpf.ZoneInfra})
+				}
 			}
 		}
 	}
@@ -270,21 +281,34 @@ func buildSharedPrefixes(networks []Network, subnetsByNetwork map[string][]Subne
 	return out
 }
 
-// buildInfraPrefixes collects the global INFRA /32s from infra-port
-// fixed IPs and subnet gateway IPs. These two sources overlap heavily:
-// a router-interface port's fixed IP is almost always the subnet's
-// gateway IP, so a naive append emits each gateway /32 twice. We
-// de-duplicate so the global INFRA rows stay single-copy, keeping the
-// trie's deduped O(G + Σ O_t) cardinality and an accurate entry count.
-func buildInfraPrefixes(subnets []Subnet, ports []Port) []netip.Prefix {
+// buildInfraPrefixes collects the INFRA /32s from infra-port fixed
+// IPs and subnet gateway IPs: once each for the global rows, and per
+// subnet for the tenant-scoped copies Step 2 emits. The two sources
+// overlap heavily (a router-interface port's fixed IP is almost always
+// the subnet's gateway IP), so both views are de-duplicated, keeping
+// the trie's entry count accurate.
+func buildInfraPrefixes(subnets []Subnet, ports []Port) ([]netip.Prefix, map[string][]netip.Prefix) {
 	seen := make(map[netip.Prefix]struct{})
-	var out []netip.Prefix
-	add := func(prefix netip.Prefix) {
-		if _, dup := seen[prefix]; dup {
+	var global []netip.Prefix
+	type subnetPrefix struct {
+		subnetID string
+		prefix   netip.Prefix
+	}
+	seenInSubnet := make(map[subnetPrefix]struct{})
+	bySubnet := make(map[string][]netip.Prefix)
+	add := func(subnetID string, prefix netip.Prefix) {
+		if _, dup := seen[prefix]; !dup {
+			seen[prefix] = struct{}{}
+			global = append(global, prefix)
+		}
+		if subnetID == "" {
 			return
 		}
-		seen[prefix] = struct{}{}
-		out = append(out, prefix)
+		if _, dup := seenInSubnet[subnetPrefix{subnetID, prefix}]; dup {
+			return
+		}
+		seenInSubnet[subnetPrefix{subnetID, prefix}] = struct{}{}
+		bySubnet[subnetID] = append(bySubnet[subnetID], prefix)
 	}
 	for _, p := range ports {
 		if !IsInfraPort(p.DeviceOwner) {
@@ -295,7 +319,7 @@ func buildInfraPrefixes(subnets []Subnet, ports []Port) []netip.Prefix {
 			if !ok {
 				continue
 			}
-			add(prefix)
+			add(ip.SubnetID, prefix)
 		}
 	}
 	for _, s := range subnets {
@@ -306,9 +330,9 @@ func buildInfraPrefixes(subnets []Subnet, ports []Port) []netip.Prefix {
 		if !ok {
 			continue
 		}
-		add(prefix)
+		add(s.ID, prefix)
 	}
-	return out
+	return global, bySubnet
 }
 
 // parsePrefixV4 returns the prefix if it is IPv4; IPv6 returns false
