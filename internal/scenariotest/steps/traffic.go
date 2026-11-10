@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/assert"
@@ -34,13 +35,43 @@ type DriveStep struct {
 	// gate — for a drive that follows a tap teardown (ghost-grace deletes
 	// the peer, dropping a tap and racing a benign attach-failure).
 	SkipAttachRecheck bool
+	// PaceMiB streams each VM flow in PaceMiB chunks one second apart,
+	// stretching it to about Bytes/PaceMiB seconds so During has
+	// traffic to overlap. Zero streams in one burst.
+	PaceMiB int64
+	// During runs these steps, in order, while the flows are in flight,
+	// starting DuringAfter after the first stream begins; the drive
+	// returns once both are done. They run concurrently with the flows,
+	// which read the run-state's FIPs, so they must not change the
+	// run-state: agent-host steps such as [RestartAgentStep] fit, VM and
+	// port lifecycle steps do not. A failure cancels the flows.
+	During      []scenariotest.Step
+	DuringAfter time.Duration
 }
 
 func (DriveStep) Kind() string { return "drive" }
 
+// HostNeeds forwards what the During steps need of the agent hosts.
+func (s DriveStep) HostNeeds() scenariotest.HostNeeds { return HostNeeds(s.During) }
+
+// RequiredMetrics forwards the families the During steps read.
+func (s DriveStep) RequiredMetrics() []string { return RequiredMetrics(s.During) }
+
 func (s DriveStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 	sc := *env.Scenario
 	sc.Flows = s.Flows
+	var during func(context.Context) error
+	if len(s.During) > 0 {
+		during = func(ctx context.Context) error {
+			for _, st := range s.During {
+				env.Log.Info("drive: during flows", "step", st.Kind())
+				if err := st.Run(ctx, env); err != nil {
+					return fmt.Errorf("during flows: %s: %w", st.Kind(), err)
+				}
+			}
+			return nil
+		}
+	}
 	return drive.Run(ctx, drive.Options{
 		Config:            env.Config,
 		Scenario:          &sc,
@@ -54,6 +85,9 @@ func (s DriveStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
 		KeepBaseline:      s.KeepBaseline,
 		SkipMACLearn:      s.SkipMACLearn,
 		SkipAttachRecheck: s.SkipAttachRecheck,
+		PaceMiB:           s.PaceMiB,
+		During:            during,
+		DuringAfter:       s.DuringAfter,
 	})
 }
 

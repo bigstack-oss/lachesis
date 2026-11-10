@@ -61,6 +61,7 @@ func All() []*scenariotest.Scenario {
 		gcPressureRelief(),
 		octaviaLBAttribution(),
 		attachPresenceHeal(),
+		agentRestartUnderLoad(),
 	}
 }
 

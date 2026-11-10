@@ -101,3 +101,21 @@ func RequiredMetrics(steps []scenariotest.Step) []string {
 	}
 	return out
 }
+
+// HostNeeds unions what a script's steps declare through
+// [scenariotest.HostRequirer] — how a step that nests others forwards
+// their needs to the run's skip check.
+func HostNeeds(steps []scenariotest.Step) scenariotest.HostNeeds {
+	var n scenariotest.HostNeeds
+	for _, st := range steps {
+		r, ok := st.(scenariotest.HostRequirer)
+		if !ok {
+			continue
+		}
+		m := r.HostNeeds()
+		n.AgentSSH = n.AgentSSH || m.AgentSSH
+		n.WALPath = n.WALPath || m.WALPath
+		n.PinPath = n.PinPath || m.PinPath
+	}
+	return n
+}

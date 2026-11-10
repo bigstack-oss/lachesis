@@ -55,6 +55,11 @@ type RestartAgentStep struct {
 	// TapsGoneWhileDown is how many of this node's taps the Down steps
 	// remove, so the readiness wait expects that many fewer re-attached.
 	TapsGoneWhileDown int
+	// Kill SIGKILLs the agent's main process instead of a systemctl
+	// restart and leaves bringing it back to the unit's Restart= policy:
+	// the crash shape, with no graceful shutdown and no final WAL flush.
+	// Not combinable with Down, RemoveWAL or RemovePins.
+	Kill bool
 	// Timeout overrides [scenariotest.AgentControlConfig.ReadyTimeout] for the
 	// post-restart readiness wait.
 	Timeout time.Duration
@@ -65,14 +70,10 @@ func (RestartAgentStep) Kind() string { return "restart-agent" }
 // HostNeeds declares the agent_control keys this step reads, so a
 // cluster that has not staged them SKIPs rather than failing mid-run.
 func (s RestartAgentStep) HostNeeds() scenariotest.HostNeeds {
-	n := scenariotest.HostNeeds{AgentSSH: true, WALPath: s.RemoveWAL, PinPath: s.RemovePins}
-	for _, st := range s.Down {
-		if r, ok := st.(scenariotest.HostRequirer); ok {
-			m := r.HostNeeds()
-			n.WALPath = n.WALPath || m.WALPath
-			n.PinPath = n.PinPath || m.PinPath
-		}
-	}
+	n := HostNeeds(s.Down)
+	n.AgentSSH = true
+	n.WALPath = n.WALPath || s.RemoveWAL
+	n.PinPath = n.PinPath || s.RemovePins
 	return n
 }
 
@@ -86,6 +87,9 @@ func (s RestartAgentStep) RequiredMetrics() []string {
 }
 
 func (s RestartAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	if s.Kill && (len(s.Down) > 0 || s.RemoveWAL || s.RemovePins) {
+		return fmt.Errorf("restart-agent: Kill cannot combine with Down, RemoveWAL or RemovePins — systemd restarts a killed agent on its own, leaving no gap to act in")
+	}
 	ctl, err := agentctl.For(env, s.Node)
 	if err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
@@ -113,11 +117,15 @@ func (s RestartAgentStep) Run(ctx context.Context, env *scenariotest.StepEnv) er
 	}
 	cycle := agentctl.Cycle{RemoveWAL: s.RemoveWAL, RemovePins: s.RemovePins}
 	var oldPID string
-	if len(s.Down) == 0 {
-		if oldPID, err = ctl.Restart(ctx, cycle); err != nil {
-			return fmt.Errorf("restart-agent: %w", err)
-		}
-	} else if oldPID, err = s.cycleAround(ctx, env, ctl, cycle); err != nil {
+	switch {
+	case s.Kill:
+		oldPID, err = ctl.Kill(ctx)
+	case len(s.Down) == 0:
+		oldPID, err = ctl.Restart(ctx, cycle)
+	default:
+		oldPID, err = s.cycleAround(ctx, env, ctl, cycle)
+	}
+	if err != nil {
 		return fmt.Errorf("restart-agent: %w", err)
 	}
 	wantTaps := base.AttachedInterfaces - float64(s.TapsGoneWhileDown)

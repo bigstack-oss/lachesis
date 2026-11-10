@@ -207,6 +207,27 @@ func (c *Controller) Stop(ctx context.Context) (oldPID string, err error) {
 	return oldPID, nil
 }
 
+// Kill SIGKILLs the unit's main process and leaves the restart to the
+// unit's Restart= policy. It returns the killed PID, the restart
+// evidence [Controller.AwaitReady] needs.
+func (c *Controller) Kill(ctx context.Context) (oldPID string, err error) {
+	pid, err := c.MainPID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read %s MainPID on %s: %w", c.Unit, c.Host, err)
+	}
+	if pid == "" || pid == "0" {
+		return "", fmt.Errorf("%s is not running on %s; nothing to kill", c.Unit, c.Host)
+	}
+	if err := scenariotest.ShellSafe("MainPID", pid); err != nil {
+		return "", err
+	}
+	if out, err := c.exec.Run(ctx, c.Host, "sudo kill -9 "+pid); err != nil {
+		return "", fmt.Errorf("kill -9 %s (%s) on %s: %w (output: %s)", pid, c.Unit, c.Host, err, out)
+	}
+	c.log.Info("agent killed; awaiting the unit's Restart=", "host", c.Host, "unit", c.Unit, "old_pid", pid)
+	return pid, nil
+}
+
 // Start starts the unit, first destroying the durable state cy names
 // (the same shapes as [Controller.Restart]).
 func (c *Controller) Start(ctx context.Context, cy Cycle) error {

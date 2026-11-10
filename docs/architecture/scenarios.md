@@ -211,6 +211,7 @@ At packet time (VM-A → 172.16.99.x):
 | lifecycle (ghost sweep, MAC reuse) | `mac-reuse` |
 | live migration continuity | `live-migration-continuity` |
 | attach-presence resync (filters removed out-of-band) | `attach-presence-heal` |
+| agent restart or `kill -9` with a transfer in flight | `agent-restart-under-load` |
 
 The catalog-audit backlog tracks scenarios for every remaining designed case;
 the harness itself is documented in [development/testing.md](../development/testing.md).

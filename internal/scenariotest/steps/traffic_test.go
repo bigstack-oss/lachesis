@@ -2,10 +2,14 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/fake"
@@ -97,4 +101,79 @@ func driveState() *scenariotest.RunState {
 	}
 	rs.Attach = scenariotest.AttachRecord{Target: 7, Failures: 0}
 	return rs
+}
+
+// TestDriveStep_DuringForwardsNestedNeeds: a drive with nested During
+// steps declares their host and metric needs, so the run's skip and
+// refusal checks see a restart nested inside a drive.
+func TestDriveStep_DuringForwardsNestedNeeds(t *testing.T) {
+	plain := DriveStep{}
+	if plain.HostNeeds() != (scenariotest.HostNeeds{}) || len(plain.RequiredMetrics()) != 0 {
+		t.Errorf("a drive without During declared needs: %+v %v", plain.HostNeeds(), plain.RequiredMetrics())
+	}
+	s := DriveStep{During: []scenariotest.Step{RestartAgentStep{RemoveWAL: true}}}
+	if got := s.HostNeeds(); !got.AgentSSH || !got.WALPath {
+		t.Errorf("HostNeeds = %+v, want the nested restart's AgentSSH and WALPath", got)
+	}
+	if got := s.RequiredMetrics(); !slices.Contains(got, scenariotest.MetricAttachedInterfaces) {
+		t.Errorf("RequiredMetrics = %v, want the nested restart's readiness families", got)
+	}
+}
+
+// recordStep records that it ran, and can fail.
+type recordStep struct {
+	ran  *bool
+	fail bool
+}
+
+func (recordStep) Kind() string { return "record" }
+
+func (r recordStep) Run(context.Context, *scenariotest.StepEnv) error {
+	*r.ran = true
+	if r.fail {
+		return errors.New("probe failed")
+	}
+	return nil
+}
+
+// TestDriveStep_During runs the nested steps with the step's env and
+// names the failing one in the error.
+func TestDriveStep_During(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		ran := false
+		s := DriveStep{
+			Flows:  []scenariotest.Flow{{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP}},
+			During: []scenariotest.Step{recordStep{ran: &ran, fail: fail}},
+		}
+		err := s.Run(context.Background(), ingressEnv(t, &syncExec{}))
+		if !ran {
+			t.Errorf("fail=%v: During step never ran", fail)
+		}
+		switch {
+		case fail && (err == nil || !strings.Contains(err.Error(), "during flows: record")):
+			t.Errorf("err = %v, want the During step named", err)
+		case !fail && err != nil:
+			t.Errorf("drive: %v", err)
+		}
+	}
+}
+
+// syncExec is a [fake.Exec] safe for the flow and During goroutines,
+// whose stream lasts long enough for During to start.
+type syncExec struct {
+	mu sync.Mutex
+	fake.Exec
+}
+
+func (e *syncExec) Run(ctx context.Context, addr, command string) (string, error) {
+	if strings.Contains(command, "| nc ") {
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.Exec.Run(ctx, addr, command)
 }
