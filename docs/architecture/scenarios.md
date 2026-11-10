@@ -207,7 +207,7 @@ At packet time (VM-A → 172.16.99.x):
 | F — Octavia | `octavia-lb-attribution` |
 | G/H/K/L — static routes | — (backlog; catalog audit) |
 | J — cross-host same tenant | `cross-host-same-tenant` |
-| infra zone (gateway/DHCP) | `vm-to-gateway` |
+| infra zone (metadata; own subnet gateway + OVN metadata/DHCP port) | `vm-to-gateway`, `vm-to-subnet-infra` |
 | lifecycle (ghost sweep, MAC reuse) | `mac-reuse` |
 | live migration continuity | `live-migration-continuity` |
 | attach-presence resync (filters removed out-of-band) | `attach-presence-heal` |
