@@ -10,6 +10,11 @@ survives each kind of crash.
 ```
 1. Zombie Hunter
    → delete orphaned tc_telemetry_in/out filters from a previous crash
+   → spare a filter only when its link is on the attach allowlist and
+     it sits in the canonical slot (its hook's own name, FilterHandle,
+     FilterPriority): step 4's FilterReplace swaps in the new program
+     at that slot atomically, and until then the old program keeps
+     counting into the pinned telemetry_map
 
 2. Load eBPF objects
    → including subnet_zone_trie and mac_tenant_map specs
@@ -75,7 +80,8 @@ are separate goroutines. This is [Contract 4](./contracts.md#required-contracts)
 | TC attach before trie populated | First flows permanently keyed `dst_zone=MISS`; never reclassify (zone is baked into the kernel flow key) |
 | GC before WAL merge | Active flows evicted before `LastEbpfRaw` set → counter spike on next scrape |
 | Initial attach sweep before netlink subscribe | A tap created in the gap is never attached → silent undercount. Subscribe-with-replay closes the gap; the Interface Registry + pinned filter priority (step 4) make the replay/event overlap harmless |
-| Skip Zombie Hunter | Restart stacks duplicate filters → every packet counted twice |
+| Skip Zombie Hunter | An orphan the attach never replaces (a link off the allowlist, or a filter off the canonical slot from an older build) keeps running beside the new filter → every packet counted twice |
+| Hunt deletes the canonical filters on allowlisted links | Every VM goes uncounted from the hunt until step 4 attaches it, seconds per restart |
 
 ## Failure policy — Neutron API and Kafka outages
 
@@ -126,7 +132,8 @@ reaches an attach call. Two measures in the subscriber close the gap:
 2. **Resync sweep.** Every `bpf.attach_resync_interval` (default 60s; 0
    disables) the subscriber lists the host's links, checks each allowlisted
    one in the kernel for both telemetry filters in their exact slot (name,
-   `FilterHandle`, `FilterPriority`), and re-attaches any that lack them.
+   `FilterHandle`, `FilterPriority`) running this agent's programs, and
+   re-attaches any that lack them.
    `FilterReplace` is idempotent, so a healthy host performs no kernel writes.
    The Registry is then rebuilt as exactly the set the kernel carries. The
    kernel is the truth, not the Registry. Under churn the kernel can interrupt a dump,
@@ -161,7 +168,8 @@ undercounts billing.
 
 **Zero-loss (map pinning, implemented):**
 - The counter-bearing maps (`telemetry_map`, `telemetry_stats`) are pinned under `bpf.pin_path` → they survive the process. The two metadata maps are deliberately *not* pinned; cold-start (step 3) rebuilds them before attach, so pinning them would buy no billing continuity.
-- Across the crash gap the orphaned TC filters keep the old program counting into the pinned `telemetry_map`; the boot-time Zombie Hunter (step 1) then detaches them, but the bpffs pin holds the map alive independently of any filter/program refcount — so hunt-then-reuse cannot destroy it, and the two steps need no ordering constraint between them.
+- Across the crash gap the orphaned TC filters keep the old program counting into the pinned `telemetry_map`. The boot-time Zombie Hunter (step 1) leaves the canonical filters on allowlisted links in place, so the old program keeps counting through the new agent's boot until step 4's `FilterReplace` swaps in the new program at the same slot, with no uncounted window. The old program classifies against its own metadata maps, frozen at the crash, which only matters for a port that changed during that window. The hunter deletes every other telemetry filter. The bpffs pin holds the map alive independently of any filter/program refcount, so hunt-then-reuse cannot destroy it, and the two steps need no ordering constraint between them.
+- The spared filters are why the attach-presence check also compares the filter's program ID with the new agent's program: if step 4's attach fails on a link, the old program still sits in the canonical slot, and the resync sweep must replace it rather than report the link attached.
 - The new agent reuses the pinned maps, reads the [WAL](./primer.md#write-ahead-log) → restores GlobalState (cumulative counters and the settled-bytes accumulator), and the first BatchLookup merges the surviving kernel counters against the WAL-restored `LastEbpfRaw` (`current ≥ lastRaw`, so the delta is exact).
 - **Net data loss: 0.**
 

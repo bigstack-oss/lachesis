@@ -6,7 +6,7 @@
 // pairs the agent attaches, and the slog component label. The whole
 // package is //go:build linux, so this file carries the tag too. The
 // attach logic (Replace, AttachTelemetry, LinkAttacher,
-// IsTelemetryFilterName, TelemetryFilters, HasTelemetry) lives in
+// IsTelemetryFilterName, TelemetryFilters, HasTelemetry, InCanonicalSlot) lives in
 // tcattach.go.
 
 package tcattach

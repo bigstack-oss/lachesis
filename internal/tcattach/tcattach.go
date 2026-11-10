@@ -88,29 +88,59 @@ func TelemetryFilters(link netlink.Link) []*netlink.BpfFilter {
 }
 
 // HasTelemetry reports whether link carries both telemetry filters in
-// the exact slot [AttachTelemetry] installs them: the hook's own name
-// at [FilterHandle] and [FilterPriority]. A same-named filter in any
-// other slot does not count, so a link holding only that is reported
-// unattached and a re-attach installs the real pair.
+// the exact slot [AttachTelemetry] installs them ([InCanonicalSlot]),
+// each running the given program: ingress for the ingress hook, egress
+// for the egress hook. A same-named filter in any other slot, or a
+// canonical one running another program, does not count, so a re-attach
+// installs the real pair. The program check matters because boot spares
+// the previous run's canonical filters (see package zombie): one whose
+// re-attach failed still sits in the slot but runs the old program.
 //
 // A non-nil error means the answer is unknown: the kernel kept
 // interrupting the filter dump (concurrent tc changes), so a missing
 // filter may only be missing from the partial result.
-func HasTelemetry(link netlink.Link) (bool, error) {
-	for _, h := range Hooks {
+func HasTelemetry(link netlink.Link, ingress, egress *ebpf.Program) (bool, error) {
+	for i, prog := range []*ebpf.Program{ingress, egress} {
+		h := Hooks[i]
+		id, err := programID(prog)
+		if err != nil {
+			return false, err
+		}
 		fs, err := hookFilters(link, h.Parent)
 		if err != nil {
 			return false, err
 		}
 		if !slices.ContainsFunc(fs, func(f *netlink.BpfFilter) bool {
-			return f.Name == h.Name &&
-				f.Handle == FilterHandle &&
-				f.Priority == FilterPriority
+			return InCanonicalSlot(f) && f.Id == int(id)
 		}) {
 			return false, nil
 		}
 	}
 	return true, nil
+}
+
+// InCanonicalSlot reports whether f sits where [AttachTelemetry] puts a
+// telemetry filter: a hook's own name under that hook's parent, at
+// [FilterHandle] and [FilterPriority]. Only a filter there is replaced
+// in place by the next AttachTelemetry.
+func InCanonicalSlot(f *netlink.BpfFilter) bool {
+	return f.Handle == FilterHandle &&
+		f.Priority == FilterPriority &&
+		slices.Contains(Hooks, Hook{Name: f.Name, Parent: f.Parent})
+}
+
+// programID returns the kernel ID of prog, which a TC filter dump
+// reports for the program a BPF filter runs.
+func programID(prog *ebpf.Program) (ebpf.ProgramID, error) {
+	info, err := prog.Info()
+	if err != nil {
+		return 0, fmt.Errorf("tcattach: program info: %w", err)
+	}
+	id, ok := info.ID()
+	if !ok {
+		return 0, errors.New("tcattach: program ID unavailable")
+	}
+	return id, nil
 }
 
 // hookFilters lists the BPF filters under parent on link whose name is
@@ -168,10 +198,11 @@ func (a *LinkAttacher) Attach(link netlink.Link) error {
 	return AttachTelemetry(link, a.ingress, a.egress)
 }
 
-// Attached reports whether link carries both telemetry filters
-// ([HasTelemetry]); a non-nil error means the answer is unknown.
+// Attached reports whether link carries both telemetry filters running
+// this attacher's programs ([HasTelemetry]); a non-nil error means the
+// answer is unknown.
 func (a *LinkAttacher) Attached(link netlink.Link) (bool, error) {
-	return HasTelemetry(link)
+	return HasTelemetry(link, a.ingress, a.egress)
 }
 
 // clsactHandle is the kernel-reserved TC handle for the clsact
