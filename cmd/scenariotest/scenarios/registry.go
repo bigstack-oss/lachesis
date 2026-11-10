@@ -22,6 +22,7 @@ func All() []*scenariotest.Scenario {
 	return []*scenariotest.Scenario{
 		twoVMsSameTenant(),
 		vmToGateway(),
+		vmToSubnetInfra(),
 		vmToInternet(),
 		crossTenantShared(),
 		crossTenantRouted(),
