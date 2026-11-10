@@ -15,6 +15,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 	kafkago "github.com/segmentio/kafka-go"
+	"github.com/vishvananda/netlink"
 
 	"github.com/bigstack-oss/lachesis/internal/boot"
 	"github.com/bigstack-oss/lachesis/internal/bpf"
@@ -120,13 +121,19 @@ func (b *bootstrapper) prepareProcess() error {
 }
 
 // huntZombies removes TC filters orphaned by a previous crash, before
-// any program is loaded (boot step 1). Hunt errors are non-fatal — a
-// partial cleanup still leaves a working agent — so the count is
-// stashed for [buildAgent] to record once the metrics exist.
+// any program is loaded (boot step 1). It spares the canonical filters
+// on links the netlink subscriber will attach to, so they keep counting
+// until the attach replaces them. Hunt errors are non-fatal — a partial
+// cleanup still leaves a working agent — so the count is stashed for
+// [buildAgent] to record once the metrics exist.
 //
 // Boot sequence: docs/architecture/boot-and-recovery.md#boot-sequence
 func (b *bootstrapper) huntZombies() error {
-	cleaned, err := zombie.Hunt()
+	cleaned, err := zombie.Hunt(func(link netlink.Link) bool {
+		attach, _ := cnetlink.ShouldAttach(link.Attrs().Name, link.Type(),
+			b.cfg.BPF.AttachPrefixes, b.cfg.BPF.AttachInterfaces)
+		return attach
+	})
 	switch {
 	case err != nil:
 		slog.Warn("hunt encountered errors; continuing with partial cleanup",

@@ -283,13 +283,13 @@ func TestHasTelemetry(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if ok, err := tcattach.HasTelemetry(link); ok || err != nil {
+		if ok, err := tcattach.HasTelemetry(link, prog, prog); ok || err != nil {
 			t.Errorf("bare link: HasTelemetry = %v, %v; want false, nil", ok, err)
 		}
 		if err := tcattach.AttachTelemetry(link, prog, prog); err != nil {
 			return err
 		}
-		if ok, err := tcattach.HasTelemetry(link); !ok || err != nil {
+		if ok, err := tcattach.HasTelemetry(link, prog, prog); !ok || err != nil {
 			t.Errorf("after AttachTelemetry: HasTelemetry = %v, %v; want true, nil", ok, err)
 		}
 
@@ -318,11 +318,80 @@ func TestHasTelemetry(t *testing.T) {
 		}); err != nil {
 			return err
 		}
-		if ok, err := tcattach.HasTelemetry(link); ok || err != nil {
+		if ok, err := tcattach.HasTelemetry(link, prog, prog); ok || err != nil {
 			t.Errorf("egress filter off its slot: HasTelemetry = %v, %v; want false, nil", ok, err)
 		}
 		if got := len(tcattach.TelemetryFilters(link)); got != 2 {
 			t.Errorf("TelemetryFilters = %d filters, want 2 (name-only scan sees the off-slot one)", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+}
+
+// TestHasTelemetry_RequiresBoundProgram pins the guard behind sparing
+// canonical filters at boot (issue 334): a canonical-slot filter pair
+// running a different program (the previous run's, if its boot
+// re-attach failed) is not "attached" for this attacher, so the
+// resync replaces it instead of leaving the old program running
+// against frozen metadata maps.
+func TestHasTelemetry_RequiresBoundProgram(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("rlimit: %v", err)
+	}
+	spec, err := fixtures.LoadNoop()
+	if err != nil {
+		t.Fatalf("load noop spec: %v", err)
+	}
+	drv, err := bpfunit.New(spec)
+	if err != nil {
+		t.Fatalf("driver: %v", err)
+	}
+	defer drv.Close()
+	oldProg := drv.Program(fixtures.ProgNoopIn)
+	newProg := drv.Program(fixtures.NoopProgTcNoopOut)
+	if oldProg == nil || newProg == nil {
+		t.Fatal("noop programs missing from collection")
+	}
+
+	ns, err := tns.New()
+	if err != nil {
+		t.Fatalf("new ns: %v", err)
+	}
+	defer ns.Close()
+
+	innerMAC, _ := net.ParseMAC("aa:bb:cc:dd:e8:01")
+	outerMAC, _ := net.ParseMAC("aa:bb:cc:dd:e8:02")
+	innerIP := &net.IPNet{IP: net.IPv4(10, 86, 0, 1), Mask: net.CIDRMask(30, 32)}
+	outerIP := &net.IPNet{IP: net.IPv4(10, 86, 0, 2), Mask: net.CIDRMask(30, 32)}
+	host, err := ns.AddVeth(tns.VethSpec{
+		InnerName: "vm-tcprog", OuterName: "tap-tcprog",
+		InnerMAC: innerMAC, OuterMAC: outerMAC,
+		InnerIP: innerIP, OuterIP: outerIP,
+	})
+	if err != nil {
+		t.Fatalf("add veth: %v", err)
+	}
+	defer netlink.LinkDel(host)
+
+	if err := ns.Do(func() error {
+		link, err := netlink.LinkByName("vm-tcprog")
+		if err != nil {
+			return err
+		}
+		if err := tcattach.AttachTelemetry(link, oldProg, oldProg); err != nil {
+			return err
+		}
+		attacher := tcattach.NewLinkAttacher(newProg, newProg)
+		if ok, err := attacher.Attached(link); ok || err != nil {
+			t.Errorf("canonical slot runs another program: Attached = %v, %v; want false, nil", ok, err)
+		}
+		if err := attacher.Attach(link); err != nil {
+			return err
+		}
+		if ok, err := attacher.Attached(link); !ok || err != nil {
+			t.Errorf("after Attach: Attached = %v, %v; want true, nil", ok, err)
 		}
 		return nil
 	}); err != nil {
