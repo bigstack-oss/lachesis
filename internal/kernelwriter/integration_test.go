@@ -7,6 +7,7 @@
 package kernelwriter_test
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"testing"
@@ -160,5 +161,85 @@ func TestKernelWriter_RoundTrip(t *testing.T) {
 				t.Fatalf("drain telemetry_map: %v", err)
 			}
 		})
+	}
+}
+
+// TestKernelWriter_SubnetInfraBeatsTenantSubnet drives the zone a VM's
+// own gateway and OVN metadata/DHCP port get through the production
+// path: Neutron snapshot → BuildTrie → WriteSubnetZoneTrie → classifier.
+// The kernel consults the tenant's rows before the global ones, so the
+// infra /32s must win inside the tenant's own /24 in both directions.
+func TestKernelWriter_SubnetInfraBeatsTenantSubnet(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("rlimit: %v", err)
+	}
+	spec, err := bpf.LoadTelemetry()
+	if err != nil {
+		t.Fatalf("load telemetry spec: %v", err)
+	}
+	drv, err := bpfunit.New(spec)
+	if err != nil {
+		t.Fatalf("new driver: %v", err)
+	}
+	defer drv.Close()
+	telMap := drv.Map(bpf.MapTelemetry)
+
+	meta := metadata.New()
+	meta.Insert(macVMA, &metadata.TenantMeta{ProjectID: projA})
+	interner := metadata.NewTenantInterner()
+	if _, err := kernelwriter.WriteMacTenantMap(drv.Map(bpf.MapMacTenant), meta, interner); err != nil {
+		t.Fatalf("WriteMacTenantMap: %v", err)
+	}
+
+	entries, _, _ := neutron.BuildTrie(neutron.Snapshot{
+		Networks: []neutron.Network{{ID: "net-a", ProjectID: projA}},
+		Subnets: []neutron.Subnet{{
+			ID: "sub-a", NetworkID: "net-a", ProjectID: projA,
+			CIDR: "192.168.101.0/24", GatewayIP: "192.168.101.1", IPVersion: 4,
+		}},
+		Ports: []neutron.Port{
+			{DeviceOwner: "network:router_interface", ProjectID: projA,
+				FixedIPs: []neutron.FixedIP{{SubnetID: "sub-a", IPAddress: "192.168.101.1"}}},
+			{DeviceOwner: "network:distributed", ProjectID: projA,
+				FixedIPs: []neutron.FixedIP{{SubnetID: "sub-a", IPAddress: "192.168.101.2"}}},
+		},
+	})
+	if _, err := kernelwriter.WriteSubnetZoneTrie(drv.Map(bpf.MapSubnetZoneTrie), entries, interner); err != nil {
+		t.Fatalf("WriteSubnetZoneTrie: %v", err)
+	}
+
+	vmIP := net.IPv4(192, 168, 101, 147)
+	for _, tc := range []struct {
+		name   string
+		remote net.IP
+		want   bpf.ZoneCode
+	}{
+		{"gateway", net.IPv4(192, 168, 101, 1), bpf.ZoneInfra},
+		{"OVN metadata/DHCP port", net.IPv4(192, 168, 101, 2), bpf.ZoneInfra},
+		{"Nova metadata", net.IPv4(169, 254, 169, 254), bpf.ZoneInfra},
+		{"routed peer in own subnet", net.IPv4(192, 168, 101, 50), bpf.ZoneSameTenant},
+		{"internet", net.IPv4(8, 8, 8, 8), bpf.ZoneExternal},
+	} {
+		for _, dir := range []bpf.Direction{bpf.DirectionIngress, bpf.DirectionEgress} {
+			src, dst, sip, dip, prog := macVMA, macRtr, vmIP, tc.remote, bpf.ProgramIngress
+			if dir == bpf.DirectionEgress {
+				src, dst, sip, dip, prog = macRtr, macVMA, tc.remote, vmIP, bpf.ProgramEgress
+			}
+			t.Run(fmt.Sprintf("%s/%s", tc.name, prog), func(t *testing.T) {
+				if err := bpfunit.DrainTelemetryByMACs(telMap, src, dst); err != nil {
+					t.Fatalf("drain telemetry_map: %v", err)
+				}
+				if _, err := drv.Run(prog, bpfunit.EthIPv4TCP(bpfunit.MAC(src), bpfunit.MAC(dst), sip, dip, 12345, 80, nil)); err != nil {
+					t.Fatalf("run: %v", err)
+				}
+				zone, ok, err := bpfunit.FindZone(telMap, src, dst, dir)
+				if err != nil || !ok {
+					t.Fatalf("find zone: ok=%v err=%v", ok, err)
+				}
+				if zone != tc.want {
+					t.Errorf("dst_zone = %d, want %d", zone, tc.want)
+				}
+			})
+		}
 	}
 }

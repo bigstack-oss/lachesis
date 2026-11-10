@@ -26,7 +26,11 @@ Neutron v2.0 API only:
 Global rows (steps 1, 3, 4) are emitted **once**, under the sentinel
 `tenant_id=0` — the kernel falls back to them when the per-tenant lookup misses
 ([packet-classification.md](./packet-classification.md), step 7). Only steps 2
-and 5 emit per-tenant rows. (An earlier per-tenant-everything shape replicated
+and 5 emit per-tenant rows. Because the per-tenant lookup runs first, a global
+row never beats a tenant row that covers the same address, whatever its prefix
+length. Step 2 therefore repeats each owned subnet's own infra `/32`s under the
+owning tenant; without them the tenant's `/24` would bill its gateway and OVN
+metadata/DHCP port as SAME_TENANT. (An earlier per-tenant-everything shape replicated
 every global row once per tenant — ~96% of trie occupancy on a 27-tenant
 deployment — and would overflow the 16,384 cap at production tenant counts; see
 [data-structures.md](./data-structures.md#kernel-side-bpf-maps).)
@@ -42,6 +46,8 @@ Run once at cold start, then incrementally on every reconcile:
                        AND not S.network.shared
                        AND not S.network.router:external:
       add (T, S.cidr) → ZONE_SAME_TENANT
+      for each step-4 infra IP X on S:                 # gateway_ip + infra ports
+        add (T, X/32) → ZONE_INFRA                    # else (T, S.cidr) shadows it
 
   Step 3 — Shared networks                             [global, once]
     for each subnet S where S.network.shared == true
@@ -286,10 +292,12 @@ net-pub emits nothing — external networks fall to the catchall.
 |---|---|---|---|
 | T1 | 2 | owned | `(T1, 10.0.1.0/24) → SAME` |
 | T1 | 2 | owned | `(T1, 10.0.2.0/24) → SAME` |
+| T1 | 2 | own subnets' infra IPs (router-T1 interfaces) | `(T1, 10.0.1.1/32) → INFRA`, `(T1, 10.0.2.1/32) → INFRA` |
 | T1 | 5 | extraroute `10.50.0.0/16` via `192.168.100.20`: hop 0 → nexthop is router-T2's interface; Step C finds `10.50.0.0/16` directly attached → owner T2 | `(T1, 10.50.0.0/16) → OTHER` |
 | T1 | 5 | extraroute `172.16.99.0/24` via `10.0.1.50`: nexthop port is `compute:nova`, `tenant_id=T1` → `zone_for(T1, T1, net-T1)` | `(T1, 172.16.99.0/24) → SAME` |
 | T2 | 2 | owned | `(T2, 10.1.1.0/24) → SAME` |
 | T2 | 2 | owned | `(T2, 10.50.0.0/16) → SAME` |
+| T2 | 2 | own subnets' infra IPs (router-T2 interfaces) | `(T2, 10.1.1.1/32) → INFRA`, `(T2, 10.50.0.1/32) → INFRA` |
 
 Note `10.50.0.0/16` appears twice with opposite zones — T1's view says OTHER,
 T2's says SAME. That coexistence is exactly why the key is
@@ -298,9 +306,11 @@ to `8.8.8.8` misses every `(T1, …)` row, falls back to `(0, 8.8.8.8)`, and hit
 the catchall → EXTERNAL. The INFRA /32 rows earn their keep on MAC-miss
 traffic: an OVN-synthesized DHCP response arrives from a `server_mac` that is
 not any Neutron port, so the MAC path misses and the LPM lookup on its source
-IP (`10.0.1.1`, the gateway) classifies it INFRA — note the /32 INFRA row
-beats the /24 SHARED row on the transit networks too, because longest prefix
-wins within the sentinel rows.
+IP (`10.0.1.1`, the gateway) classifies it INFRA. Inside T1's own subnet that
+hit is T1's step-2 copy `(T1, 10.0.1.1/32)`: the global copy alone would never
+be reached, because `(T1, 10.0.1.0/24)` answers the first lookup. On the shared
+transit network the global /32 INFRA row does the work, beating the /24 SHARED
+row because longest prefix wins within the sentinel rows.
 
 ## Worked example — multi-hop chain
 

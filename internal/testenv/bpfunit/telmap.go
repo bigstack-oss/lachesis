@@ -63,7 +63,8 @@ func FindKey(m *ebpf.Map, srcMAC, dstMAC uint64, dir bpf.Direction) (bpf.FlowKey
 }
 
 // DrainTelemetryByMACs deletes every telemetry_map entry whose flow_key
-// matches the (srcMAC, dstMAC) pair in either direction. Tests call this
+// matches (srcMAC, dstMAC) in that MAC order, under either hook direction; a
+// reply frame (dstMAC, srcMAC) needs its own call. Tests call this
 // between subcases so a prior /24 hit doesn't carry over to a later case
 // sharing the same MAC pair.
 func DrainTelemetryByMACs(m *ebpf.Map, srcMAC, dstMAC uint64) error {
