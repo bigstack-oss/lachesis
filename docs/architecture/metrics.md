@@ -38,7 +38,7 @@ them, so changing any value is a breaking change once consumers exist.
 |---|---|---|
 | `tenant_id` | Neutron project UUID, or `unknown` | The tenant the flow's VM belongs to (resolved via `mac_tenant_map`); `unknown` when the VM MAC is not (yet) in the metadata map |
 | `zone` | `external`, `same_tenant`, `other_tenant`, `infra`, `miss`, `shared`, `multicast` | The remote endpoint's zone relative to the VM's tenant ([packet-classification.md](./packet-classification.md)); the canonical strings from `bpf.ZoneCode.String()`. `multicast` is assigned by the kernel to any frame with a group destination MAC (platform-L2 chatter) — counted but never billed |
-| `external_network` | external-network name (ID when nameless), or `none` | The network the flow's external traffic leaves through, resolved **per flow**: the peer router-interface MAC's gateway network when known, else the VM's attribution (FIP network / gateway-IP rule) — full rules in [billing.md](./billing.md). Carried **only** on `zone="external"` series; every other zone (and external traffic with no resolvable path) emits the `none` sentinel, keeping cardinality at (#external networks + 1). The single labeling source is `metadata.FlowExternalLabel`, applied identically at scrape-time aggregation and every settle fold |
+| `external_network` | Neutron network **ID** of the external network, or `none` | The network the flow's external traffic leaves through, resolved **per flow**: the peer router-interface MAC's gateway network when known, else the VM's attribution (FIP network / gateway-IP rule) — full rules in [billing.md](./billing.md). Carried **only** on `zone="external"` series; every other zone (and external traffic with no resolvable path) emits the `none` sentinel, keeping cardinality at (#external networks + 1). The ID is the stable key (a rename or a duplicate name cannot move or merge a series); names come from `lachesis_external_network_info`, below. After an upgrade from a name-labelled build, a server can carry a frozen series under the old name next to a growing series under the ID ([billing.md](./billing.md#external-network-label)). The single labeling source is `metadata.FlowExternalLabel`, applied identically at scrape-time aggregation and every settle fold |
 | `server_id` | Nova instance UUID (Neutron port `device_id`) | Per-server family only. Never `unknown` — flows whose MAC doesn't resolve to a server are absent from the family by construction |
 | `port_id` | Neutron port UUID | Port layer only. A MAC maps to exactly one port; a recreated port is a new UUID, hence a new series |
 | `direction` | `tx`, `rx` | `tx` = the VM is sending; `rx` = the VM is receiving |
@@ -68,7 +68,7 @@ depends on them. Do not reintroduce hook-frame strings into the metric labels.
 
 ## Identity info metrics (join series; emitted from the Neutron snapshot)
 
-Three additive *info* families let dashboards render human names (and, for
+Four additive *info* families let dashboards render human names (and, for
 ports, the MAC and fixed IPs) next to the UUID labels without putting a name label on the billing families — the
 kube-state-metrics `kube_pod_info` pattern (a value-`1` series joined with
 PromQL `group_left`).
@@ -78,6 +78,7 @@ PromQL `group_left`).
 | `lachesis_tenant_info` | gauge (always 1) | `tenant_id, name` | mortal — one series per Keystone project in the committed snapshot |
 | `lachesis_server_info` | gauge (always 1) | `server_id, name, tenant_id` | mortal — one series per Nova server; **absent** when the Nova fetch fails |
 | `lachesis_port_info` | gauge (always 1) | `port_id, server_id, tenant_id, mac, ips` | mortal — one series per VM port (the `mac_tenant_map` admission predicate: VM-like `device_owner`, project and MAC set; router/DHCP ports excluded) |
+| `lachesis_external_network_info` | gauge (always 1) | `external_network, name` | mortal — one series per external network (`router:external`) in the committed snapshot |
 
 They are emitted by a dedicated `neutron.InfoCollector` (registered under the
 neutron subsystem), **not** the billing `metrics.Collector` — the billing
@@ -86,7 +87,7 @@ a historical join shows the name an entity held *at that time* rather than
 back-dating a rename. Each scrape re-emits from the current
 `neutron.Snapshot()`, so a series vanishes the sync after its entity leaves the
 snapshot (a `GaugeVec` would instead leak deleted-entity series forever).
-Cardinality is one series per tenant / per server / per VM port — no churn
+Cardinality is one series per tenant / per server / per VM port / per external network — no churn
 amplification.
 
 `lachesis_port_info` comes free from the port list `Sync` already fetches.
@@ -117,6 +118,24 @@ The per-port join works the same way, adding the MAC and fixed IPs:
 sum by (port_id) (rate(lachesis_port_bytes_total{server_id="<uuid>"}[1m]))
   * on(port_id) group_left(mac, ips) lachesis_port_info
 ```
+
+`lachesis_external_network_info` joins on the `external_network` label.
+Its consumption rules are the same two as above:
+
+```promql
+sum by (external_network) (rate(lachesis_bytes_total{zone="external"}[1m]))
+  * on(external_network) group_left(name)
+    topk by (external_network) (1, max by (external_network, name) (lachesis_external_network_info))  # named rows
+or sum by (external_network) (rate(lachesis_bytes_total{zone="external"}[1m]))
+     unless on(external_network) lachesis_external_network_info        # bare-ID fallback
+```
+
+The `topk by (external_network) (1, …)` keeps the right side one series per network even
+while a rename is visible on two agents for a scrape or two.
+
+Rows the join cannot match keep their bare `external_network`: the `none`
+sentinel, a legacy name-labelled series, a never-synced agent, or an absent
+info family.
 
 ## Health (per-subsystem; bounded cardinality)
 

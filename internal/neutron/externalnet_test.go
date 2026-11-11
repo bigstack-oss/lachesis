@@ -14,7 +14,7 @@ func extSnap() Snapshot {
 	return Snapshot{
 		Networks: []Network{
 			{ID: "net-pub1", Name: "public-1", IsExternal: true},
-			{ID: "net-pub2", Name: "", IsExternal: true}, // nameless → ID fallback
+			{ID: "net-pub2", Name: "", IsExternal: true}, // nameless: the label is still the ID
 			{ID: "net-priv", Name: "private-a"},
 		},
 		Subnets: []Subnet{
@@ -54,8 +54,8 @@ func TestExternalNetworkByPort(t *testing.T) {
 	got := ExternalNetworkByPort(&snap)
 
 	want := map[string]string{
-		"port-vm-routed": "public-1", // router gateway, network name
-		"port-vm-fip":    "net-pub2", // FIP wins; nameless network falls back to ID
+		"port-vm-routed": "net-pub1", // router gateway, network ID
+		"port-vm-fip":    "net-pub2", // FIP wins
 	}
 	for port, ext := range want {
 		if got[port] != ext {
@@ -72,15 +72,15 @@ func TestExternalNetworkByPort(t *testing.T) {
 func TestExternalNetworkByPortMultiPathDeterministic(t *testing.T) {
 	snap := extSnap()
 	// Give the FIP VM a second FIP on public-1: candidates are
-	// {net-pub2, public-1}; the lexicographically smallest label wins,
+	// {net-pub1, net-pub2}; the lexicographically smallest ID wins,
 	// and repeated calls agree.
 	snap.FloatingIPs = append(snap.FloatingIPs,
 		FloatingIP{ID: "fip-2", PortID: "port-vm-fip", FloatingNetworkID: "net-pub1"})
 
 	first := ExternalNetworkByPort(&snap)
-	if first["port-vm-fip"] != "net-pub2" {
+	if first["port-vm-fip"] != "net-pub1" {
 		t.Errorf("multi-FIP pick = %q, want lexicographically smallest %q",
-			first["port-vm-fip"], "net-pub2")
+			first["port-vm-fip"], "net-pub1")
 	}
 	for i := 0; i < 5; i++ {
 		again := ExternalNetworkByPort(&snap)
@@ -119,8 +119,8 @@ func TestDetectMultiExternalPaths(t *testing.T) {
 	if h.PortID != "port-vm-fip" || h.ServerID != "srv-2" {
 		t.Errorf("hit identity wrong: %+v", h)
 	}
-	if len(h.Candidates) != 2 || h.Candidates[0] != "net-pub2" || h.Candidates[1] != "public-1" {
-		t.Errorf("candidates = %v, want sorted [net-pub2 public-1]", h.Candidates)
+	if len(h.Candidates) != 2 || h.Candidates[0] != "net-pub1" || h.Candidates[1] != "net-pub2" {
+		t.Errorf("candidates = %v, want sorted [net-pub1 net-pub2]", h.Candidates)
 	}
 	if picked := ExternalNetworkByPort(&snap)["port-vm-fip"]; h.Picked != picked {
 		t.Errorf("anomaly Picked %q disagrees with attribution %q", h.Picked, picked)
@@ -145,8 +145,8 @@ func TestExternalNetworkByPortGatewayIPRule(t *testing.T) {
 	})
 
 	got := ExternalNetworkByPort(&snap)
-	if got["port-vm-routed"] != "public-1" {
-		t.Errorf("attribution = %q, want the gateway-owning router's %q", got["port-vm-routed"], "public-1")
+	if got["port-vm-routed"] != "net-pub1" {
+		t.Errorf("attribution = %q, want the gateway-owning router's %q", got["port-vm-routed"], "net-pub1")
 	}
 	if hits := detectMultiExternalPaths(snap); len(hits) != 0 {
 		t.Errorf("gateway-IP rule should suppress the dual-router false positive, got %+v", hits)
@@ -168,7 +168,7 @@ func TestExternalNetworkByPortGatewayIPRule(t *testing.T) {
 }
 
 // TestRouterExtMACs: only gatewayed routers' interface MACs map, to
-// their gateway network's label (name, ID fallback); no-gateway
+// their gateway network ID; no-gateway
 // routers, non-router ports, and unparseable MACs are absent.
 func TestRouterExtMACs(t *testing.T) {
 	snap := Snapshot{
@@ -193,11 +193,11 @@ func TestRouterExtMACs(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("RouterExtMACs = %v, want exactly p1+p2", got)
 	}
-	if got[macU64(t, "fa:16:3e:00:00:01")] != "public-1" {
-		t.Errorf("rtr-1 interface label = %q, want public-1", got[macU64(t, "fa:16:3e:00:00:01")])
+	if got[macU64(t, "fa:16:3e:00:00:01")] != "net-pub1" {
+		t.Errorf("rtr-1 interface label = %q, want net-pub1", got[macU64(t, "fa:16:3e:00:00:01")])
 	}
 	if got[macU64(t, "fa:16:3e:00:00:02")] != "net-pub2" {
-		t.Errorf("rtr-2 interface label = %q, want ID fallback net-pub2", got[macU64(t, "fa:16:3e:00:00:02")])
+		t.Errorf("rtr-2 interface label = %q, want net-pub2", got[macU64(t, "fa:16:3e:00:00:02")])
 	}
 }
 

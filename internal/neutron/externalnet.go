@@ -19,10 +19,12 @@ import (
 // egress leaves through: a bound floating IP wins (OVN NATs through it
 // whichever router carries the traffic), else the external gateway of
 // an attached router. Ports with neither are absent. The label is the
-// network Name, which is what rate tables key on.
+// network ID, which a rename or a duplicate name cannot disturb.
 //
-// A multi-homed VM gets ONE attribution, picked deterministically, so
-// an unchanged topology never flaps and re-labels live series.
+// A multi-homed VM gets ONE attribution, picked deterministically (the
+// smallest network ID, never the name, so a cosmetic rename cannot flip
+// which network bills), so an unchanged topology never flaps and
+// re-labels live series.
 func ExternalNetworkByPort(snap *Snapshot) map[string]string {
 	out := make(map[string]string)
 	for portID, c := range externalCandidatesByPort(snap) {
@@ -78,15 +80,6 @@ type portCandidates struct {
 // derive from, so the two can never disagree about what "ambiguous"
 // means. Ports with no external path are absent from the map.
 func externalCandidatesByPort(snap *Snapshot) map[string]portCandidates {
-	netLabel := make(map[string]string, len(snap.Networks))
-	for _, n := range snap.Networks {
-		if n.Name != "" {
-			netLabel[n.ID] = n.Name
-		} else {
-			netLabel[n.ID] = n.ID
-		}
-	}
-
 	// Tier 2: subnet → external label via attached routers, built first
 	// so FIP hits can shadow it. Only one interface holds a subnet's
 	// gateway_ip and the VMs' default route points there, so that router
@@ -96,7 +89,7 @@ func externalCandidatesByPort(snap *Snapshot) map[string]portCandidates {
 	routerExt := make(map[string]string) // routerID → ext label
 	for _, r := range snap.Routers {
 		if r.ExternalNetworkID != "" {
-			routerExt[r.ID] = netLabel[r.ExternalNetworkID]
+			routerExt[r.ID] = r.ExternalNetworkID
 		}
 	}
 	subnetGateway := make(map[string]string, len(snap.Subnets)) // subnetID → gateway IP
@@ -132,7 +125,7 @@ func externalCandidatesByPort(snap *Snapshot) map[string]portCandidates {
 		if f.PortID == "" || f.FloatingNetworkID == "" {
 			continue
 		}
-		fipExt[f.PortID] = append(fipExt[f.PortID], netLabel[f.FloatingNetworkID])
+		fipExt[f.PortID] = append(fipExt[f.PortID], f.FloatingNetworkID)
 	}
 
 	out := make(map[string]portCandidates)
@@ -178,18 +171,10 @@ func dedupe(in []string) []string {
 // such a flow's peer MAC IS that interface. Relies on OVN's unique
 // per-interface MAC, which the duplicate_router_mac anomaly asserts.
 func RouterExtMACs(snap *Snapshot) map[uint64]string {
-	netLabel := make(map[string]string, len(snap.Networks))
-	for _, n := range snap.Networks {
-		if n.Name != "" {
-			netLabel[n.ID] = n.Name
-		} else {
-			netLabel[n.ID] = n.ID
-		}
-	}
 	routerExt := make(map[string]string, len(snap.Routers))
 	for _, r := range snap.Routers {
 		if r.ExternalNetworkID != "" {
-			routerExt[r.ID] = netLabel[r.ExternalNetworkID]
+			routerExt[r.ID] = r.ExternalNetworkID
 		}
 	}
 	out := make(map[uint64]string)

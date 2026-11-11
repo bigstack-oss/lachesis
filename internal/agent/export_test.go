@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"github.com/prometheus/client_golang/prometheus"
 	"runtime/debug"
 	"time"
 
@@ -62,4 +63,10 @@ func WireGhostSweeperForTest(a *Agent, ev gc.MacEvictor, interval time.Duration)
 	for p := boot.PhaseBPFLoaded; p <= boot.PhaseStateRestored; p++ {
 		_ = a.seq.Advance(p)
 	}
+}
+
+// CollectorForTest returns the agent's billing Collector so a test can
+// read the series a restore produced.
+func CollectorForTest(a *Agent) prometheus.Collector {
+	return a.collector
 }
