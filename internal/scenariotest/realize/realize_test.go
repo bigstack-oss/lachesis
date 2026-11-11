@@ -454,3 +454,13 @@ func TestRealize_RecordsVMPortMACs(t *testing.T) {
 		t.Fatalf("run-state has %d VM port refs, want 2: %+v", vmPorts, rs.Ports)
 	}
 }
+
+// TestRealize_RecordsProviderExternalNetworkID: assert matches the
+// external_network label, which is the provider network's ID, so
+// realize must persist it in the run-state.
+func TestRealize_RecordsProviderExternalNetworkID(t *testing.T) {
+	cloud, rs := realizeFixture(t, fake.SameTenantScenario())
+	if rs.ProviderExternalNetworkID == "" || rs.ProviderExternalNetworkID != cloud.ExtNetID {
+		t.Errorf("ProviderExternalNetworkID = %q, want %q", rs.ProviderExternalNetworkID, cloud.ExtNetID)
+	}
+}

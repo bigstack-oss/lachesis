@@ -191,6 +191,7 @@ func (r *realizer) resolvePrereqs() error {
 	if r.extNetID, err = r.opts.Cloud.FindExternalNetwork(r.ctx, p.ExternalNetworkName); err != nil {
 		return err
 	}
+	r.rs.ProviderExternalNetworkID = r.extNetID
 	if r.flavorID, err = r.opts.Cloud.FindFlavor(r.ctx, scenariotest.FlavorFor(r.opts.Config, r.opts.Scenario)); err != nil {
 		return err
 	}

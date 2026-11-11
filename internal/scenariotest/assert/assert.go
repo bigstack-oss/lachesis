@@ -153,7 +153,10 @@ func evaluate(sc *scenariotest.Scenario, cfg scenariotest.Config, rs *scenariote
 		if !ok {
 			return scenariotest.AssertReport{}, fmt.Errorf("assert: expectation references tenant %q but run-state has no such project", e.TenantID)
 		}
-		ext := resolveExternalNetwork(sc, cfg, rs, e.ExternalNetwork)
+		ext, err := resolveExternalNetwork(sc, rs, e.ExternalNetwork)
+		if err != nil {
+			return scenariotest.AssertReport{}, err
+		}
 		row := scenariotest.AssertRow{
 			Tenant: e.TenantID, TenantID: ref.ID,
 			Zone: e.Zone, ExternalNetwork: ext, Direction: e.Direction,
@@ -211,25 +214,35 @@ func evaluate(sc *scenariotest.Scenario, cfg scenariotest.Config, rs *scenariote
 }
 
 // resolveExternalNetwork maps an expectation's ExternalNetwork to the
-// label value to match — the same indirection realize applies: empty
-// stays empty (no filter); a marker in [scenariotest.Scenario.CreateExternalNets]
-// resolves to its run-mangled created name (the network Name the agent
-// labels by); any other DSL external-network marker id resolves to the
-// provider network the config binds it to; anything else — including
-// the "none" sentinel — is literal.
-func resolveExternalNetwork(sc *scenariotest.Scenario, cfg scenariotest.Config, rs *scenariotest.RunState, name string) string {
+// `external_network` label value to match, which is a Neutron network
+// ID: empty stays empty (no filter); a marker in
+// [scenariotest.Scenario.CreateExternalNets] resolves to the live ID
+// realize recorded for it; any other DSL external-network marker id
+// resolves to the provider network's recorded ID, an error for a
+// run-state that predates the field; anything else, including the
+// "none" sentinel, is literal.
+func resolveExternalNetwork(sc *scenariotest.Scenario, rs *scenariotest.RunState, name string) (string, error) {
 	if name == "" || sc.Builder == nil {
-		return name
+		return name, nil
 	}
 	for _, created := range sc.CreateExternalNets {
-		if created == name {
-			return scenariotest.Mangle(cfg.Naming.Prefix, rs.RunID, name)
+		if created != name {
+			continue
 		}
+		for _, n := range rs.Networks {
+			if n.DSLID == name {
+				return n.ID, nil
+			}
+		}
+		return "", fmt.Errorf("assert: created external network %q has no entry in the run-state", name)
 	}
 	for _, n := range sc.Builder.Build().Networks {
 		if n.IsExternal && n.ID == name {
-			return cfg.Prerequisites.ExternalNetworkName
+			if rs.ProviderExternalNetworkID == "" {
+				return "", fmt.Errorf("assert: expectation names provider external network %q but the run-state records no provider network ID; re-run up with this scenariotest build", name)
+			}
+			return rs.ProviderExternalNetworkID, nil
 		}
 	}
-	return name
+	return name, nil
 }

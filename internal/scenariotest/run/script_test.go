@@ -450,10 +450,11 @@ func (m *extPathMetrics) Scrape(context.Context, string) (scenariotest.ScrapeRes
 	if len(m.cloud.ServerIDs) > 0 {
 		serverID = m.cloud.ServerIDs[0]
 	}
-	// The created network's agent-emitted label is its run-mangled
-	// Neutron name — what the per-flow router-MAC attribution resolves
-	// for flows riding r-ext2.
-	created := scenariotest.Mangle("scenariotest", "run1", "net-ext2")
+	// The agent labels by network ID: the provider network's, and the
+	// created network's — what the per-flow router-MAC attribution
+	// resolves for flows riding r-ext2.
+	provider := m.cloud.ExtNetID
+	created := m.cloud.NetIDs[scenariotest.Mangle("scenariotest", "run1", "net-ext2")]
 	return scenariotest.ScrapeResult{
 		Present: map[string]bool{
 			scenariotest.MetricBytesTotal:         true,
@@ -464,11 +465,11 @@ func (m *extPathMetrics) Scrape(context.Context, string) (scenariotest.ScrapeRes
 		AttachedInterfaces: m.Env.BaseAttached + float64(m.Env.Booted),
 		Anomalies:          map[string]float64{"multi_external_path": extraFIP},
 		Bytes: []scenariotest.BytesSample{
-			{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: ext},
+			{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: provider, Direction: "tx", Value: ext},
 			{TenantID: "uuid-t1", Zone: "external", ExternalNetwork: created, Direction: "tx", Value: ext2},
 		},
 		Servers: []scenariotest.ServerSample{
-			{ServerID: serverID, TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: ext},
+			{ServerID: serverID, TenantID: "uuid-t1", Zone: "external", ExternalNetwork: provider, Direction: "tx", Value: ext},
 			{ServerID: serverID, TenantID: "uuid-t1", Zone: "external", ExternalNetwork: created, Direction: "tx", Value: ext2},
 		},
 	}, nil
@@ -708,6 +709,9 @@ func extPathScenario() *scenariotest.Scenario {
 		}},
 		steps.AssertFlowPeerStep{Router: "r-ext2", Via: "10.0.11.254", Zone: "external",
 			MinBytes: 1 << 20, Note: "steered bytes observed on r-ext2's interface"},
+		steps.DeleteFIPStep{VM: "vm-a", Network: "net-ext2"},
+		steps.AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0, Timeout: time.Second,
+			Note: "ambiguity clears after FIP removal"},
 		steps.AddRouteStep{VM: "vm-a", CIDR: "8.8.10.0/24", Via: "10.0.11.253"},
 		steps.CaptureStep{},
 		steps.DriveStep{Flows: []scenariotest.Flow{{From: "vm-a", To: scenariotest.ExternalTarget("8.8.10.9"), Bytes: 1 << 20, Proto: scenariotest.TCP}}},
@@ -717,9 +721,6 @@ func extPathScenario() *scenariotest.Scenario {
 		}},
 		steps.AssertFlowPeerStep{Router: "r-nogw", Via: "10.0.11.253", Zone: "external",
 			MinBytes: 1 << 20, Note: "fallback bytes observed on the gateway-less interface"},
-		steps.DeleteFIPStep{VM: "vm-a", Network: "net-ext2"},
-		steps.AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0, Timeout: time.Second,
-			Note: "ambiguity clears after FIP removal"},
 		steps.MonotoneStep{Tenant: "T1", Note: "series stable through FIP churn"},
 	}
 	return sc

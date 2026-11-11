@@ -28,6 +28,11 @@ type RunState struct {
 	Ports    []ResourceRef         `json:"ports"`
 	Servers  []ResourceRef         `json:"servers"`
 	FIPs     []FIPRef              `json:"fips"`
+	// ProviderExternalNetworkID is the UUID of the provider external
+	// network the run's routers gateway to and its FIPs come from — the
+	// `external_network` label value its series carry, resolved at
+	// realize. Absent in run-states predating it.
+	ProviderExternalNetworkID string `json:"provider_external_network_id,omitempty"`
 	// LoadBalancers are the Octavia load balancers realize created.
 	// Torn down FIRST and by cascade: Octavia owns the Amphora VMs and
 	// their Neutron ports, which would otherwise block subnet and
