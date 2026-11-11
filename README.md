@@ -34,7 +34,7 @@ Generic flow tools (sFlow/NetFlow) and host exporters tell you *how much* traffi
 ## ✨ Features
 
 **Billing accuracy**
-- **Per-tenant, per-zone, per-direction byte & packet accounting** — the billing metric `lachesis_bytes_total{tenant_id,zone,direction,external_network}`.
+- **Per-tenant, per-zone, per-direction byte & packet accounting** — the billing metric `lachesis_bytes_total{tenant_id,zone,direction,external_network}`, where `external_network` is the Neutron network ID (names via `lachesis_external_network_info`).
 - **Five traffic zones** — `same_tenant`, `other_tenant`, `infra`, `external`, `shared` — from a hybrid L2 MAC lookup plus an LPM zone trie.
 - **Octavia re-attribution** — LB bytes billed to the client tenant, not the amphora.
 - **Per-server drill-down** — an optional mortal per-server family for capacity views alongside the immortal per-tenant billing family.
