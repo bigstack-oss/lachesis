@@ -36,7 +36,8 @@ func vmToInternet() *scenariotest.Scenario {
 			{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20},
 			// The same egress must carry the provider network's
 			// external_network label ("net-ext" resolves to the bound
-			// provider network, like TenantID → UUID) — pinning the
+			// provider network's UUID, which is what the label carries,
+			// like TenantID → UUID) — pinning the
 			// zone-gated label live (docs/architecture/metrics.md)...
 			{TenantID: "T1", Zone: "external", Direction: "tx", MinBytes: 1 << 20,
 				ExternalNetwork: "net-ext"},

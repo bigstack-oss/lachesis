@@ -95,11 +95,19 @@ func multiExternalPath() *scenariotest.Scenario {
 			steps.AssertFlowPeerStep{Router: "r-ext2", Via: "10.0.11.254", Zone: "external",
 				MinBytes: 1 << 20, Note: "steered bytes observed on r-ext2's interface"},
 
+			// Remove the second path: anomaly clears, series undisturbed.
+			steps.DeleteFIPStep{VM: "vm-a", Network: "net-ext2"},
+			steps.AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0,
+				Note: "ambiguity clears after FIP removal"},
 			// Tier-2 fallback: ride the gateway-less router. Its
 			// interface MAC misses the router map (no gateway →
 			// nothing to attribute per flow), so these external-zone
 			// bytes must fall back to the VM's OWN attribution — the
 			// provider network, via its FIP / the gateway-IP rule.
+			// Runs AFTER the second FIP is removed: with two FIPs the
+			// fallback pick is the smallest network ID, which is
+			// arbitrary, so only the single-FIP VM has an unambiguous
+			// attribution (the provider network) to assert.
 			// Catches a broken fallback (label "none") and a router map
 			// that wrongly includes gateway-less interfaces.
 			steps.AddRouteStep{VM: "vm-a", CIDR: "8.8.10.0/24", Via: "10.0.11.253"},
@@ -120,10 +128,6 @@ func multiExternalPath() *scenariotest.Scenario {
 			steps.AssertFlowPeerStep{Router: "r-nogw", Via: "10.0.11.253", Zone: "external",
 				MinBytes: 1 << 20, Note: "fallback bytes observed on the gateway-less interface"},
 
-			// Remove the second path: anomaly clears, series undisturbed.
-			steps.DeleteFIPStep{VM: "vm-a", Network: "net-ext2"},
-			steps.AssertAnomalyStep{Class: "multi_external_path", Min: 0, Max: 0,
-				Note: "ambiguity clears after FIP removal"},
 			steps.MonotoneStep{Tenant: "T1", Note: "series stable through FIP churn"},
 		},
 	}

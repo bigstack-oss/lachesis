@@ -225,14 +225,14 @@ func extAssertState() *scenariotest.RunState {
 		{ServerID: "srv-a", TenantID: "uuid-t1", Zone: "external", ExternalNetwork: "ext", Direction: "tx", Value: 800},
 	}
 	rs.Servers = []scenariotest.ResourceRef{{DSLID: "vm-a", ID: "srv-a", ProjectID: "uuid-t1"}}
+	rs.ProviderExternalNetworkID = "ext"
 	return rs
 }
 
 // TestAssert_ExternalNetworkFilter: an expectation pinning
 // ExternalNetwork must count only that label's series — growth on the
 // "none" bucket cannot satisfy it — and the DSL marker id ("net-ext")
-// resolves to the config's provider network name ("ext"), mirroring
-// realize's binding.
+// resolves to the provider network ID recorded at realize ("ext").
 func TestAssert_ExternalNetworkFilter(t *testing.T) {
 	sc := fake.SameTenantScenario()
 	sc.Expect = []scenariotest.Expect{
@@ -311,28 +311,40 @@ func TestAssert_VMExpectRefusesPreFamilyAgent(t *testing.T) {
 	}
 }
 
-// TestResolveExternalNetwork pins the three resolution tiers: a
-// CreateExternalNets marker resolves to its run-mangled created name
-// (the label the agent really emits — NOT the provider network), a
-// provider-bound external marker resolves to the config's provider
-// network, and everything else (empty, "none", literals) passes
-// through.
+// TestResolveExternalNetwork pins the three resolution tiers, all to
+// network IDs (what the agent labels by): a CreateExternalNets marker
+// resolves to its live created ID, a provider-bound external marker
+// resolves to the provider ID recorded at realize, and everything else
+// (empty, "none", literals) passes through. A provider marker with no
+// recorded ID (a run-state from an older build) is an error.
 func TestResolveExternalNetwork(t *testing.T) {
 	sc := fake.ExtPathTopology() // declares net-ext (provider) + net-ext2 (created)
 	cfg := fake.Config()
 	rs := scenariotest.NewRunState("run1", sc.Name, cfg.Naming.Prefix)
+	rs.ProviderExternalNetworkID = "uuid-provider"
+	rs.Networks = []scenariotest.ResourceRef{{DSLID: "net-ext2", ID: "uuid-created", Name: "scenariotest-run1-net-ext2"}}
 
 	cases := []struct{ in, want string }{
 		{"", ""},
 		{"none", "none"},
-		{"net-ext", "ext"}, // provider-bound marker
-		{"net-ext2", "scenariotest-run1-net-ext2"}, // created marker → mangled name
-		{"public-9", "public-9"},                   // literal, not a marker
+		{"net-ext", "uuid-provider"}, // provider-bound marker
+		{"net-ext2", "uuid-created"}, // created marker → its live ID
+		{"public-9", "public-9"},     // literal, not a marker
 	}
 	for _, tc := range cases {
-		if got := resolveExternalNetwork(sc, cfg, rs, tc.in); got != tc.want {
-			t.Errorf("resolveExternalNetwork(%q) = %q, want %q", tc.in, got, tc.want)
+		got, err := resolveExternalNetwork(sc, rs, tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("resolveExternalNetwork(%q) = %q, %v, want %q", tc.in, got, err, tc.want)
 		}
+	}
+
+	rs.ProviderExternalNetworkID = ""
+	if _, err := resolveExternalNetwork(sc, rs, "net-ext"); err == nil {
+		t.Error("provider marker with no recorded ID: want an error")
+	}
+	rs.Networks = nil
+	if _, err := resolveExternalNetwork(sc, rs, "net-ext2"); err == nil {
+		t.Error("created marker absent from the run-state: want an error")
 	}
 }
 

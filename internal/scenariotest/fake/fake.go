@@ -49,6 +49,7 @@ type Cloud struct {
 	CreatedProjects []string
 	Grants          []string
 	Nets            []scenariotest.NetworkSpec
+	NetIDs          map[string]string // created network name → id
 	Subs            []scenariotest.SubnetSpec
 	Rtrs            []scenariotest.RouterSpec
 	Ifaces          []IfaceRec
@@ -125,7 +126,7 @@ type RouteRec struct {
 func NewCloud(env *Env) *Cloud {
 	return &Cloud{
 		Env: env, ExtNetID: "ext-net-real", Hyps: []string{"compute-0"},
-		PreProjects: map[string]string{}, FindErrs: map[string]error{},
+		PreProjects: map[string]string{}, NetIDs: map[string]string{}, FindErrs: map[string]error{},
 		PortSubnet: map[string]string{}, RouterExt: map[string]string{},
 		RouterSubnets: map[string]map[string]bool{},
 		RouterRoutes:  map[string][]scenariotest.RouteSpec{},
@@ -174,7 +175,9 @@ func (c *Cloud) GrantAdminRole(_ context.Context, projectID string) error {
 }
 func (c *Cloud) CreateNetwork(_ context.Context, _ string, spec scenariotest.NetworkSpec) (string, error) {
 	c.Nets = append(c.Nets, spec)
-	return c.id("net"), nil
+	id := c.id("net")
+	c.NetIDs[spec.Name] = id
+	return id, nil
 }
 func (c *Cloud) CreateSubnet(_ context.Context, _ string, spec scenariotest.SubnetSpec) (string, error) {
 	c.Subs = append(c.Subs, spec)
