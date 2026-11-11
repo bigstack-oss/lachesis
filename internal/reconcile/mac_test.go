@@ -463,9 +463,9 @@ func TestReconcileMACs_ExternalNetworkChangeSettlesOldAttribution(t *testing.T) 
 		Metrics:   NewMetrics(),
 	})
 	// Same tenant, same server — only the external network moved. The
-	// snapshot resolves the port to public-2 via its new FIP.
+	// snapshot resolves the port to net-pub2 via its new FIP.
 	snap := neutron.Snapshot{
-		Networks:    []neutron.Network{{ID: "net-pub2", Name: "public-2", IsExternal: true}},
+		Networks:    []neutron.Network{{ID: "net-pub2", Name: "net-pub2", IsExternal: true}},
 		Ports:       []neutron.Port{{MACAddress: macStr, ProjectID: "proj-a", DeviceOwner: "compute:nova", DeviceID: "srv-1", ID: "port-1"}},
 		FloatingIPs: []neutron.FloatingIP{{ID: "fip", PortID: "port-1", FloatingNetworkID: "net-pub2"}},
 	}
@@ -474,8 +474,8 @@ func TestReconcileMACs_ExternalNetworkChangeSettlesOldAttribution(t *testing.T) 
 		t.Fatalf("macDelta = %+v, want {Changed:1}", d)
 	}
 
-	if cur, _ := meta.Lookup(m); cur.ExternalNetwork != "public-2" {
-		t.Errorf("metadata ExternalNetwork = %q, want public-2", cur.ExternalNetwork)
+	if cur, _ := meta.Lookup(m); cur.ExternalNetwork != "net-pub2" {
+		t.Errorf("metadata ExternalNetwork = %q, want net-pub2", cur.ExternalNetwork)
 	}
 	_, settled, _, _ := st.SnapshotWithSettled(nil, nil, nil, nil)
 	got := map[state.TenantSettledKey]uint64{}

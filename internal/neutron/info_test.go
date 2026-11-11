@@ -171,3 +171,39 @@ func TestInfoCollector_PortInfo(t *testing.T) {
 		})
 	}
 }
+
+const extNetInfoHeader = `# HELP lachesis_external_network_info Identity mapping for an external network: value is always 1, joined onto the billing families by external_network (the Neutron network ID) to render the network name. One series per external network.
+# TYPE lachesis_external_network_info gauge
+`
+
+// TestInfoCollector_ExternalNetworkInfo pins lachesis_external_network_info:
+// external networks only, one series per ID (a duplicate name is two
+// series, which is the point of keying on ID), the usual skip/dedupe
+// guards, and mortality: a network gone from the next snapshot stops
+// being emitted.
+func TestInfoCollector_ExternalNetworkInfo(t *testing.T) {
+	snap := &Snapshot{Networks: []Network{
+		{ID: "net-a", Name: "public", IsExternal: true},
+		{ID: "net-b", Name: "public", IsExternal: true}, // same name, own series
+		{ID: "net-priv", Name: "private"},               // not external
+		{ID: "", Name: "no-id", IsExternal: true},       // skipped
+		{ID: "net-a", Name: "dup", IsExternal: true},    // deduped (first wins)
+	}}
+	cur := snap
+	c := NewInfoCollector(func() *Snapshot { return cur })
+
+	expected := extNetInfoHeader +
+		`lachesis_external_network_info{external_network="net-a",name="public"} 1
+lachesis_external_network_info{external_network="net-b",name="public"} 1
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(expected), "lachesis_external_network_info"); err != nil {
+		t.Errorf("first sync: %v", err)
+	}
+
+	cur = &Snapshot{Networks: []Network{{ID: "net-b", Name: "renamed", IsExternal: true}}}
+	expected = extNetInfoHeader + `lachesis_external_network_info{external_network="net-b",name="renamed"} 1
+`
+	if err := testutil.CollectAndCompare(c, strings.NewReader(expected), "lachesis_external_network_info"); err != nil {
+		t.Errorf("after net-a removed and net-b renamed: %v", err)
+	}
+}

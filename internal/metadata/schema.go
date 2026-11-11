@@ -29,11 +29,10 @@ type TenantMeta struct {
 	//
 	// Billing tiers: docs/architecture/billing.md
 	PortID string
-	// ExternalNetwork is the human-facing label of the external
+	// ExternalNetwork is the label (network ID) of the external
 	// network this VM's egress leaves through — its floating IP's
-	// network, or its router's external gateway network (network name,
-	// falling back to ID when the name is empty). Empty when the VM has
-	// no external path. Only EXTERNAL-zone series carry it; see
+	// network, or its router's external gateway network. Empty when the
+	// VM has no external path. Only EXTERNAL-zone series carry it; see
 	// [ExternalNetworkLabel] for the zone gate every emitter applies.
 	ExternalNetwork string
 	// IsAmphora marks an Octavia load-balancer Amphora port. The

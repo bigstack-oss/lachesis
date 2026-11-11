@@ -15,8 +15,9 @@ import (
 )
 
 // InfoCollector emits the additive lachesis_tenant_info,
-// lachesis_server_info and lachesis_port_info families from the last committed snapshot, read
-// lock-free at scrape time.
+// lachesis_server_info, lachesis_port_info and
+// lachesis_external_network_info families from the last committed
+// snapshot, read lock-free at scrape time.
 //
 // Kept separate from the billing Collector by design: the billing
 // families must stay byte-identical, and names live only as info series
@@ -35,6 +36,7 @@ type InfoCollector struct {
 	tenantInfo *prometheus.Desc
 	serverInfo *prometheus.Desc
 	portInfo   *prometheus.Desc
+	extNetInfo *prometheus.Desc
 }
 
 // NewInfoCollector constructs the collector over a committed-snapshot
@@ -57,6 +59,11 @@ func NewInfoCollector(snapshot func() *Snapshot) *InfoCollector {
 			"Identity mapping for a VM port: value is always 1, joined onto the per-port family by port_id (group_left) to render its MAC and fixed IPs. One series per VM port; ips is the sorted, comma-joined fixed-IP list.",
 			[]string{"port_id", "server_id", "tenant_id", "mac", "ips"}, nil,
 		),
+		extNetInfo: prometheus.NewDesc(
+			"lachesis_external_network_info",
+			"Identity mapping for an external network: value is always 1, joined onto the billing families by external_network (the Neutron network ID) to render the network name. One series per external network.",
+			[]string{"external_network", "name"}, nil,
+		),
 	}
 }
 
@@ -65,15 +72,16 @@ func (c *InfoCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tenantInfo
 	ch <- c.serverInfo
 	ch <- c.portInfo
+	ch <- c.extNetInfo
 }
 
 // Collect implements [prometheus.Collector]. It reads the committed
-// snapshot and emits one value-1 series per project, per server and per
-// VM port. A
-// nil snapshot (never synced) emits nothing — the graceful-degradation
-// contract dashboards rely on. Entries with an empty id are skipped, and
-// a per-scrape seen-set drops duplicate ids so a malformed upstream list
-// can never turn into a Gather error that fails the whole scrape.
+// snapshot and emits one value-1 series per project, per server, per
+// VM port and per external network. A nil snapshot (never synced)
+// emits nothing — the graceful-degradation contract dashboards rely on.
+// Entries with an empty id are skipped, and a per-scrape seen-set drops
+// duplicate ids so a malformed upstream list can never turn into a
+// Gather error that fails the whole scrape.
 func (c *InfoCollector) Collect(ch chan<- prometheus.Metric) {
 	snap := c.snapshot()
 	if snap == nil {
@@ -115,6 +123,18 @@ func (c *InfoCollector) Collect(ch chan<- prometheus.Metric) {
 		seenPort[p.ID] = struct{}{}
 		ch <- prometheus.MustNewConstMetric(c.portInfo, prometheus.GaugeValue, 1,
 			p.ID, p.DeviceID, p.ProjectID, p.MACAddress, joinFixedIPs(p.FixedIPs))
+	}
+
+	seenExt := make(map[string]struct{})
+	for _, n := range snap.Networks {
+		if n.ID == "" || !n.IsExternal {
+			continue
+		}
+		if _, dup := seenExt[n.ID]; dup {
+			continue
+		}
+		seenExt[n.ID] = struct{}{}
+		ch <- prometheus.MustNewConstMetric(c.extNetInfo, prometheus.GaugeValue, 1, n.ID, n.Name)
 	}
 }
 

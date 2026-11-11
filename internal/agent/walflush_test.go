@@ -14,10 +14,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/bigstack-oss/lachesis/internal/agent"
 	"github.com/bigstack-oss/lachesis/internal/bpf"
@@ -467,5 +469,47 @@ func TestFlushWAL_RecordsEachRowsOwner(t *testing.T) {
 	}
 	if got[stray] != (state.Owner{}) {
 		t.Errorf("unresolved row Owner = %+v, want zero", got[stray])
+	}
+}
+
+// TestRestoreFromWAL_NameLabelledRowFoldsUnderNameOnUpgrade pins the
+// upgrade from a name-labelled build: a WAL row owned by external
+// network "public" restores into an agent that now resolves the same
+// network to its ID. The name series keeps its exact value, and the ID
+// series starts from zero — no series goes backwards and no byte is
+// counted under both labels.
+func TestRestoreFromWAL_NameLabelledRowFoldsUnderNameOnUpgrade(t *testing.T) {
+	key := bpf.FlowKey{
+		SrcMac: [6]uint8{0xaa, 0, 0, 0, 0, 1}, DstMac: [6]uint8{0xbb, 0, 0, 0, 0, 1},
+		EthProto: 0x0800, Direction: bpf.DirectionIngress, DstZone: bpf.ZoneExternal,
+	}
+	rec := state.Record{
+		Key: key,
+		Counter: state.Counter{
+			Total:       bpf.FlowMetrics{Bytes: 5000, Packets: 5, LastSeenNs: 1},
+			LastEbpfRaw: bpf.FlowMetrics{Bytes: 5000, Packets: 5, LastSeenNs: 1},
+		},
+		Owner: state.Owner{Tenant: "proj-a", ExtNet: "public", Server: "srv-1"},
+	}
+	path := filepath.Join(t.TempDir(), "wal.json")
+	if err := wal.Save(path, "", []state.Record{rec}, nil, nil, nil, 1753400000, nil); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	ag := newIdleAgent(t, config.WALConfig{Enabled: true, Path: path, FlushInterval: time.Minute})
+	agent.MetadataForTest(ag).Insert(metadata.VMMAC(key),
+		&metadata.TenantMeta{ProjectID: "proj-a", ServerID: "srv-1", ExternalNetwork: "net-pub-id"})
+	if err := agent.RestoreFromWALForTest(ag); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	const header = `# HELP lachesis_tenant_bytes_total Per-tenant network bytes, cumulative since first sight — live rows + tenant-settled, so the series never decreases across VM churn. Immortal (docs/architecture/billing.md).
+# TYPE lachesis_tenant_bytes_total counter
+`
+	want := header + `lachesis_tenant_bytes_total{direction="tx",external_network="net-pub-id",tenant_id="proj-a",zone="external"} 0
+lachesis_tenant_bytes_total{direction="tx",external_network="public",tenant_id="proj-a",zone="external"} 5000
+`
+	if err := testutil.CollectAndCompare(agent.CollectorForTest(ag), strings.NewReader(want),
+		"lachesis_tenant_bytes_total"); err != nil {
+		t.Error(err)
 	}
 }

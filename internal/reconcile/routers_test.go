@@ -76,8 +76,8 @@ func TestReconcileRouterMACs_GatewayChangeSettlesOldLabel(t *testing.T) {
 	if len(settled) != 1 || settled[0].Key != wantKey || settled[0].Bytes != 700 {
 		t.Fatalf("settled = %+v, want 700 bytes under OLD label %+v", settled, wantKey)
 	}
-	if ext, ok := routers.Lookup(mac(t, rtrMAC)); !ok || ext != "public-2" {
-		t.Errorf("post-swap lookup = %q/%v, want public-2", ext, ok)
+	if ext, ok := routers.Lookup(mac(t, rtrMAC)); !ok || ext != "net-pub2" {
+		t.Errorf("post-swap lookup = %q/%v, want net-pub2", ext, ok)
 	}
 }
 
@@ -88,7 +88,7 @@ func TestReconcileRouterMACs_NoChangeNoFold(t *testing.T) {
 	meta := metadata.New()
 	meta.Insert(mac(t, vmMAC), &metadata.TenantMeta{ProjectID: "proj-a"})
 	routers := metadata.NewRouterMACs()
-	routers.Replace(map[uint64]string{mac(t, rtrMAC): "public-1"})
+	routers.Replace(map[uint64]string{mac(t, rtrMAC): "net-pub1"})
 	st := state.New()
 	st.ApplyDelta(extFlowKey(t, vmMAC, rtrMAC), bpf.FlowMetrics{Bytes: 700, Packets: 7, LastSeenNs: 1})
 
