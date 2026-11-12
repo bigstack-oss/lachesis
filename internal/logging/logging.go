@@ -40,7 +40,7 @@ func Init(cfg config.LoggingConfig, w io.Writer) (*Handle, error) {
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(lvl)
 
-	opts := &slog.HandlerOptions{Level: levelVar}
+	opts := &slog.HandlerOptions{Level: levelVar, ReplaceAttr: renderDurations}
 	var handler slog.Handler
 	switch cfg.Format {
 	case "json":
@@ -55,6 +55,17 @@ func Init(cfg config.LoggingConfig, w io.Writer) (*Handle, error) {
 	slog.SetDefault(logger)
 
 	return &Handle{levelVar: levelVar, logger: logger}, nil
+}
+
+// renderDurations logs a time.Duration as its String form ("10s") rather
+// than the integer nanoseconds slog's JSON handler emits by default.
+// ReplaceAttr sees every leaf attribute, including those in groups and
+// those bound with Logger.With.
+func renderDurations(_ []string, a slog.Attr) slog.Attr {
+	if a.Value.Kind() == slog.KindDuration {
+		return slog.String(a.Key, a.Value.Duration().String())
+	}
+	return a
 }
 
 // Logger returns the slog.Logger associated with this handle. Identical
