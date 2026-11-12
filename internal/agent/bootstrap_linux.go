@@ -349,6 +349,12 @@ func (b *bootstrapper) wireKafka() error {
 		// newest event, not the topic's history — cold-start Sync already
 		// loaded current state, so only new events need a kick.
 		StartOffset: kafkago.LastOffset,
+		// The topic can gain partitions after the agent joins: a fresh
+		// install auto-creates it with the broker's single default
+		// partition and the platform widens it minutes later. Without
+		// the watch the group keeps its join-time assignment until a
+		// restart and silently misses every event on the new partitions.
+		WatchPartitionChanges: true,
 	})
 	b.ag.kafkaConsumer = kafka.New(kafka.Options{
 		Reader:  reader,
