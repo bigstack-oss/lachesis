@@ -162,7 +162,7 @@ func (s *linuxSubscriber) Run(ctx context.Context) error {
 		}
 		s.opts.Metrics.recordRestart()
 		slog.Warn("subscription lost; re-subscribing",
-			"component", component, "err", err, "backoff", delay.String())
+			"component", component, "err", err, "backoff", delay)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -213,7 +213,7 @@ func (s *linuxSubscriber) runStream(ctx context.Context, resyncFirst bool) error
 		"component", component,
 		"prefixes", s.opts.Prefixes,
 		"explicit", s.opts.Explicit,
-		"resync_interval", s.opts.ResyncInterval.String())
+		"resync_interval", s.opts.ResyncInterval)
 
 	var tick <-chan time.Time
 	if s.opts.ResyncInterval > 0 {
