@@ -95,7 +95,7 @@ func TestReconcileOnce_AppliesDeltaAndCommits(t *testing.T) {
 	fm := &fakeMap{}
 	r, mx := newReconciler(src, fm)
 
-	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0), triggerTick)
 
 	if fm.updates != 2 || fm.deletes != 0 {
 		t.Errorf("kernel ops = %d updates / %d deletes, want 2/0", fm.updates, fm.deletes)
@@ -113,7 +113,7 @@ func TestReconcileOnce_SyncErrorSkipsApplyAndCommit(t *testing.T) {
 	fm := &fakeMap{}
 	r, mx := newReconciler(src, fm)
 
-	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0), triggerTick)
 
 	if fm.updates != 0 || fm.deletes != 0 {
 		t.Errorf("kernel touched on sync error: %d updates / %d deletes", fm.updates, fm.deletes)
@@ -138,7 +138,7 @@ func TestReconcileOnce_ApplyErrorSkipsCommit(t *testing.T) {
 	fm := &fakeMap{failUpdate: true}
 	r, mx := newReconciler(src, fm)
 
-	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0), triggerTick)
 
 	if src.commits != 0 {
 		t.Errorf("committed despite apply error: commits = %d, want 0", src.commits)
@@ -159,7 +159,7 @@ func TestReconcileOnce_DeltaAgainstOld(t *testing.T) {
 	fm := &fakeMap{}
 	r, _ := newReconciler(src, fm)
 
-	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0), triggerTick)
 
 	if fm.updates != 0 || fm.deletes != 1 {
 		t.Errorf("kernel ops = %d updates / %d deletes, want 0/1 (A removed)", fm.updates, fm.deletes)
@@ -338,14 +338,14 @@ func TestReconcileOnce_PrunesServerSettledOnNovaList(t *testing.T) {
 
 	// Nil/empty Nova list → hold (pruning on missing data would end
 	// live servers' series).
-	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0), triggerTick)
 	if st.ServerSettledLen() != 1 {
 		t.Fatalf("empty Nova list must hold buckets; ServerSettledLen = %d, want 1", st.ServerSettledLen())
 	}
 
 	// A populated list without srv-dead → the bucket is released.
 	src.syncResult.Snapshot.Servers = []neutron.Server{{ID: "srv-alive"}}
-	r.reconcileOnce(context.Background(), time.Unix(1001, 0))
+	r.reconcileOnce(context.Background(), time.Unix(1001, 0), triggerTick)
 	if st.ServerSettledLen() != 0 {
 		t.Fatalf("populated Nova list must prune dead servers; ServerSettledLen = %d, want 0", st.ServerSettledLen())
 	}
@@ -394,7 +394,7 @@ func TestReconcileOnce_PrunesTenantSettledOnKeystoneList(t *testing.T) {
 	// Empty project list → hold (the Keystone fetch is sync-fatal, so
 	// this shape shouldn't occur — the skip is the same safe direction
 	// as the Nova prune's).
-	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0), triggerTick)
 	if st.TenantSettledLen() != 2 {
 		t.Fatalf("empty project list must hold buckets; TenantSettledLen = %d, want 2", st.TenantSettledLen())
 	}
@@ -405,7 +405,7 @@ func TestReconcileOnce_PrunesTenantSettledOnKeystoneList(t *testing.T) {
 	// A populated list without t-dead → its bucket folds into the total
 	// absorber; "unknown" survives despite also being absent.
 	src.syncResult.Snapshot.Projects = []neutron.Project{{ID: "t-alive"}}
-	r.reconcileOnce(context.Background(), time.Unix(1001, 0))
+	r.reconcileOnce(context.Background(), time.Unix(1001, 0), triggerTick)
 	if st.TenantSettledLen() != 1 {
 		t.Fatalf("populated project list must prune deleted projects; TenantSettledLen = %d, want 1", st.TenantSettledLen())
 	}

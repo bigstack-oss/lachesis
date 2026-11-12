@@ -334,10 +334,17 @@ func (b *bootstrapper) wireKafka() error {
 		slog.Warn("hostname unavailable; using a random kafka consumer-group suffix to keep it per-agent",
 			"component", componentKafka, "err", err)
 	}
+	groupID := b.cfg.Kafka.EffectiveGroupID(host, fmt.Sprintf("%08x", rand.Uint32()))
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers: b.cfg.Kafka.Brokers,
-		GroupID: b.cfg.Kafka.EffectiveGroupID(host, fmt.Sprintf("%08x", rand.Uint32())),
+		GroupID: groupID,
 		Topic:   b.cfg.Kafka.Topic,
+		// The reader retries group joins and fetches internally and never
+		// returns those errors from ReadMessage; without a logger a consumer
+		// that cannot join its group is silent.
+		ErrorLogger: kafkago.LoggerFunc(func(msg string, args ...any) {
+			slog.Warn("kafka reader error", "component", componentKafka, "err", fmt.Sprintf(msg, args...))
+		}),
 		// A fresh per-host group has no committed offset; start from the
 		// newest event, not the topic's history — cold-start Sync already
 		// loaded current state, so only new events need a kick.
@@ -350,6 +357,8 @@ func (b *bootstrapper) wireKafka() error {
 		Metrics: b.ag.mx.kafka,
 		Topic:   b.cfg.Kafka.Topic,
 	})
+	slog.Info("kafka consumer configured", "component", componentKafka,
+		"brokers", b.cfg.Kafka.Brokers, "topic", b.cfg.Kafka.Topic, "group_id", groupID)
 	return nil
 }
 

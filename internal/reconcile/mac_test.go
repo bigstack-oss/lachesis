@@ -406,7 +406,7 @@ func TestReconcileOnce_RefreshesMapGauges(t *testing.T) {
 		Interner: metadata.NewTenantInterner(), Metrics: NewMetrics(), BPFGauge: fg,
 	})
 
-	r.reconcileOnce(context.Background(), time.Unix(1000, 0))
+	r.reconcileOnce(context.Background(), time.Unix(1000, 0), triggerTick)
 
 	if got := fg.vals[bpf.MapSubnetZoneTrie]; got != 2 {
 		t.Errorf("subnet_zone_trie gauge = %v, want 2 (committed rows)", got)

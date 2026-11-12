@@ -83,6 +83,8 @@ func (c *Consumer) Run(ctx context.Context) {
 		}
 	}
 	defer func() { _ = c.reader.Close() }()
+	slog.Info("kafka consumer reading", "component", component, "topic", c.topic)
+	first := true
 	for {
 		msg, err := c.reader.ReadMessage(ctx)
 		if err != nil {
@@ -99,22 +101,31 @@ func (c *Consumer) Run(ctx context.Context) {
 			}
 			continue
 		}
-		c.handle(msg.Value)
+		if first {
+			first = false
+			slog.Info("kafka consumer received its first message",
+				"component", component, "topic", c.topic, "partition", msg.Partition, "offset", msg.Offset)
+		}
+		c.mx.RecordMessage(c.topic, c.handle(msg.Value))
 		c.mx.SetLag(c.topic, c.reader.Stats().Lag)
 	}
 }
 
-// handle decodes one message and kicks a reconcile if it is a committed
-// Neutron metadata change. Non-Neutron events (Nova, Cinder, …) on the
-// shared topic and malformed messages are ignored — the former are
-// expected, the latter unexpected and logged.
-func (c *Consumer) handle(value []byte) {
+// handle decodes one message, kicks a reconcile if it is a committed
+// Neutron metadata change, and returns the outcome. Non-Neutron events
+// (Nova, Cinder, …) on the shared topic and malformed messages are
+// ignored — the former are expected, the latter unexpected and logged.
+func (c *Consumer) handle(value []byte) string {
 	eventType, publisherID, ok := decodeEvent(value)
 	if !ok {
 		slog.Warn("kafka: undecodable notification; skipped", "component", component)
-		return
+		return outcomeUndecodable
 	}
-	if isNeutronChange(eventType, publisherID) {
-		c.trigger.Kick()
+	if !isNeutronChange(eventType, publisherID) {
+		return outcomeIgnored
 	}
+	slog.Debug("kafka: neutron change; kicking reconcile",
+		"component", component, "event_type", eventType, "publisher_id", publisherID)
+	c.trigger.Kick()
+	return outcomeKicked
 }
