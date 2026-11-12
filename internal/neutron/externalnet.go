@@ -18,7 +18,8 @@ import (
 // ExternalNetworkByPort maps each VM port to the external network its
 // egress leaves through: a bound floating IP wins (OVN NATs through it
 // whichever router carries the traffic), else the external gateway of
-// an attached router. Ports with neither are absent. The label is the
+// an attached router, else the external network the port sits on
+// directly. Ports with none of these are absent. The label is the
 // network ID, which a rename or a duplicate name cannot disturb.
 //
 // A multi-homed VM gets ONE attribution, picked deterministically (the
@@ -120,6 +121,13 @@ func externalCandidatesByPort(snap *Snapshot) map[string]portCandidates {
 		return anyExt[subnetID]
 	}
 
+	externalNet := make(map[string]bool) // networkID → router:external
+	for _, n := range snap.Networks {
+		if n.IsExternal {
+			externalNet[n.ID] = true
+		}
+	}
+
 	fipExt := make(map[string][]string) // portID → candidate labels
 	for _, f := range snap.FloatingIPs {
 		if f.PortID == "" || f.FloatingNetworkID == "" {
@@ -138,6 +146,12 @@ func externalCandidatesByPort(snap *Snapshot) map[string]portCandidates {
 			for _, fip := range p.FixedIPs {
 				raw = append(raw, subnetExt(fip.SubnetID)...)
 			}
+		}
+		// Tier 3: a port directly on an external network leaves
+		// through that network's own gateway. Last, so a topology the
+		// tiers above already attribute keeps its label.
+		if len(raw) == 0 && externalNet[p.NetworkID] {
+			raw = []string{p.NetworkID}
 		}
 		candidates := dedupe(raw)
 		if len(candidates) == 0 {
