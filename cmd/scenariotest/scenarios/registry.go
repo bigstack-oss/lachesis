@@ -24,6 +24,7 @@ func All() []*scenariotest.Scenario {
 		vmToGateway(),
 		vmToSubnetInfra(),
 		vmToInternet(),
+		vmDirectExternal(),
 		crossTenantShared(),
 		crossTenantRouted(),
 		macReuse(),

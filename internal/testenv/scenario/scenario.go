@@ -112,6 +112,19 @@ func (n *NetRef) VM(id, project, ip string) *NetRef {
 	return n.attachPort(id, project, "compute:nova", id+"-instance", ip)
 }
 
+// DHCPVM adds a compute:nova port with no fixed IP: Neutron allocates
+// its address from the network's own subnet, which the DSL need not
+// declare. This places a VM directly on a provider network such as
+// the [Builder.ExternalNetwork] marker, whose addressing belongs to
+// the cluster rather than the scenario.
+func (n *NetRef) DHCPVM(id, project string) *NetRef {
+	n.b.ports = append(n.b.ports, neutron.Port{
+		ID: id, NetworkID: n.netID, ProjectID: project,
+		DeviceOwner: "compute:nova", DeviceID: id + "-instance",
+	})
+	return n
+}
+
 // VMInAZ is [NetRef.VM] for a named availability zone: Nova writes
 // compute:<az-name> as the device_owner, "nova" being only the
 // default AZ's name.

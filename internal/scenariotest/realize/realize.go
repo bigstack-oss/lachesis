@@ -424,15 +424,17 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 		if err != nil {
 			return err
 		}
-		fip := p.FixedIPs[0]
 		name := scenariotest.Mangle(r.prefix(), r.opts.RunID, p.ID)
-		portID, err := r.opts.Cloud.CreatePort(r.ctx, proj, scenariotest.PortSpec{
+		spec := scenariotest.PortSpec{
 			Name:       name,
 			NetworkID:  r.netLive[p.NetworkID],
-			SubnetID:   r.subnetLive[fip.SubnetID],
-			FixedIP:    fip.IPAddress,
 			SecGroupID: r.secGroupID,
-		})
+		}
+		if len(p.FixedIPs) > 0 {
+			spec.SubnetID = r.subnetLive[p.FixedIPs[0].SubnetID]
+			spec.FixedIP = p.FixedIPs[0].IPAddress
+		}
+		portID, err := r.opts.Cloud.CreatePort(r.ctx, proj, spec)
 		if err != nil {
 			return err
 		}
@@ -440,21 +442,33 @@ func (r *realizer) vmPorts(snap neutron.Snapshot) error {
 		if err != nil {
 			return err
 		}
+		ip := spec.FixedIP
+		if ip == "" {
+			if ip, err = r.opts.Cloud.PortFixedIP(r.ctx, portID); err != nil {
+				return err
+			}
+		}
 		r.taps++
 		r.rs.Ports = append(r.rs.Ports, scenariotest.ResourceRef{DSLID: p.ID, ID: portID, Name: name, ProjectID: proj, MAC: mac})
 		if p.ID == vmID {
 			// Primary NIC: this is the server, tracked for boot + FIP.
 			r.vmPort[vmID] = portID
 			r.vmProject[vmID] = proj
-			r.vmInternalIP[vmID] = fip.IPAddress
+			r.vmInternalIP[vmID] = ip
 			r.vmOrder = append(r.vmOrder, vmID)
+			if r.netExternal[p.NetworkID] {
+				if r.rs.DirectAddrs == nil {
+					r.rs.DirectAddrs = map[string]string{}
+				}
+				r.rs.DirectAddrs[vmID] = ip
+			}
 		} else {
 			r.vmExtraPorts[vmID] = append(r.vmExtraPorts[vmID], portID)
 		}
 		if err := r.save(); err != nil {
 			return err
 		}
-		r.opts.Log.Debug("vm port ready", "vm", vmID, "port", portID, "ip", fip.IPAddress, "primary", p.ID == vmID)
+		r.opts.Log.Debug("vm port ready", "vm", vmID, "port", portID, "ip", ip, "primary", p.ID == vmID)
 	}
 	return nil
 }
@@ -506,8 +520,15 @@ func (r *realizer) waitOneActive(s scenariotest.ResourceRef) error {
 	return r.opts.Cloud.WaitServerActive(ctx, s.ProjectID, s.ID)
 }
 
+// allocateFIPs fronts every VM with a provider FIP for SSH reach,
+// except a VM sitting directly on the provider network: Neutron cannot
+// float an address onto a port already on the FIP's own network, and
+// the harness reaches that VM on its fixed IP instead.
 func (r *realizer) allocateFIPs() error {
 	for _, vmID := range r.vmOrder {
+		if _, direct := r.rs.DirectAddrs[vmID]; direct {
+			continue
+		}
 		proj := r.vmProject[vmID]
 		spec := r.opts.Scenario.FIPs[vmID]
 		extNetID := r.extNetID

@@ -213,9 +213,9 @@ const (
 	UDP
 )
 
-// Expect is one lower-bound assertion on the /metrics counter
-// tuple {tenant_id, zone, direction}. The delta (post − pre) for
-// the named tuple must be at least MinBytes.
+// Expect is one bound on the /metrics counter tuple {tenant_id,
+// zone, direction}. The delta (post − pre) for the named tuple must
+// be at least MinBytes and, when MaxBytes is set, at most MaxBytes.
 type Expect struct {
 	// TenantID is the DSL project name (e.g. "T1"). `assert`
 	// resolves it to the created/reused Keystone project UUID — the
@@ -260,4 +260,10 @@ type Expect struct {
 	// lachesis_tenant_bytes_total (or lachesis_server_bytes_total when VM is
 	// set) for this tuple over the drive window.
 	MinBytes int64
+
+	// MaxBytes is an optional upper bound on the same delta; zero
+	// leaves it unbounded. A row with only MaxBytes asserts a series
+	// the drive must not feed: a budget above background chatter and
+	// well below the driven bytes.
+	MaxBytes int64
 }

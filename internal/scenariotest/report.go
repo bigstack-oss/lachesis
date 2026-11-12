@@ -38,6 +38,7 @@ type AssertRow struct {
 	Current   float64 `json:"current"`
 	Delta     float64 `json:"delta"`
 	MinBytes  int64   `json:"min_bytes"`
+	MaxBytes  int64   `json:"max_bytes,omitempty"`
 	Pass      bool    `json:"pass"`
 	Note      string  `json:"note,omitempty"`
 }

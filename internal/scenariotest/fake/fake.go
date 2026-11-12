@@ -107,6 +107,9 @@ type Cloud struct {
 	PortName    map[string]string // port id → spec name
 	PortProject map[string]string // port id → project
 	PortNet     map[string]string // port id → network id
+	// PortIP is each port's fixed IP: the spec's, or a synthetic
+	// allocation when the spec names none, as Neutron allocates.
+	PortIP map[string]string
 
 	// teardown model: residualPorts seeds platform-created ports
 	// (cube:mgr) per network id; deletions and detaches append to
@@ -131,6 +134,7 @@ func NewCloud(env *Env) *Cloud {
 		RouterSubnets: map[string]map[string]bool{},
 		RouterRoutes:  map[string][]scenariotest.RouteSpec{},
 		MACs:          map[string]string{}, PortNet: map[string]string{},
+		PortIP:      map[string]string{},
 		PortName:    map[string]string{},
 		PortProject: map[string]string{},
 		ServerName:  map[string]string{}, ServerProject: map[string]string{},
@@ -208,6 +212,10 @@ func (c *Cloud) CreatePort(_ context.Context, proj string, spec scenariotest.Por
 	c.PortNet[id] = spec.NetworkID
 	c.PortProject[id] = proj
 	c.PortName[id] = spec.Name
+	c.PortIP[id] = spec.FixedIP
+	if spec.FixedIP == "" {
+		c.PortIP[id] = fmt.Sprintf("198.51.100.%d", c.Seq)
+	}
 	if spec.MACAddress != "" {
 		c.MACs[id] = spec.MACAddress
 	} else {
@@ -222,6 +230,13 @@ func (c *Cloud) PortMAC(_ context.Context, portID string) (string, error) {
 		return "", fmt.Errorf("fake neutron: no port %s", portID)
 	}
 	return mac, nil
+}
+func (c *Cloud) PortFixedIP(_ context.Context, portID string) (string, error) {
+	ip, ok := c.PortIP[portID]
+	if !ok {
+		return "", fmt.Errorf("fake neutron: no port %s", portID)
+	}
+	return ip, nil
 }
 func (c *Cloud) AddRouterInterface(_ context.Context, _, routerID, subnetID, portID string) error {
 	c.Ifaces = append(c.Ifaces, IfaceRec{routerID, subnetID, portID})

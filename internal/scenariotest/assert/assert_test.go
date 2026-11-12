@@ -95,6 +95,33 @@ func TestAssert_FailBelowMin(t *testing.T) {
 	}
 }
 
+// TestAssert_MaxBytesBoundsGrowth: a MaxBytes row passes while its
+// series stays within budget and fails once the drive feeds it.
+func TestAssert_MaxBytesBoundsGrowth(t *testing.T) {
+	sc := assertScenario()
+	sc.Expect = []scenariotest.Expect{
+		{TenantID: "T1", Zone: "same_tenant", Direction: "tx", MaxBytes: 64 << 10},
+		{TenantID: "T1", Zone: "same_tenant", Direction: "rx", MaxBytes: 64 << 10},
+	}
+	m := fake.HealthyMetrics{Attached: 7, Bytes: []scenariotest.BytesSample{
+		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "tx", Value: 100 + 512},
+		{TenantID: "uuid-t1", Zone: "same_tenant", Direction: "rx", Value: 200 + 2<<20},
+	}}
+	rep, _, err := runAssertFixture(t, sc, assertState(), m, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Assert: %v", err)
+	}
+	if rep.OK {
+		t.Fatal("want failed report: rx grew past its budget")
+	}
+	if !rep.Rows[0].Pass || rep.Rows[1].Pass {
+		t.Errorf("row verdicts wrong: %+v", rep.Rows)
+	}
+	if rep.Rows[1].MaxBytes != 64<<10 {
+		t.Errorf("row MaxBytes = %d, want the declared budget", rep.Rows[1].MaxBytes)
+	}
+}
+
 func TestAssert_NegativeDeltaFlagsBaseline(t *testing.T) {
 	// Counter dropped below baseline (ghost GC evicted a prior run's
 	// flows after the baseline was captured).

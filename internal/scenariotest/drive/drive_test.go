@@ -118,6 +118,27 @@ func TestDrive_ExternalTargetUsesPing(t *testing.T) {
 	}
 }
 
+// TestDrive_DirectVMDrivesFromFixedIP: a VM directly on the provider
+// network has no FIP; drive reaches it on the fixed IP realize
+// recorded instead.
+func TestDrive_DirectVMDrivesFromFixedIP(t *testing.T) {
+	sc := fake.SameTenantScenario()
+	sc.Flows = []scenariotest.Flow{{From: "vm-a", To: scenariotest.ExternalTarget("8.8.8.8"), Bytes: 1 << 20, Proto: scenariotest.TCP}}
+	rs := driveState()
+	rs.FIPs = rs.FIPs[1:]
+	rs.DirectAddrs = map[string]string{"vm-a": "198.51.100.7"}
+	exec := &fake.Exec{}
+
+	if _, err := driveFixture(t, sc, rs, exec, fake.HealthyMetrics{Attached: 7}); err != nil {
+		t.Fatalf("Drive: %v", err)
+	}
+	for _, c := range exec.Calls {
+		if strings.Contains(c.Command, "ping") && c.Addr != "198.51.100.7" {
+			t.Errorf("ping run on %s, want the direct fixed IP", c.Addr)
+		}
+	}
+}
+
 func TestDrive_AttachRegressionAborts(t *testing.T) {
 	sc := fake.SameTenantScenario()
 	sc.Flows = []scenariotest.Flow{{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP}}
