@@ -103,6 +103,9 @@ func SkipReason(sc *Scenario, cfg Config) string {
 	if needs.PinPath && cfg.AgentControl.PinPath == "" {
 		return "removes the agent's map pins but agent_control.pin_path is unset"
 	}
+	if needs.Kafka && len(cfg.Kafka.Brokers) == 0 {
+		return "drives Kafka but kafka.brokers is unset"
+	}
 	// An ACTIVE_STANDBY load balancer needs an Octavia flavor whose
 	// profile sets loadbalancer_topology; the harness never creates one
 	// (same policy as images, keypairs and secgroups). A cluster without
@@ -130,6 +133,7 @@ func scenarioHostNeeds(sc *Scenario) HostNeeds {
 		n.AgentSSH = n.AgentSSH || m.AgentSSH
 		n.WALPath = n.WALPath || m.WALPath
 		n.PinPath = n.PinPath || m.PinPath
+		n.Kafka = n.Kafka || m.Kafka
 	}
 	return n
 }

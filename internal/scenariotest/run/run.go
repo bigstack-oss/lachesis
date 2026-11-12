@@ -37,7 +37,10 @@ type Options struct {
 	// AgentExec is the agent-host SSH transport for [steps.RestartAgentStep];
 	// nil is fine unless a scenario restarts an agent.
 	AgentExec scenariotest.VMExec
-	Log       *slog.Logger
+	// Broker is the cluster's Kafka for the Kafka steps; nil is fine
+	// unless a scenario drives Kafka.
+	Broker scenariotest.Broker
+	Log    *slog.Logger
 
 	// HardStop, when non-nil, aborts even the deferred teardown once
 	// cancelled — the CLI cancels it on a second interrupt. The run
@@ -172,6 +175,7 @@ func Run(ctx context.Context, opts Options) (scenariotest.AssertReport, error) {
 		Metrics:         opts.Metrics,
 		Exec:            opts.Exec,
 		AgentExec:       opts.AgentExec,
+		Broker:          opts.Broker,
 		Log:             opts.Log,
 		SinkDelay:       opts.SinkDelay,
 		MACLearnTimeout: opts.MACLearnTimeout,

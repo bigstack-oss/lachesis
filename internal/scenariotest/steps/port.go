@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
@@ -15,11 +16,12 @@ import (
 
 // AwaitPortBindingStep polls every agent's /debug/lookup until the MAC
 // of Port (its run-state ref) is bound to Port's CURRENT Neutron id —
-// the reconcile has processed a same-MAC port rebirth. On a healthy
-// agent this resolves within one reconcile interval; an agent whose
-// change detection misses the port_id change never rebinds, so the
-// timeout is recorded as a FAILING ROW (the defect itself), not a
-// mechanical error. Timeout defaults to [DefaultSweepTimeout].
+// the reconcile has processed a new port or a same-MAC port rebirth.
+// On a healthy agent this resolves within one reconcile interval, or
+// within seconds when Kafka kicks the reconcile; a miss is recorded as
+// a FAILING ROW (the defect itself), not a mechanical error, and the
+// timeout log names each agent's reason. Timeout defaults to
+// [DefaultSweepTimeout].
 type AwaitPortBindingStep struct {
 	VM      string
 	Port    string // the [AttachPortStep.ID] whose live id must be bound
@@ -47,19 +49,21 @@ func (s AwaitPortBindingStep) Run(ctx context.Context, env *scenariotest.StepEnv
 	deadline := time.Now().Add(timeout)
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	var last string
+	var why []string // misses from the last poll the deadline did not cut short
 	for {
-		bound := true
+		var missing []string
 		for _, u := range scenariotest.AgentURLs(env.Config) {
 			res, err := env.Metrics.LookupMAC(ctx, u, ref.MAC)
-			if err != nil || !res.Found || res.PortID != ref.ID {
-				bound = false
-				if err == nil {
-					last = res.PortID
-				}
+			switch {
+			case err != nil:
+				missing = append(missing, fmt.Sprintf("lookup on %s failed: %v", u, err))
+			case !res.Found:
+				missing = append(missing, "unknown to "+u)
+			case res.PortID != ref.ID:
+				missing = append(missing, fmt.Sprintf("bound to stale port %s on %s", res.PortID, u))
 			}
 		}
-		if bound {
+		if len(missing) == 0 {
 			env.Log.Info("await-port-binding: rebound", "port", s.Port, "id", ref.ID)
 			env.AddRow(scenariotest.AssertRow{
 				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
@@ -67,12 +71,16 @@ func (s AwaitPortBindingStep) Run(ctx context.Context, env *scenariotest.StepEnv
 			})
 			return nil
 		}
+		if ctx.Err() == nil {
+			why = missing
+		}
 		select {
 		case <-ctx.Done():
-			// The defect, as a row: the agents still bind the MAC to a
-			// stale (dead) port id — the port tier is mislabeling.
-			env.Log.Warn("await-port-binding: timeout — MAC still bound to a stale port",
-				"port", s.Port, "want", ref.ID, "stale", last)
+			// The defect, as a row. "unknown" means no reconcile learned the
+			// port at all; "stale port" means one ran but kept a dead
+			// port's binding.
+			env.Log.Warn("await-port-binding: timeout — MAC not bound to the port",
+				"port", s.Port, "want", ref.ID, "mac", ref.MAC, "timeout", timeout, "why", strings.Join(why, "; "))
 			env.AddRow(scenariotest.AssertRow{
 				Tenant: s.VM, VM: s.VM, Zone: "-", Direction: "-",
 				Baseline: 1, Current: 0, Delta: -1, Pass: false, Note: s.Note,

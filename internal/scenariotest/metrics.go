@@ -103,6 +103,14 @@ const (
 	// OutcomeHealed is the [MetricReattachTotal] `outcome` value for a
 	// successful re-attach.
 	OutcomeHealed = "healed"
+	// MetricKafkaMessages counts the notifications the agent's Kafka
+	// consumer read, split by `topic` and `outcome`. Only
+	// outcome="kicked" is a committed Neutron change that kicked a
+	// reconcile; KafkaKickedStep asserts on it.
+	MetricKafkaMessages = "lachesis_kafka_messages_total"
+	// OutcomeKicked is the [MetricKafkaMessages] `outcome` value for a
+	// message that kicked a reconcile.
+	OutcomeKicked = "kicked"
 )
 
 // BytesSample is one lachesis_tenant_bytes_total series: the {tenant_id, zone,
@@ -182,6 +190,9 @@ type ScrapeResult struct {
 	// CountersResetEpoch is this agent's state-restart epoch gauge
 	// (0 when the family is absent — a pre-epoch build).
 	CountersResetEpoch float64
+	// KafkaKicked is [MetricKafkaMessages] for the kicked outcome,
+	// keyed by topic.
+	KafkaKicked map[string]float64
 }
 
 // MetricsSnapshot aggregates one scrape across all configured agents:

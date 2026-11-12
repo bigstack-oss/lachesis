@@ -11,6 +11,7 @@ import (
 	"github.com/bigstack-oss/lachesis/cmd/scenariotest/scenarios"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/agentmetrics"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/kafkabroker"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/openstack"
 	"github.com/charmbracelet/lipgloss"
 	charmlog "github.com/charmbracelet/log"
@@ -159,4 +160,13 @@ func loadRunState(statePath string, sc *scenariotest.Scenario, sub string) (*sce
 // resolution happens inside openstack.New).
 func newCloud(ctx context.Context, cfg scenariotest.Config, log *slog.Logger) (scenariotest.Cloud, error) {
 	return openstack.New(ctx, cfg.OpenStack, log)
+}
+
+// newBroker returns the Kafka driver, or nil when no brokers are
+// configured: scenarios with Kafka steps then SKIP before running.
+func newBroker(cfg scenariotest.Config) scenariotest.Broker {
+	if len(cfg.Kafka.Brokers) == 0 {
+		return nil
+	}
+	return kafkabroker.New(cfg.Kafka.Brokers)
 }

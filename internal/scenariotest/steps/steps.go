@@ -7,8 +7,9 @@
 // A step is one type implementing [scenariotest.Step], grouped into
 // files by what it acts on: traffic.go drives and captures, lifecycle.go
 // boots/deletes/migrates servers, port.go hot-plugs NICs, network.go
-// mutates Neutron, agent.go drives the agent host, and the two assert_*
-// files hold the assertions — billing-facing and agent-internal.
+// mutates Neutron, agent.go drives the agent host, kafka.go stages Kafka
+// topics and publishes to them, and the two assert_* files hold the
+// assertions — billing-facing and agent-internal.
 // Adding a step is one new type in the right file; the executor never
 // changes.
 package steps
@@ -116,6 +117,7 @@ func HostNeeds(steps []scenariotest.Step) scenariotest.HostNeeds {
 		n.AgentSSH = n.AgentSSH || m.AgentSSH
 		n.WALPath = n.WALPath || m.WALPath
 		n.PinPath = n.PinPath || m.PinPath
+		n.Kafka = n.Kafka || m.Kafka
 	}
 	return n
 }

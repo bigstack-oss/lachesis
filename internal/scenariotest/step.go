@@ -32,10 +32,10 @@ type MetricRequirer interface {
 	RequiredMetrics() []string
 }
 
-// HostNeeds declares which agent_control config keys a step's
-// execution requires. A cluster that has not staged them SKIPs the
-// scenario rather than failing it — the creds being absent is a
-// property of the environment, not a defect in the scenario.
+// HostNeeds declares which optional config (agent_control keys, Kafka
+// brokers) a step's execution requires. A cluster that has not staged
+// them SKIPs the scenario rather than failing it — the creds being
+// absent is a property of the environment, not a defect in the scenario.
 type HostNeeds struct {
 	// AgentSSH: the step drives the agent host over SSH.
 	AgentSSH bool
@@ -43,6 +43,8 @@ type HostNeeds struct {
 	WALPath bool
 	// PinPath: the step removes the agent's bpffs pin directory.
 	PinPath bool
+	// Kafka: the step talks to the Kafka brokers.
+	Kafka bool
 }
 
 // HostRequirer is the optional [Step] extension carrying [HostNeeds].
@@ -89,6 +91,9 @@ type StepEnv struct {
 	// SSH transport for steps that restart an agent, built from
 	// [Config.AgentControl]. Nil unless a scenario restarts an agent.
 	AgentExec VMExec
+	// Broker drives the cluster's Kafka, built from [Config.Kafka]. Nil
+	// unless the brokers are configured.
+	Broker    Broker
 	Log       *slog.Logger
 	SinkDelay time.Duration
 	// MACLearnTimeout passes through to the drive phase's MAC-learn

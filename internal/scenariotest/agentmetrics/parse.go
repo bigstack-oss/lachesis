@@ -143,6 +143,31 @@ func anomalySamples(fams map[string]*dto.MetricFamily) map[string]float64 {
 	return out
 }
 
+// kafkaKicked extracts lachesis_kafka_messages_total{outcome="kicked"}
+// by its topic label. nil when the family is absent.
+func kafkaKicked(fams map[string]*dto.MetricFamily) map[string]float64 {
+	fam, ok := fams[scenariotest.MetricKafkaMessages]
+	if !ok {
+		return nil
+	}
+	out := map[string]float64{}
+	for _, m := range fam.GetMetric() {
+		var topic, outcome string
+		for _, lp := range m.GetLabel() {
+			switch lp.GetName() {
+			case "topic":
+				topic = lp.GetValue()
+			case "outcome":
+				outcome = lp.GetValue()
+			}
+		}
+		if outcome == scenariotest.OutcomeKicked {
+			out[topic] += sampleValue(m)
+		}
+	}
+	return out
+}
+
 // sampleValue returns whichever typed value a metric carries. The
 // agent emits lachesis_tenant_bytes_total as a counter and the attach metrics
 // as gauge/counter; reading all three shapes keeps this robust to the

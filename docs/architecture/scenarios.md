@@ -213,6 +213,8 @@ At packet time (VM-A → 172.16.99.x):
 | attach-presence resync (filters removed out-of-band) | `attach-presence-heal` |
 | agent restart or `kill -9` with a transfer in flight | `agent-restart-under-load` |
 | the restarted agent logs durations as text, not nanoseconds | `agent-log-durations` |
+| a new VM learned from its Kafka port event, not the periodic reconcile | `kafka-driven-attribution` |
+| the Kafka topic gains partitions after the agent's consumer joined | `kafka-partition-growth` |
 
 The catalog-audit backlog tracks scenarios for every remaining designed case;
 the harness itself is documented in [development/testing.md](../development/testing.md).

@@ -138,6 +138,32 @@ lachesis_tc_reattach_total{iface_kind="other",outcome="failed"} 0
 	}
 }
 
+// The Kafka message family splits by topic and outcome; only kicked
+// messages count, per topic.
+func TestClient_ScrapeKafkaKicked(t *testing.T) {
+	const exposition = `# HELP lachesis_kafka_messages_total Notifications read from Kafka.
+# TYPE lachesis_kafka_messages_total counter
+lachesis_kafka_messages_total{outcome="kicked",topic="scratch"} 6
+lachesis_kafka_messages_total{outcome="ignored",topic="scratch"} 40
+lachesis_kafka_messages_total{outcome="undecodable",topic="scratch"} 1
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(exposition))
+	}))
+	defer srv.Close()
+
+	res, err := New(nil).Scrape(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Scrape: %v", err)
+	}
+	if !res.Present[scenariotest.MetricKafkaMessages] {
+		t.Errorf("metric %s reported absent", scenariotest.MetricKafkaMessages)
+	}
+	if got := res.KafkaKicked["scratch"]; got != 6 {
+		t.Errorf("KafkaKicked[scratch] = %v, want 6 (kicked only)", got)
+	}
+}
+
 func TestClient_MissingMetric(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("# TYPE other_metric gauge\nother_metric 1\n"))

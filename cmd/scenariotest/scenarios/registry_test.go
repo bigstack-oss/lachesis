@@ -18,7 +18,9 @@ var validZones = map[string]bool{
 // unique, and every expectation — top-level or embedded in an
 // AssertStep — must name a valid zone and a tx/rx direction (the real
 // metric vocabulary). A scenario declares either the classic
-// Flows+Expect pair or a step script that drives and asserts.
+// Flows+Expect pair or a step script that drives and asserts. A
+// scenario with no topology exercises the agent's control plane, not
+// its datapath, so it needs assertions but no flows.
 func TestAll_BuildAndInvariants(t *testing.T) {
 	seen := map[string]bool{}
 	for _, s := range All() {
@@ -34,9 +36,7 @@ func TestAll_BuildAndInvariants(t *testing.T) {
 			t.Fatalf("%s: nil builder", s.Name)
 		}
 		snap := s.Builder.Build() // must not panic
-		if len(snap.Networks) == 0 {
-			t.Errorf("%s: topology has no networks", s.Name)
-		}
+		topologyFree := len(snap.Networks) == 0 && len(snap.Ports) == 0
 
 		flows, expects := s.Flows, s.Expect
 		asserts := len(expects) > 0
@@ -58,7 +58,7 @@ func TestAll_BuildAndInvariants(t *testing.T) {
 				asserts = true
 			}
 		}
-		if len(flows) == 0 {
+		if len(flows) == 0 && !topologyFree {
 			t.Errorf("%s: no flows declared (top-level or in steps)", s.Name)
 		}
 		if !asserts {
@@ -135,5 +135,24 @@ func TestCrossHostSameTenant_SkipsOnSingleNode(t *testing.T) {
 		if e.Node == "" {
 			t.Errorf("expectation %+v must target a node — the collective sum can't tell the taps apart", e)
 		}
+	}
+}
+
+// Without brokers to stage the scratch topic on, the partition-growth
+// regression is an environment gap, not a defect: SKIPPED, not FAILED.
+func TestKafkaPartitionGrowth_SkipsWithoutBrokers(t *testing.T) {
+	sc, err := Get("kafka-partition-growth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := scenariotest.Defaults()
+	cfg.Cluster.Agents = []scenariotest.AgentConfig{{Host: "h", MetricsURL: "http://h/metrics"}}
+	cfg.AgentControl.KeyPath = "/k"
+	if r := scenariotest.SkipReason(sc, cfg); !strings.Contains(r, "kafka.brokers") {
+		t.Fatalf("SkipReason without brokers = %q, want a kafka.brokers skip", r)
+	}
+	cfg.Kafka.Brokers = []string{"h:9095"}
+	if r := scenariotest.SkipReason(sc, cfg); r != "" {
+		t.Fatalf("SkipReason with brokers = %q, want runnable", r)
 	}
 }
