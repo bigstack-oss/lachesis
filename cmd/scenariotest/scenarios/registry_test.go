@@ -71,8 +71,8 @@ func TestAll_BuildAndInvariants(t *testing.T) {
 			if e.Direction != "tx" && e.Direction != "rx" {
 				t.Errorf("%s: invalid direction %q (want tx|rx)", s.Name, e.Direction)
 			}
-			if e.MinBytes <= 0 {
-				t.Errorf("%s: non-positive MinBytes %d", s.Name, e.MinBytes)
+			if e.MinBytes < 0 || e.MaxBytes < 0 || (e.MinBytes == 0 && e.MaxBytes == 0) {
+				t.Errorf("%s: expectation bounds nothing (MinBytes %d, MaxBytes %d)", s.Name, e.MinBytes, e.MaxBytes)
 			}
 		}
 	}

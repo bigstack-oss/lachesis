@@ -28,6 +28,11 @@ type RunState struct {
 	Ports    []ResourceRef         `json:"ports"`
 	Servers  []ResourceRef         `json:"servers"`
 	FIPs     []FIPRef              `json:"fips"`
+	// DirectAddrs maps a VM's DSL id to the fixed IP of its primary
+	// port when that port sits directly on the provider external
+	// network: such a VM has no FIP, and the harness host reaches it
+	// on that address instead.
+	DirectAddrs map[string]string `json:"direct_addrs,omitempty"`
 	// ProviderExternalNetworkID is the UUID of the provider external
 	// network the run's routers gateway to and its FIPs come from — the
 	// `external_network` label value its series carry, resolved at

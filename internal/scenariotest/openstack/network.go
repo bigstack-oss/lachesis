@@ -3,6 +3,7 @@ package openstack
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/external"
@@ -104,8 +105,10 @@ func (o *Cloud) CreatePort(ctx context.Context, projectID string, spec scenariot
 	opts := ports.CreateOpts{
 		NetworkID:  spec.NetworkID,
 		Name:       spec.Name,
-		FixedIPs:   []ports.IP{{SubnetID: spec.SubnetID, IPAddress: spec.FixedIP}},
 		MACAddress: spec.MACAddress,
+	}
+	if spec.SubnetID != "" || spec.FixedIP != "" {
+		opts.FixedIPs = []ports.IP{{SubnetID: spec.SubnetID, IPAddress: spec.FixedIP}}
 	}
 	for _, ap := range spec.AllowedPairs {
 		opts.AllowedAddressPairs = append(opts.AllowedAddressPairs,
@@ -138,6 +141,22 @@ func (o *Cloud) PortMAC(ctx context.Context, portID string) (string, error) {
 		return "", fmt.Errorf("openstack: get port %s: %w", portID, err)
 	}
 	return p.MACAddress, nil
+}
+
+// PortFixedIP reads a port's first IPv4 fixed IP through the admin
+// network client. IPv4, because a dual-stack provider network may list
+// the IPv6 address first and the harness reaches VMs over IPv4.
+func (o *Cloud) PortFixedIP(ctx context.Context, portID string) (string, error) {
+	p, err := ports.Get(ctx, o.network, portID).Extract()
+	if err != nil {
+		return "", fmt.Errorf("openstack: get port %s: %w", portID, err)
+	}
+	for _, ip := range p.FixedIPs {
+		if a, err := netip.ParseAddr(ip.IPAddress); err == nil && a.Is4() {
+			return ip.IPAddress, nil
+		}
+	}
+	return "", fmt.Errorf("openstack: port %s has no IPv4 fixed IP", portID)
 }
 
 // ListNetworkPorts uses the admin network client: the residual ports

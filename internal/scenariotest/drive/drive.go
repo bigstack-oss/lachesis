@@ -600,6 +600,9 @@ func (d *driver) fip(vmID string) (string, error) {
 			return f.Address, nil
 		}
 	}
+	if addr, ok := d.opts.State.DirectAddrs[vmID]; ok {
+		return addr, nil
+	}
 	return "", fmt.Errorf("run-state has no FIP for VM %q", vmID)
 }
 

@@ -51,8 +51,8 @@ const (
 	noteBaselineInvalidated = "baseline invalidated (counter dropped — ghost GC evicted a prior run's flows); re-run drive"
 )
 
-// Run evaluates every declared expectation as a MinBytes lower
-// bound on the delta between the drive-time baseline and the live
+// Run evaluates every declared expectation as bounds (MinBytes, and
+// MaxBytes when set) on the delta between the drive-time baseline and the live
 // counters, polling until all pass or the stabilize timeout fires. The
 // report is persisted to ReportPath either way; the returned error is
 // reserved for evaluation being impossible (no baseline, unknown
@@ -160,7 +160,7 @@ func evaluate(sc *scenariotest.Scenario, cfg scenariotest.Config, rs *scenariote
 		row := scenariotest.AssertRow{
 			Tenant: e.TenantID, TenantID: ref.ID,
 			Zone: e.Zone, ExternalNetwork: ext, Direction: e.Direction,
-			MinBytes: e.MinBytes,
+			MinBytes: e.MinBytes, MaxBytes: e.MaxBytes,
 		}
 		node := ""
 		if e.Node != "" {
@@ -201,7 +201,7 @@ func evaluate(sc *scenariotest.Scenario, cfg scenariotest.Config, rs *scenariote
 			row.Baseline, row.Current = base.tuples[k], cur.tuples[k]
 		}
 		row.Delta = row.Current - row.Baseline
-		row.Pass = row.Delta >= float64(e.MinBytes)
+		row.Pass = row.Delta >= float64(e.MinBytes) && (e.MaxBytes <= 0 || row.Delta <= float64(e.MaxBytes))
 		if row.Delta < 0 {
 			row.Note = noteBaselineInvalidated
 		}

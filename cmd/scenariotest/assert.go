@@ -13,7 +13,7 @@ import (
 func newAssertCmd(opts *rootOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:   "assert <scenario>",
-		Short: "Evaluate MinBytes expectations against /metrics deltas; write the report.",
+		Short: "Evaluate byte-bound expectations against /metrics deltas; write the report.",
 		Args:  scenarioNameArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, sc, err := loadConfigAndScenario(opts.config, args[0])

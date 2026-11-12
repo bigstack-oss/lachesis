@@ -464,3 +464,38 @@ func TestRealize_RecordsProviderExternalNetworkID(t *testing.T) {
 		t.Errorf("ProviderExternalNetworkID = %q, want %q", rs.ProviderExternalNetworkID, cloud.ExtNetID)
 	}
 }
+
+// TestRealize_DirectVMOnProviderNetwork: a DHCP VM on the provider
+// marker gets a port on the provider network with no requested
+// address, no FIP (Neutron could not float one onto its own network),
+// and the address Neutron allocated recorded as its harness reach.
+func TestRealize_DirectVMOnProviderNetwork(t *testing.T) {
+	b := scenario.New()
+	b.ExternalNetwork("net-ext", "admin").DHCPVM("vm-d", "T1")
+	cloud, rs := realizeFixture(t, &scenariotest.Scenario{Name: "direct", Builder: b})
+
+	if len(cloud.Nets) != 0 || len(cloud.Subs) != 0 {
+		t.Errorf("created nets %+v subnets %+v, want none (the provider net is reused)", cloud.Nets, cloud.Subs)
+	}
+	if len(cloud.Ports) != 1 {
+		t.Fatalf("ports = %+v, want the VM's one", cloud.Ports)
+	}
+	if p := cloud.Ports[0]; p.NetworkID != cloud.ExtNetID || p.SubnetID != "" || p.FixedIP != "" || p.SecGroupID == "" {
+		t.Errorf("port spec = %+v, want the provider network, Neutron-allocated, with the run's security group", p)
+	}
+	if len(cloud.Fips) != 0 || len(rs.FIPs) != 0 {
+		t.Errorf("FIPs %+v / %+v, want none for a direct VM", cloud.Fips, rs.FIPs)
+	}
+	var portID string
+	for _, p := range rs.Ports {
+		if p.DSLID == "vm-d" {
+			portID = p.ID
+		}
+	}
+	if want := cloud.PortIP[portID]; want == "" || rs.DirectAddrs["vm-d"] != want {
+		t.Errorf("DirectAddrs = %v, want vm-d at the allocated %q", rs.DirectAddrs, want)
+	}
+	if len(rs.Servers) != 1 {
+		t.Errorf("servers = %+v, want vm-d booted", rs.Servers)
+	}
+}

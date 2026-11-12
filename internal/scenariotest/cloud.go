@@ -55,8 +55,12 @@ type Cloud interface {
 	CreateNetwork(ctx context.Context, projectID string, spec NetworkSpec) (id string, err error)
 	CreateSubnet(ctx context.Context, projectID string, spec SubnetSpec) (id string, err error)
 	CreateRouter(ctx context.Context, projectID string, spec RouterSpec) (id string, err error)
-	// CreatePort creates an unbound Neutron port with one fixed IP.
+	// CreatePort creates an unbound Neutron port with one fixed IP,
+	// allocated by Neutron when the spec names neither subnet nor IP.
 	CreatePort(ctx context.Context, projectID string, spec PortSpec) (id string, err error)
+	// PortFixedIP returns a port's first IPv4 fixed IP (admin view): the
+	// address Neutron allocated to a port created without one.
+	PortFixedIP(ctx context.Context, portID string) (ip string, err error)
 	// PortMAC returns a port's MAC address (admin view). The mac-reuse
 	// scenario reads a VM's Neutron-assigned MAC before deleting it, so
 	// the reborn port can pin the same address.

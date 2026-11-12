@@ -211,3 +211,46 @@ func macU64(t *testing.T, s string) uint64 {
 	copy(key[:], hw)
 	return bpf.MACKey(key)
 }
+
+// TestExternalNetworkByPortDirectAttach: a VM port sitting directly on
+// a router:external network has no FIP and no router on its subnet,
+// yet its egress leaves through that network, so the network itself is
+// the attribution. A NIC on each of two external networks attributes
+// each port to its own network, and the FIP and router tiers keep
+// their results.
+func TestExternalNetworkByPortDirectAttach(t *testing.T) {
+	snap := extSnap()
+	snap.Subnets = append(snap.Subnets,
+		Subnet{ID: "sub-pub1", NetworkID: "net-pub1", CIDR: "203.0.113.0/24", GatewayIP: "203.0.113.1"},
+		Subnet{ID: "sub-pub2", NetworkID: "net-pub2", CIDR: "198.51.100.0/24", GatewayIP: "198.51.100.1"},
+	)
+	snap.Ports = append(snap.Ports,
+		Port{ID: "port-vm-direct", NetworkID: "net-pub1", DeviceOwner: "compute:nova", DeviceID: "srv-4",
+			FixedIPs: []FixedIP{{SubnetID: "sub-pub1", IPAddress: "203.0.113.10"}}},
+		Port{ID: "port-vm-nic-a", NetworkID: "net-pub1", DeviceOwner: "compute:nova", DeviceID: "srv-5",
+			FixedIPs: []FixedIP{{SubnetID: "sub-pub1", IPAddress: "203.0.113.11"}}},
+		Port{ID: "port-vm-nic-b", NetworkID: "net-pub2", DeviceOwner: "compute:nova", DeviceID: "srv-5",
+			FixedIPs: []FixedIP{{SubnetID: "sub-pub2", IPAddress: "198.51.100.11"}}},
+	)
+	got := ExternalNetworkByPort(&snap)
+
+	tests := []struct {
+		port string
+		want string
+	}{
+		{"port-vm-direct", "net-pub1"},
+		{"port-vm-nic-a", "net-pub1"},
+		{"port-vm-nic-b", "net-pub2"},
+		{"port-vm-routed", "net-pub1"},
+		{"port-vm-fip", "net-pub2"},
+		{"port-vm-isolated", ""},
+	}
+	for _, tt := range tests {
+		if got[tt.port] != tt.want {
+			t.Errorf("port %s: external_network = %q, want %q", tt.port, got[tt.port], tt.want)
+		}
+	}
+	if hits := detectMultiExternalPaths(snap); len(hits) != 0 {
+		t.Errorf("one network per NIC is not ambiguous, got %+v", hits)
+	}
+}

@@ -60,7 +60,7 @@ VM-A (T1, 10.0.1.5) ──→ tenant router ──→ NAT GW ──→ 8.8.8.8
 |---|---|---|---|---|---|
 | VM-A tap, ingress | 0 | AA→T1 | 8.8.8.8 | sentinel catchall `(0, 0.0.0.0/0)` | EXTERNAL ✓ |
 
-Live regressions: `vm-to-internet`; `multi-external-path` additionally asserts *which* external network each flow bills under ([billing.md](./billing.md)).
+Live regressions: `vm-to-internet`; `multi-external-path` additionally asserts *which* external network each flow bills under ([billing.md](./billing.md)); `vm-direct-external` asserts the same for a VM attached directly to the provider external network, with no router and no floating IP.
 
 ## Scenario E — External ingress (internet → VM via floating IP)
 
@@ -202,7 +202,7 @@ At packet time (VM-A → 172.16.99.x):
 | A / I — same tenant, direct L2 | `twovms-same-tenant` |
 | B — same tenant via router | — (backlog; catalog audit) |
 | C — cross-tenant | `cross-tenant-shared`, `cross-tenant-routed` |
-| D — external egress | `vm-to-internet`, `multi-external-path` |
+| D — external egress | `vm-to-internet`, `multi-external-path`, `vm-direct-external` |
 | D/E — SNAT client ↔ another tenant's FIP on one external network (router gateway bills external) | `snat-to-foreign-fip` |
 | E — external ingress via FIP | exercised implicitly (drive sinks are reached via FIP); no dedicated assert |
 | F — Octavia | `octavia-lb-attribution` |

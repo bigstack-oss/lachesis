@@ -60,3 +60,24 @@ func TestNIC_UnknownVMPanics(t *testing.T) {
 	b.Network("net-b", "T1").Subnet("sub-b", "10.0.2.0/24", "10.0.2.1")
 	b.NIC("ghost", "sub-b", "10.0.2.9")
 }
+
+// TestDHCPVM_OnSubnetlessNetwork: a DHCP VM needs no declared subnet
+// and carries no fixed IP, so the snapshot leaves its address to
+// Neutron while still naming the network it sits on.
+func TestDHCPVM_OnSubnetlessNetwork(t *testing.T) {
+	b := New()
+	b.ExternalNetwork("net-ext", "admin").DHCPVM("vm-d", "T1")
+	snap := b.Build()
+
+	if len(snap.Ports) != 1 {
+		t.Fatalf("ports = %+v, want exactly vm-d", snap.Ports)
+	}
+	p := snap.Ports[0]
+	if p.ID != "vm-d" || p.NetworkID != "net-ext" || p.ProjectID != "T1" ||
+		p.DeviceOwner != "compute:nova" || p.DeviceID != "vm-d-instance" {
+		t.Errorf("DHCP VM port = %+v", p)
+	}
+	if len(p.FixedIPs) != 0 {
+		t.Errorf("fixed IPs = %+v, want none (Neutron allocates)", p.FixedIPs)
+	}
+}
