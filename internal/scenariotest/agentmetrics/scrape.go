@@ -18,7 +18,7 @@ func (c *Client) Scrape(ctx context.Context, url string) (scenariotest.ScrapeRes
 		scenariotest.MetricSettledFlows, scenariotest.MetricLingeringGhosts, scenariotest.MetricServerBytesTotal,
 		scenariotest.MetricNeutronAnomalies, scenariotest.MetricTenantSettledTuples,
 		scenariotest.MetricUnresolvedResolved, scenariotest.MetricGCEvictions,
-		scenariotest.MetricCountersReset, scenariotest.MetricReattachTotal,
+		scenariotest.MetricCountersReset, scenariotest.MetricReattachTotal, scenariotest.MetricKafkaMessages,
 	} {
 		_, ok := fams[n]
 		r.Present[n] = ok
@@ -38,5 +38,6 @@ func (c *Client) Scrape(ctx context.Context, url string) (scenariotest.ScrapeRes
 	r.PortBytes = portSamples(fams)
 	r.Anomalies = anomalySamples(fams)
 	r.CountersResetEpoch = familySum(fams, scenariotest.MetricCountersReset)
+	r.KafkaKicked = kafkaKicked(fams)
 	return r, nil
 }

@@ -31,6 +31,7 @@ type Config struct {
 	Prerequisites Prereqs            `yaml:"prerequisites"`
 	SSH           SSHConfig          `yaml:"ssh"`
 	AgentControl  AgentControlConfig `yaml:"agent_control"`
+	Kafka         KafkaConfig        `yaml:"kafka"`
 	Naming        NamingConfig       `yaml:"naming"`
 }
 
@@ -121,6 +122,14 @@ type AgentControlConfig struct {
 // same way it builds the VM driver's.
 func (a AgentControlConfig) SSHConfig() SSHConfig {
 	return SSHConfig{User: a.User, KeyPath: a.KeyPath, Timeout: a.Timeout}
+}
+
+// KafkaConfig is how the Kafka steps reach the cluster's broker to
+// stage a scratch topic and publish to it. Optional: a scenario with a
+// Kafka step SKIPs when Brokers is empty.
+type KafkaConfig struct {
+	// Brokers lists bootstrap addresses as host:port.
+	Brokers []string `yaml:"brokers"`
 }
 
 // Prereqs names the pre-staged Glance / Nova / Neutron resources

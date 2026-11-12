@@ -63,6 +63,8 @@ func All() []*scenariotest.Scenario {
 		octaviaLBAttribution(),
 		attachPresenceHeal(),
 		agentRestartUnderLoad(),
+		kafkaDrivenAttribution(),
+		kafkaPartitionGrowth(),
 	}
 }
 

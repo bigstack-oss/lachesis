@@ -11,6 +11,8 @@ import (
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/fake"
+	"github.com/bigstack-oss/lachesis/internal/scenariotest/steps"
+	"github.com/bigstack-oss/lachesis/internal/testenv/scenario"
 )
 
 // runScenario is the two-VM fixture with a drivable flow and an
@@ -279,4 +281,31 @@ func mustLoadReport(t *testing.T, path string) scenariotest.AssertReport {
 		t.Fatalf("decode report: %v", err)
 	}
 	return rep
+}
+
+// A scenario with no topology still runs end to end, with the broker
+// reaching its steps: nothing is realized and nothing torn down.
+func TestRun_TopologyFreeScenarioReachesBroker(t *testing.T) {
+	cloud, opts := baseRunOptions(t)
+	b := &fake.Broker{}
+	opts.Broker = b
+	opts.Config.Kafka.Brokers = []string{"k:9095"}
+	opts.Scenario = &scenariotest.Scenario{
+		Name:    "kafka-only",
+		Builder: scenario.New(),
+		Steps: []scenariotest.Step{
+			steps.CreateTopicStep{Topic: "t", Partitions: 2},
+			steps.PublishNeutronEventStep{Topic: "t", Partitions: 2},
+		},
+	}
+	rep, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !rep.OK || len(b.Published) != 2 {
+		t.Fatalf("OK=%v published=%d, want OK and 2", rep.OK, len(b.Published))
+	}
+	if len(cloud.Servers) != 0 || len(cloud.Nets) != 0 {
+		t.Errorf("created %d servers, %d networks; want none", len(cloud.Servers), len(cloud.Nets))
+	}
 }

@@ -1,7 +1,7 @@
 // Agent-internal assertions: the gauges and counters that prove the
 // agent's own machinery ran — the ghost sweep, the unresolved buffer's
-// late binding, GC pressure relief, the counters-reset epoch, and the
-// topology-anomaly classes.
+// late binding, GC pressure relief, the counters-reset epoch, the
+// topology-anomaly classes, and the Kafka consumer's kicks.
 
 package steps
 
@@ -16,6 +16,10 @@ import (
 // sweepPollInterval is the pause between [AwaitSweepStep] polls. A var,
 // not a const, so poll-loop tests can shrink it.
 var sweepPollInterval = 5 * time.Second
+
+// kafkaKickedPollInterval is the pause between [KafkaKickedStep]
+// scrapes; a var so tests can shrink it.
+var kafkaKickedPollInterval = time.Second
 
 // AwaitSweepStep blocks until the ghost sweep has processed a deleted
 // VM/NIC. Always set ForMACOf: it polls /debug/lookup for that MAC and
@@ -473,6 +477,66 @@ func (s MaxGhostsStep) Run(ctx context.Context, env *scenariotest.StepEnv) error
 		Tenant: "lingering-ghosts", Zone: "-", Direction: "-",
 		Baseline: env.Captured.Ghosts, Current: snap.LingeringGhosts, Delta: delta,
 		Pass: delta <= float64(s.Budget), Note: s.Note,
+	})
+	return nil
+}
+
+// DefaultKafkaKickedTimeout bounds [KafkaKickedStep]'s poll. The agent
+// counts a message the moment it reads it, so a consumer that owns the
+// partition does so within seconds of the publish.
+const DefaultKafkaKickedTimeout = time.Minute
+
+// KafkaKickedStep asserts one agent's Kafka consumer kicked at least Min
+// reconciles from Topic (lachesis_kafka_messages_total{outcome="kicked"}).
+// It reads the absolute count: the series starts at 0 when the agent
+// boots onto Topic, so a scenario restarts the agent onto a scratch topic
+// before publishing. Polls until the floor is met or Timeout (default
+// [DefaultKafkaKickedTimeout]) records a failing row.
+type KafkaKickedStep struct {
+	// Node selects the agent, as in [RestartAgentStep].
+	Node    string
+	Topic   string
+	Min     int64
+	Timeout time.Duration
+	Note    string
+}
+
+func (KafkaKickedStep) Kind() string { return "assert-kafka-kicked" }
+
+func (KafkaKickedStep) RequiredMetrics() []string {
+	return []string{scenariotest.MetricKafkaMessages}
+}
+
+func (s KafkaKickedStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	agent, err := scenariotest.AgentForNode(env.Config, s.Node)
+	if err != nil {
+		return fmt.Errorf("assert-kafka-kicked: %w", err)
+	}
+	timeout := s.Timeout
+	if timeout <= 0 {
+		timeout = DefaultKafkaKickedTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	var kicked float64
+	for {
+		res, err := env.Metrics.Scrape(ctx, agent.MetricsURL)
+		if err != nil {
+			return fmt.Errorf("assert-kafka-kicked: scrape %s: %w", agent.MetricsURL, err)
+		}
+		kicked = res.KafkaKicked[s.Topic]
+		if kicked >= float64(s.Min) || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(kafkaKickedPollInterval):
+		}
+	}
+	env.AddRow(scenariotest.AssertRow{
+		Tenant: "kafka-kicked", Zone: s.Topic, Node: agent.Host, Direction: "-",
+		Current: kicked, Delta: kicked, MinBytes: s.Min,
+		Pass: kicked >= float64(s.Min), Note: s.Note,
 	})
 	return nil
 }

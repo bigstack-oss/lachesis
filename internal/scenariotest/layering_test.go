@@ -36,7 +36,7 @@ func TestCoreImportsNoSubpackage(t *testing.T) {
 // other sub-packages.
 func TestSubpackagesImportOnlyTheCore(t *testing.T) {
 	// Drivers are leaves by construction: they wrap one external system.
-	for _, leaf := range []string{"openstack", "agentmetrics", "remote"} {
+	for _, leaf := range []string{"openstack", "agentmetrics", "remote", "kafkabroker"} {
 		for _, imp := range imports(t, corePkg+"/"+leaf) {
 			if strings.HasPrefix(imp, corePkg+"/") {
 				t.Errorf("driver %s imports sibling sub-package %s — drivers are leaves; "+

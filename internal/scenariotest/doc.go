@@ -1,6 +1,6 @@
 // Package scenariotest is the core of the live-validation harness: the
 // scenario DSL, the step seam, the run-state, the report, and the
-// [Cloud] / [MetricsSource] / [VMExec] interfaces through which
+// [Cloud] / [MetricsSource] / [VMExec] / [Broker] interfaces through which
 // everything reaches a real cluster.
 //
 // ONE layering rule holds the tree together: sub-packages import the

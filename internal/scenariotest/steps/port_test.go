@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/scenariotest"
 	"github.com/bigstack-oss/lachesis/internal/scenariotest/fake"
@@ -205,5 +206,58 @@ func TestSteps_AttachPortMACFrom(t *testing.T) {
 	if err := (AttachPortStep{VM: "vm-a", ID: "vm-a-nic4", Network: "net-b", Subnet: "sub-b",
 		IP: "10.0.31.11", MACFrom: "never-recorded"}).Run(ctx, senv); err == nil {
 		t.Error("MACFrom with no recorded MAC must error")
+	}
+}
+
+// bindingMetrics answers every /debug/lookup with one fixed result.
+type bindingMetrics struct {
+	fake.InstantMACs
+	lookup scenariotest.MACLookup
+}
+
+func (m bindingMetrics) Scrape(context.Context, string) (scenariotest.ScrapeResult, error) {
+	return scenariotest.ScrapeResult{}, nil
+}
+
+func (m bindingMetrics) LookupMAC(context.Context, string, string) (scenariotest.MACLookup, error) {
+	return m.lookup, nil
+}
+
+// A port no reconcile learned and a port bound to a dead id both fail
+// the row, and the timeout log says which of the two it was.
+func TestSteps_AwaitPortBinding(t *testing.T) {
+	tests := []struct {
+		name     string
+		lookup   scenariotest.MACLookup
+		wantPass bool
+		wantLog  string
+	}{
+		{"bound", scenariotest.MACLookup{Found: true, PortID: "port-new"}, true, "rebound"},
+		{"unknown", scenariotest.MACLookup{}, false, "unknown to "},
+		{"stale", scenariotest.MACLookup{Found: true, PortID: "port-old"}, false, "bound to stale port port-old"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs strings.Builder
+			env := &scenariotest.StepEnv{
+				Config: fake.Config(),
+				State: &scenariotest.RunState{Ports: []scenariotest.ResourceRef{
+					{DSLID: "vm-x", ID: "port-new", MAC: "fa:16:3e:00:00:01"},
+				}},
+				Metrics: bindingMetrics{lookup: tt.lookup},
+				Log:     slog.New(slog.NewTextHandler(&logs, nil)),
+				Report:  &scenariotest.AssertReport{OK: true},
+			}
+			step := AwaitPortBindingStep{VM: "vm-x", Port: "vm-x", Timeout: 20 * time.Millisecond}
+			if err := step.Run(context.Background(), env); err != nil {
+				t.Fatalf("a binding miss is a row, not an error: %v", err)
+			}
+			if len(env.Report.Rows) != 1 || env.Report.Rows[0].Pass != tt.wantPass {
+				t.Fatalf("rows = %+v, want one row with pass=%v", env.Report.Rows, tt.wantPass)
+			}
+			if !strings.Contains(logs.String(), tt.wantLog) {
+				t.Errorf("log does not say %q:\n%s", tt.wantLog, logs.String())
+			}
+		})
 	}
 }

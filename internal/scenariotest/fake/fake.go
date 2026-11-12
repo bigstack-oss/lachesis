@@ -685,3 +685,50 @@ type PerNode struct {
 func (p PerNode) Scrape(_ context.Context, url string) (scenariotest.ScrapeResult, error) {
 	return p.ByURL[url], nil
 }
+
+// Broker is a recording [scenariotest.Broker]: it keeps each topic's
+// partition count and every publish, and refuses what Kafka refuses — a
+// grow that does not grow, a publish to a partition the topic lacks.
+type Broker struct {
+	Partitions map[string]int
+	Published  []Published
+}
+
+// Published is one [Broker.Publish] call.
+type Published struct {
+	Topic     string
+	Partition int
+	Value     []byte
+}
+
+func (b *Broker) RecreateTopic(_ context.Context, topic string, partitions int) error {
+	if b.Partitions == nil {
+		b.Partitions = map[string]int{}
+	}
+	b.Partitions[topic] = partitions
+	return nil
+}
+
+func (b *Broker) GrowTopic(_ context.Context, topic string, partitions int) error {
+	if _, ok := b.Partitions[topic]; !ok {
+		return fmt.Errorf("fake kafka: no topic %s", topic)
+	}
+	if partitions <= b.Partitions[topic] {
+		return fmt.Errorf("fake kafka: %s already has %d partitions", topic, b.Partitions[topic])
+	}
+	b.Partitions[topic] = partitions
+	return nil
+}
+
+func (b *Broker) DeleteTopic(_ context.Context, topic string) error {
+	delete(b.Partitions, topic)
+	return nil
+}
+
+func (b *Broker) Publish(_ context.Context, topic string, partition int, value []byte) error {
+	if partition >= b.Partitions[topic] {
+		return fmt.Errorf("fake kafka: %s has no partition %d", topic, partition)
+	}
+	b.Published = append(b.Published, Published{topic, partition, value})
+	return nil
+}
