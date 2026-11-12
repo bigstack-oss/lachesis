@@ -172,6 +172,84 @@ func TestDrive_MissingFIPFails(t *testing.T) {
 	}
 }
 
+// TestDrive_PullFlowServesFromTarget pins the download shape: the
+// target serves the bytes and the source only dials and receives, so
+// the stream's direction is To → From while the connection is still
+// opened From → To (the source may sit behind SNAT).
+func TestDrive_PullFlowServesFromTarget(t *testing.T) {
+	sc := fake.SameTenantScenario()
+	sc.Flows = []scenariotest.Flow{{From: "vm-a", To: scenariotest.FIPTarget("vm-b"), Bytes: 2 << 20, Proto: scenariotest.TCP, Pull: true}}
+	rs := driveState()
+	exec := &fake.Exec{}
+
+	if _, err := driveFixture(t, sc, rs, exec, fake.HealthyMetrics{Attached: 7}); err != nil {
+		t.Fatalf("Drive: %v", err)
+	}
+	var serveIdx, dialIdx = -1, -1
+	for i, c := range exec.Calls {
+		switch {
+		case strings.Contains(c.Command, "nc -l -p 15000"):
+			serveIdx = i
+			if c.Addr != "203.0.113.11" {
+				t.Errorf("server started on %s, want target FIP 203.0.113.11", c.Addr)
+			}
+			if !strings.Contains(c.Command, "-e dd if=/dev/zero bs=1M count=2") {
+				t.Errorf("target must serve the byte budget: %q", c.Command)
+			}
+		case strings.Contains(c.Command, "nc 203.0.113.11 15000"):
+			dialIdx = i
+			if c.Addr != "203.0.113.10" {
+				t.Errorf("dial run on %s, want source FIP 203.0.113.10", c.Addr)
+			}
+			if strings.Contains(c.Command, "dd if=/dev/zero") {
+				t.Errorf("the pulling source must not send the budget: %q", c.Command)
+			}
+		}
+	}
+	if serveIdx == -1 || dialIdx == -1 {
+		t.Fatalf("missing serve or dial call: %+v", exec.Calls)
+	}
+	if serveIdx > dialIdx {
+		t.Error("server must start before the dial")
+	}
+}
+
+func TestDrive_PullFlowRejectedBeforeTraffic(t *testing.T) {
+	tests := []struct {
+		name string
+		flow scenariotest.Flow
+		pace int64
+		want string
+	}{
+		{"external target", scenariotest.Flow{From: "vm-a", To: scenariotest.ExternalTarget("8.8.8.8"), Bytes: 1 << 20, Proto: scenariotest.TCP, Pull: true}, 0, "VM target"},
+		{"paced", scenariotest.Flow{From: "vm-a", To: scenariotest.VMTarget("vm-b"), Bytes: 1 << 20, Proto: scenariotest.TCP, Pull: true}, 1, "not paced"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := fake.SameTenantScenario()
+			sc.Flows = []scenariotest.Flow{tc.flow}
+			exec := &fake.Exec{}
+			err := Run(context.Background(), Options{
+				Config:    fake.Config(),
+				Scenario:  sc,
+				State:     driveState(),
+				StatePath: t.TempDir() + "/state.json",
+				Metrics:   fake.HealthyMetrics{Attached: 7},
+				Exec:      exec,
+				Log:       slog.New(slog.DiscardHandler),
+				SinkDelay: -1,
+				PaceMiB:   tc.pace,
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error mentioning %q, got %v", tc.want, err)
+			}
+			if len(exec.Calls) != 0 {
+				t.Errorf("no traffic may run: %+v", exec.Calls)
+			}
+		})
+	}
+}
+
 func TestMibCount(t *testing.T) {
 	tests := []struct {
 		bytes int64
