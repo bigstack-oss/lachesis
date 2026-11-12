@@ -33,6 +33,7 @@ func All() []*scenariotest.Scenario {
 		walRestartContinuity(),
 		vmDeletedWhileAgentDown(),
 		agentColdRestart(),
+		agentLogDurations(),
 		liveMigrateRoundTrip(),
 		multiPortPartialDelete(),
 		portRecreateSameServer(),
