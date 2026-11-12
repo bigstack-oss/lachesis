@@ -133,6 +133,11 @@ type Flow struct {
 	To    FlowTarget
 	Bytes int64
 	Proto Protocol
+	// Pull reverses a VM-target flow's byte direction: To serves Bytes
+	// and From receives them, over a connection From still opens. It is
+	// the download shape for a source behind SNAT, which nothing can
+	// dial into.
+	Pull bool
 }
 
 // FlowTarget is the destination of a [Flow]. Exactly one of VMID, IP,

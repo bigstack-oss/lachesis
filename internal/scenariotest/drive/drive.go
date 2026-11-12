@@ -110,6 +110,9 @@ func Run(ctx context.Context, opts Options) error {
 	if err := d.checkPace(); err != nil {
 		return err
 	}
+	if err := d.checkPull(); err != nil {
+		return err
+	}
 	if opts.SkipAttachRecheck {
 		opts.Log.Warn("attach recheck: skipped by request (drive follows a tap teardown)")
 	} else if err := d.recheckAttach(); err != nil {
@@ -221,6 +224,24 @@ func (d *driver) checkPace() error {
 		}
 		if dur := time.Duration(paceChunks(mibCount(f.Bytes), d.opts.PaceMiB)) * time.Second; dur >= timeout {
 			return fmt.Errorf("flow %d: paced stream lasts about %s, at or over ssh.timeout %s — raise ssh.timeout or PaceMiB", i, dur, timeout)
+		}
+	}
+	return nil
+}
+
+// checkPull rejects, before any traffic, a pull flow the driver cannot
+// serve: only a VM can run the serving side, and the served stream is
+// one unpaced burst.
+func (d *driver) checkPull() error {
+	for i, f := range d.opts.Scenario.Flows {
+		if !f.Pull {
+			continue
+		}
+		if f.To.VMID == "" && f.To.FIPOf == "" {
+			return fmt.Errorf("flow %d: a pull flow needs a VM target (VMTarget or FIPTarget)", i)
+		}
+		if d.opts.PaceMiB > 0 {
+			return fmt.Errorf("flow %d: pull flows are not paced", i)
 		}
 	}
 	return nil
@@ -367,7 +388,8 @@ func (d *driver) runFlow(i int, f scenariotest.Flow) error {
 // sinking into a busybox `nc -l` started via the target's FIP. A
 // VMID target dials the VM's internal IP (the asserted bytes flow
 // tenant-network paths); a FIPOf target dials the VM's floating
-// address instead, forcing the hairpin DNAT/SNAT path.
+// address instead, forcing the hairpin DNAT/SNAT path. A Pull flow
+// serves the bytes from the target instead and the source receives.
 func (d *driver) runVMFlow(i int, f scenariotest.Flow, srcFIP string) error {
 	dstVM := f.To.VMID
 	if dstVM == "" {
@@ -388,18 +410,26 @@ func (d *driver) runVMFlow(i int, f scenariotest.Flow, srcFIP string) error {
 	}
 
 	port := flowBasePort + i
-	sink := fmt.Sprintf("nohup sh -c 'nc -l -p %d > /dev/null' >/dev/null 2>&1 &", port)
-	if _, err := d.opts.Exec.Run(d.ctx, dstFIP, sink); err != nil {
-		return fmt.Errorf("start sink: %w", err)
+	listen := fmt.Sprintf("nohup sh -c 'nc -l -p %d > /dev/null' >/dev/null 2>&1 &", port)
+	stream, mib := d.streamCmd(f.Bytes, dstAddr, port)
+	if f.Pull {
+		// `-e` hands the socket to dd, which never reads it: the
+		// dialer's stdin EOF half-closes the connection at once, and
+		// a plain `dd | nc -l` would exit on that EOF mid-stream.
+		mib = mibCount(f.Bytes)
+		listen = fmt.Sprintf("nohup nc -l -p %d -e dd if=/dev/zero bs=1M count=%d >/dev/null 2>&1 &", port, mib)
+		stream = fmt.Sprintf("nc %s %d </dev/null >/dev/null", dstAddr, port)
+	}
+	if _, err := d.opts.Exec.Run(d.ctx, dstFIP, listen); err != nil {
+		return fmt.Errorf("start listener: %w", err)
 	}
 	d.sleepSinkDelay()
 
-	stream, mib := d.streamCmd(f.Bytes, dstAddr, port)
 	d.markStreaming()
 	if _, err := d.opts.Exec.Run(d.ctx, srcFIP, stream); err != nil {
 		return fmt.Errorf("stream: %w", err)
 	}
-	d.opts.Log.Info("flow: tcp stream", "flow", i, "from", f.From, "to", dstVM, "dst", dstAddr, "port", port, "mib", mib)
+	d.opts.Log.Info("flow: tcp stream", "flow", i, "from", f.From, "to", dstVM, "dst", dstAddr, "port", port, "mib", mib, "pull", f.Pull)
 	return nil
 }
 

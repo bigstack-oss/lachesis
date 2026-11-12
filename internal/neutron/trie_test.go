@@ -195,7 +195,6 @@ func TestBuildTrie_ExternalNetworkSkipsStep2(t *testing.T) {
 func TestBuildTrie_Step4InfraPorts(t *testing.T) {
 	ports := []Port{
 		{DeviceOwner: "network:router_interface", FixedIPs: []FixedIP{{IPAddress: "10.0.0.1"}}},
-		{DeviceOwner: "network:router_gateway", FixedIPs: []FixedIP{{IPAddress: "192.0.2.1"}}},
 		{DeviceOwner: "network:distributed", FixedIPs: []FixedIP{{IPAddress: "10.0.0.2"}}},
 		{DeviceOwner: "network:dhcp", FixedIPs: []FixedIP{{IPAddress: "10.0.0.3"}}},
 		// DVR FIP gateway and L3-HA VRRP IPs are caught by the
@@ -210,6 +209,9 @@ func TestBuildTrie_Step4InfraPorts(t *testing.T) {
 		// `network:` namespace — the FIP /32 must fall through to
 		// catchall EXTERNAL, not INFRA.
 		{DeviceOwner: "network:floatingip", FixedIPs: []FixedIP{{IPAddress: "203.0.113.7"}}},
+		// network:router_gateway is the router's SNAT source address on
+		// the external network — tenant traffic, so EXTERNAL too.
+		{DeviceOwner: "network:router_gateway", FixedIPs: []FixedIP{{IPAddress: "192.0.2.1"}}},
 		// Other non-network owners that must NOT be INFRA.
 		{DeviceOwner: "Octavia", FixedIPs: []FixedIP{{IPAddress: "10.0.0.99"}}},
 		{DeviceOwner: "manila:share", FixedIPs: []FixedIP{{IPAddress: "10.0.0.100"}}},
@@ -218,16 +220,74 @@ func TestBuildTrie_Step4InfraPorts(t *testing.T) {
 		Networks: []Network{{ID: "n1", ProjectID: "T1"}},
 		Ports:    append(ports, Port{ProjectID: "T1"}), // ensure tenant gets enumerated
 	})
-	for _, infraIP := range []string{"10.0.0.1", "192.0.2.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"} {
+	for _, infraIP := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"} {
 		want := TrieEntry{"", netip.MustParsePrefix(infraIP + "/32"), bpf.ZoneInfra}
 		if !slices.Contains(got, want) {
 			t.Errorf("missing global INFRA row for %s\nentries: %+v", infraIP, got)
 		}
 	}
-	for _, notInfra := range []string{"10.0.0.42", "10.0.0.99", "10.0.0.100", "203.0.113.7"} {
+	for _, notInfra := range []string{"10.0.0.42", "10.0.0.99", "10.0.0.100", "203.0.113.7", "192.0.2.1"} {
 		if slices.Contains(got, TrieEntry{"", netip.MustParsePrefix(notInfra + "/32"), bpf.ZoneInfra}) {
 			t.Errorf("non-infra IP %s leaked into INFRA", notInfra)
 		}
+	}
+}
+
+// TestBuildTrie_RouterGatewaySNATPeerIsExternal is the lachesis#338
+// shape: two tenants' routers gatewayed on one external network. A
+// FIP-less VM behind one router reaches the other tenant's FIP from
+// its router's SNAT (router_gateway) address, so that address is the
+// peer at the FIP side's tap in both directions and must resolve
+// EXTERNAL from either tenant, never INFRA. The tenant's own subnet
+// gateway stays INFRA.
+func TestBuildTrie_RouterGatewaySNATPeerIsExternal(t *testing.T) {
+	entries, _, _ := BuildTrie(Snapshot{
+		Networks: []Network{
+			{ID: "n-ext", ProjectID: "T-admin", IsExternal: true},
+			{ID: "n1", ProjectID: "T1"},
+			{ID: "n2", ProjectID: "T2"},
+		},
+		Subnets: []Subnet{
+			{ID: "s-ext", NetworkID: "n-ext", CIDR: "203.0.113.0/24", GatewayIP: "203.0.113.1", IPVersion: 4},
+			{ID: "s1", NetworkID: "n1", CIDR: "10.0.1.0/24", GatewayIP: "10.0.1.1", IPVersion: 4},
+			{ID: "s2", NetworkID: "n2", CIDR: "10.0.2.0/24", GatewayIP: "10.0.2.1", IPVersion: 4},
+		},
+		Ports: []Port{
+			{ID: "r1-gw", ProjectID: "T1", DeviceOwner: "network:router_gateway", DeviceID: "r1",
+				FixedIPs: []FixedIP{{SubnetID: "s-ext", IPAddress: "203.0.113.11"}}},
+			{ID: "r1-if", ProjectID: "T1", DeviceOwner: DeviceOwnerRouterInterface, DeviceID: "r1",
+				FixedIPs: []FixedIP{{SubnetID: "s1", IPAddress: "10.0.1.1"}}},
+			{ID: "r2-gw", ProjectID: "T2", DeviceOwner: "network:router_gateway", DeviceID: "r2",
+				FixedIPs: []FixedIP{{SubnetID: "s-ext", IPAddress: "203.0.113.12"}}},
+			{ID: "r2-if", ProjectID: "T2", DeviceOwner: DeviceOwnerRouterInterface, DeviceID: "r2",
+				FixedIPs: []FixedIP{{SubnetID: "s2", IPAddress: "10.0.2.1"}}},
+			{ID: "vm-b-fip", DeviceOwner: "network:floatingip",
+				FixedIPs: []FixedIP{{SubnetID: "s-ext", IPAddress: "203.0.113.50"}}},
+		},
+		Routers: []Router{
+			{ID: "r1", ProjectID: "T1", ExternalNetworkID: "n-ext"},
+			{ID: "r2", ProjectID: "T2", ExternalNetworkID: "n-ext"},
+		},
+	})
+	tests := []struct {
+		name   string
+		tenant string
+		peer   string
+		want   bpf.ZoneCode
+	}{
+		{"FIP side sees the other tenant's SNAT address", "T2", "203.0.113.11", bpf.ZoneExternal},
+		{"SNAT side sees the other tenant's SNAT address", "T1", "203.0.113.12", bpf.ZoneExternal},
+		{"a tenant's own router SNAT address", "T1", "203.0.113.11", bpf.ZoneExternal},
+		{"the other tenant's FIP", "T1", "203.0.113.50", bpf.ZoneExternal},
+		{"own subnet gateway stays infra", "T2", "10.0.2.1", bpf.ZoneInfra},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hit, _ := LookupZone(entries, netip.MustParseAddr(tc.peer), tc.tenant)
+			if hit == nil || hit.Zone != tc.want {
+				t.Errorf("LookupZone(%s, %s) = %+v, want %v", tc.peer, tc.tenant, hit, tc.want)
+			}
+		})
 	}
 }
 

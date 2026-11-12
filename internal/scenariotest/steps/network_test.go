@@ -187,3 +187,58 @@ func TestSteps_EnableForwarding(t *testing.T) {
 		}
 	})
 }
+
+func TestSteps_AddRoute(t *testing.T) {
+	// vm-b carries its provider SSH FIP and a second, scenario-network
+	// FIP; only the SSH FIP is the address a FIPOf route targets.
+	newEnv := func(exec *fake.Exec) *scenariotest.StepEnv {
+		return &scenariotest.StepEnv{
+			Config: fake.Config(),
+			State: &scenariotest.RunState{FIPs: []scenariotest.FIPRef{
+				{VMID: "vm-a", Address: "203.0.113.9"},
+				{VMID: "vm-b", Address: "203.0.113.20"},
+				{VMID: "vm-b", Address: "198.51.100.7", Network: "net-ext2"},
+			}},
+			Exec: exec,
+			Log:  slog.New(slog.DiscardHandler),
+		}
+	}
+
+	t.Run("static CIDR", func(t *testing.T) {
+		exec := &fake.Exec{}
+		if err := (AddRouteStep{VM: "vm-a", CIDR: "8.8.9.0/24", Via: "10.0.11.254"}).Run(context.Background(), newEnv(exec)); err != nil {
+			t.Fatalf("add-route: %v", err)
+		}
+		last := exec.Calls[len(exec.Calls)-1]
+		if last.Addr != "203.0.113.9" || !strings.Contains(last.Command, "ip route add 8.8.9.0/24 via 10.0.11.254") {
+			t.Errorf("ran %q over %s, want the static route over vm-a's SSH FIP", last.Command, last.Addr)
+		}
+	})
+
+	t.Run("FIPOf routes the peer's SSH FIP as a /32", func(t *testing.T) {
+		exec := &fake.Exec{}
+		if err := (AddRouteStep{VM: "vm-a", FIPOf: "vm-b", Via: "10.0.11.254"}).Run(context.Background(), newEnv(exec)); err != nil {
+			t.Fatalf("add-route: %v", err)
+		}
+		last := exec.Calls[len(exec.Calls)-1]
+		if last.Addr != "203.0.113.9" || !strings.Contains(last.Command, "ip route add 203.0.113.20/32 via 10.0.11.254") {
+			t.Errorf("ran %q over %s, want vm-b's SSH FIP /32 over vm-a's SSH FIP", last.Command, last.Addr)
+		}
+	})
+
+	t.Run("FIPOf without a recorded FIP errors", func(t *testing.T) {
+		exec := &fake.Exec{}
+		err := (AddRouteStep{VM: "vm-a", FIPOf: "vm-c", Via: "10.0.11.254"}).Run(context.Background(), newEnv(exec))
+		if err == nil || len(exec.Calls) != 0 {
+			t.Errorf("want an error before any exec, got err=%v calls=%+v", err, exec.Calls)
+		}
+	})
+
+	t.Run("CIDR and FIPOf together error", func(t *testing.T) {
+		exec := &fake.Exec{}
+		err := (AddRouteStep{VM: "vm-a", CIDR: "8.8.9.0/24", FIPOf: "vm-b", Via: "10.0.11.254"}).Run(context.Background(), newEnv(exec))
+		if err == nil || len(exec.Calls) != 0 {
+			t.Errorf("want an error before any exec, got err=%v calls=%+v", err, exec.Calls)
+		}
+	})
+}

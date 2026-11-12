@@ -17,6 +17,7 @@ func TestIsVMPort(t *testing.T) {
 		{"trunk:subport", true},
 		// network:* never VM (the partition rule).
 		{"network:router_interface", false},
+		{"network:router_gateway", false},
 		{"network:dhcp", false},
 		{"network:floatingip", false}, // bookkeeping — neither infra nor VM
 		{"network:remote_managed", false},
@@ -133,8 +134,8 @@ func TestIsKnownVMOwnerImpliesIsVMPort(t *testing.T) {
 func TestPortClassPartition(t *testing.T) {
 	for _, owner := range []string{
 		"compute:nova", "Octavia", "manila:share", "baremetal:nova", "cube:mgr",
-		"network:router_interface", "network:dhcp", "network:floatingip",
-		"network:remote_managed", "",
+		"network:router_interface", "network:router_gateway", "network:dhcp",
+		"network:floatingip", "network:remote_managed", "",
 	} {
 		infra := IsInfraPort(owner)
 		vm := IsVMPort(owner)
@@ -150,7 +151,6 @@ func TestIsInfraPort(t *testing.T) {
 		want        bool
 	}{
 		{"network:router_interface", true},
-		{"network:router_gateway", true},
 		{"network:dhcp", true},
 		{"network:metadata", true},
 		{"network:distributed", true},
@@ -158,6 +158,9 @@ func TestIsInfraPort(t *testing.T) {
 		{"network:ha_router_replicated_interface", true},
 		{"network:routed", true},
 		{"network:floatingip", false}, // explicit exception
+		// The SNAT source address of every FIP-less VM behind the
+		// router: tenant traffic, not platform traffic (lachesis#338).
+		{"network:router_gateway", false},
 		{"compute:nova", false},
 		{"compute:Octavia", false},
 		{"Octavia", false},

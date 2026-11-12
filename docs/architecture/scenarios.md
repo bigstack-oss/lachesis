@@ -203,6 +203,7 @@ At packet time (VM-A → 172.16.99.x):
 | B — same tenant via router | — (backlog; catalog audit) |
 | C — cross-tenant | `cross-tenant-shared`, `cross-tenant-routed` |
 | D — external egress | `vm-to-internet`, `multi-external-path` |
+| D/E — SNAT client ↔ another tenant's FIP on one external network (router gateway bills external) | `snat-to-foreign-fip` |
 | E — external ingress via FIP | exercised implicitly (drive sinks are reached via FIP); no dedicated assert |
 | F — Octavia | `octavia-lb-attribution` |
 | G/H/K/L — static routes | — (backlog; catalog audit) |

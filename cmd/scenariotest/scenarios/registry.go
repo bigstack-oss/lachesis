@@ -65,6 +65,7 @@ func All() []*scenariotest.Scenario {
 		agentRestartUnderLoad(),
 		kafkaDrivenAttribution(),
 		kafkaPartitionGrowth(),
+		snatToForeignFIP(),
 	}
 }
 

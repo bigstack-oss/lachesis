@@ -161,12 +161,30 @@ func (s SetRouterGatewayStep) Run(ctx context.Context, env *scenariotest.StepEnv
 type AddRouteStep struct {
 	VM   string
 	CIDR string
-	Via  string
+	// FIPOf names a VM whose provider SSH FIP, as a /32, is the route's
+	// destination: one only known once `up` allocated it. Set exactly
+	// one of CIDR and FIPOf.
+	FIPOf string
+	Via   string
 }
 
 func (AddRouteStep) Kind() string { return "add-route" }
 
 func (s AddRouteStep) Run(ctx context.Context, env *scenariotest.StepEnv) error {
+	if (s.CIDR == "") == (s.FIPOf == "") {
+		return fmt.Errorf("add-route on %s: set exactly one of CIDR and FIPOf", s.VM)
+	}
+	cidr := s.CIDR
+	if s.FIPOf != "" {
+		for _, f := range env.State.FIPs {
+			if f.VMID == s.FIPOf && f.Network == "" { // the provider SSH FIP
+				cidr = f.Address + "/32"
+			}
+		}
+		if cidr == "" {
+			return fmt.Errorf("add-route: run-state has no SSH FIP for VM %q", s.FIPOf)
+		}
+	}
 	fip := ""
 	for _, f := range env.State.FIPs {
 		if f.VMID == s.VM && f.Network == "" { // the provider SSH FIP
@@ -183,11 +201,11 @@ func (s AddRouteStep) Run(ctx context.Context, env *scenariotest.StepEnv) error 
 	// not found"); the busybox `route` spelling is the fallback for
 	// images without iproute2 at that path.
 	cmd := fmt.Sprintf("sudo /sbin/ip route add %s via %s 2>/dev/null || sudo route add -net %s gw %s",
-		s.CIDR, s.Via, s.CIDR, s.Via)
+		cidr, s.Via, cidr, s.Via)
 	if out, err := env.Exec.Run(ctx, fip, cmd); err != nil {
-		return fmt.Errorf("add-route %s via %s on %s: %w (output: %s)", s.CIDR, s.Via, s.VM, err, out)
+		return fmt.Errorf("add-route %s via %s on %s: %w (output: %s)", cidr, s.Via, s.VM, err, out)
 	}
-	env.Log.Info("add-route", "cidr", s.CIDR, "via", s.Via, "vm", s.VM)
+	env.Log.Info("add-route", "cidr", cidr, "via", s.Via, "vm", s.VM)
 	return nil
 }
 
