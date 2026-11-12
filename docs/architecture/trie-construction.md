@@ -60,7 +60,6 @@ Run once at cold start, then incrementally on every reconcile:
         network:metadata,               # traditional Neutron metadata
         network:distributed,            # OVN distributed DHCP — IP only
         network:router_interface,       # router-to-subnet attachment
-        network:router_gateway,         # router-to-external attachment
       }:
       add (0, P.fixed_ip/32) → ZONE_INFRA
 
@@ -110,6 +109,13 @@ Notes, in step order:
   group destination MAC and classifies `multicast` (never billed, decided by
   the kernel before any trie lookup); the unicast response half bills INFRA.
   Trivial volume; accepted.
+- **Router gateways are not infra (step 4).** A `network:router_gateway` port's
+  address on the external network is the SNAT source of every FIP-less VM behind
+  that router. Another tenant's VM that talks to it over the external network
+  is exchanging tenant traffic, so the address falls through to step 1's
+  catchall as `ZONE_EXTERNAL`, like a floating IP. The `external_network`
+  label still resolves per flow from the peer router-interface MAC
+  ([billing.md](./billing.md)).
 - **IPv6 subnets and fixed IPs are skipped** — the kernel trie is keyed on
   u32 IPv4. Deferred: [contracts.md](./contracts.md#deferred-work) item 1.
 ### Port classification (`device_owner`)
@@ -123,7 +129,7 @@ split; this table is the verified ground truth on the deployment target
 | `device_owner` | infra | VM-like | note |
 |---|---|---|---|
 | `network:router_interface` | yes | no | |
-| `network:router_gateway` | yes | no | |
+| `network:router_gateway` | no | no | the router's SNAT address on the external network; tenant traffic, billed external |
 | `network:distributed` | yes | no | fixed IP only; MAC only on the unattached metadata veth |
 | `network:dhcp` | yes | no | |
 | `network:metadata` | yes | no | absent under OVN |
@@ -139,10 +145,12 @@ split; this table is the verified ground truth on the deployment target
 **Infra is prefix-matched, not allow-listed.** Any `network:` value counts,
 which picks up deployment-specific and future owners without a code change
 (`network:floatingip_agent_gateway` for DVR, `network:ha_router_replicated_interface`
-for L3-HA, `network:routed` for segmented access). `network:floatingip` is the
-single carve-out. Misclassifying a VM port as INFRA would corrupt SAME_TENANT
-billing, so the boundary is deliberately conservative in the other direction:
-an unrecognised non-`network:` owner admits as VM-like.
+for L3-HA, `network:routed` for segmented access). `network:floatingip` and
+`network:router_gateway` are the carve-outs: each is an address on the external
+network that tenant traffic uses as its source or destination. Misclassifying a
+VM port as INFRA would corrupt SAME_TENANT billing, so the boundary is
+deliberately conservative in the other direction: an unrecognised
+non-`network:` owner admits as VM-like.
 
 **The known-owner allowlist is separate and stricter.** `IsKnownVMOwner`
 covers `compute:*`, `Octavia*`, `manila:*`, `baremetal:*`, `trunk:*` and

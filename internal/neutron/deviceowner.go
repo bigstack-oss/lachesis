@@ -10,17 +10,21 @@ package neutron
 import "strings"
 
 // IsInfraPort reports whether deviceOwner is in Neutron's reserved
-// `network:` namespace, with one carve-out: `network:floatingip` is
-// neither infra nor VM-like. Prefix-matched rather than allow-listed so
-// deployment-specific and future owners classify without a code change.
-// Misclassifying a VM port as INFRA corrupts SAME_TENANT billing.
+// `network:` namespace, with two carve-outs that are neither infra nor
+// VM-like: `network:floatingip`, and `network:router_gateway`, whose
+// address is the SNAT source of every FIP-less VM behind the router —
+// tenant traffic on the external network, so it must bill external.
+// Prefix-matched rather than allow-listed so deployment-specific and
+// future owners classify without a code change. Misclassifying a VM
+// port as INFRA corrupts SAME_TENANT billing.
 //
 // docs/architecture/trie-construction.md#port-classification-device_owner
 func IsInfraPort(deviceOwner string) bool {
 	if !strings.HasPrefix(deviceOwner, deviceOwnerNetworkPrefix) {
 		return false
 	}
-	if deviceOwner == "network:floatingip" {
+	switch deviceOwner {
+	case "network:floatingip", "network:router_gateway":
 		return false
 	}
 	return true
