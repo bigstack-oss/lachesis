@@ -111,6 +111,9 @@ type AgentControlConfig struct {
 	// cold-restart scenarios (RestartAgentStep.RemovePins removes it
 	// to simulate a host reboot's kernel-state loss).
 	PinPath string `yaml:"pin_path"`
+	// LogPath is the agent's on-host log file, read by AssertAgentLogStep;
+	// defaults to the CubeCOS unit's /var/log/lachesis/lachesis.log.
+	LogPath string `yaml:"log_path"`
 }
 
 // SSHConfig projects the agent-control block onto the shared

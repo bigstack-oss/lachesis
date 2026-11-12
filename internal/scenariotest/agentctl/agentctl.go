@@ -13,8 +13,10 @@ package agentctl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +25,9 @@ import (
 
 // defaultUnit is the systemd unit an unconfigured agent_control drives.
 const defaultUnit = "lachesis-agent"
+
+// defaultLogPath is where the CubeCOS unit appends the agent's JSON log.
+const defaultLogPath = "/var/log/lachesis/lachesis.log"
 
 // readyPollInterval is the pause between readiness probes after a
 // restart.
@@ -343,6 +348,65 @@ func (c *Controller) AwaitReady(ctx context.Context, oldPID string, baseTaps flo
 					c.Unit, oldPID, timeout, ctx.Err())
 			}
 			return fmt.Errorf("%s not ready within %s: %w", c.Agent.MetricsURL, timeout, ctx.Err())
+		case <-time.After(readyPollInterval):
+		}
+	}
+}
+
+// AwaitLog returns the newest JSON log record with the given msg that the
+// unit's CURRENT run wrote, polling until timeout. The log is append-only
+// and outlives restarts, so records older than the unit's last start are
+// ignored: after a restart that is the line the new process wrote, never
+// a stale one from its predecessor.
+//
+// msg must be shell-safe (it is matched as a literal inside the command
+// line); every agent log message the scenarios read is.
+func (c *Controller) AwaitLog(ctx context.Context, msg string, timeout time.Duration) (map[string]any, error) {
+	if err := scenariotest.ShellSafe("log msg", msg); err != nil {
+		return nil, err
+	}
+	path := c.control.LogPath
+	if path == "" {
+		path = defaultLogPath
+	}
+	if err := scenariotest.ShellSafe("agent_control.log_path", path); err != nil {
+		return nil, err
+	}
+	startCmd := fmt.Sprintf(`date -d "$(systemctl show -p ActiveEnterTimestamp --value %s)" +%%s`, c.Unit)
+	out, err := c.exec.Run(ctx, c.Host, startCmd)
+	if err != nil {
+		return nil, fmt.Errorf("read %s start time on %s: %w (output: %s)", c.Unit, c.Host, err, out)
+	}
+	epoch, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s start time %q on %s: %w", c.Unit, out, c.Host, err)
+	}
+	since := time.Unix(epoch, 0)
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	// `|| true`: grep exits 1 on no match, which is "not written yet",
+	// not a transport failure.
+	cmd := fmt.Sprintf(`sudo tac %s | grep -m1 -F '"msg":"%s"' || true`, path, msg)
+	for {
+		line, err := c.exec.Run(ctx, c.Host, cmd)
+		if err != nil {
+			return nil, fmt.Errorf("read %s on %s: %w", path, c.Host, err)
+		}
+		if line = strings.TrimSpace(line); line != "" {
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				return nil, fmt.Errorf("log line for msg %q is not JSON (is logging.format json?): %w: %s", msg, err, line)
+			}
+			if ts, _ := rec["time"].(string); ts != "" {
+				if t, err := time.Parse(time.RFC3339Nano, ts); err == nil && !t.Before(since) {
+					return rec, nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("no %q record from the current %s run in %s within %s", msg, c.Unit, path, timeout)
 		case <-time.After(readyPollInterval):
 		}
 	}

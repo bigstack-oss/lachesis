@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bigstack-oss/lachesis/internal/config"
 	"github.com/bigstack-oss/lachesis/internal/logging"
@@ -149,5 +150,44 @@ func TestParseLevel(t *testing.T) {
 
 	if _, err := logging.ParseLevel("verbose"); err == nil {
 		t.Errorf("expected error for verbose")
+	}
+}
+
+func TestInit_JSONDurationsRenderHuman(t *testing.T) {
+	var buf bytes.Buffer
+	h, err := logging.Init(config.LoggingConfig{Level: "info", Format: "json"}, &buf)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	h.Logger().With("fixed", 90*time.Second).Info("serving",
+		"scrape_interval", 10*time.Second,
+		slog.Group("nested", "backoff", 1500*time.Millisecond),
+	)
+
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, buf.String())
+	}
+	if got["scrape_interval"] != "10s" {
+		t.Errorf("scrape_interval = %v, want \"10s\"", got["scrape_interval"])
+	}
+	if got["fixed"] != "1m30s" {
+		t.Errorf("logger-bound duration = %v, want \"1m30s\"", got["fixed"])
+	}
+	nested, _ := got["nested"].(map[string]any)
+	if nested["backoff"] != "1.5s" {
+		t.Errorf("grouped duration = %v, want \"1.5s\"", nested["backoff"])
+	}
+}
+
+func TestInit_TextDurationsRenderHuman(t *testing.T) {
+	var buf bytes.Buffer
+	h, err := logging.Init(config.LoggingConfig{Level: "info", Format: "text"}, &buf)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	h.Logger().Info("serving", "scrape_interval", 10*time.Second)
+	if !strings.Contains(buf.String(), "scrape_interval=10s") {
+		t.Errorf("text output missing scrape_interval=10s: %s", buf.String())
 	}
 }
