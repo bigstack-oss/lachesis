@@ -61,7 +61,7 @@ func PeerMAC(key bpf.FlowKey) uint64 {
 // FlowExternalLabel resolves the external_network label for one flow:
 // per-flow via the peer router-interface MAC when the router map knows
 // it (the network that actually carried the flow), else the per-VM
-// attribution (FIP / gateway-IP rule), both behind the
+// attribution (FIP / gateway-IP rule / direct attachment), both behind the
 // [ExternalNetworkLabel] zone gate. Single source for every emitter —
 // the Collector's live aggregation, the ghost sweep's settle fold, and
 // the reconciler's attribution-change folds all label through here, so
