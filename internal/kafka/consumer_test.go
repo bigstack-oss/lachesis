@@ -3,10 +3,12 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	kafkago "github.com/segmentio/kafka-go"
 )
 
@@ -84,12 +86,21 @@ func TestHandle_KicksOnlyOnNeutronChange(t *testing.T) {
 	ft := &fakeTrigger{}
 	c := New(Options{Trigger: ft, Metrics: NewMetrics("notifications.info"), Topic: "notifications.info"})
 
-	c.handle(oslo("port.create.end", "network.dev-cmp"))   // kick
-	c.handle(oslo("volume.create.end", "cinder.dev-cmp"))  // ignore (Cinder)
-	c.handle(oslo("port.create.start", "network.dev-cmp")) // ignore (pre-commit)
-	c.handle([]byte("garbage"))                            // ignore (malformed)
-	c.handle(oslo("router.update.end", "network.dev-cmp")) // kick
-
+	cases := []struct {
+		value []byte
+		want  string
+	}{
+		{oslo("port.create.end", "network.dev-cmp"), outcomeKicked},
+		{oslo("volume.create.end", "cinder.dev-cmp"), outcomeIgnored},
+		{oslo("port.create.start", "network.dev-cmp"), outcomeIgnored},
+		{[]byte("garbage"), outcomeUndecodable},
+		{oslo("router.update.end", "network.dev-cmp"), outcomeKicked},
+	}
+	for _, tc := range cases {
+		if got := c.handle(tc.value); got != tc.want {
+			t.Errorf("handle(%s) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
 	if ft.count() != 2 {
 		t.Errorf("kicks = %d, want 2 (the two committed Neutron changes)", ft.count())
 	}
@@ -116,14 +127,16 @@ func (f *fakeReader) Stats() kafkago.ReaderStats { return kafkago.ReaderStats{} 
 func (f *fakeReader) Close() error               { f.closed = true; return nil }
 
 // TestRun_ConsumesKicksAndShutsDown drives the full loop: a Neutron event
-// in the stream triggers a kick, and Run exits cleanly on cancel, closing
-// the reader.
+// in the stream triggers a kick, every message read is counted by
+// outcome, and Run exits cleanly on cancel, closing the reader.
 func TestRun_ConsumesKicksAndShutsDown(t *testing.T) {
 	ft := &fakeTrigger{}
 	fr := &fakeReader{msgs: []kafkago.Message{
+		{Value: oslo("compute.instance.create.end", "compute.dev-cmp")},
 		{Value: oslo("port.create.end", "network.dev-cmp")},
 	}}
-	c := New(Options{Reader: fr, Trigger: ft, Metrics: NewMetrics("t"), Topic: "t"})
+	mx := NewMetrics("t")
+	c := New(Options{Reader: fr, Trigger: ft, Metrics: mx, Topic: "t"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -146,5 +159,15 @@ func TestRun_ConsumesKicksAndShutsDown(t *testing.T) {
 	}
 	if !fr.closed {
 		t.Error("Run did not close the reader on exit")
+	}
+	want := `
+# HELP lachesis_kafka_messages_total Notifications read from Kafka, by what the consumer did with each: kicked a reconcile, ignored (not a committed Neutron metadata change), or undecodable.
+# TYPE lachesis_kafka_messages_total counter
+lachesis_kafka_messages_total{outcome="ignored",topic="t"} 1
+lachesis_kafka_messages_total{outcome="kicked",topic="t"} 1
+lachesis_kafka_messages_total{outcome="undecodable",topic="t"} 0
+`
+	if err := testutil.CollectAndCompare(mx.messages, strings.NewReader(want)); err != nil {
+		t.Error(err)
 	}
 }

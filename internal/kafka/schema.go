@@ -16,6 +16,19 @@ const component = "kafka"
 // consumer's metrics.
 const labelTopic = "topic"
 
+// labelOutcome is the Prometheus label naming what the consumer did with
+// a message it read.
+const labelOutcome = "outcome"
+
+// Message outcomes on lachesis_kafka_messages_total. Kicked is a committed
+// Neutron metadata change; ignored is any other event on the shared topic;
+// undecodable is a message the envelope decode rejected.
+const (
+	outcomeKicked      = "kicked"
+	outcomeIgnored     = "ignored"
+	outcomeUndecodable = "undecodable"
+)
+
 // neutronPublisherPrefix matches a Neutron notification on the shared
 // notifications topic: oslo sets publisher_id to "network.<host>".
 const neutronPublisherPrefix = "network"

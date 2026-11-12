@@ -247,7 +247,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 // when it waited behind a kick-triggered pass.
 func (r *Reconciler) timedPass(ctx context.Context, now time.Time, trigger string) {
 	start := time.Now()
-	r.reconcileOnce(ctx, now)
+	r.reconcileOnce(ctx, now, trigger)
 	r.mx.ObservePass(trigger, time.Since(start))
 }
 
@@ -262,7 +262,7 @@ func (r *Reconciler) intervalNow() time.Duration {
 // commit on success. Orchestration only — each step records its own
 // terminal outcome on lachesis_reconcile_runs_total and signals whether
 // the pass may continue.
-func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
+func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time, trigger string) {
 	result, ok := r.fetch(ctx)
 	if !ok {
 		return
@@ -280,7 +280,7 @@ func (r *Reconciler) reconcileOnce(ctx context.Context, now time.Time) {
 	r.pruneServerSettled(result.Snapshot.Servers)
 	r.pruneTenantSettled(result.Snapshot.Projects)
 	r.refreshMapGauges(len(result.Entries), nAmp)
-	r.logOutcome(delta, mac, len(result.Ambiguities))
+	r.logOutcome(trigger, delta, mac, len(result.Ambiguities))
 }
 
 // pruneServerSettled releases buckets for servers gone from the Nova
@@ -400,15 +400,15 @@ func (r *Reconciler) applyTrie(result neutron.SyncResult) (kernelwriter.TrieDelt
 // unlike cold-start (which can abort under strict mode), a running agent
 // applies the EXTERNAL fallback already baked into the entries and
 // continues.
-func (r *Reconciler) logOutcome(delta kernelwriter.TrieDelta, mac macDelta, ambiguities int) {
+func (r *Reconciler) logOutcome(trigger string, delta kernelwriter.TrieDelta, mac macDelta, ambiguities int) {
 	if delta != (kernelwriter.TrieDelta{}) {
 		slog.Info("reconcile applied trie delta",
-			"component", component,
+			"component", component, "trigger", trigger,
 			"added", delta.Added, "changed", delta.Changed, "removed", delta.Removed)
 	}
 	if mac != (macDelta{}) {
 		slog.Info("reconcile applied mac_tenant_map delta",
-			"component", component,
+			"component", component, "trigger", trigger,
 			"inserted", mac.Inserted, "changed", mac.Changed, "ghosted", mac.Ghosted)
 	}
 	if ambiguities > 0 {

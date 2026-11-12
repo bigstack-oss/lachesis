@@ -187,6 +187,7 @@ info family.
 | `lachesis_reconcile_kicks_total` | counter | — | reconcile kicks: one per committed Neutron metadata change from Kafka (the change-event rate the agent sees), plus one per SIGHUP reload; flat at 0 while ports change = dead Kafka feed. Minus `lachesis_reconcile_duration_seconds_count{trigger="kick"}` = kicks folded into a pass |
 | `lachesis_kafka_lag_messages` | gauge | `topic` | Kafka consumer lag behind the topic head; sustained growth = falling behind live updates |
 | `lachesis_kafka_consume_errors_total` | counter | `topic` | Kafka consumer read failures (broker unreachable, fetch errors) |
+| `lachesis_kafka_messages_total` | counter | `topic`, `outcome="kicked\|ignored\|undecodable"` | notifications the Kafka consumer read, by what it did with each. All flat while ports change = no feed reaches the agent; `ignored` climbing with `kicked` flat = events arrive but none match the Neutron filter (publisher or event type) |
 
 ## Planned (subsystem not yet built; add with the subsystem)
 
